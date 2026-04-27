@@ -275,12 +275,15 @@ function MyChatPanel({ workspaceId, data }: Props) {
   // as if it were msg #2's reply.
   const sendTokenRef = useRef(0);
 
-  // Release every in-flight send guard at once. Keep the three sites
-  // (WS push, HTTP .then() success, HTTP .catch() success) in lockstep
-  // so a future contributor can't drop one and silently re-introduce
-  // the post-WS Send-button freeze. `setSending(false)` is the only
-  // observable user-side signal; the two refs are synchronous guards
-  // the disabled-button logic can't see.
+  // Release every in-flight send guard at once. Used by every site
+  // that ends a send: pendingAgentMsgs WS push, ACTIVITY_LOGGED
+  // a2a_receive ok/error WS event, HTTP .then() success, and HTTP
+  // .catch() success. Keep these in lockstep — a future contributor
+  // adding a new "I saw the reply" path that only clears `sending` +
+  // `sendingFromAPIRef` (the natural pair) silently re-introduces
+  // the post-WS Send-button freeze, because the disabled-button
+  // logic can't see `sendInFlightRef` and so the visible state diverges
+  // from the synchronous re-entry guard at line 464.
   const releaseSendGuards = useCallback(() => {
     setSending(false);
     sendingFromAPIRef.current = false;
@@ -408,15 +411,13 @@ function MyChatPanel({ workspaceId, data }: Props) {
               // via pendingAgentMsgs or the HTTP .then()).
               const own = (targetId || msg.workspace_id) === workspaceId;
               if (own && sendingFromAPIRef.current) {
-                setSending(false);
-                sendingFromAPIRef.current = false;
+                releaseSendGuards();
               }
             } else if (status === "error") {
               line = `⚠ ${targetName} error`;
               const own = (targetId || msg.workspace_id) === workspaceId;
               if (own && sendingFromAPIRef.current) {
-                setSending(false);
-                sendingFromAPIRef.current = false;
+                releaseSendGuards();
                 setError("Agent error (Exception) — see workspace logs for details.");
               }
             }
