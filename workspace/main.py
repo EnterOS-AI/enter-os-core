@@ -188,7 +188,6 @@ async def main():  # pragma: no cover
         capabilities=AgentCapabilities(
             streaming=config.a2a.streaming,
             push_notifications=config.a2a.push_notifications,
-            state_transition_history=True,
         ),
         skills=[
             AgentSkill(
