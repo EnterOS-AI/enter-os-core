@@ -242,10 +242,16 @@ async def main():  # pragma: no cover
         agent_card=agent_card,
     )
 
-    # v1: replace A2AStarletteApplication with Starlette route factory
+    # v1: replace A2AStarletteApplication with Starlette route factory.
+    # rpc_url is required in a2a-sdk 1.x (was implicit at root in 0.x).
+    # Use '/' to match a2a.utils.constants.DEFAULT_RPC_URL — that's also
+    # what the platform's a2a_proxy.go POSTs to (it forwards to the
+    # workspace's URL without appending a path). Card endpoint stays at
+    # the well-known path /.well-known/agent-card.json (handled by
+    # create_agent_card_routes default).
     routes = []
     routes.extend(create_agent_card_routes(agent_card))
-    routes.extend(create_jsonrpc_routes(request_handler=handler))
+    routes.extend(create_jsonrpc_routes(request_handler=handler, rpc_url="/"))
     app = Starlette(routes=routes)
 
     # 8. Register with platform
