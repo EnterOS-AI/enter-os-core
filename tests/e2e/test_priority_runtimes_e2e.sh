@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
-# E2E test: claude-code AND hermes both work end-to-end (task #87 priority adapters).
+# E2E test: every runtime template (8 total) works end-to-end.
 #
-# Self-contained happy-path smoke for the two runtimes the project commits
-# to first-class support for. Provisions a fresh workspace per runtime,
-# waits for it to reach status=online, sends a real A2A message, and
-# asserts a non-error reply. Pins the contract so the upcoming refactor
-# (move adapter executors to template repos) cannot silently break either
-# path.
+# Self-contained happy-path smoke per runtime. Provisions a fresh
+# workspace, waits for status=online, sends a real A2A message, and
+# asserts a non-error reply. Pins the contract so the post-#87 template
+# extraction (and ongoing template work) can't silently break any
+# runtime.
+#
+# Runtimes covered: claude-code, hermes, langgraph, crewai, autogen,
+# deepagents, openclaw, gemini-cli. claude-code + hermes have unique
+# provisioning quirks (claude-code OAuth, hermes 15-min cold-boot)
+# and stay first-class with their own run_<runtime> functions; the
+# 5 OpenAI-backed runtimes share run_openai_runtime; gemini-cli has
+# its own block (Google AI key). Each phase skips cleanly if its
+# prerequisite secret is missing.
 #
 # What this proves:
 #   1. Provisioning + container boot works for each runtime.
@@ -285,11 +292,134 @@ print(json.dumps({
   fi
 }
 
+####################################################################
+# Secondary runtimes — same provision/online/A2A loop, parametrized.
+####################################################################
+# These 5 templates (langgraph, crewai, autogen, deepagents, openclaw)
+# all use OpenAI as their LLM provider in the default config and don't
+# need the hermes-specific HERMES_* secret block. Skip if no key.
+# claude-code + hermes stay first-class above because each has unique
+# provisioning quirks (claude-code OAuth, hermes cold-boot tolerance);
+# refactoring them into this generic loop would lose those guards.
+
+run_openai_runtime() {
+  local runtime="$1"
+  local label="$2"
+  echo ""
+  echo "=== $label happy path ==="
+  if [ -z "${E2E_OPENAI_API_KEY:-}" ]; then
+    skip "E2E_OPENAI_API_KEY not set ($runtime needs an LLM provider key)"
+    return 0
+  fi
+  local secrets
+  secrets=$(python3 -c "
+import json, os
+k = os.environ['E2E_OPENAI_API_KEY']
+print(json.dumps({
+    'OPENAI_API_KEY': k,
+    'OPENAI_BASE_URL': 'https://api.openai.com/v1',
+    'MODEL_PROVIDER': 'openai:gpt-4o-mini',
+}))
+")
+  local resp wsid
+  resp=$(curl -s -X POST "$BASE/workspaces" -H "Content-Type: application/json" \
+    -d "{\"name\":\"Priority E2E ($runtime)\",\"runtime\":\"$runtime\",\"tier\":1,\"model\":\"openai/gpt-4o-mini\",\"secrets\":$secrets}")
+  wsid=$(echo "$resp" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("id",""))') || true
+  if [ -z "$wsid" ]; then
+    fail "create $runtime workspace" "$resp"
+    return 0
+  fi
+  CREATED_WSIDS+=("$wsid")
+  echo "  workspace=$wsid"
+
+  local final
+  final=$(wait_for_status "$wsid" "online failed" 240) || true
+  if [ "$final" != "online" ]; then
+    fail "$runtime workspace reaches online" "final status: $final"
+    return 0
+  fi
+  pass "$runtime workspace reaches online"
+
+  local token
+  token=$(e2e_mint_test_token "$wsid")
+  if [ -z "$token" ]; then
+    fail "mint $runtime test token" "no token returned"
+    return 0
+  fi
+
+  local reply
+  if reply=$(send_test_prompt "$wsid" "$token"); then
+    if echo "$reply" | grep -q "PONG"; then
+      pass "$runtime reply contains PONG"
+    else
+      pass "$runtime reply non-empty (first 80 chars: ${reply:0:80})"
+    fi
+    assert_activity_logged "$runtime" "$wsid" "$token"
+  else
+    fail "$runtime reply" "${reply:-<empty or error>}"
+  fi
+}
+
+run_langgraph()  { run_openai_runtime "langgraph"  "langgraph"; }
+run_crewai()     { run_openai_runtime "crewai"     "crewai"; }
+run_autogen()    { run_openai_runtime "autogen"    "autogen"; }
+run_deepagents() { run_openai_runtime "deepagents" "deepagents"; }
+run_openclaw()   { run_openai_runtime "openclaw"   "openclaw"; }
+
+# gemini-cli wants a Google API key, not OpenAI. Skip if absent.
+run_gemini_cli() {
+  echo ""
+  echo "=== gemini-cli happy path ==="
+  if [ -z "${E2E_GEMINI_API_KEY:-}" ]; then
+    skip "E2E_GEMINI_API_KEY not set (gemini-cli needs Google AI key)"
+    return 0
+  fi
+  local secrets
+  secrets=$(python3 -c "
+import json, os
+print(json.dumps({'GEMINI_API_KEY': os.environ['E2E_GEMINI_API_KEY']}))
+")
+  local resp wsid
+  resp=$(curl -s -X POST "$BASE/workspaces" -H "Content-Type: application/json" \
+    -d "{\"name\":\"Priority E2E (gemini-cli)\",\"runtime\":\"gemini-cli\",\"tier\":1,\"secrets\":$secrets}")
+  wsid=$(echo "$resp" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("id",""))') || true
+  if [ -z "$wsid" ]; then fail "create gemini-cli workspace" "$resp"; return 0; fi
+  CREATED_WSIDS+=("$wsid")
+  echo "  workspace=$wsid"
+  local final
+  final=$(wait_for_status "$wsid" "online failed" 240) || true
+  if [ "$final" != "online" ]; then
+    fail "gemini-cli workspace reaches online" "final status: $final"
+    return 0
+  fi
+  pass "gemini-cli workspace reaches online"
+  local token; token=$(e2e_mint_test_token "$wsid")
+  if [ -z "$token" ]; then fail "mint gemini-cli test token" "no token"; return 0; fi
+  local reply
+  if reply=$(send_test_prompt "$wsid" "$token"); then
+    if echo "$reply" | grep -q "PONG"; then
+      pass "gemini-cli reply contains PONG"
+    else
+      pass "gemini-cli reply non-empty (first 80 chars: ${reply:0:80})"
+    fi
+    assert_activity_logged "gemini-cli" "$wsid" "$token"
+  else
+    fail "gemini-cli reply" "${reply:-<empty or error>}"
+  fi
+}
+
 WANT="${E2E_RUNTIMES:-claude-code hermes}"
 for r in $WANT; do
   case "$r" in
     claude-code) run_claude_code ;;
     hermes)      run_hermes ;;
+    langgraph)   run_langgraph ;;
+    crewai)      run_crewai ;;
+    autogen)     run_autogen ;;
+    deepagents)  run_deepagents ;;
+    openclaw)    run_openclaw ;;
+    gemini-cli)  run_gemini_cli ;;
+    all)         run_claude_code; run_hermes; run_langgraph; run_crewai; run_autogen; run_deepagents; run_openclaw; run_gemini_cli ;;
     *) echo "unknown runtime in E2E_RUNTIMES: $r" >&2; exit 2 ;;
   esac
 done
