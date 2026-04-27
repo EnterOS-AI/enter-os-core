@@ -7,20 +7,46 @@ This path is aligned to the current repository and current UI. It gets you from 
 - Docker + Docker Compose v2
 - Node.js 20+
 - Go 1.25+
+- `jq` (for the template-registry clone in `setup.sh`)
 - One model/API key for the runtime you want to use
   - `ANTHROPIC_API_KEY`
   - `OPENAI_API_KEY`
   - `GOOGLE_API_KEY`
   - or another provider routed through LiteLLM
 
-## Step 1: Clone the repository
+## The one-command path
+
+```bash
+git clone https://github.com/Molecule-AI/molecule-monorepo.git
+cd molecule-monorepo
+./scripts/dev-start.sh
+```
+
+That single script:
+
+1. Generates an `ADMIN_TOKEN` into `.env` (first run only — preserved on re-runs)
+2. Brings up Postgres, Redis, Langfuse, ClickHouse, and Temporal via `infra/scripts/setup.sh`
+3. Populates the workspace template + plugin registry from `manifest.json`
+4. Builds and starts the platform on `http://localhost:8080`
+5. Installs canvas deps (first run) and starts the canvas on `http://localhost:3000`
+6. Prints next-step instructions and tails both processes — `Ctrl-C` tears everything down
+
+Total wall-clock: ~30 seconds for a re-run, ~2 minutes for a first run (npm install + docker pulls).
+
+Once the canvas is up: open it, add your model API key in **Config → Secrets & API Keys → Global**, then click a template card or **+ Create blank workspace**.
+
+## Manual setup (advanced)
+
+If you'd rather run each component yourself — useful when you're iterating on the platform binary or the canvas in isolation — follow the steps below. Each section is what `dev-start.sh` does internally; running them by hand gives you per-component logs and lets you keep one piece running while you restart another.
+
+### Step 1: Clone the repository
 
 ```bash
 git clone https://github.com/Molecule-AI/molecule-monorepo.git
 cd molecule-monorepo
 ```
 
-## Step 2: Start the shared infrastructure
+### Step 2: Start the shared infrastructure
 
 Recommended:
 
@@ -28,7 +54,7 @@ Recommended:
 ./infra/scripts/setup.sh
 ```
 
-That brings up Postgres, Redis, and Langfuse.
+That brings up Postgres, Redis, Langfuse, ClickHouse, and Temporal.
 
 If you only want the raw compose flow:
 
@@ -36,7 +62,7 @@ If you only want the raw compose flow:
 docker compose -f docker-compose.infra.yml up -d
 ```
 
-## Step 3: Start the platform
+### Step 3: Start the platform
 
 ```bash
 cd workspace-server
@@ -45,7 +71,7 @@ go run ./cmd/server
 
 The control plane listens on `http://localhost:8080`.
 
-## Step 4: Start the canvas
+### Step 4: Start the canvas
 
 In a new terminal:
 
