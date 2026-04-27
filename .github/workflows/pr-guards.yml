@@ -1,0 +1,22 @@
+name: pr-guards
+
+# Thin caller that delegates to the molecule-ci reusable guard. Today
+# the guard is just "disable auto-merge when a new commit is pushed
+# after auto-merge was enabled" — added 2026-04-27 after PR #2174
+# auto-merged with only its first commit because the second commit
+# was pushed after the merge queue had locked the PR's SHA.
+#
+# When more PR-time guards land in molecule-ci, add them here as
+# additional jobs that share the same pull_request:synchronize
+# trigger.
+
+on:
+  pull_request:
+    types: [synchronize]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  disable-auto-merge-on-push:
+    uses: Molecule-AI/molecule-ci/.github/workflows/disable-auto-merge-on-push.yml@main
