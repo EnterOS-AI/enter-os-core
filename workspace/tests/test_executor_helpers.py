@@ -445,8 +445,26 @@ def test_get_a2a_instructions_mcp_default():
 
 def test_get_a2a_instructions_cli_variant():
     out = get_a2a_instructions(mcp=False)
-    assert "a2a_cli.py" in out
+    assert "a2a_cli" in out
     assert "MCP tools" not in out
+
+
+def test_a2a_cli_instructions_use_module_invocation_not_legacy_app_path():
+    # The CLI variant of the a2a instructions ships in the agent system
+    # prompt for non-MCP runtimes (Ollama, custom). The model copies the
+    # invocation form verbatim into shell calls, so any path drift here
+    # silently breaks delegation. The legacy /app/a2a_cli.py path was
+    # correct under the pre-#87 monolithic-template Docker layout but
+    # stops resolving once the runtime ships as a wheel — pin the
+    # canonical `python3 -m molecule_runtime.a2a_cli` form so future
+    # refactors can't silently regress it.
+    out = get_a2a_instructions(mcp=False)
+    assert "/app/a2a_cli.py" not in out, (
+        "Legacy /app/a2a_cli.py path leaked back into the CLI-variant "
+        "system prompt — agents on Ollama/custom runtimes would copy "
+        "this verbatim and every delegation would fail."
+    )
+    assert "python3 -m molecule_runtime.a2a_cli" in out
 
 
 def test_a2a_mcp_instructions_reference_existing_tools():

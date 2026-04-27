@@ -4,14 +4,10 @@
 Usage (from any script, cron job, or shell inside the container):
 
   # Set current task (shows on canvas card)
-  python3 /app/molecule_ai_status.py "Running weekly SEO audit..."
+  python3 -m molecule_runtime.molecule_ai_status "Running weekly SEO audit..."
 
   # Clear task (removes banner from canvas)
-  python3 /app/molecule_ai_status.py ""
-
-  # Or use the shell alias:
-  molecule-monorepo-status "Analyzing competitor data..."
-  molecule-monorepo-status ""
+  python3 -m molecule_runtime.molecule_ai_status ""
 
 The status appears as an amber banner on the workspace card in the canvas,
 visible to the project owner in real-time.
@@ -63,13 +59,13 @@ def set_status(task: str):
                 timeout=5.0,
             )
     except Exception as e:
-        print(f"molecule-monorepo-status: failed to update: {e}", file=sys.stderr)
+        print(f"molecule_ai_status: failed to update: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":  # pragma: no cover
     if len(sys.argv) < 2:
-        print("Usage: molecule-monorepo-status 'task description'")
-        print("       molecule-monorepo-status ''  # clear")
+        print("Usage: python3 -m molecule_runtime.molecule_ai_status 'task description'")
+        print("       python3 -m molecule_runtime.molecule_ai_status ''  # clear")
         sys.exit(1)
 
     set_status(sys.argv[1])
