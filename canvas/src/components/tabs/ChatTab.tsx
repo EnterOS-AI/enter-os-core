@@ -313,6 +313,11 @@ function MyChatPanel({ workspaceId, data }: Props) {
     if (sendingFromAPIRef.current && msgs.length > 0) {
       setSending(false);
       sendingFromAPIRef.current = false;
+      // Reply arrived via WS push (e.g. claude-code SDK). The HTTP .then()
+      // will see sendingFromAPIRef=false and early-return without touching
+      // sendInFlightRef, so we must release the synchronous guard here or
+      // the next sendMessage() silently no-ops at line 438.
+      sendInFlightRef.current = false;
     }
   }, [pendingAgentMsgs, workspaceId]);
 
@@ -510,7 +515,10 @@ function MyChatPanel({ workspaceId, data }: Props) {
         // Skip if the WS A2A_RESPONSE event already handled this response.
         // Both paths (WS + HTTP) check sendingFromAPIRef — whichever clears
         // it first wins, the other becomes a no-op (no duplicate messages).
-        if (!sendingFromAPIRef.current) return;
+        if (!sendingFromAPIRef.current) {
+          sendInFlightRef.current = false;
+          return;
+        }
         const replyText = extractReplyText(resp);
         const replyFiles = extractFilesFromTask((resp?.result ?? {}) as Record<string, unknown>);
         if (replyText || replyFiles.length > 0) {

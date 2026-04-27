@@ -33,6 +33,7 @@ import {
   cleanup,
   fireEvent,
 } from "@testing-library/react";
+import type { ComponentProps } from "react";
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -78,7 +79,13 @@ import { A2AEdge } from "../A2AEdge";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function defaultEdgeProps(over: Record<string, unknown> = {}) {
+type A2AEdgeProps = ComponentProps<typeof A2AEdge>;
+
+function defaultEdgeProps(over: Record<string, unknown> = {}): A2AEdgeProps {
+  // EdgeProps is a discriminated union — the test fixture only supplies
+  // the geometry/identity fields the component actually reads, so a
+  // double-cast through unknown lets call sites spread without restating
+  // every optional field React Flow declares.
   return {
     id: "edge-1",
     source: "ws-source",
@@ -91,7 +98,7 @@ function defaultEdgeProps(over: Record<string, unknown> = {}) {
     targetPosition: "left",
     style: {},
     ...over,
-  } as never; // EdgeProps is a discriminated union; cast simplifies the test fixture
+  } as unknown as A2AEdgeProps;
 }
 
 beforeEach(() => {
