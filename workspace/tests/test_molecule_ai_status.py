@@ -113,7 +113,11 @@ class TestSetStatus:
         mod.set_status("something")
 
         captured = capsys.readouterr()
-        assert "molecule-monorepo-status: failed to update" in captured.err
+        # Error prefix matches the canonical module-form invocation; the
+        # legacy molecule-monorepo-status shell alias only existed in the
+        # dev-only workspace/Dockerfile base image, never in shipped
+        # template images, so the prefix was misleading.
+        assert "molecule_ai_status: failed to update" in captured.err
         assert "platform unreachable" in captured.err
 
     def test_set_status_heartbeat_fields_are_correct(self, monkeypatch):
