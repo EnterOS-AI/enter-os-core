@@ -5,8 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "@/lib/api";
 import { useCanvasStore, type WorkspaceNodeData } from "@/store/canvas";
-import { WS_URL } from "@/store/socket";
-import { closeWebSocketGracefully } from "@/lib/ws-close";
+import { useSocketEvent } from "@/hooks/useSocketEvent";
 import { type ChatMessage, type ChatAttachment, createMessage, appendMessageDeduped } from "./chat/types";
 import { uploadChatFiles, downloadChatFile } from "./chat/uploads";
 import { AttachmentChip, PendingAttachmentPill } from "./chat/AttachmentViews";
@@ -365,22 +364,25 @@ function MyChatPanel({ workspaceId, data }: Props) {
     return () => clearInterval(timer);
   }, [sending]);
 
-  // Live activity feed via WebSocket while sending
+  // Live activity feed seed — clears when not sending. The actual
+  // event subscription is unconditional below (useSocketEvent at the
+  // top level — hooks can't be conditional). The handler gates on
+  // `sending` itself so it's a no-op when idle.
   useEffect(() => {
     if (!sending) {
       setActivityLog([]);
       return;
     }
     setActivityLog([`Processing with ${runtimeDisplayName(data.runtime)}...`]);
+  }, [sending, data.runtime]);
 
-    const ws = new WebSocket(WS_URL);
-    ws.onerror = () => {
-      // Don't crash — activity feed is non-essential, just log
-      console.warn("ChatTab activity feed WS error");
-    };
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
+  // Subscribe to global WS via the singleton ReconnectingSocket (no
+  // per-component WebSocket — the previous pattern dropped events
+  // silently on any reconnect because each panel's raw socket had no
+  // onclose handler).
+  useSocketEvent((msg) => {
+    if (!sending) return;
+    try {
         if (msg.event === "ACTIVITY_LOGGED") {
           // Filter to events for THIS workspace. The platform's
           // BroadcastOnly fires to every connected client, and
@@ -447,13 +449,8 @@ function MyChatPanel({ workspaceId, data }: Props) {
         // A2A_RESPONSE is already consumed by the store and its text is
         // appended to messages via the pendingAgentMsgs effect above; we
         // don't need to duplicate it here.
-      } catch { /* ignore */ }
-    };
-
-    return () => {
-      closeWebSocketGracefully(ws);
-    };
-  }, [sending, workspaceId, resolveWorkspaceName]);
+    } catch { /* ignore */ }
+  });
 
   const sendMessage = async () => {
     const text = input.trim();

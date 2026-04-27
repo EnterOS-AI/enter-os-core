@@ -1,5 +1,6 @@
 import { useCanvasStore } from "./canvas";
 import { deriveWsBaseUrl } from "@/lib/ws-url";
+import { emitSocketEvent } from "./socket-events";
 
 // If explicit WS_URL is set, use it as-is (may include custom path).
 // Otherwise derive base + append /ws.
@@ -139,6 +140,12 @@ class ReconnectingSocket {
       try {
         const msg: WSMessage = JSON.parse(event.data);
         useCanvasStore.getState().applyEvent(msg);
+        // Fan out to component-level subscribers so panels (Agent
+        // Comms, MyChat activity feed) don't have to open their own
+        // raw WebSocket — that pattern silently dropped events on
+        // any reconnect because the per-component sockets had no
+        // onclose / no backoff. See store/socket-events.ts.
+        emitSocketEvent(msg);
       } catch {
         // Malformed WS message — skip silently
       }
