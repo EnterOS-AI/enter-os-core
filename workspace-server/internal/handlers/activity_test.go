@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
@@ -600,5 +601,128 @@ func TestScanSessionSearchRows_RowsErrPropagates(t *testing.T) {
 	_, err := scanSessionSearchRows(f)
 	if err == nil {
 		t.Fatal("expected error to propagate")
+	}
+}
+
+// recordingBroadcaster records every BroadcastOnly invocation so a test
+// can assert what made it onto the wire. Implements events.EventEmitter.
+type recordingBroadcaster struct {
+	calls []recordedBroadcast
+}
+
+type recordedBroadcast struct {
+	workspaceID string
+	eventType   string
+	payload     map[string]interface{}
+}
+
+func (c *recordingBroadcaster) RecordAndBroadcast(_ context.Context, _ string, _ string, _ interface{}) error {
+	return nil
+}
+
+func (c *recordingBroadcaster) BroadcastOnly(workspaceID string, eventType string, payload interface{}) {
+	// Re-marshal/unmarshal so tests assert the actual wire shape (matches
+	// what hub.Broadcast does before sending). json.RawMessage values in
+	// the source payload survive the round-trip as their underlying JSON.
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		c.calls = append(c.calls, recordedBroadcast{workspaceID, eventType, nil})
+		return
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		c.calls = append(c.calls, recordedBroadcast{workspaceID, eventType, nil})
+		return
+	}
+	c.calls = append(c.calls, recordedBroadcast{workspaceID, eventType, out})
+}
+
+// TestLogActivity_Broadcast_IncludesRequestAndResponseBodies pins the
+// fix for the canvas Agent Comms "Delegating to <peer>" boilerplate
+// regression: without request_body/response_body in the live broadcast,
+// the panel renders the fallback string and the actual task text only
+// appears after a refresh re-fetches the row from /activity.
+func TestLogActivity_Broadcast_IncludesRequestAndResponseBodies(t *testing.T) {
+	mock := setupTestDB(t)
+	defer mock.ExpectationsWereMet()
+
+	mock.ExpectExec("INSERT INTO activity_logs").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	cb := &recordingBroadcaster{}
+	srcID := "ws-source"
+	tgtID := "ws-target"
+	method := "message/send"
+	summary := "Delegating to ws-target"
+	status := "ok"
+
+	LogActivity(context.Background(), cb, ActivityParams{
+		WorkspaceID:  "ws-source",
+		ActivityType: "a2a_send",
+		SourceID:     &srcID,
+		TargetID:     &tgtID,
+		Method:       &method,
+		Summary:      &summary,
+		RequestBody:  map[string]interface{}{"task": "audit moleculesai.app for performance"},
+		ResponseBody: nil,
+		Status:       status,
+	})
+
+	if len(cb.calls) != 1 {
+		t.Fatalf("expected 1 broadcast, got %d", len(cb.calls))
+	}
+	payload := cb.calls[0].payload
+	if payload["activity_type"] != "a2a_send" {
+		t.Errorf("activity_type missing/wrong: %v", payload["activity_type"])
+	}
+	// Critical: request_body must be present and carry the task text so
+	// the canvas's live-update path can render the actual delegation
+	// content instead of "Delegating to <peer>".
+	rb, ok := payload["request_body"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("request_body missing from broadcast payload: got %#v", payload["request_body"])
+	}
+	if got := rb["task"]; got != "audit moleculesai.app for performance" {
+		t.Errorf("request_body.task = %v, want the actual task text", got)
+	}
+	// response_body was nil — must NOT be present (otherwise the canvas
+	// renders an empty agent reply bubble).
+	if _, present := payload["response_body"]; present {
+		t.Errorf("response_body should be omitted when nil, got %v", payload["response_body"])
+	}
+}
+
+func TestLogActivity_Broadcast_IncludesResponseBody(t *testing.T) {
+	mock := setupTestDB(t)
+	defer mock.ExpectationsWereMet()
+
+	mock.ExpectExec("INSERT INTO activity_logs").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	cb := &recordingBroadcaster{}
+	srcID := "ws-source"
+	method := "message/send"
+	status := "ok"
+
+	LogActivity(context.Background(), cb, ActivityParams{
+		WorkspaceID:  "ws-source",
+		ActivityType: "a2a_receive",
+		SourceID:     &srcID,
+		Method:       &method,
+		RequestBody:  map[string]interface{}{"task": "audit"},
+		ResponseBody: map[string]interface{}{"result": "LCP 2.1s, INP 180ms, CLS 0.05"},
+		Status:       status,
+	})
+
+	if len(cb.calls) != 1 {
+		t.Fatalf("expected 1 broadcast, got %d", len(cb.calls))
+	}
+	payload := cb.calls[0].payload
+	rb, ok := payload["response_body"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("response_body missing from broadcast: got %#v", payload["response_body"])
+	}
+	if got := rb["result"]; got != "LCP 2.1s, INP 180ms, CLS 0.05" {
+		t.Errorf("response_body.result = %v, want the actual reply text", got)
 	}
 }

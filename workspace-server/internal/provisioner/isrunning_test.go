@@ -49,3 +49,48 @@ func TestIsContainerNotFound(t *testing.T) {
 		})
 	}
 }
+
+// isRemovalInProgress decides whether Stop() treats Docker's "already
+// being removed" race as success (the container WILL be gone) versus
+// surfacing a 500 to the caller. False negative on cascade-delete
+// breaks the UX ("workspace marked removed, but stop call(s) failed —
+// please retry" when the workspace is, in fact, removed). False
+// positive would silently swallow a different daemon error and skip
+// the volume cleanup. Both directions matter — pin the truth table.
+func TestIsRemovalInProgress(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"docker race message",
+			errors.New(`Error response from daemon: removal of container ws-eeb99b5d-607 is already in progress`),
+			true},
+		{"docker race without ws prefix",
+			errors.New(`removal of container abc123 is already in progress`),
+			true},
+		// "already in progress" alone is too generic — would false-
+		// positive on e.g. "image pull is already in progress". Both
+		// substrings must be present.
+		{"unrelated already in progress",
+			errors.New(`image pull is already in progress`),
+			false},
+		{"not-found is NOT removal-in-progress",
+			errors.New(`Error response from daemon: No such container: ws-abc`),
+			false},
+		{"context deadline",
+			errors.New("context deadline exceeded"),
+			false},
+		{"empty string",
+			errors.New(""),
+			false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isRemovalInProgress(tc.err); got != tc.want {
+				t.Errorf("isRemovalInProgress(%q) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}

@@ -519,6 +519,25 @@ func LogActivity(ctx context.Context, broadcaster events.EventEmitter, params Ac
 		if len(params.ToolTrace) > 0 {
 			payload["tool_trace"] = json.RawMessage(params.ToolTrace)
 		}
+		// Include request/response bodies in the live broadcast so the
+		// canvas's Agent Comms panel can render the actual task text
+		// and reply text immediately, instead of falling back to the
+		// "Delegating to <peer>" boilerplate. Without this, the live
+		// bubble was useless until a refresh re-fetched the activity
+		// row from /workspaces/:id/activity (which DOES return these
+		// columns from the DB). The workspace's report_activity helper
+		// caps each side at sensible sizes (4096 chars for error_detail,
+		// 256 for summary; request/response are bounded by the
+		// runtime's own caps — typical delegate_task payload is a few
+		// hundred chars to a few KB). json.RawMessage avoids a
+		// re-marshal round-trip; reqJSON/respJSON were already encoded
+		// for the DB insert above.
+		if reqStr != nil {
+			payload["request_body"] = json.RawMessage(reqJSON)
+		}
+		if respStr != nil {
+			payload["response_body"] = json.RawMessage(respJSON)
+		}
 		broadcaster.BroadcastOnly(params.WorkspaceID, "ACTIVITY_LOGGED", payload)
 	}
 }
