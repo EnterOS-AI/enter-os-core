@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
-from a2a.helpers import new_agent_text_message
+from a2a.helpers import new_text_message
 
 from adapter_base import AdapterConfig, BaseAdapter
 
@@ -191,7 +191,7 @@ class GoogleADKA2AExecutor(AgentExecutor):
         if not user_text:
             parts = getattr(getattr(context, "message", None), "parts", None)
             logger.warning("GoogleADKA2AExecutor: no text in message parts: %s", parts)
-            await event_queue.enqueue_event(new_agent_text_message(_NO_TEXT_MSG))
+            await event_queue.enqueue_event(new_text_message(_NO_TEXT_MSG))
             return
 
         session_id = getattr(context, "context_id", None) or "default-session"
@@ -223,7 +223,7 @@ class GoogleADKA2AExecutor(AgentExecutor):
                         response_parts.append(text)
 
             final_text = "".join(response_parts).strip() or _NO_RESPONSE_MSG
-            await event_queue.enqueue_event(new_agent_text_message(final_text))
+            await event_queue.enqueue_event(new_text_message(final_text))
 
         except Exception as exc:
             logger.error(
@@ -234,7 +234,7 @@ class GoogleADKA2AExecutor(AgentExecutor):
             )
             # Mirror sanitize_agent_error() convention: expose class name only.
             await event_queue.enqueue_event(
-                new_agent_text_message(f"Agent error: {type(exc).__name__}")
+                new_text_message(f"Agent error: {type(exc).__name__}")
             )
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:

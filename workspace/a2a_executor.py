@@ -446,20 +446,32 @@ class LangGraphA2AExecutor(AgentExecutor):
                     # making the earlier `Part(text=text)` call (line ~358, inside
                     # the astream_events loop) raise UnboundLocalError because
                     # the local binding is not yet in scope at that point.
-                    from a2a.types import FilePart, FileWithUri, Message, Role, TextPart
-                    _parts: list[Part] = [Part(root=TextPart(text=final_text))] if final_text else []
+                    #
+                    # a2a-sdk 1.x flattened the Part shape: 0.x used
+                    # `Part(root=TextPart(text=...))` / `Part(root=FilePart(file=
+                    # FileWithUri(uri=..., name=..., mimeType=...)))` (Pydantic
+                    # discriminated-union style). 1.x's Part is a single proto
+                    # message with flat fields: text, url, filename, media_type,
+                    # raw, data, metadata. TextPart/FilePart/FileWithUri were
+                    # removed. Same for Message: messageId/taskId/contextId
+                    # camelCase became message_id/task_id/context_id.
+                    from a2a.types import Message, Role
+                    _parts: list[Part] = [Part(text=final_text)] if final_text else []
                     for f in _outbound:
-                        _parts.append(Part(root=FilePart(file=FileWithUri(
-                            uri="workspace:" + f["path"],
-                            name=f["name"],
-                            mimeType=f["mime_type"],
-                        ))))
+                        _parts.append(Part(
+                            url="workspace:" + f["path"],
+                            filename=f["name"],
+                            media_type=f["mime_type"],
+                        ))
                     msg = Message(
-                        messageId=uuid.uuid4().hex,
-                        role=Role.agent,
+                        message_id=uuid.uuid4().hex,
+                        # 1.x Role is a protobuf enum: ROLE_UNSPECIFIED,
+                        # ROLE_USER, ROLE_AGENT. Old `Role.agent` (Pydantic
+                        # lowercase enum) doesn't exist anymore.
+                        role=Role.ROLE_AGENT,
                         parts=_parts,
-                        taskId=task_id,
-                        contextId=context_id,
+                        task_id=task_id,
+                        context_id=context_id,
                     )
                 else:
                     msg = new_text_message(final_text, task_id=task_id, context_id=context_id)

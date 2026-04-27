@@ -251,7 +251,11 @@ async def main():  # pragma: no cover
     # create_agent_card_routes default).
     routes = []
     routes.extend(create_agent_card_routes(agent_card))
-    routes.extend(create_jsonrpc_routes(request_handler=handler, rpc_url="/"))
+    # enable_v0_3_compat=True so any external 0.3.x A2A client (still using
+    # `"role": "user"` lowercase + camelCase Pydantic field names) can talk
+    # to us without re-deploying. Internally our outbound payloads are now
+    # 1.x-shaped (ROLE_USER), but inbound is opt-in compatible.
+    routes.extend(create_jsonrpc_routes(request_handler=handler, rpc_url="/", enable_v0_3_compat=True))
     app = Starlette(routes=routes)
 
     # 8. Register with platform
@@ -457,7 +461,7 @@ async def main():  # pragma: no cover
                     "method": "message/send",
                     "params": {
                         "message": {
-                            "role": "user",
+                            "role": "ROLE_USER",
                             "messageId": f"initial-{_uuid.uuid4().hex[:8]}",
                             "parts": [{"kind": "text", "text": config.initial_prompt}],
                         },
@@ -556,7 +560,7 @@ async def main():  # pragma: no cover
                     "method": "message/send",
                     "params": {
                         "message": {
-                            "role": "user",
+                            "role": "ROLE_USER",
                             "messageId": f"idle-{_uuid.uuid4().hex[:8]}",
                             "parts": [{"kind": "text", "text": config.idle_prompt}],
                         },

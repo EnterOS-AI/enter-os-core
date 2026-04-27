@@ -269,7 +269,7 @@ async def _execute_delegation(task_id: str, workspace_id: str, task: str):
                             "id": f"delegation-{task_id}-{attempt}",
                             "params": {
                                 "message": {
-                                    "role": "user",
+                                    "role": "ROLE_USER",
                                     "parts": [{"kind": "text", "text": task}],
                                     "messageId": f"msg-{task_id}-{attempt}",
                                 },

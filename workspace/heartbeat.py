@@ -375,7 +375,7 @@ class HeartbeatLoop:
                                 "method": "message/send",
                                 "params": {
                                     "message": {
-                                        "role": "user",
+                                        "role": "ROLE_USER",
                                         "parts": [{"type": "text", "text": trigger_msg}],
                                     },
                                 },
