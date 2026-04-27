@@ -175,14 +175,24 @@ async def main():  # pragma: no cover
     machine_ip = os.environ.get("HOSTNAME", get_machine_ip())
     workspace_url = f"http://{machine_ip}:{port}"
 
-    # v1: AgentCard.url removed; put url+protocol in supported_protocols instead.
+    # v1: AgentCard.url removed; put url+protocol in supported_interfaces instead.
     # v1: AgentCapabilities.inputModes/outputModes removed; move to AgentCard.default_*.
     # v1: pushNotifications → push_notifications (Pydantic field name)
+    #
+    # AgentCard's protocol message uses `supported_interfaces` (plural,
+    # interfaces — see a2a-sdk types/a2a_pb2.pyi:189). The 0.3.x→1.0
+    # migration in #1974 originally used `supported_protocols`, which
+    # the protobuf doesn't expose at all — every workspace boot since
+    # then crashed with `ValueError: Protocol message AgentCard has no
+    # "supported_protocols" field`. The crash didn't surface in the
+    # publish-runtime smoke because the smoke only IMPORTS
+    # molecule_runtime.main, never CALLS the AgentCard constructor.
+    # Don't rename back.
     agent_card = AgentCard(
         name=config.name,
         description=config.description or config.name,
         version=config.version,
-        supported_protocols=[
+        supported_interfaces=[
             AgentInterface(protocol_binding="https://a2a.g/v1", url=workspace_url)
         ],
         capabilities=AgentCapabilities(
