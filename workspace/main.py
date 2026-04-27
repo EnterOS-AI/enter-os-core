@@ -437,13 +437,23 @@ async def main():  # pragma: no cover
             )
         async def _send_initial_prompt():
             """Wait for server to be ready, then send initial_prompt as self-message."""
-            # Wait for the A2A server to accept connections
+            # Wait for the A2A server to accept connections.
+            # Use the SDK's own constant for the well-known path so this
+            # probe and the route mounted by create_agent_card_routes()
+            # never drift apart. Pre-fix this hardcoded the pre-1.x
+            # well-known path string; a2a-sdk 1.x renamed it (the
+            # canonical value lives in a2a.utils.constants now), so
+            # the probe got 404 every attempt and fell through to
+            # "server not ready after 30s, skipping" even though the
+            # server was actually serving fine. Net effect: every
+            # workspace silently dropped its `initial_prompt`.
+            from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
             ready = False
             for attempt in range(30):
                 await asyncio.sleep(1)
                 try:
                     async with httpx.AsyncClient(timeout=5.0) as client:
-                        resp = await client.get(f"http://127.0.0.1:{port}/.well-known/agent.json")
+                        resp = await client.get(f"http://127.0.0.1:{port}{AGENT_CARD_WELL_KNOWN_PATH}")
                         if resp.status_code == 200:
                             ready = True
                             break
