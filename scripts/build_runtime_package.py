@@ -82,6 +82,7 @@ TOP_LEVEL_MODULES = {
 SUBPACKAGES = {
     "adapters",
     "builtin_tools",
+    "lib",
     "plugins_registry",
     "policies",
     "skill_loader",
@@ -105,8 +106,7 @@ EXCLUDE_FILES = {
 EXCLUDE_DIRS = {
     "__pycache__",
     "tests",
-    "lib",
-    "molecule_audit",
+    "molecule_audit",  # only used by tests; not on production import path
     "scripts",
 }
 
@@ -273,6 +273,32 @@ def main() -> int:
         if stale:
             print(f"  in TOP_LEVEL_MODULES but NOT in workspace/ (no-op, but misleading): {sorted(stale)}", file=sys.stderr)
         print("  Edit scripts/build_runtime_package.py:TOP_LEVEL_MODULES to match.", file=sys.stderr)
+        return 3
+
+    # Same drift gate for SUBPACKAGES — catches the inverse class of
+    # bug where a workspace/ subdirectory is referenced by main.py
+    # (`from lib.pre_stop import ...`) but is either missing from
+    # SUBPACKAGES (so the rewriter doesn't qualify the import) or
+    # accidentally listed in EXCLUDE_DIRS (so the directory itself
+    # isn't shipped). 0.1.16-0.1.19 had `lib` in EXCLUDE_DIRS while
+    # main.py imported from it — `ModuleNotFoundError: No module
+    # named 'lib'` at every workspace startup.
+    on_disk_subpkgs = {
+        d.name for d in src.iterdir()
+        if d.is_dir()
+        and d.name not in EXCLUDE_DIRS
+        and d.name not in {"__pycache__"}
+        and (d / "__init__.py").exists()
+    }
+    sub_missing = on_disk_subpkgs - SUBPACKAGES
+    sub_stale = SUBPACKAGES - on_disk_subpkgs
+    if sub_missing or sub_stale:
+        print("error: SUBPACKAGES drifted from workspace/ subdirectories:", file=sys.stderr)
+        if sub_missing:
+            print(f"  in workspace/ but NOT in SUBPACKAGES (will ship un-rewritten or be excluded): {sorted(sub_missing)}", file=sys.stderr)
+        if sub_stale:
+            print(f"  in SUBPACKAGES but NOT in workspace/ (no-op, but misleading): {sorted(sub_stale)}", file=sys.stderr)
+        print("  Edit scripts/build_runtime_package.py:SUBPACKAGES + EXCLUDE_DIRS to match.", file=sys.stderr)
         return 3
 
     pkg_dir = out / "molecule_runtime"
