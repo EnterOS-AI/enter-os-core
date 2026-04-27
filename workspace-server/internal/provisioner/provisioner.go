@@ -983,6 +983,17 @@ func (p *Provisioner) Stop(ctx context.Context, workspaceID string) error {
 		log.Printf("Provisioner: container %s already gone (no-op)", name)
 		return nil
 	}
+	if isRemovalInProgress(err) {
+		// Another concurrent caller (orphan sweeper, sibling cascade
+		// delete, manual `docker rm -f`) is already removing this
+		// container. The post-condition is the same as success: the
+		// container WILL be gone shortly. Surfacing this as a 500 on
+		// cascade-delete causes UI confusion ("workspace marked
+		// removed, but stop call(s) failed — please retry") even
+		// though retrying would just race the same in-flight removal.
+		log.Printf("Provisioner: container %s removal already in progress (no-op)", name)
+		return nil
+	}
 	// Real failure: daemon timeout, socket EOF, ctx cancellation, etc.
 	// Caller (workspace_crud.stopAndRemove, orphan_sweeper.sweepOnce)
 	// must propagate this so they can skip the follow-up RemoveVolume.
@@ -1046,6 +1057,29 @@ func isContainerNotFound(err error) bool {
 	s := err.Error()
 	return strings.Contains(s, "No such container") ||
 		strings.Contains(s, "not found")
+}
+
+// isRemovalInProgress detects the race where Docker is already removing
+// the container in response to a concurrent call. Symptom observed
+// during cascade-delete of a 7-workspace org: two of the seven returned
+//
+//	Error response from daemon: removal of container ws-xxx is already in progress
+//
+// because the platform's deletion fanout fired Stop() on every workspace
+// in parallel and the orphan sweeper happened to also reap two of them
+// at the same instant. The post-condition is identical to a successful
+// removal — the container WILL be gone — so callers should treat this
+// as a no-op rather than a real failure.
+//
+// String-match for the same reason as isContainerNotFound: docker/docker
+// surfaces this as a plain error string, no typed predicate. The CLI
+// itself relies on the message text.
+func isRemovalInProgress(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "removal of container") &&
+		strings.Contains(err.Error(), "already in progress")
 }
 
 // DockerClient returns the underlying Docker client for sharing with other handlers.
