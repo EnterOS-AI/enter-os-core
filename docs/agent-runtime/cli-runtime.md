@@ -228,13 +228,13 @@ CLI runtimes keep the same memory tool surface as the Python runtime. When `AWAR
 Any process inside a workspace container (cron jobs, scripts, background tasks) can update the canvas card display:
 
 ```bash
-molecule-monorepo-status "Running weekly SEO audit..."  # show on canvas
-molecule-monorepo-status ""                              # clear when done
+python3 -m molecule_runtime.molecule_ai_status "Running weekly SEO audit..."  # show on canvas
+python3 -m molecule_runtime.molecule_ai_status ""                              # clear when done
 ```
 
 From Python:
 ```python
-from molecule_ai_status import set_status
+from molecule_runtime.molecule_ai_status import set_status
 set_status("Analyzing competitor data...")
 ```
 

@@ -48,7 +48,16 @@ logger = logging.getLogger(__name__)
 
 WORKSPACE_MOUNT = "/workspace"
 CONFIG_MOUNT = "/configs"
-DEFAULT_MCP_SERVER_PATH = "/app/a2a_mcp_server.py"
+# Resolved relative to this module so it tracks the wheel install
+# location. The hardcoded "/app/a2a_mcp_server.py" was correct under
+# the pre-#87 monolithic-template layout, but post-universal-runtime
+# the file ships inside the molecule-ai-workspace-runtime wheel at
+# site-packages/molecule_runtime/, while /app/ now holds only
+# template-specific modules (adapter.py + the runtime-native executor).
+# Stale path → Claude Code SDK silently fails to spawn the MCP
+# subprocess → list_peers / delegate_task / a2a_send_message all
+# disappear from the agent's toolset.
+DEFAULT_MCP_SERVER_PATH = str(Path(__file__).parent / "a2a_mcp_server.py")
 DEFAULT_DELEGATION_RESULTS_FILE = "/tmp/delegation_results.jsonl"
 PLATFORM_HTTP_TIMEOUT_S = 5.0
 MEMORY_RECALL_LIMIT = 10
@@ -290,11 +299,11 @@ Instead: (1) try delegating to a different peer, (2) handle the task yourself, o
 
 _A2A_INSTRUCTIONS_CLI = """## Inter-Agent Communication
 You can delegate tasks to other workspaces using the a2a command:
-  python3 /app/a2a_cli.py peers                                  # List available peers
-  python3 /app/a2a_cli.py delegate <workspace_id> <task>          # Sync: wait for response
-  python3 /app/a2a_cli.py delegate --async <workspace_id> <task>  # Async: return task_id
-  python3 /app/a2a_cli.py status <workspace_id> <task_id>         # Check async task
-  python3 /app/a2a_cli.py info                                    # Your workspace info
+  python3 -m molecule_runtime.a2a_cli peers                                  # List available peers
+  python3 -m molecule_runtime.a2a_cli delegate <workspace_id> <task>          # Sync: wait for response
+  python3 -m molecule_runtime.a2a_cli delegate --async <workspace_id> <task>  # Async: return task_id
+  python3 -m molecule_runtime.a2a_cli status <workspace_id> <task_id>         # Check async task
+  python3 -m molecule_runtime.a2a_cli info                                    # Your workspace info
 
 For quick questions, use sync delegate. For long tasks, use --async + status.
 Only delegate to peers listed by the peers command (access control enforced)."""
