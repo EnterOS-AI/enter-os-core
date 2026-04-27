@@ -168,6 +168,50 @@ jobs:
           assert callable(get_adapter), 'adapters.get_adapter must be callable'
           assert hasattr(BaseAdapter, 'name'), 'BaseAdapter interface broken'
           assert hasattr(AdapterConfig, '__init__'), 'AdapterConfig dataclass missing'
+
+          # Call-shape smoke for AgentCard. Pure imports don't catch
+          # field-shape regressions in upstream SDKs that only surface
+          # at construction time. Two bugs of this exact class shipped
+          # since the a2a-sdk 1.0 migration:
+          #   - state_transition_history=True (fixed in #2179)
+          #   - supported_protocols=[...] (the protobuf field is
+          #     supported_interfaces — caused every workspace boot
+          #     to crash with `ValueError: Protocol message AgentCard
+          #     has no "supported_protocols" field`; fixed alongside
+          #     this smoke)
+          #
+          # This block instantiates the EXACT classes main.py uses,
+          # with the EXACT keyword arguments. If a future a2a-sdk
+          # upgrade renames any of supported_interfaces / streaming /
+          # push_notifications / etc., the publish fails here instead
+          # of breaking every workspace startup. main.py and this
+          # smoke MUST stay in lockstep — adding a kwarg to one
+          # without mirroring it here is the regression vector.
+          from a2a.types import AgentCard, AgentCapabilities, AgentSkill, AgentInterface
+          AgentCard(
+              name='smoke-agent',
+              description='publish-runtime smoke test',
+              version='0.0.0-smoke',
+              supported_interfaces=[
+                  AgentInterface(protocol_binding='https://a2a.g/v1', url='http://localhost:8080'),
+              ],
+              capabilities=AgentCapabilities(
+                  streaming=True,
+                  push_notifications=False,
+              ),
+              skills=[
+                  AgentSkill(
+                      id='smoke-skill',
+                      name='Smoke',
+                      description='no-op',
+                      tags=['smoke'],
+                      examples=['noop'],
+                  ),
+              ],
+              default_input_modes=['text/plain', 'application/json'],
+              default_output_modes=['text/plain', 'application/json'],
+          )
+          print('✓ AgentCard call-shape smoke passed')
           print('✓ smoke import passed')
           "
 
