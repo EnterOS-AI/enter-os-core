@@ -263,6 +263,29 @@ function MyChatPanel({ workspaceId, data }: Props) {
   // from the closure and lets a second `sendMessage` enter. A ref
   // observes the latest value synchronously.
   const sendInFlightRef = useRef(false);
+  // Monotonic token bumped on every sendMessage entry. Each .then()/
+  // .catch() captures its own token in closure and bails if a newer
+  // send has superseded it — prevents a late HTTP response for an
+  // earlier message from clobbering the flags / appending text that
+  // belong to a newer in-flight send. Race scenario the token closes:
+  // (1) send msg #1 (2) WS push for msg #1 arrives, releases guards
+  // (3) user sends msg #2 (4) HTTP for msg #1 finally lands — without
+  // the token check, .then() sees sendingFromAPIRef=true (set by
+  // msg #2's send), enters the main body, and processes msg #1's body
+  // as if it were msg #2's reply.
+  const sendTokenRef = useRef(0);
+
+  // Release every in-flight send guard at once. Keep the three sites
+  // (WS push, HTTP .then() success, HTTP .catch() success) in lockstep
+  // so a future contributor can't drop one and silently re-introduce
+  // the post-WS Send-button freeze. `setSending(false)` is the only
+  // observable user-side signal; the two refs are synchronous guards
+  // the disabled-button logic can't see.
+  const releaseSendGuards = useCallback(() => {
+    setSending(false);
+    sendingFromAPIRef.current = false;
+    sendInFlightRef.current = false;
+  }, []);
 
   // Load chat history from database on mount
   useEffect(() => {
@@ -311,13 +334,11 @@ function MyChatPanel({ workspaceId, data }: Props) {
       setMessages((prev) => appendMessageDeduped(prev, createMessage("agent", m.content, m.attachments)));
     }
     if (sendingFromAPIRef.current && msgs.length > 0) {
-      setSending(false);
-      sendingFromAPIRef.current = false;
-      // Reply arrived via WS push (e.g. claude-code SDK). The HTTP .then()
-      // will see sendingFromAPIRef=false and early-return without touching
-      // sendInFlightRef, so we must release the synchronous guard here or
-      // the next sendMessage() silently no-ops at line 438.
-      sendInFlightRef.current = false;
+      // Reply arrived via WS push (e.g. claude-code SDK). Release all
+      // three guards together — without sendInFlightRef the next
+      // sendMessage() silently no-ops at the synchronous re-entry
+      // check.
+      releaseSendGuards();
     }
   }, [pendingAgentMsgs, workspaceId]);
 
@@ -467,6 +488,10 @@ function MyChatPanel({ workspaceId, data }: Props) {
     setSending(true);
     sendingFromAPIRef.current = true;
     setError(null);
+    // Capture this send's token so the .then()/.catch() callbacks can
+    // detect a newer send that may have superseded them. See the
+    // sendTokenRef declaration for the race scenario this closes.
+    const myToken = ++sendTokenRef.current;
 
     // Build conversation history from prior messages (last 20)
     const history = messages
@@ -512,6 +537,11 @@ function MyChatPanel({ workspaceId, data }: Props) {
       },
     }, { timeoutMs: 120_000 })
       .then((resp) => {
+        // Bail without touching any flags if a newer sendMessage has
+        // already run — its myToken bumped sendTokenRef, so this is
+        // a stale callback for an earlier message. The newer send
+        // owns the in-flight guards now.
+        if (sendTokenRef.current !== myToken) return;
         // Skip if the WS A2A_RESPONSE event already handled this response.
         // Both paths (WS + HTTP) check sendingFromAPIRef — whichever clears
         // it first wins, the other becomes a no-op (no duplicate messages).
@@ -526,11 +556,11 @@ function MyChatPanel({ workspaceId, data }: Props) {
             appendMessageDeduped(prev, createMessage("agent", replyText, replyFiles)),
           );
         }
-        setSending(false);
-        sendingFromAPIRef.current = false;
-        sendInFlightRef.current = false;
+        releaseSendGuards();
       })
       .catch(() => {
+        // Stale-callback guard — same rationale as .then().
+        if (sendTokenRef.current !== myToken) return;
         // Same dedup guard as .then(): if a WS path (pendingAgentMsgs
         // or ACTIVITY_LOGGED a2a_receive ok) already delivered the
         // reply, sendingFromAPIRef is already false and there's
@@ -542,9 +572,7 @@ function MyChatPanel({ workspaceId, data }: Props) {
           sendInFlightRef.current = false;
           return;
         }
-        setSending(false);
-        sendingFromAPIRef.current = false;
-        sendInFlightRef.current = false;
+        releaseSendGuards();
         setError("Failed to send message — agent may be unreachable");
       });
   };
