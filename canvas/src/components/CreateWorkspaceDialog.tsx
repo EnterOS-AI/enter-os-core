@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback, useId, useMemo } from "react"
 import * as Dialog from "@radix-ui/react-dialog";
 import { api } from "@/lib/api";
 import { isSaaSTenant } from "@/lib/tenant";
+import { ExternalConnectModal, type ExternalConnectionInfo } from "./ExternalConnectModal";
 
 interface WorkspaceOption {
   id: string;
@@ -54,6 +55,13 @@ export function CreateWorkspaceButton() {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [workspaces, setWorkspaces] = useState<WorkspaceOption[]>([]);
+  // External-runtime path: skip docker provision, mint a workspace_auth_token,
+  // and surface the connection snippet in a modal after create. When
+  // isExternal is true the template / model / hermes-provider fields are
+  // hidden (they're meaningless for BYO-compute agents).
+  const [isExternal, setIsExternal] = useState(false);
+  const [externalConnection, setExternalConnection] =
+    useState<ExternalConnectionInfo | null>(null);
 
   // Hermes-specific state
   const [hermesProvider, setHermesProvider] = useState("anthropic");
@@ -185,21 +193,42 @@ export function CreateWorkspaceButton() {
         ? parseFloat(budgetLimit)
         : null;
 
-      await api.post("/workspaces", {
+      const createResp = await api.post<{
+        id: string;
+        status: string;
+        external?: boolean;
+        connection?: ExternalConnectionInfo;
+      }>("/workspaces", {
         name: name.trim(),
         role: role.trim() || undefined,
-        template: template.trim() || undefined,
+        // External workspaces don't consume a template — skip it so the
+        // backend doesn't try to resolve a non-existent dir and log a
+        // misleading "template not found" warning.
+        template: isExternal ? undefined : (template.trim() || undefined),
         tier,
         parent_id: parentId || undefined,
         budget_limit: parsedBudget,
         canvas: { x: Math.random() * 400 + 100, y: Math.random() * 300 + 100 },
-        ...(isHermes && provider
+        // Runtime=external flips the backend into awaiting-agent mode:
+        // no container provisioning, token minted, connection payload
+        // returned in the response for the modal below.
+        ...(isExternal ? { runtime: "external" } : {}),
+        ...(!isExternal && isHermes && provider
           ? {
               secrets: { [provider.envVar]: hermesApiKey.trim() },
               model: hermesModel.trim(),
             }
           : {}),
       });
+      // External path: keep the create dialog open just long enough to
+      // hand control to the connect modal, then close. The connect
+      // modal holds the token; we CANNOT re-fetch it later. If the
+      // backend somehow returns external=true without a connection
+      // payload we still close the create dialog — the operator will
+      // have to mint a token via POST /workspaces/:id/tokens.
+      if (isExternal && createResp.connection) {
+        setExternalConnection(createResp.connection);
+      }
       setOpen(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to create workspace");
@@ -265,13 +294,33 @@ export function CreateWorkspaceButton() {
               type="number"
               helper="Leave blank for unlimited"
             />
-            <InputField
-              label="Template"
-              value={template}
-              onChange={setTemplate}
-              placeholder="e.g. seo-agent (from workspace-configs-templates/)"
-              mono
-            />
+            {/* External toggle — when on, this workspace is BYO-compute:
+                no template, no model, no hermes provider fields. Backend
+                returns a copyable connection snippet via the modal. */}
+            <label className="flex items-start gap-2 rounded-lg border border-zinc-800 p-3 cursor-pointer hover:border-zinc-700 transition-colors">
+              <input
+                type="checkbox"
+                checked={isExternal}
+                onChange={(e) => setIsExternal(e.target.checked)}
+                className="mt-0.5"
+              />
+              <div className="text-xs">
+                <div className="text-zinc-200 font-medium">External agent (bring your own compute)</div>
+                <div className="text-zinc-500 mt-0.5">
+                  Skip the container. We&apos;ll return a workspace_id + auth token + ready-to-paste snippet so an agent running on your laptop / server / CI can register via A2A.
+                </div>
+              </div>
+            </label>
+
+            {!isExternal && (
+              <InputField
+                label="Template"
+                value={template}
+                onChange={setTemplate}
+                placeholder="e.g. seo-agent (from workspace-configs-templates/)"
+                mono
+              />
+            )}
 
             <div>
               <div
@@ -448,6 +497,14 @@ export function CreateWorkspaceButton() {
           </div>
         </Dialog.Content>
       </Dialog.Portal>
+      {/* Rendered as a sibling so it stays mounted after the create dialog
+          closes. Without this the auth_token would disappear the moment
+          the create modal unmounted its React subtree — the operator
+          would never see the copy-paste snippet. */}
+      <ExternalConnectModal
+        info={externalConnection}
+        onClose={() => setExternalConnection(null)}
+      />
     </Dialog.Root>
   );
 }

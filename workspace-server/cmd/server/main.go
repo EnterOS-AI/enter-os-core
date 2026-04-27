@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/handlers"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/imagewatch"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/registry"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/router"
@@ -252,6 +254,12 @@ func main() {
 
 	// Cron Scheduler — fires A2A messages to workspaces on user-defined schedules
 	cronSched := scheduler.New(wh, broadcaster)
+	// Wire the native-scheduler skip — when an adapter's heartbeat
+	// declares provides_native_scheduler=true, the platform's polling
+	// loop drops that workspace's schedules to avoid double-fire (the
+	// SDK runs them itself). See project memory
+	// `project_runtime_native_pluggable.md` and capability primitive #3.
+	cronSched.SetNativeSchedulerCheck(handlers.ProvidesNativeScheduler)
 	go supervised.RunWithRecover(ctx, "scheduler", cronSched.Start)
 
 	// Hibernation Monitor — auto-pauses idle workspaces that have
@@ -264,6 +272,18 @@ func main() {
 	// Channel Manager — social channel integrations (Telegram, Slack, etc.)
 	channelMgr := channels.NewManager(wh, broadcaster)
 	go supervised.RunWithRecover(ctx, "channel-manager", channelMgr.Start)
+
+	// Image auto-refresh — closes the runtime CD chain to "merge → containers
+	// running new code" with no human in between. Polls GHCR for digest
+	// changes on workspace-template-* :latest tags and invokes the same
+	// refresh logic /admin/workspace-images/refresh exposes. Opt-in:
+	// SaaS deploys whose pipeline already pulls every release should leave
+	// it off (would be redundant work). Self-hosters get true zero-touch.
+	if prov != nil && strings.EqualFold(os.Getenv("IMAGE_AUTO_REFRESH"), "true") {
+		svc := handlers.NewWorkspaceImageService(prov.DockerClient())
+		watcher := imagewatch.New(svc)
+		go supervised.RunWithRecover(ctx, "image-auto-refresh", watcher.Run)
+	}
 
 	// Wire channel manager into scheduler for auto-posting cron output to Slack
 	cronSched.SetChannels(channelMgr)

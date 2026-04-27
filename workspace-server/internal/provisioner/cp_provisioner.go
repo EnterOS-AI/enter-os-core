@@ -15,6 +15,28 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 )
 
+// CPProvisionerAPI is the contract WorkspaceHandler uses to talk to the
+// control-plane provisioner. Extracted as an interface (#1814) so handler
+// tests can substitute a mock without standing up the real CP HTTP client
+// + auth chain. Production wires *CPProvisioner directly via
+// NewCPProvisioner — see the compile-time assertion below.
+//
+// Method set is intentionally narrow — only the methods that
+// WorkspaceHandler actually calls. Adding a new handler call site that
+// reaches into CPProvisioner means widening this interface explicitly,
+// which surfaces the dependency in code review.
+type CPProvisionerAPI interface {
+	Start(ctx context.Context, cfg WorkspaceConfig) (string, error)
+	Stop(ctx context.Context, workspaceID string) error
+	GetConsoleOutput(ctx context.Context, workspaceID string) (string, error)
+}
+
+// Compile-time assertion: *CPProvisioner satisfies CPProvisionerAPI.
+// Catches a future method-signature drift at build time instead of at
+// the SetCPProvisioner call site (which would be a runtime "interface
+// not implemented" only when the SaaS path is exercised).
+var _ CPProvisionerAPI = (*CPProvisioner)(nil)
+
 // CPProvisioner provisions workspace agents by calling the control plane's
 // workspace provision API. The control plane creates EC2 instances with
 // Docker + the workspace runtime installed at boot from PyPI.

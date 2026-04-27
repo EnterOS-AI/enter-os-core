@@ -71,7 +71,7 @@ async def delegate(target_id: str, task: str, async_mode: bool = False):
                         "method": "message/send",
                         "params": {
                             "message": {
-                                "role": "user",
+                                "role": "ROLE_USER",
                                 "messageId": str(uuid.uuid4()),
                                 "parts": [{"kind": "text", "text": task}],
                             }
@@ -108,7 +108,7 @@ async def delegate(target_id: str, task: str, async_mode: bool = False):
                         "method": "message/send",
                         "params": {
                             "message": {
-                                "role": "user",
+                                "role": "ROLE_USER",
                                 "messageId": str(uuid.uuid4()),
                                 "parts": [{"kind": "text", "text": task}],
                             }

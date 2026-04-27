@@ -178,6 +178,15 @@ services:
       # public images (current state for all 8 templates).
       GHCR_USER: "${GHCR_USER:-}"
       GHCR_TOKEN: "${GHCR_TOKEN:-}"
+      # Auto-refresh workspace-template-* images. The watcher polls GHCR
+      # every 5 min; when a digest moves, it pulls and force-recreates any
+      # matching ws-* containers (existing /admin/workspace-images/refresh
+      # logic). Closes the runtime CD chain: merge → containers running
+      # new code, no operator step. Default ON for local dev because that's
+      # where the runtime → ws iteration loop is tightest. Set to "false"
+      # if you don't want the platform to mutate ws-* containers behind
+      # your back during a long-running test.
+      IMAGE_AUTO_REFRESH: "${IMAGE_AUTO_REFRESH:-true}"
     volumes:
       - ./workspace-configs-templates:/configs
       - ./org-templates:/org-templates:ro

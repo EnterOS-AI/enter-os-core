@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -264,6 +265,128 @@ func TestNotify_PersistsToActivityLogsForReloadRecovery(t *testing.T) {
 		t.Errorf("DB expectations not met: %v", err)
 	}
 }
+
+func TestNotify_WithAttachments_PersistsFilePartsForReload(t *testing.T) {
+	// Pins the response_body shape: must include {result: msg, parts: [{kind:"file", file: {...}}]}
+	// so the chat history loader's extractFilesFromTask reconstructs the
+	// download chips after a page reload. Without `parts`, the bubble
+	// shows up but the attachment chip is silently dropped on every
+	// refresh.
+	mockDB, mock, _ := sqlmock.New()
+	defer mockDB.Close()
+	db.DB = mockDB
+
+	mock.ExpectQuery(`SELECT name FROM workspaces`).
+		WithArgs("ws-attach").
+		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("DD"))
+
+	// Capture the JSONB arg so we can assert on the persisted shape
+	// AFTER the call (must include parts[].kind=file so reload
+	// reconstructs download chips). Use AnyArg() for the binding
+	// gate — the substring asserts below are what actually validate
+	// the shape; a custom matcher that always returned true would
+	// be misleading about which step does the gating.
+	var capturedRespJSON string
+	mock.ExpectExec(`INSERT INTO activity_logs`).
+		WithArgs("ws-attach", sqlmock.AnyArg(), sqlmockCaptureArg(&capturedRespJSON)).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	broadcaster := newTestBroadcaster()
+	handler := NewActivityHandler(broadcaster)
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-attach"}}
+	body := `{
+		"message": "Here's the build:",
+		"attachments": [
+			{"uri": "workspace:/workspace/.molecule/chat-uploads/abc-build.zip",
+			 "name": "build.zip", "mimeType": "application/zip", "size": 12345}
+		]
+	}`
+	c.Request = httptest.NewRequest("POST", "/workspaces/ws-attach/notify", strings.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	handler.Notify(c)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("DB expectations not met: %v", err)
+	}
+	// Verify the persisted response_body has both the text (so chat
+	// reload renders the bubble) AND a parts[].kind=file (so reload
+	// renders the download chip).
+	if !strings.Contains(capturedRespJSON, `"result":"Here's the build:"`) {
+		t.Errorf("response_body missing result text: %s", capturedRespJSON)
+	}
+	if !strings.Contains(capturedRespJSON, `"kind":"file"`) ||
+		!strings.Contains(capturedRespJSON, `"name":"build.zip"`) ||
+		!strings.Contains(capturedRespJSON, `workspace:/workspace/.molecule/chat-uploads/abc-build.zip`) {
+		t.Errorf("response_body missing file part — chat reload won't render the chip: %s", capturedRespJSON)
+	}
+}
+
+func TestNotify_RejectsAttachmentWithEmptyURIOrName(t *testing.T) {
+	// Critical regression guard. gin's go-playground/validator does NOT
+	// iterate slice elements without `dive`, so `binding:"required"` on
+	// NotifyAttachment.URI/Name would silently fail to enforce on
+	// `attachments: [{"uri":"","name":""}]`. Without this explicit
+	// per-element check, the platform broadcasts empty-URI chips that
+	// render blank in the canvas AND get persisted in activity_logs
+	// for every page reload to re-render. Pre-fix: passed validation.
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"empty uri", `{"message":"hi","attachments":[{"uri":"","name":"file.zip"}]}`},
+		{"empty name", `{"message":"hi","attachments":[{"uri":"workspace:/x","name":""}]}`},
+		{"both empty", `{"message":"hi","attachments":[{"uri":"","name":""}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mockDB, _, _ := sqlmock.New()
+			defer mockDB.Close()
+			db.DB = mockDB
+			// No DB expectations — handler must reject with 400 BEFORE
+			// reaching SELECT/INSERT. sqlmock will fail "expectations not met"
+			// only if the handler unexpectedly queries.
+
+			broadcaster := newTestBroadcaster()
+			handler := NewActivityHandler(broadcaster)
+			gin.SetMode(gin.TestMode)
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Params = gin.Params{{Key: "id", Value: "ws-x"}}
+			c.Request = httptest.NewRequest("POST", "/workspaces/ws-x/notify", strings.NewReader(tc.body))
+			c.Request.Header.Set("Content-Type", "application/json")
+			handler.Notify(c)
+
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("expected 400 for %s, got %d: %s", tc.name, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+// sqlmockCaptureArg returns an sqlmock.Argument that always matches AND
+// writes the string-coerced driver value into `dst`. Lets a test
+// inspect the actual JSON bytes written to a JSONB column without
+// pretending to enforce shape — that's what the downstream substring
+// asserts in the test body do.
+func sqlmockCaptureArg(dst *string) sqlmock.Argument {
+	return sqlmockArgFn(func(v driver.Value) bool {
+		if s, ok := v.(string); ok {
+			*dst = s
+		}
+		return true
+	})
+}
+
+type sqlmockArgFn func(driver.Value) bool
+
+func (f sqlmockArgFn) Match(v driver.Value) bool { return f(v) }
 
 func TestNotify_DBFailure_StillBroadcastsAnd200(t *testing.T) {
 	// Persistence is best-effort — a DB hiccup must NOT block the

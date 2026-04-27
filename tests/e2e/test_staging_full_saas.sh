@@ -72,7 +72,12 @@ CURL_COMMON=(-sS --fail-with-body --max-time 30)
 # ─── cleanup trap ───────────────────────────────────────────────────────
 CLEANUP_DONE=0
 cleanup_org() {
-  [ "$CLEANUP_DONE" = "1" ] && return 0
+  # Capture upstream exit code IMMEDIATELY — must be the first statement
+  # in the trap, before any command (including the CLEANUP_DONE check)
+  # that would clobber $?.
+  local entry_rc=$?
+
+  if [ "$CLEANUP_DONE" = "1" ]; then return 0; fi
   CLEANUP_DONE=1
 
   if [ "${E2E_KEEP_ORG:-0}" = "1" ]; then
@@ -99,6 +104,20 @@ cleanup_org() {
     exit 4
   fi
   ok "Teardown clean — no orphan resources for $SLUG"
+
+  # Normalize unexpected upstream exit codes to 1 (generic failure). The
+  # script's documented contract (header "Exit codes" section) only emits
+  # {0, 1, 2, 3, 4}, but `set -e` propagates the raw exit code of the
+  # failing command — e.g. curl exits 22 on HTTP error under
+  # --fail-with-body. Without this normalization, the
+  # E2E_INTENTIONAL_FAILURE sanity workflow (e2e-staging-sanity.yml)
+  # gets rc=22 from the poisoned-token curl, falls through its
+  # case statement, and opens a false-positive priority-high
+  # "safety net broken" issue (#2159, 2026-04-27).
+  case "$entry_rc" in
+    0|1|2|3|4) ;;          # contracted codes — let bash use entry_rc
+    *) exit 1 ;;            # anything else is a generic failure
+  esac
 }
 trap cleanup_org EXIT INT TERM
 
@@ -167,7 +186,29 @@ print('')
   fi
   case "$STATUS" in
     running)  break ;;
-    failed)   fail "Tenant provisioning failed for $SLUG" ;;
+    failed)
+      # Diagnostic burst: dump the org row so the operator sees
+      # `last_error` (CP migration 022 / handler #289 — issue #285).
+      # Pre-fix the harness only logged "Tenant provisioning failed",
+      # forcing whoever debugs canary to scrape CP server logs to
+      # learn WHY. Same shape as the TLS-readiness burst at step 4
+      # (PR #2107). Redacts nothing because /cp/admin/orgs already
+      # returns a narrow, ops-safe shape (id/slug/name/plan/
+      # member_count/instance_status/last_error/timestamps —
+      # no tokens, no encrypted fields).
+      log "── DIAGNOSTIC BURST (step 2 — tenant provisioning failed) ──"
+      echo "$LIST_JSON" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for o in d.get('orgs', []):
+    if o.get('slug') == '$SLUG':
+        print(json.dumps(o, indent=2))
+        sys.exit(0)
+print('(no org row found for slug=$SLUG — DB drift?)')
+" 2>&1 | sed 's/^/  /'
+      log "── END DIAGNOSTIC ──"
+      fail "Tenant provisioning failed for $SLUG (see diagnostic above for last_error)"
+      ;;
     *)        sleep 15 ;;
   esac
 done

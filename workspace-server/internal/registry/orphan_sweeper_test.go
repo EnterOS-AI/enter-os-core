@@ -14,13 +14,15 @@ import (
 // Records every Stop / RemoveVolume call so tests can assert which
 // workspace IDs got reconciled.
 type fakeReaper struct {
-	mu             sync.Mutex
-	listResponse   []string
-	listErr        error
-	stopErr        map[string]error
-	removeVolErr   map[string]error
-	stopCalls      []string
-	removeVolCalls []string
+	mu                  sync.Mutex
+	listResponse        []string
+	listErr             error
+	managedListResponse []string
+	managedListErr      error
+	stopErr             map[string]error
+	removeVolErr        map[string]error
+	stopCalls           []string
+	removeVolCalls      []string
 }
 
 func (f *fakeReaper) ListWorkspaceContainerIDPrefixes(_ context.Context) ([]string, error) {
@@ -28,6 +30,13 @@ func (f *fakeReaper) ListWorkspaceContainerIDPrefixes(_ context.Context) ([]stri
 		return nil, f.listErr
 	}
 	return f.listResponse, nil
+}
+
+func (f *fakeReaper) ListManagedContainerIDPrefixes(_ context.Context) ([]string, error) {
+	if f.managedListErr != nil {
+		return nil, f.managedListErr
+	}
+	return f.managedListResponse, nil
 }
 
 func (f *fakeReaper) Stop(_ context.Context, wsID string) error {
@@ -251,5 +260,163 @@ func TestStartOrphanSweeper_NilReaperIsNoOp(t *testing.T) {
 		// expected
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("StartOrphanSweeper(nil) blocked instead of returning immediately")
+	}
+}
+
+// TestSweepOnce_WipedDBReapsLabeledOrphans — the new branch.
+// Scenario: a previous platform process labeled and provisioned two
+// containers; the operator then `docker compose down -v`'d the DB.
+// The new platform boots, sweeper runs:
+//   - ListWorkspaceContainerIDPrefixes returns nothing (no name-filter
+//     matches because we cleared running ws-* in this scenario via the
+//     test setup — irrelevant to second pass)
+//   - ListManagedContainerIDPrefixes returns the two labeled prefixes
+//     (in real Docker these still exist; their label survives daemon
+//     restart)
+//   - The reverse-lookup query returns zero matches (DB is empty)
+//   - Sweeper reaps both
+func TestSweepOnce_WipedDBReapsLabeledOrphans(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	reaper := &fakeReaper{
+		listResponse:        nil, // no name-filter matches in this scenario
+		managedListResponse: []string{"abc123def456", "ee0011223344"},
+	}
+
+	// First-pass query is skipped (listResponse is nil → early return
+	// path doesn't even reach a DB call). Second-pass reverse lookup
+	// returns no rows — both prefixes are unknown.
+	mock.ExpectQuery(`SELECT lk\s+FROM unnest`).
+		WillReturnRows(sqlmock.NewRows([]string{"lk"}))
+
+	sweepOnce(context.Background(), reaper)
+
+	if len(reaper.stopCalls) != 2 {
+		t.Fatalf("expected 2 Stop calls (both prefixes reaped), got %v", reaper.stopCalls)
+	}
+	wantStops := map[string]struct{}{"abc123def456": {}, "ee0011223344": {}}
+	for _, c := range reaper.stopCalls {
+		if _, ok := wantStops[c]; !ok {
+			t.Errorf("unexpected Stop call: %q", c)
+		}
+	}
+	if len(reaper.removeVolCalls) != 2 {
+		t.Errorf("expected 2 RemoveVolume calls, got %v", reaper.removeVolCalls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// TestSweepOnce_WipedDBSkipsLabeledContainersWithRows — the safety
+// guarantee: if a labeled container DOES have a workspace row (e.g.
+// status='online' or 'paused'), the sweeper must not reap it. Only
+// the no-row case justifies reaping.
+func TestSweepOnce_WipedDBSkipsLabeledContainersWithRows(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	reaper := &fakeReaper{
+		listResponse:        nil,
+		managedListResponse: []string{"abc123def456", "ee0011223344"},
+	}
+
+	// The reverse-lookup returns both prefixes — both have rows in DB.
+	// Sweeper should not reap either.
+	mock.ExpectQuery(`SELECT lk\s+FROM unnest`).
+		WillReturnRows(sqlmock.NewRows([]string{"lk"}).
+			AddRow("abc123def456%").
+			AddRow("ee0011223344%"))
+
+	sweepOnce(context.Background(), reaper)
+
+	if len(reaper.stopCalls) != 0 {
+		t.Errorf("Stop must not fire when all labeled containers have DB rows; got %v", reaper.stopCalls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// TestSweepOnce_WipedDBReapsOnlyTheUnknownOnes — mixed case: one
+// labeled container has a row (keep), one doesn't (reap).
+func TestSweepOnce_WipedDBReapsOnlyTheUnknownOnes(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	const keep = "abcdef012345"
+	const reap = "fedcba543210"
+	reaper := &fakeReaper{
+		listResponse:        nil,
+		managedListResponse: []string{keep, reap},
+	}
+
+	mock.ExpectQuery(`SELECT lk\s+FROM unnest`).
+		WillReturnRows(sqlmock.NewRows([]string{"lk"}).
+			AddRow(keep + "%"))
+
+	sweepOnce(context.Background(), reaper)
+
+	if len(reaper.stopCalls) != 1 || reaper.stopCalls[0] != reap {
+		t.Errorf("expected 1 Stop call for %s, got %v", reap, reaper.stopCalls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// TestSweepOnce_WipedDBSkippedOnDockerError — if Docker errors when
+// listing managed containers, the second pass aborts cleanly without
+// bleeding the error into the first pass. (In this test there's no
+// first-pass work either, so nothing should fire.)
+func TestSweepOnce_WipedDBSkippedOnDockerError(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	reaper := &fakeReaper{
+		listResponse:   nil,
+		managedListErr: errors.New("docker daemon offline"),
+	}
+
+	// No DB query expected for the second pass since we error out
+	// before reaching SQL.
+	sweepOnce(context.Background(), reaper)
+
+	if len(reaper.stopCalls) != 0 {
+		t.Errorf("Docker error must not result in Stop calls; got %v", reaper.stopCalls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// TestSweepOnce_WipedDBSkipsNonUUIDPrefixes — defence-in-depth: if a
+// non-UUID-shaped name slipped past the label filter (shouldn't happen
+// because the provisioner only labels ws-* containers, but the sweeper
+// shouldn't trust upstream invariants), the prefix is dropped before
+// hitting the SQL query.
+func TestSweepOnce_WipedDBSkipsNonUUIDPrefixes(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	const valid = "abc123def456"
+	reaper := &fakeReaper{
+		listResponse:        nil,
+		managedListResponse: []string{"hello world", "abc%inject", valid},
+	}
+
+	// Only `valid` survives isLikelyWorkspaceID — it's the only prefix
+	// that should appear in the unnest array.
+	mock.ExpectQuery(`SELECT lk\s+FROM unnest`).
+		WillReturnRows(sqlmock.NewRows([]string{"lk"}))
+
+	sweepOnce(context.Background(), reaper)
+
+	if len(reaper.stopCalls) != 1 || reaper.stopCalls[0] != valid {
+		t.Errorf("expected exactly 1 reap (the UUID-shaped one); got %v", reaper.stopCalls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
 	}
 }

@@ -81,6 +81,19 @@ causing a render loop when any node position changed.
 - Include a test plan in the PR description
 - PRs are merged with **merge commits** (not squash or rebase)
 
+#### Auto-merge & the "extra commit" trap
+
+**Two system guards protect against pushing commits after auto-merge has been enabled.** Don't try to work around them — they exist because we shipped a half-merged PR on 2026-04-27 (`#2174` merged with only its first commit; the second was orphaned on a branch GitHub had already deleted).
+
+1. **Repo-wide:** "Automatically delete head branches" is on. Once a PR merges, the branch is deleted server-side. Any subsequent `git push` to that branch fails with `remote rejected — no such branch`.
+
+2. **CI:** the `pr-guards` workflow (calling [molecule-ci `disable-auto-merge-on-push`](https://github.com/Molecule-AI/molecule-ci/blob/main/.github/workflows/disable-auto-merge-on-push.yml)) fires on every push to an open PR. If auto-merge was already enabled, it's disabled and a comment is posted. You must explicitly re-enable after verifying the new commit.
+
+**Workflow rules that follow from the guards:**
+- Push **all** commits before running `gh pr merge --auto`.
+- If you realize you need another commit after enabling auto-merge: push it, then **re-run** `gh pr merge --auto` — the guard will already have disabled it. The disable + re-enable is the verification step.
+- For changes that depend on each other across PRs (e.g. a build-script change + a workflow that consumes it), prefer a **stack** of PRs (PR-B branched off PR-A's branch, opened only after PR-A is in queue) over amending one in-flight PR.
+
 ### Running Tests
 
 ```bash

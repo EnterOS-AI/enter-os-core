@@ -514,15 +514,25 @@ func configDirName(workspaceID string) string {
 //
 // Keep in sync with workspace/build-all.sh — adding a new
 // runtime means bumping both this list and the Docker image tags.
-var knownRuntimes = map[string]struct{}{
-	"langgraph":   {},
-	"claude-code": {},
-	"openclaw":    {},
-	"crewai":      {},
-	"autogen":     {},
-	"deepagents":  {},
-	"hermes":      {},
-	"codex":       {},
+// knownRuntimes is populated from manifest.json at service init (see
+// runtime_registry.go). The package init order is:
+//   1. var knownRuntimes = fallbackRuntimes
+//   2. init() calls initKnownRuntimes() which replaces it if
+//      manifest.json is readable.
+// The fallback matters for unit tests that don't mount the manifest.
+//
+// "external" is a first-class runtime that intentionally does NOT
+// spawn a Docker container. Workspaces with runtime="external" are
+// created in status=awaiting_agent; the operator installs
+// molecule-sdk-python (or any A2A-compatible agent) somewhere they
+// control and calls POST /registry/register with the workspace_id +
+// workspace_auth_token from the create response. Canvas proxies A2A
+// calls to the registered URL thereafter. "external" has no template
+// repo, so it's always injected by the registry layer.
+var knownRuntimes = fallbackRuntimes
+
+func init() {
+	initKnownRuntimes()
 }
 
 // yamlQuote emits a YAML double-quoted scalar that safely contains any

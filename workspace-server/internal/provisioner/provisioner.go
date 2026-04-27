@@ -150,6 +150,24 @@ func ContainerName(workspaceID string) string {
 // own containers vs. anything else on the host.
 const containerNamePrefix = "ws-"
 
+// LabelManaged is stamped on every workspace container + volume the
+// provisioner creates. It's the orphan sweeper's signal for "I (or a
+// previous platform process on this deployment) provisioned this" —
+// without it, the sweeper has to assume any ws-* container might
+// belong to a different platform sharing the same Docker daemon and
+// only reaps things whose workspace row explicitly says
+// status='removed'. With it, the sweeper can confidently reap a
+// labeled container whose workspace row no longer exists at all
+// (the wiped-DB case after `docker compose down -v`).
+const LabelManaged = "molecule.platform.managed"
+
+// managedLabels is the canonical label map applied to every workspace
+// container + volume. Pulled out so a future addition (e.g. instance
+// UUID for multi-platform-shared-daemon disambiguation) is one edit.
+func managedLabels() map[string]string {
+	return map[string]string{LabelManaged: "true"}
+}
+
 // ListWorkspaceContainerIDPrefixes returns the 12-char workspace ID
 // prefixes of every running ws-* container the Docker daemon knows
 // about. The 12-char form matches ContainerName's truncation, so the
@@ -200,6 +218,53 @@ func (p *Provisioner) ListWorkspaceContainerIDPrefixes(ctx context.Context) ([]s
 	return prefixes, nil
 }
 
+// ListManagedContainerIDPrefixes returns the workspace ID prefix of every
+// container carrying the LabelManaged stamp. Distinct from
+// ListWorkspaceContainerIDPrefixes (name-filtered, may include sibling
+// platforms' containers on a shared Docker daemon): this method is the
+// "things definitely provisioned by a Molecule platform process" set.
+//
+// The orphan sweeper uses this for its second pass — reaping containers
+// whose workspace row no longer exists at all (the wiped-DB case after
+// `docker compose down -v`). Without the label gate the sweeper would
+// have to be conservative and only reap rows it could prove were ours,
+// leaving wiped-DB orphans to leak forever.
+//
+// Returns an empty slice on any Docker error (sweeper treats that as
+// "skip this round" — same contract as ListWorkspaceContainerIDPrefixes).
+func (p *Provisioner) ListManagedContainerIDPrefixes(ctx context.Context) ([]string, error) {
+	if p == nil || p.cli == nil {
+		return nil, nil
+	}
+	containers, err := p.cli.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: filters.NewArgs(filters.Arg("label", LabelManaged+"=true")),
+	})
+	if err != nil {
+		return nil, err
+	}
+	prefixes := make([]string, 0, len(containers))
+	for _, c := range containers {
+		// Same name-strip dance as ListWorkspaceContainerIDPrefixes —
+		// label filter is exact (not substring), so any false-positive
+		// must be a non-ws-* container we accidentally labeled. Defence
+		// against a future bug that stamps the label on something else.
+		for _, name := range c.Names {
+			n := strings.TrimPrefix(name, "/")
+			if !strings.HasPrefix(n, containerNamePrefix) {
+				continue
+			}
+			id := strings.TrimPrefix(n, containerNamePrefix)
+			if id == "" {
+				continue
+			}
+			prefixes = append(prefixes, id)
+			break
+		}
+	}
+	return prefixes, nil
+}
+
 // InternalURL returns the Docker-internal URL for a workspace container.
 func InternalURL(workspaceID string) string {
 	return fmt.Sprintf("http://%s:%s", ContainerName(workspaceID), DefaultPort)
@@ -212,7 +277,8 @@ func (p *Provisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string, e
 
 	// Create named volume for configs (idempotent — no-op if already exists)
 	_, err := p.cli.VolumeCreate(ctx, volume.CreateOptions{
-		Name: configVolume,
+		Name:   configVolume,
+		Labels: managedLabels(),
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to create config volume %s: %w", configVolume, err)
@@ -230,8 +296,9 @@ func (p *Provisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string, e
 	}
 
 	containerCfg := &container.Config{
-		Image: image,
-		Env:   env,
+		Image:  image,
+		Env:    env,
+		Labels: managedLabels(),
 		ExposedPorts: nat.PortSet{
 			nat.Port(DefaultPort + "/tcp"): {},
 		},
@@ -273,7 +340,7 @@ func (p *Provisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string, e
 				log.Printf("Provisioner: claude-sessions volume %s reset (fresh session)", claudeSessionsVolume)
 			}
 		}
-		if _, cvErr := p.cli.VolumeCreate(ctx, volume.CreateOptions{Name: claudeSessionsVolume}); cvErr != nil {
+		if _, cvErr := p.cli.VolumeCreate(ctx, volume.CreateOptions{Name: claudeSessionsVolume, Labels: managedLabels()}); cvErr != nil {
 			return "", fmt.Errorf("failed to create claude-sessions volume %s: %w", claudeSessionsVolume, cvErr)
 		}
 		binds = append(binds, fmt.Sprintf("%s:/root/.claude/sessions", claudeSessionsVolume))

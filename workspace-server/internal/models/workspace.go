@@ -70,6 +70,40 @@ type HeartbeatPayload struct {
 	// non-empty value is "wedged"; future values can extend this without
 	// migration.
 	RuntimeState string `json:"runtime_state"`
+
+	// RuntimeMetadata is the adapter-declared capability map + per-
+	// capability override values. The Python runtime builds this from
+	// BaseAdapter.capabilities() + per-hook methods (e.g.
+	// idle_timeout_override()) — see workspace/heartbeat.py:
+	// _runtime_metadata_payload. Optional: missing means "use platform
+	// defaults for everything", matching pre-2026-04 behavior.
+	//
+	// Pointer (not value) so a missing JSON field is nil rather than a
+	// zero-value RuntimeMetadata{} that would falsely claim "all caps =
+	// false declared explicitly". Lets the platform distinguish "adapter
+	// said no native ownership" from "old runtime version, didn't say".
+	RuntimeMetadata *RuntimeMetadata `json:"runtime_metadata,omitempty"`
+}
+
+// RuntimeMetadata is the adapter-declared capability + override block
+// the Python runtime sends in the heartbeat payload. New fields can be
+// added with `omitempty` without breaking older runtime versions.
+//
+// See project memory `project_runtime_native_pluggable.md` for the
+// principle and workspace/adapter_base.py:RuntimeCapabilities for the
+// Python source of truth.
+type RuntimeMetadata struct {
+	// Capabilities maps capability name → "adapter owns it natively".
+	// Keys (heartbeat, scheduler, session, status_mgmt, retry,
+	// activity_decoration, channel_dispatch) match
+	// RuntimeCapabilities.to_dict() in adapter_base.py — keep in sync.
+	Capabilities map[string]bool `json:"capabilities,omitempty"`
+
+	// IdleTimeoutSeconds, when set, overrides the per-dispatch silence
+	// window in a2a_proxy.go for this workspace's A2A traffic. Pointer
+	// so nil means "no override; use the global default". Zero / negative
+	// is treated as nil by the consumer (a2a_proxy.go).
+	IdleTimeoutSeconds *int `json:"idle_timeout_seconds,omitempty"`
 }
 
 type UpdateCardPayload struct {

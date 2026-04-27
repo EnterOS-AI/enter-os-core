@@ -67,6 +67,35 @@ func (h *WorkspaceHandler) handleA2ADispatchError(ctx context.Context, workspace
 	// with 202 status here was the original cycle 53 bug — callers saw
 	// proxyErr != nil and logged "delegation failed: proxy a2a error".
 	if isUpstreamBusyError(err) {
+		// Capability primitive #5 — see project memory
+		// `project_runtime_native_pluggable.md`. When the target workspace's
+		// adapter has declared provides_native_session=True, the SDK
+		// owns its own queue/session state (claude-agent-sdk's streaming
+		// session, hermes-agent's in-container event log, etc.). Adding
+		// the platform's a2a_queue layer on top would double-buffer the
+		// same in-flight state — and worse, the platform queue's drain
+		// timing has no relationship to the SDK's actual readiness, so
+		// the queued request might dispatch while the SDK is STILL busy.
+		//
+		// For native_session targets, return 503 + Retry-After directly.
+		// The caller's adapter handles retry on its own schedule, and
+		// the SDK's own queue absorbs the in-flight request when it does.
+		// Observability is preserved: logA2AFailure already ran above;
+		// activity_logs records the busy event; the broadcaster fires.
+		if runtimeOverrides.HasCapability(workspaceID, "session") {
+			log.Printf("ProxyA2A: target %s busy and declares native_session — skip enqueue, return 503", workspaceID)
+			return 0, nil, &proxyA2AError{
+				Status:  http.StatusServiceUnavailable,
+				Headers: map[string]string{"Retry-After": strconv.Itoa(busyRetryAfterSeconds)},
+				Response: gin.H{
+					"error":           "workspace agent busy — adapter handles retry (native_session)",
+					"busy":            true,
+					"retry_after":     busyRetryAfterSeconds,
+					"native_session":  true,
+				},
+			}
+		}
+
 		idempotencyKey := extractIdempotencyKey(body)
 		if qid, depth, qerr := EnqueueA2A(
 			ctx, workspaceID, callerID, PriorityTask, body, a2aMethod, idempotencyKey,

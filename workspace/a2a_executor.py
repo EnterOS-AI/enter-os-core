@@ -41,7 +41,7 @@ from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
 from a2a.types import Part
 # KI-009: a2a-sdk v1 renames a2a.utils → a2a.helpers; TextPart removed (Part takes text= directly)
-from a2a.helpers import new_agent_text_message
+from a2a.helpers import new_text_message
 from shared_runtime import (
     extract_history as _extract_history,
     extract_message_text,
@@ -231,7 +231,7 @@ class LangGraphA2AExecutor(AgentExecutor):
             parts = getattr(getattr(context, "message", None), "parts", None)
             logger.warning("A2A execute: no text content in message parts: %s", parts)
             await event_queue.enqueue_event(
-                new_agent_text_message("Error: message contained no text content.")
+                new_text_message("Error: message contained no text content.")
             )
             return ""
 
@@ -246,7 +246,7 @@ class LangGraphA2AExecutor(AgentExecutor):
                 )
             except PromptInjectionError as exc:
                 await event_queue.enqueue_event(
-                    new_agent_text_message(f"Request blocked: {exc}")
+                    new_text_message(f"Request blocked: {exc}")
                 )
                 return ""
 
@@ -446,37 +446,49 @@ class LangGraphA2AExecutor(AgentExecutor):
                     # making the earlier `Part(text=text)` call (line ~358, inside
                     # the astream_events loop) raise UnboundLocalError because
                     # the local binding is not yet in scope at that point.
-                    from a2a.types import FilePart, FileWithUri, Message, Role, TextPart
-                    _parts: list[Part] = [Part(root=TextPart(text=final_text))] if final_text else []
+                    #
+                    # a2a-sdk 1.x flattened the Part shape: 0.x used
+                    # `Part(root=TextPart(text=...))` / `Part(root=FilePart(file=
+                    # FileWithUri(uri=..., name=..., mimeType=...)))` (Pydantic
+                    # discriminated-union style). 1.x's Part is a single proto
+                    # message with flat fields: text, url, filename, media_type,
+                    # raw, data, metadata. TextPart/FilePart/FileWithUri were
+                    # removed. Same for Message: messageId/taskId/contextId
+                    # camelCase became message_id/task_id/context_id.
+                    from a2a.types import Message, Role
+                    _parts: list[Part] = [Part(text=final_text)] if final_text else []
                     for f in _outbound:
-                        _parts.append(Part(root=FilePart(file=FileWithUri(
-                            uri="workspace:" + f["path"],
-                            name=f["name"],
-                            mimeType=f["mime_type"],
-                        ))))
+                        _parts.append(Part(
+                            url="workspace:" + f["path"],
+                            filename=f["name"],
+                            media_type=f["mime_type"],
+                        ))
                     msg = Message(
-                        messageId=uuid.uuid4().hex,
-                        role=Role.agent,
+                        message_id=uuid.uuid4().hex,
+                        # 1.x Role is a protobuf enum: ROLE_UNSPECIFIED,
+                        # ROLE_USER, ROLE_AGENT. Old `Role.agent` (Pydantic
+                        # lowercase enum) doesn't exist anymore.
+                        role=Role.ROLE_AGENT,
                         parts=_parts,
-                        taskId=task_id,
-                        contextId=context_id,
+                        task_id=task_id,
+                        context_id=context_id,
                     )
                 else:
-                    msg = new_agent_text_message(final_text, task_id=task_id, context_id=context_id)
+                    msg = new_text_message(final_text, task_id=task_id, context_id=context_id)
                 # Attach tool_trace via metadata when supported. Guarded with
                 # hasattr because some test mocks return a plain string here.
                 if tool_trace and hasattr(msg, "metadata"):
                     try:
                         msg.metadata = {"tool_trace": tool_trace}
                     except (AttributeError, TypeError):
-                        # `new_agent_text_message()` returns a plain string in
+                        # `new_text_message()` returns a plain string in
                         # MagicMock paths in tests, where assignment to
                         # .metadata raises despite hasattr being true (the
                         # mock has the attribute as a property). Suppression
                         # is intentional — production Message objects always
                         # accept the assignment. See #1787 + commit dcbcf19
                         # for the original test-mock motivation.
-                        logger.debug("metadata attach skipped (non-Message return from new_agent_text_message)")
+                        logger.debug("metadata attach skipped (non-Message return from new_text_message)")
                 await event_queue.enqueue_event(msg)
                 _result = final_text
 
@@ -491,7 +503,7 @@ class LangGraphA2AExecutor(AgentExecutor):
                 # Emit a Message so both streaming and non-streaming clients
                 # receive an error response rather than hanging.
                 await event_queue.enqueue_event(
-                    new_agent_text_message(
+                    new_text_message(
                         f"Agent error: {e}", task_id=task_id, context_id=context_id
                     )
                 )

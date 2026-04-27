@@ -22,16 +22,25 @@ from platform_auth import auth_headers, refresh_cache, self_source_headers
 
 def _runtime_state_payload() -> dict:
     """Build the {runtime_state, sample_error} portion of the heartbeat
-    body when the Claude SDK has hit a wedge. Returns an empty dict
-    when the runtime is healthy so the heartbeat payload doesn't grow
-    fields the platform doesn't need.
+    body when SOME adapter executor has marked itself wedged. Returns
+    an empty dict when the runtime is healthy so the heartbeat payload
+    doesn't grow fields the platform doesn't need.
 
-    Imported lazily so workspaces running non-Claude runtimes (where
-    `claude_sdk_executor` may not be importable at all) keep working —
-    a missing import means "no Claude wedge possible here, healthy."
+    Source of truth is runtime_wedge (lives in molecule-runtime,
+    independent of any specific adapter). Pre task #87 this imported
+    from claude_sdk_executor — that worked because the executor was
+    bundled into molecule-runtime, but blocked moving it to the
+    claude-code template repo. The runtime_wedge module is now the
+    cross-cutting wedge-state holder; adapters mark/clear via it,
+    heartbeat reads it.
+
+    Imported lazily so a workspace whose runtime image somehow ships
+    without runtime_wedge (corrupt install, mid-rolling-deploy state)
+    keeps heartbeating — a missing import means "no wedge info; assume
+    healthy."
     """
     try:
-        from claude_sdk_executor import is_wedged, wedge_reason
+        from runtime_wedge import is_wedged, wedge_reason
     except Exception:
         return {}
     if not is_wedged():
@@ -43,13 +52,52 @@ def _runtime_state_payload() -> dict:
         "sample_error": wedge_reason(),
     }
 
+
+def _runtime_metadata_payload() -> dict:
+    """Build the {runtime_metadata} portion of the heartbeat body —
+    adapter-declared capabilities + per-capability override values
+    (idle timeout, etc.). The platform reads this to route capabilities
+    to the right owner: native (adapter) vs fallback (platform).
+
+    Returns an empty dict if the adapter can't be loaded or introspected.
+    Heartbeat must NEVER fail because of capability discovery — observability
+    is more important than capability accuracy. The platform falls through
+    to its own defaults when fields are missing.
+
+    See project memory `project_runtime_native_pluggable.md` and
+    workspace/adapter_base.py:RuntimeCapabilities.
+    """
+    try:
+        from adapters import get_adapter
+        # ADAPTER_MODULE wins over the runtime arg in get_adapter — pass
+        # an empty string to force the env-var path.
+        adapter_cls = get_adapter("")
+        adapter = adapter_cls()
+        caps = adapter.capabilities()
+        meta: dict = {"capabilities": caps.to_dict()}
+        idle = adapter.idle_timeout_override()
+        # Only include the override when it's a positive integer. None /
+        # zero / negative falls through to the platform's global default
+        # (env A2A_IDLE_TIMEOUT_SECONDS, default 5min) — that "absent
+        # field = use default" contract is what keeps the wire small.
+        if isinstance(idle, int) and idle > 0:
+            meta["idle_timeout_seconds"] = idle
+        return {"runtime_metadata": meta}
+    except Exception as e:
+        # debug-level: missing ADAPTER_MODULE in dev / test envs is normal
+        logger.debug("runtime_metadata: failed to read adapter caps: %s", e)
+        return {}
+
+
 logger = logging.getLogger(__name__)
 
 HEARTBEAT_INTERVAL = 30  # seconds
 MAX_CONSECUTIVE_FAILURES = 10
 MAX_SEEN_DELEGATION_IDS = 200
 SELF_MESSAGE_COOLDOWN = 60  # seconds — minimum between self-messages to prevent loops
-# Shared path — also used by cli_executor._read_delegation_results()
+# Shared path — adapter executors (in their template repos) read this
+# same file via executor_helpers.read_delegation_results so heartbeat-
+# delivered async delegation results land in the next agent turn.
 DELEGATION_RESULTS_FILE = os.environ.get("DELEGATION_RESULTS_FILE", "/tmp/delegation_results.jsonl")
 
 
@@ -123,6 +171,7 @@ class HeartbeatLoop:
                         # sample_error field. The platform reads
                         # runtime_state to flip status → degraded.
                         body.update(_runtime_state_payload())
+                        body.update(_runtime_metadata_payload())
                         await client.post(
                             f"{self.platform_url}/registry/heartbeat",
                             json=body,
@@ -326,7 +375,7 @@ class HeartbeatLoop:
                                 "method": "message/send",
                                 "params": {
                                     "message": {
-                                        "role": "user",
+                                        "role": "ROLE_USER",
                                         "parts": [{"type": "text", "text": trigger_msg}],
                                     },
                                 },

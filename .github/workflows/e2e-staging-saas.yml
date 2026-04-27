@@ -141,18 +141,26 @@ jobs:
           orgs=$(curl -sS "$MOLECULE_CP_URL/cp/admin/orgs" \
             -H "Authorization: Bearer $ADMIN_TOKEN" 2>/dev/null \
             | python3 -c "
-          import json, sys, os
+          import json, sys, os, datetime
           run_id = os.environ.get('GITHUB_RUN_ID', '')
           d = json.load(sys.stdin)
-          today = __import__('datetime').date.today().strftime('%Y%m%d')
           # ONLY sweep slugs from *this* CI run. Previously the filter was
           # f'e2e-{today}-' which stomped on parallel CI runs AND any manual
           # E2E probes a dev was running against staging (incident 2026-04-21
           # 15:02Z: this workflow's safety net deleted an unrelated manual
           # run's tenant 1s after it hit 'running').
-          prefix = f'e2e-{today}-{run_id}-' if run_id else f'e2e-{today}-'
+          # Sweep both today AND yesterday's UTC dates so a run that crosses
+          # midnight still matches its own slug — see the 2026-04-26→27
+          # canvas-safety-net incident for the same bug class.
+          today = datetime.date.today()
+          yesterday = today - datetime.timedelta(days=1)
+          dates = (today.strftime('%Y%m%d'), yesterday.strftime('%Y%m%d'))
+          if run_id:
+              prefixes = tuple(f'e2e-{d}-{run_id}-' for d in dates)
+          else:
+              prefixes = tuple(f'e2e-{d}-' for d in dates)
           candidates = [o['slug'] for o in d.get('orgs', [])
-                        if o.get('slug','').startswith(prefix)
+                        if any(o.get('slug','').startswith(p) for p in prefixes)
                         and o.get('instance_status') not in ('purged',)]
           print('\n'.join(candidates))
           " 2>/dev/null)

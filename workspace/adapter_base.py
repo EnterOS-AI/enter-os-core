@@ -35,15 +35,102 @@ class AdapterConfig:
     heartbeat: Any = None                   # HeartbeatLoop instance
 
 
+@dataclass(frozen=True)
+class RuntimeCapabilities:
+    """Adapter-declared ownership of cross-cutting platform capabilities.
+
+    The platform provides FALLBACK implementations of heartbeat, cron,
+    durable session, etc. When a runtime SDK provides one of these
+    natively (e.g. claude-code's streaming session model, hermes-agent's
+    sidecar lifecycle), the adapter sets the corresponding flag to True.
+    The platform reads these flags and skips its fallback for that
+    capability — the adapter is responsible instead.
+
+    Observability is NEVER skipped: A2A protocol, activity_logs, and the
+    broadcaster always run regardless of who owns the capability. These
+    flags only switch WHO IMPLEMENTS the behavior, not whether the
+    platform sees it.
+
+    All defaults are False so introducing this dataclass is a no-op:
+    every existing adapter inherits BaseAdapter.capabilities() which
+    returns RuntimeCapabilities() with everything off, matching today's
+    "platform does it all" behavior. Each capability gets a platform-
+    side consumer in a follow-up PR; this class is the foundation.
+
+    See project memory `project_runtime_native_pluggable.md` for the
+    architecture principle these flags encode.
+    """
+    # Heartbeat — adapter sends its own keep-alive signal to the platform's
+    # broadcaster instead of relying on workspace/heartbeat.py's 30s loop.
+    # Set True when the SDK already maintains a long-lived session that
+    # produces natural progress events (e.g. claude-code streaming).
+    provides_native_heartbeat: bool = False
+
+    # Cron / schedule — adapter handles scheduled triggers internally
+    # (Temporal workflows, Durable Functions, sidecar daemons). Platform
+    # scheduler skips polling workspace_schedules for this workspace,
+    # avoiding double-fire on restart.
+    provides_native_scheduler: bool = False
+
+    # Durable session — adapter persists in-flight session state across
+    # restarts and exposes it via pre_stop_state/restore_state. When True,
+    # the platform's a2a_queue does not need to enqueue mid-session
+    # requests; the adapter handles QUEUED-state on its own.
+    provides_native_session: bool = False
+
+    # Status lifecycle — adapter reports its own ready/degraded/failed
+    # state (e.g. via heartbeat metadata). Platform respects the adapter
+    # report instead of inferring status from heartbeat error rate.
+    provides_native_status_mgmt: bool = False
+
+    # Retry — adapter handles transient errors (rate limits, 5xx) with
+    # its own backoff. Platform stops re-dispatching A2A requests that
+    # the adapter explicitly marked as "retrying internally".
+    provides_native_retry: bool = False
+
+    # Activity log decoration — adapter contributes runtime-specific
+    # fields (model, token_count, latency breakdown) into activity_log
+    # rows alongside the platform-defined columns.
+    provides_activity_decoration: bool = False
+
+    # Channel dispatch — adapter sends to external channels (Slack,
+    # Lark, etc.) directly instead of routing through platform channels
+    # manager. Used when the SDK has built-in channel integrations.
+    provides_channel_dispatch: bool = False
+
+    def to_dict(self) -> dict[str, bool]:
+        """Serializable shape for the heartbeat payload + /capabilities
+        endpoint. Plain dict avoids leaking dataclass internals to Go."""
+        return {
+            "heartbeat": self.provides_native_heartbeat,
+            "scheduler": self.provides_native_scheduler,
+            "session": self.provides_native_session,
+            "status_mgmt": self.provides_native_status_mgmt,
+            "retry": self.provides_native_retry,
+            "activity_decoration": self.provides_activity_decoration,
+            "channel_dispatch": self.provides_channel_dispatch,
+        }
+
+
 class BaseAdapter(ABC):
     """Interface every agent infrastructure adapter must implement.
 
     To add a new agent infra:
-    1. Create workspace/adapters/<your_infra>/
+    1. Create a standalone template repo (molecule-ai-workspace-template-<infra>)
     2. Implement adapter.py with a class extending BaseAdapter
-    3. Add requirements.txt with your infra's dependencies
-    4. Export as Adapter in __init__.py
-    5. Submit a PR
+    3. Add requirements.txt with your infra's dependencies + molecule-runtime
+    4. Set ADAPTER_MODULE in the Dockerfile to your adapter module path
+
+    Cross-cutting capabilities your adapter can opt into:
+    - capabilities() — declare native ownership of heartbeat, scheduler,
+      session, status mgmt, etc. (see RuntimeCapabilities above)
+    - idle_timeout_override() — extend the platform's per-dispatch
+      silence window for SDKs with long synth turns
+    - runtime_wedge.mark_wedged() / clear_wedge() — flip the workspace
+      to `degraded` + auto-recover when your SDK hits a non-recoverable
+      error class. Import directly from `runtime_wedge`; the heartbeat
+      forwards the state to the platform automatically. See the
+      runtime_wedge module docstring for the integration recipe.
     """
 
     @staticmethod
@@ -71,6 +158,44 @@ class BaseAdapter(ABC):
         Used by the Config tab UI to render the right form fields.
         Override in subclasses for adapter-specific settings."""
         return {}
+
+    def capabilities(self) -> "RuntimeCapabilities":
+        """Declare which cross-cutting capabilities this adapter owns
+        natively vs delegates to platform fallback.
+
+        Default returns RuntimeCapabilities() — every flag False, meaning
+        the platform owns everything (today's behavior). Adapters override
+        to declare native ownership; e.g. claude-code's adapter returns
+        RuntimeCapabilities(provides_native_heartbeat=True,
+                             provides_native_session=True).
+
+        Subsequent platform-side consumers (idle-timeout override,
+        scheduler skip, etc.) read this and route accordingly. See
+        project memory `project_runtime_native_pluggable.md`."""
+        return RuntimeCapabilities()
+
+    def idle_timeout_override(self) -> int | None:
+        """Per-A2A-dispatch silence window override, in SECONDS.
+
+        Return None to use the platform default (env var
+        A2A_IDLE_TIMEOUT_SECONDS, falling back to 5 minutes — see
+        a2a_proxy.go:defaultIdleTimeoutDuration). Override when this
+        runtime's SDK can legitimately go silent longer than the
+        default before the dispatch should be considered wedged.
+
+        Why this is per-adapter, not just env: the env value is a
+        cluster-wide knob set by ops. Different SDKs have different
+        latency profiles — claude-code synthesis on Opus + tool use
+        legitimately runs 8-10 min between broadcasts; hermes synth
+        with custom providers can be even slower. Hardcoding 5min for
+        everyone either cancels real work (claude-code synth) or
+        leaves wedged runtimes (langgraph) hanging too long.
+
+        Platform reads this from the heartbeat payload and stashes
+        it per-workspace; dispatchA2A consults it before applying the
+        idle timer. None / unset / zero falls through to the global
+        default — same behavior as before this hook landed."""
+        return None
 
     # ------------------------------------------------------------------
     # Plugin install hooks
@@ -312,15 +437,19 @@ class BaseAdapter(ABC):
         if plugins.plugin_names:
             logger.info(f"Plugins: {', '.join(plugins.plugin_names)}")
 
-        # Load skills (workspace + plugin skills, deduped)
-        loaded_skills = load_skills(config.config_path, config.tools)
+        # Load skills (workspace + plugin skills, deduped). Pass the runtime
+        # name so SKILL.md frontmatter `runtime: [...]` can opt skills out
+        # of incompatible adapters (hermes won't load claude-code-only
+        # skills, etc.).
+        runtime_name = type(self).name()
+        loaded_skills = load_skills(config.config_path, config.tools, current_runtime=runtime_name)
         seen_skill_ids = {s.metadata.id for s in loaded_skills}
         for plugin_skills_dir in plugins.skill_dirs:
             plugin_skill_names = [
                 d for d in os.listdir(plugin_skills_dir)
                 if os.path.isdir(os.path.join(plugin_skills_dir, d))
             ]
-            for skill in load_skills(plugin_skills_dir, plugin_skill_names):
+            for skill in load_skills(plugin_skills_dir, plugin_skill_names, current_runtime=runtime_name):
                 if skill.metadata.id not in seen_skill_ids:
                     loaded_skills.append(skill)
                     seen_skill_ids.add(skill.metadata.id)

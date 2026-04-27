@@ -6,6 +6,7 @@ global.fetch = vi.fn(() =>
 );
 
 import { useCanvasStore, summarizeWorkspaceCapabilities } from "../canvas";
+import { __resetTombstonesForTest } from "../deleteTombstones";
 import type { WorkspaceData, WSMessage } from "../socket";
 
 // Helper to build a WorkspaceData object with sensible defaults
@@ -52,6 +53,10 @@ beforeEach(() => {
     searchOpen: false,
     viewport: { x: 0, y: 0, zoom: 1 },
   });
+  // Tombstones leak across tests because the module-level map is
+  // process-lifetime by design. Reset between tests so a delete in one
+  // test doesn't shadow a hydrate in the next.
+  __resetTombstonesForTest();
   vi.clearAllMocks();
 });
 
@@ -545,6 +550,28 @@ describe("removeSubtree", () => {
       expect(["root", "mid", "leaf", "sibling"]).not.toContain(e.source);
       expect(["root", "mid", "leaf", "sibling"]).not.toContain(e.target);
     }
+  });
+
+  // #2069: lock the tombstone path end-to-end at the store level.
+  it("hydrate cannot resurrect ids that removeSubtree just dropped (#2069)", () => {
+    useCanvasStore.getState().removeSubtree("root");
+    expect(useCanvasStore.getState().nodes.map((n) => n.id).sort())
+      .toEqual(["unrelated"]);
+
+    // Simulate the in-flight GET response landing AFTER the delete:
+    // the snapshot still contains every original workspace, including
+    // the just-removed subtree.
+    useCanvasStore.getState().hydrate([
+      makeWS({ id: "root" }),
+      makeWS({ id: "mid", parent_id: "root" }),
+      makeWS({ id: "leaf", parent_id: "mid" }),
+      makeWS({ id: "sibling", parent_id: "root" }),
+      makeWS({ id: "unrelated" }),
+    ]);
+
+    // root/mid/leaf/sibling MUST stay deleted; only `unrelated` survives.
+    const ids = useCanvasStore.getState().nodes.map((n) => n.id).sort();
+    expect(ids).toEqual(["unrelated"]);
   });
 });
 

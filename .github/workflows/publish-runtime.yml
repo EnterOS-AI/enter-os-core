@@ -10,13 +10,23 @@ name: publish-runtime
 #     the tag — `runtime-v0.1.6` publishes `0.1.6`).
 #   - Manual workflow_dispatch with an explicit `version` input (useful for
 #     dev/test releases without tagging the repo).
+#   - Auto: any push to `staging` that touches `workspace/**`. The version
+#     is derived by querying PyPI for the current latest and bumping the
+#     patch component. This closes the human-in-loop gap that caused the
+#     2026-04-27 RuntimeCapabilities ImportError outage — adapter symbol
+#     additions in workspace/adapters/base.py used to require an operator
+#     to remember to publish; now the merge itself triggers the publish.
 #
 # The workflow:
 #   1. Runs scripts/build_runtime_package.py to copy workspace/ →
 #      build/molecule_runtime/ with imports rewritten (`a2a_client` →
 #      `molecule_runtime.a2a_client`).
 #   2. Builds wheel + sdist with `python -m build`.
-#   3. Publishes to PyPI via twine + repo secret PYPI_TOKEN.
+#   3. Publishes to PyPI via the PyPA Trusted Publisher action (OIDC).
+#      No static API token is stored — PyPI verifies the workflow's
+#      OIDC claim against the trusted-publisher config registered for
+#      molecule-ai-workspace-runtime (Molecule-AI/molecule-core,
+#      publish-runtime.yml, environment pypi-publish).
 #
 # After publish: the 8 template repos pick up the new version on their
 # next image rebuild (their requirements.txt pin
@@ -28,6 +38,22 @@ on:
   push:
     tags:
       - "runtime-v*"
+    branches:
+      - staging
+    paths:
+      # Auto-publish when staging gets changes that affect what gets
+      # published. Path filter ONLY applies to branch pushes — tag pushes
+      # still fire regardless.
+      #
+      # workspace/** is the source-of-truth for runtime code.
+      # scripts/build_runtime_package.py is the build script — changes to
+      # it (e.g. a fix to the import rewriter or a manifest emit) directly
+      # affect what ships in the wheel even if no workspace/ file changes.
+      # The 2026-04-27 lib/ subpackage incident missed an auto-publish for
+      # exactly this reason — PR #2174 only changed scripts/ and the
+      # operator had to remember a manual dispatch.
+      - "workspace/**"
+      - "scripts/build_runtime_package.py"
   workflow_dispatch:
     inputs:
       version:
@@ -38,10 +64,21 @@ on:
 permissions:
   contents: read
 
+# Serialize publishes so two staging merges landing seconds apart don't
+# both compute "latest+1" and race on PyPI upload. The second one waits.
+concurrency:
+  group: publish-runtime
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
     environment: pypi-publish
+    permissions:
+      contents: read
+      id-token: write   # PyPI Trusted Publisher (OIDC) — no PYPI_TOKEN needed
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -50,14 +87,27 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Derive version from tag or input
+      - name: Derive version (tag, manual input, or PyPI auto-bump)
         id: version
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ inputs.version }}"
-          else
+          elif echo "$GITHUB_REF_NAME" | grep -q "^runtime-v"; then
             # Tag is `runtime-vX.Y.Z` — strip the prefix.
             VERSION="${GITHUB_REF_NAME#runtime-v}"
+          else
+            # Auto-publish from staging push. Query PyPI for the current
+            # latest and bump the patch component. concurrency: group above
+            # serializes parallel staging merges so we don't race on the
+            # bump. If PyPI is unreachable, fail loud — better to skip a
+            # publish than to overwrite an existing version.
+            LATEST=$(curl -fsS --retry 3 https://pypi.org/pypi/molecule-ai-workspace-runtime/json \
+              | python -c "import sys,json; print(json.load(sys.stdin)['info']['version'])")
+            MAJOR=$(echo "$LATEST" | cut -d. -f1)
+            MINOR=$(echo "$LATEST" | cut -d. -f2)
+            PATCH=$(echo "$LATEST" | cut -d. -f3)
+            VERSION="${MAJOR}.${MINOR}.$((PATCH+1))"
+            echo "Auto-bumped from PyPI latest $LATEST -> $VERSION"
           fi
           if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(\.dev[0-9]+|rc[0-9]+|a[0-9]+|b[0-9]+|\.post[0-9]+)?$'; then
             echo "::error::version $VERSION does not match PEP 440"
@@ -84,26 +134,96 @@ jobs:
         run: |
           python -m twine check dist/*
           # Smoke-import the built wheel to catch import-rewrite mistakes
-          # before they hit PyPI. The package depends on a2a-sdk + httpx
-          # via pyproject; install those so the smoke import resolves.
+          # before they hit PyPI. Asserts on STABLE INVARIANTS only —
+          # symbols + classes that are part of the package's public
+          # contract (BaseAdapter interface, the canonical a2a sentinel,
+          # core submodules). Don't add feature-flag-style assertions
+          # here — they fire false-positive every time staging is mid-
+          # release of that feature.
           python -m venv /tmp/smoke
           /tmp/smoke/bin/pip install --quiet dist/*.whl
           WORKSPACE_ID=00000000-0000-0000-0000-000000000000 \
           PLATFORM_URL=http://localhost:8080 \
             /tmp/smoke/bin/python -c "
+          # Importing main is the strongest smoke test we can do here:
+          # main.py is the entry point and pulls every other module
+          # transitively. If the build script missed an import rewrite
+          # (e.g. left a bare \`from transcript_auth import ...\` instead
+          # of \`from molecule_runtime.transcript_auth import ...\` — the
+          # 0.1.16 incident), this fails with ModuleNotFoundError instead
+          # of shipping to PyPI and breaking every workspace startup.
+          # Import the entry-point target by NAME — not just the module.
+          # The wheel's pyproject.toml declares
+          # `molecule-runtime = molecule_runtime.main:main_sync` so if
+          # main_sync goes missing (it did in 0.1.16-0.1.18), every
+          # workspace startup fails with `ImportError: cannot import name
+          # 'main_sync'`. Plain `import molecule_runtime.main` doesn't
+          # catch that because the module loads fine.
+          from molecule_runtime.main import main_sync  # noqa: F401
           from molecule_runtime import a2a_client, a2a_tools
           from molecule_runtime.builtin_tools import memory
           from molecule_runtime.adapters import get_adapter, BaseAdapter, AdapterConfig
-          assert a2a_client._A2A_QUEUED_PREFIX, 'queued prefix missing — chat-leak fix not in build'
+          # Stable invariants: package exports + BaseAdapter shape.
+          assert a2a_client._A2A_ERROR_PREFIX, 'a2a_client missing error sentinel'
+          assert callable(get_adapter), 'adapters.get_adapter must be callable'
+          assert hasattr(BaseAdapter, 'name'), 'BaseAdapter interface broken'
+          assert hasattr(AdapterConfig, '__init__'), 'AdapterConfig dataclass missing'
+
+          # Call-shape smoke for AgentCard. Pure imports don't catch
+          # field-shape regressions in upstream SDKs that only surface
+          # at construction time. Two bugs of this exact class shipped
+          # since the a2a-sdk 1.0 migration:
+          #   - state_transition_history=True (fixed in #2179)
+          #   - supported_protocols=[...] (the protobuf field is
+          #     supported_interfaces — caused every workspace boot
+          #     to crash with `ValueError: Protocol message AgentCard
+          #     has no "supported_protocols" field`; fixed alongside
+          #     this smoke)
+          #
+          # This block instantiates the EXACT classes main.py uses,
+          # with the EXACT keyword arguments. If a future a2a-sdk
+          # upgrade renames any of supported_interfaces / streaming /
+          # push_notifications / etc., the publish fails here instead
+          # of breaking every workspace startup. main.py and this
+          # smoke MUST stay in lockstep — adding a kwarg to one
+          # without mirroring it here is the regression vector.
+          from a2a.types import AgentCard, AgentCapabilities, AgentSkill, AgentInterface
+          AgentCard(
+              name='smoke-agent',
+              description='publish-runtime smoke test',
+              version='0.0.0-smoke',
+              supported_interfaces=[
+                  AgentInterface(protocol_binding='https://a2a.g/v1', url='http://localhost:8080'),
+              ],
+              capabilities=AgentCapabilities(
+                  streaming=True,
+                  push_notifications=False,
+              ),
+              skills=[
+                  AgentSkill(
+                      id='smoke-skill',
+                      name='Smoke',
+                      description='no-op',
+                      tags=['smoke'],
+                      examples=['noop'],
+                  ),
+              ],
+              default_input_modes=['text/plain', 'application/json'],
+              default_output_modes=['text/plain', 'application/json'],
+          )
+          print('✓ AgentCard call-shape smoke passed')
           print('✓ smoke import passed')
           "
 
-      - name: Publish to PyPI
-        working-directory: ${{ runner.temp }}/runtime-build
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
-        run: python -m twine upload dist/*
+      - name: Publish to PyPI (Trusted Publisher / OIDC)
+        # PyPI side is configured: project molecule-ai-workspace-runtime →
+        # publisher Molecule-AI/molecule-core, workflow publish-runtime.yml,
+        # environment pypi-publish. The action mints a short-lived OIDC
+        # token and exchanges it for a PyPI upload credential — no static
+        # API token in this repo's secrets.
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: ${{ runner.temp }}/runtime-build/dist/
 
   cascade:
     # After PyPI accepts the upload, fan out a repository_dispatch to each
@@ -118,24 +238,52 @@ jobs:
     needs: publish
     runs-on: ubuntu-latest
     steps:
+      - name: Wait for PyPI to propagate the new version
+        # PyPI accepts the upload, then takes a few seconds to make it
+        # available via the package index. If the cascade fires too
+        # fast, downstream template builds run `pip install` against
+        # an index that hasn't seen the new version yet — they resolve
+        # to the previous one, and docker layer cache then locks that
+        # in for subsequent rebuilds (the cache trap that bit us five
+        # times tonight).
+        #
+        # Poll PyPI's JSON API for up to 60s. Cheap (~50ms per poll),
+        # avoids over-trusting "publish job said success."
+        env:
+          RUNTIME_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set -eu
+          for i in $(seq 1 30); do
+            if curl -fsS "https://pypi.org/pypi/molecule-ai-workspace-runtime/${RUNTIME_VERSION}/json" >/dev/null 2>&1; then
+              echo "::notice::✓ PyPI serving ${RUNTIME_VERSION} after ${i} polls"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::PyPI never propagated ${RUNTIME_VERSION} within 60s — refusing to fan out cascade against stale index"
+          exit 1
+
       - name: Fan out repository_dispatch
         env:
           # Fine-grained PAT with `actions:write` on the 8 template repos.
           # GITHUB_TOKEN can't fire dispatches across repos — needs an explicit
           # token. Stored as a repo secret; rotate per the standard schedule.
           DISPATCH_TOKEN: ${{ secrets.TEMPLATE_DISPATCH_TOKEN }}
-          RUNTIME_VERSION: ${{ needs.publish.outputs.version || steps.version.outputs.version }}
+          # Single source of truth: the publish job's output, which handles
+          # tag/manual-input/auto-bump uniformly. The previous fallback
+          # (`steps.version.outputs.version` from inside the cascade job)
+          # was a dead reference — different job, no shared step scope.
+          RUNTIME_VERSION: ${{ needs.publish.outputs.version }}
         run: |
           set +e   # don't abort on a single repo failure — collect them all
           if [ -z "$DISPATCH_TOKEN" ]; then
             echo "::warning::TEMPLATE_DISPATCH_TOKEN secret not set — skipping cascade. PyPI was published; templates will pick up the new version on their own next rebuild."
             exit 0
           fi
-          # Re-derive version from the tag here too (in case publish job
-          # didn't expose an output the previous step's reference reads).
-          VERSION="${GITHUB_REF_NAME#runtime-v}"
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.version }}"
+          VERSION="$RUNTIME_VERSION"
+          if [ -z "$VERSION" ]; then
+            echo "::error::publish job did not expose a version output — cascade cannot fan out"
+            exit 1
           fi
           TEMPLATES="claude-code langgraph crewai autogen deepagents hermes gemini-cli openclaw"
           FAILED=""

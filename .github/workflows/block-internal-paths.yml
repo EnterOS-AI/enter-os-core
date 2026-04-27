@@ -37,7 +37,28 @@ jobs:
         if: github.event_name == 'pull_request'
         run: git fetch --depth=1 origin ${{ github.event.pull_request.base.sha }}
 
+      # For merge_group events the queue's pre-merge ref is a commit on
+      # `gh-readonly-queue/...` whose parent is the queue's base_sha.
+      # That parent isn't part of the queue branch's shallow clone, so
+      # we fetch it explicitly. Mirrors the equivalent step in
+      # secret-scan.yml (#2120) — same shallow-clone bug class.
+      - name: Fetch merge_group base SHA (merge_group events only)
+        if: github.event_name == 'merge_group'
+        run: git fetch --depth=1 origin ${{ github.event.merge_group.base_sha }}
+
       - name: Refuse if forbidden paths appear
+        env:
+          # Plumb event-specific SHAs through env so the script doesn't
+          # need conditional `${{ ... }}` interpolation per event type.
+          # github.event.before/after only exist on push events;
+          # merge_group has its own base_sha/head_sha; pull_request has
+          # pull_request.base.sha / pull_request.head.sha.
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.event.after }}
         run: |
           # Paths that must NEVER live in the public monorepo. Add to this
           # list narrowly — broader patterns belong in .gitignore so day-to-day
@@ -52,18 +73,44 @@ jobs:
             ".*-temp\.(md|txt)$"
           )
 
-          # Determine the diff base.
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE="${{ github.event.pull_request.base.sha }}"
-            HEAD="${{ github.event.pull_request.head.sha }}"
-          else
-            BASE="${{ github.event.before }}"
-            HEAD="${{ github.event.after }}"
+          # Determine the diff base. Each event type stores its SHAs in
+          # a different place — see the env block above.
+          case "${{ github.event_name }}" in
+            pull_request)
+              BASE="$PR_BASE_SHA"
+              HEAD="$PR_HEAD_SHA"
+              ;;
+            merge_group)
+              BASE="$MG_BASE_SHA"
+              HEAD="$MG_HEAD_SHA"
+              ;;
+            *)
+              BASE="$PUSH_BEFORE"
+              HEAD="$PUSH_AFTER"
+              ;;
+          esac
+
+          # On push events with shallow clones, BASE may be present in
+          # the event payload but absent from the local object DB
+          # (fetch-depth=2 doesn't always reach the previous commit
+          # across true merges). Try fetching it on demand. If the
+          # fetch fails — e.g. the SHA was force-overwritten — we fall
+          # through to the empty-BASE branch below, which scans the
+          # entire tree as if every file were new. Correct, just slow.
+          # Same recovery shape as secret-scan.yml (#2120 — incident
+          # 2026-04-27 06:50Z block-internal-paths exit 128 with
+          # "fatal: bad object <sha>" on staging push).
+          if [ -n "$BASE" ] && ! echo "$BASE" | grep -qE '^0+$'; then
+            if ! git cat-file -e "$BASE" 2>/dev/null; then
+              git fetch --depth=1 origin "$BASE" 2>/dev/null || true
+            fi
           fi
 
           # Files added or modified in this change.
-          if [ -z "$BASE" ] || echo "$BASE" | grep -qE '^0+$'; then
-            # New branch / no previous SHA — check entire tree.
+          if [ -z "$BASE" ] || echo "$BASE" | grep -qE '^0+$' || ! git cat-file -e "$BASE" 2>/dev/null; then
+            # New branch / no previous SHA / BASE unreachable — check
+            # the entire tree as if every file were new. Slower but
+            # correct on first push or post-fetch-failure recovery.
             CHANGED=$(git ls-tree -r --name-only HEAD)
           else
             CHANGED=$(git diff --name-only --diff-filter=AM "$BASE" "$HEAD")

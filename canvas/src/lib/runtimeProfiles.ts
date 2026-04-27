@@ -60,21 +60,23 @@ export const DEFAULT_RUNTIME_PROFILE: Required<
 /**
  * Named per-runtime overrides. Keep this map small and explicit —
  * each entry is a deliberate statement that this runtime's cold-boot
- * behavior differs materially from the default.
+ * behavior differs materially from the default AND that the runtime's
+ * template manifest hasn't yet declared a server-side
+ * `provision_timeout_seconds` (the preferred path post-#2054).
  *
  * Each override must also ship with a comment explaining WHY the default
  * is wrong for this runtime. Unexplained numbers rot.
+ *
+ * Empty today — `hermes` previously lived here at 720_000ms, but
+ * Molecule-AI/molecule-ai-workspace-template-hermes now declares the
+ * value in its config.yaml manifest, so the value flows through the
+ * server (workspace API → WorkspaceData.provision_timeout_ms → resolver
+ * overrides) instead of being canvas-hardcoded. New runtimes that need
+ * a non-default cold-boot threshold should follow the same pattern:
+ * declare `runtime_config.provision_timeout_seconds` in their template
+ * manifest, NOT add an entry here.
  */
-export const RUNTIME_PROFILES: Record<string, RuntimeProfile> = {
-  hermes: {
-    // 12 min. Installs ripgrep + ffmpeg + node22 + builds hermes-agent
-    // from source + Playwright + Chromium (~300MB download). Measured
-    // cold boots on staging EC2 routinely land at 8-13 min. Aligns
-    // with SaaS E2E's PROVISION_TIMEOUT_SECS=900 (15 min) so the UI
-    // warning lands shortly before the backend itself gives up.
-    provisionTimeoutMs: 720_000,
-  },
-};
+export const RUNTIME_PROFILES: Record<string, RuntimeProfile> = {};
 
 /**
  * Data fields the canvas can consult for per-workspace overrides. These

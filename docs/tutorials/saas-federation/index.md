@@ -185,7 +185,7 @@ curl -X PATCH https://api.moleculesai.app/cp/orgs/acme \
   }'
 ```
 
-When a tenant hits their workspace limit, `POST /workspaces` returns `402 Payment Required` with a message pointing them to upgrade.
+When a tenant hits their workspace limit, `POST /workspaces` returns **`409 Conflict`** (not `402 Payment Required` — quota gates are resource-state conflicts, not payment failures, per RFC 9110). The response body's `error` field carries an upgrade hint.
 
 ---
 

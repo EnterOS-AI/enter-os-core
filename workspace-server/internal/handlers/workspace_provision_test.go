@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1111,16 +1112,180 @@ func containsUnsafeString(v interface{}) bool {
 
 // TestProvisionWorkspace_NoInternalErrorsInBroadcast asserts that provisionWorkspace
 // never leaks internal error details in WORKSPACE_PROVISION_FAILED broadcasts.
-// Regression test for issue #1206.
+// Regression test for issue #1206 — drives the global-secrets decrypt-fail
+// branch (the earliest failure path in provisionWorkspace) and asserts the
+// captured broadcast payload contains the safe canned message ONLY, with
+// none of the raw decrypt-error wording leaking through.
+//
+// Why drive the decrypt-fail path specifically:
+//   - It runs BEFORE workspace_secrets, env-mutator, provisioner config build,
+//     and the actual provisioner.Provision call — so the test setup needs
+//     only one mock query (global_secrets) and one UPDATE expectation.
+//   - The decrypted error string returned by crypto.DecryptVersioned for a
+//     bogus encryption_version contains the literal version number; if a
+//     refactor regresses the redaction (e.g. someone passes err.Error()
+//     verbatim into the broadcast payload), this test catches it without
+//     having to stand up the full provisioner stack.
 func TestProvisionWorkspace_NoInternalErrorsInBroadcast(t *testing.T) {
-	t.Skip("TODO: write the test body. The interface blocker (#1814) is fixed — captureBroadcaster now satisfies events.EventEmitter and can be passed to NewWorkspaceHandler. The remaining work is constructing the provisionWorkspace failure path + asserting captured payload doesn't contain unsafeErrorStrings.")
+	mock := setupTestDB(t)
+
+	// Mock global_secrets returns ONE row with encryption_version=99.
+	// crypto.DecryptVersioned errors on unknown version with a string
+	// that includes "version=99" — concrete-but-safe payload to verify
+	// the broadcast only carries the canned message.
+	mock.ExpectQuery(`SELECT key, encrypted_value, encryption_version FROM global_secrets`).
+		WillReturnRows(sqlmock.NewRows([]string{"key", "encrypted_value", "encryption_version"}).
+			AddRow("FAKE_KEY", []byte("any-bytes"), 99))
+	// On decrypt failure provisionWorkspace also marks the workspace as
+	// failed via UPDATE workspaces. Match-anything on the args so the
+	// test isn't coupled to the exact UPDATE column order.
+	mock.ExpectExec(`UPDATE workspaces SET status = 'failed'`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	cap := &captureBroadcaster{}
+	handler := NewWorkspaceHandler(cap, nil, "http://localhost:8080", t.TempDir())
+
+	handler.provisionWorkspace("ws-1206", "/nonexistent/template", nil, models.CreateWorkspacePayload{
+		Name: "ws-1206",
+		Tier: 1,
+	})
+
+	if cap.lastData == nil {
+		t.Fatal("expected RecordAndBroadcast to capture data on decrypt failure; got nothing")
+	}
+	if got := cap.lastData["error"]; got != "failed to decrypt global secret" {
+		t.Errorf("broadcast carried unexpected error message %q — should be the safe canned string", got)
+	}
+	// containsUnsafeString is intentionally NOT used here: its
+	// "secret" / "token" entries match the legitimate redacted
+	// messages (e.g. "failed to decrypt global secret" itself) — those
+	// strings are appropriate in user-facing copy. The actual leak
+	// vector for THIS code path is the raw DecryptVersioned error
+	// string ("version=99", "platform upgrade required"); pin each
+	// of those explicitly so a future regression that interpolates
+	// err.Error() into the payload fails this test.
+	for _, v := range cap.lastData {
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		for _, leakMarker := range []string{
+			"version=99",                // raw DecryptVersioned error head
+			"platform upgrade required", // raw DecryptVersioned error tail
+			"FAKE_KEY",                  // global_secrets row's key column
+		} {
+			if strings.Contains(s, leakMarker) {
+				t.Errorf("broadcast leaked %q in payload value %q", leakMarker, s)
+			}
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations not met: %v", err)
+	}
+}
+
+// stubFailingCPProv implements provisioner.CPProvisionerAPI. Start
+// always returns the canned-leaky error fed in by the test. Stop +
+// GetConsoleOutput aren't reached on the provisionWorkspaceCP failure
+// path so they panic on call — surfaces an unexpected production-code
+// reach into them as a test failure rather than a silent passthrough.
+type stubFailingCPProv struct {
+	startErr error
+}
+
+func (s *stubFailingCPProv) Start(_ context.Context, _ provisioner.WorkspaceConfig) (string, error) {
+	return "", s.startErr
+}
+
+func (s *stubFailingCPProv) Stop(_ context.Context, _ string) error {
+	panic("stubFailingCPProv.Stop not expected on the provisionWorkspaceCP failure path")
+}
+
+func (s *stubFailingCPProv) GetConsoleOutput(_ context.Context, _ string) (string, error) {
+	panic("stubFailingCPProv.GetConsoleOutput not expected on the provisionWorkspaceCP failure path")
 }
 
 // TestProvisionWorkspaceCP_NoInternalErrorsInBroadcast asserts that
-// provisionWorkspaceCP never leaks err.Error() in WORKSPACE_PROVISION_FAILED
-// broadcasts. Regression test for issue #1206.
+// provisionWorkspaceCP never leaks err.Error() in
+// WORKSPACE_PROVISION_FAILED broadcasts. Regression test for #1206.
+//
+// Drives the cpProv.Start failure path — the only path inside
+// provisionWorkspaceCP that emits a broadcast. The stubbed Start
+// returns an error string stuffed with concrete leak markers (machine
+// type, AMI ID, VPC subnet, raw HTTP body fragment) — the kind of
+// content the real CP provisioner has historically returned when
+// AWS/CP misbehaves. A regression that interpolates err.Error() into
+// the broadcast payload would surface every marker; the canned
+// "provisioning failed" message must surface none of them.
 func TestProvisionWorkspaceCP_NoInternalErrorsInBroadcast(t *testing.T) {
-	t.Skip("TODO: write the test body. Same status as TestProvisionWorkspace_NoInternalErrorsInBroadcast — interface blocker fixed (#1814), need to construct the provisionWorkspaceCP failure path + assert payload sanitization.")
+	mock := setupTestDB(t)
+
+	// loadWorkspaceSecrets queries global_secrets and workspace_secrets
+	// in order. Empty result rows for both = no secrets to decrypt =
+	// the function returns ({}, "") = the decrypt-error early-return
+	// branch is bypassed so we reach cpProv.Start.
+	mock.ExpectQuery(`SELECT key, encrypted_value, encryption_version FROM global_secrets`).
+		WillReturnRows(sqlmock.NewRows([]string{"key", "encrypted_value", "encryption_version"}))
+	mock.ExpectQuery(`SELECT key, encrypted_value, encryption_version FROM workspace_secrets`).
+		WithArgs("ws-cp-1206").
+		WillReturnRows(sqlmock.NewRows([]string{"key", "encrypted_value", "encryption_version"}))
+	// On cpProv.Start failure, provisionWorkspaceCP also marks the
+	// workspace failed. Match-anything on args so the test isn't
+	// coupled to the exact UPDATE column order.
+	mock.ExpectExec(`UPDATE workspaces SET status = 'failed'`).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	cap := &captureBroadcaster{}
+	// Synthetic leaky error — every fragment is the kind of detail
+	// past CP errors have actually surfaced. If a regression makes
+	// the broadcast carry err.Error() verbatim, every marker below
+	// will appear in the captured payload and the assert loop catches
+	// it. (Same redaction-pin pattern as the sibling
+	// TestProvisionWorkspace_NoInternalErrorsInBroadcast — see the
+	// comment there for why we don't use containsUnsafeString.)
+	leakyErr := fmt.Errorf(
+		"CP API rejected provision: machine_type=t3.large ami=ami-0abcd1234efgh5678 " +
+			"vpc=vpc-deadbeef subnet=subnet-cafef00d body=\"{\\\"error\\\":\\\"InvalidSubnet.Conflict\\\"}\"",
+	)
+
+	handler := NewWorkspaceHandler(cap, nil, "http://localhost:8080", t.TempDir())
+	handler.SetCPProvisioner(&stubFailingCPProv{startErr: leakyErr})
+
+	handler.provisionWorkspaceCP("ws-cp-1206", "/nonexistent/template", nil, models.CreateWorkspacePayload{
+		Name:    "ws-cp-1206",
+		Tier:    1,
+		Runtime: "claude-code",
+	})
+
+	if cap.lastData == nil {
+		t.Fatal("expected RecordAndBroadcast to capture data on cpProv.Start failure; got nothing")
+	}
+	if got := cap.lastData["error"]; got != "provisioning failed" {
+		t.Errorf("broadcast carried unexpected error message %q — should be the safe canned string", got)
+	}
+	for _, v := range cap.lastData {
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		for _, leakMarker := range []string{
+			"t3.large",                // machine type
+			"ami-0abcd1234efgh5678",   // AMI id
+			"vpc-deadbeef",            // VPC id
+			"subnet-cafef00d",         // subnet id
+			"InvalidSubnet.Conflict",  // raw upstream HTTP body
+			"CP API rejected",         // raw error string head
+		} {
+			if strings.Contains(s, leakMarker) {
+				t.Errorf("broadcast leaked %q in payload value %q", leakMarker, s)
+			}
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations not met: %v", err)
+	}
 }
 
 // mockEnvMutator is a provisionhook.Registry stub that always returns a fixed error.
@@ -1134,31 +1299,129 @@ func (m *mockEnvMutator) Run(_ context.Context, _ string, _ map[string]string) e
 
 func (m *mockEnvMutator) Register(_ provisionhook.EnvMutator) {}
 
-// TestResolveAndStage_NoInternalErrorsInHTTPErr asserts that resolveAndStage
-// never puts err.Error() in HTTP error responses. Tests plugin source
-// parsing, resolver failures, and validation errors.
+// TestResolveAndStage_NoInternalErrorsInHTTPErr asserts that
+// resolveAndStage never puts internal error detail (resolver error
+// strings, file-system paths, upstream rate-limit text, auth tokens
+// echoed by a misbehaving upstream) into HTTP error response bodies.
+// Regression guard for #1206.
+//
+// Drives every error path inside resolveAndStage and asserts the
+// returned *httpErr's body carries none of the leak markers planted in
+// the stub's failing-Fetch error. Each path exercises the
+// corresponding `return nil, newHTTPErr(...)` site, so a future
+// regression that interpolates err into any of those bodies fails
+// here.
 func TestResolveAndStage_NoInternalErrorsInHTTPErr(t *testing.T) {
-	t.Skip("TODO: mockPluginsSources type mismatch with PluginsHandler.sources (*plugins.Registry). Needs resolver interface refactor — currently blocking package compile on main (2026-04-21).")
+	t.Setenv("PLUGIN_ALLOW_UNPINNED", "")
+	// Markers planted in the stub's failing-Fetch error. None of these
+	// is something a real plugin name, scheme, or schemes list would
+	// legitimately contain — so any appearance in the response body
+	// means err leaked through.
+	const leakyErrText = "rate limit exceeded x-github-request-id=ABC123 auth_token=ghp_INTERNAL_DETAIL /etc/passwd"
+	leakMarkers := []string{
+		"rate limit",
+		"x-github-request-id",
+		"auth_token",
+		"ghp_INTERNAL_DETAIL",
+		"/etc/passwd",
+	}
+
+	cases := []struct {
+		name       string
+		source     string
+		fetchErr   error // non-nil => path 6 (resolver Fetch failure)
+		wantStatus int
+	}{
+		{"empty source", "", nil, http.StatusBadRequest},
+		{"invalid source format", "not a valid uri", nil, http.StatusBadRequest},
+		{"unknown scheme", "weirdscheme://x", nil, http.StatusBadRequest},
+		{"local path-traversal", "local://../etc/passwd", nil, http.StatusBadRequest},
+		{"unpinned github source", "github://owner/repo", nil, http.StatusUnprocessableEntity},
+		// Path 6: resolver Fetch returns a leaky error. Pre-#1814 fix
+		// the body interpolated `%v` of err — every marker below would
+		// appear in the response. Post-fix the body is just the canned
+		// "failed to fetch plugin from <scheme>".
+		{"fetch failure with leaky error", "github://owner/repo#v1.0", fmt.Errorf("%s", leakyErrText), http.StatusBadGateway},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sources := &mockPluginsSources{schemes: []string{"local", "github"}}
+			if tc.fetchErr != nil {
+				sources.failingResolver = &mockResolver{fetchErr: tc.fetchErr}
+			}
+			h := &PluginsHandler{sources: sources}
+
+			_, err := h.resolveAndStage(context.Background(), installRequest{Source: tc.source})
+			if err == nil {
+				t.Fatalf("expected error for source %q, got nil", tc.source)
+			}
+			httpE, ok := err.(*httpErr)
+			if !ok {
+				t.Fatalf("expected *httpErr for source %q, got %T", tc.source, err)
+			}
+			if httpE.Status != tc.wantStatus {
+				t.Errorf("status: source=%q got %d, want %d", tc.source, httpE.Status, tc.wantStatus)
+			}
+			// Body fields can be string, []string ("available_schemes"),
+			// or other types. Walk each, normalize to a string, and
+			// search for leak markers.
+			for k, v := range httpE.Body {
+				var serialized string
+				switch x := v.(type) {
+				case string:
+					serialized = x
+				case []string:
+					serialized = strings.Join(x, " ")
+				default:
+					continue
+				}
+				for _, mark := range leakMarkers {
+					if strings.Contains(serialized, mark) {
+						t.Errorf("source=%q field=%q leaked %q in value %q",
+							tc.source, k, mark, serialized)
+					}
+				}
+			}
+		})
+	}
 }
 
-// mockPluginsSources implements plugins.SourceResolver for testing.
+// mockPluginsSources is a stub pluginSources for testing — it satisfies
+// the interface (Register/Resolve/Schemes) but stores nothing of its
+// own except the scheme list to surface in error responses + an
+// optional failingResolver to drive the Fetch-failure path.
 type mockPluginsSources struct {
-	schemes []string
+	schemes         []string
+	failingResolver *mockResolver
 }
+
+// Register is a no-op — tests don't need to record registrations.
+func (m *mockPluginsSources) Register(_ plugins.SourceResolver) {}
 
 func (m *mockPluginsSources) Schemes() []string { return m.schemes }
 
 func (m *mockPluginsSources) Resolve(source plugins.Source) (plugins.SourceResolver, error) {
 	if source.Scheme == "github" {
+		if m.failingResolver != nil {
+			return m.failingResolver, nil
+		}
 		return &mockResolver{}, nil
 	}
 	return nil, fmt.Errorf("unsupported scheme %q", source.Scheme)
 }
 
-type mockResolver struct{}
+// mockResolver is a configurable plugins.SourceResolver: Fetch returns
+// (fetchName, fetchErr) verbatim. Default zero-value fetchErr=nil and
+// fetchName="" lets tests exercise the empty-name validation path; a
+// non-nil fetchErr exercises the Fetch-failure leak-redaction path.
+type mockResolver struct {
+	fetchName string
+	fetchErr  error
+}
 
 func (*mockResolver) Scheme() string { return "" }
 
-func (*mockResolver) Fetch(ctx context.Context, spec, destDir string) (string, error) {
-	return "", nil
+func (m *mockResolver) Fetch(_ context.Context, _, _ string) (string, error) {
+	return m.fetchName, m.fetchErr
 }

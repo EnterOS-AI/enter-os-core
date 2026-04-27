@@ -101,7 +101,9 @@ git push origin runtime-v0.1.6
 The `publish-runtime` workflow takes over — checks out the tag, runs
 `scripts/build_runtime_package.py --version 0.1.6`, builds wheel + sdist,
 runs a smoke import to catch broken rewrites, and uploads to PyPI via
-the `PYPI_TOKEN` repo secret.
+the PyPA Trusted Publisher action (OIDC). No static API token is stored
+in this repo — PyPI verifies the workflow's OIDC claim against the
+trusted-publisher config registered for `molecule-ai-workspace-runtime`.
 
 For dev/test releases without tagging, dispatch the workflow manually
 with an explicit version (e.g. `0.1.6.dev1` — PEP 440 dev/rc/post forms
@@ -145,11 +147,18 @@ command. SaaS deployments typically wire step 5 into their normal deploy
 pipeline (every release pulls fresh images on every host); local dev fires
 it manually after a runtime release lands.
 
+### Auth
+
+PyPI publishing uses **Trusted Publisher (OIDC)** — no static token in the
+monorepo. The trusted-publisher config on PyPI binds the
+`molecule-ai-workspace-runtime` project to this repo's
+`publish-runtime.yml` workflow + `pypi-publish` environment. Rotation is
+moot: there is no shared secret to rotate.
+
 ### Required secrets
 
 | Secret | Where | Why |
 |---|---|---|
-| `PYPI_TOKEN` | molecule-core repo | Twine upload auth (PyPI) |
 | `TEMPLATE_DISPATCH_TOKEN` | molecule-core repo | Fine-grained PAT with `actions:write` on the 8 template repos. Without it the `cascade` job warns and exits clean — PyPI still publishes; templates just don't auto-rebuild. |
 
 ### Step 5 specifics
@@ -174,6 +183,20 @@ needs Docker socket access (the compose stack mounts
 (`docker login ghcr.io` once per host). On a fresh host without GHCR auth,
 the pull step warns per runtime and the response surfaces the failures.
 
+**Fully hands-off (opt-in image auto-refresh):**
+
+Set `IMAGE_AUTO_REFRESH=true` on the platform process. A watcher polls
+GHCR every 5 minutes for digest changes on each `workspace-template-*:latest`
+tag and invokes the same refresh logic the admin endpoint exposes —
+no operator action required between "runtime PR merged" and
+"containers running new code". Disabled by default because SaaS deploy
+pipelines that already pull on every release would do redundant work.
+
+Optional companion env (same as the admin endpoint):
+
+- `GHCR_USER` + `GHCR_TOKEN` — required for private template images;
+  unused for the current public set, but harmless if set.
+
 ## Local dev (build the package without publishing)
 
 ```bash
@@ -188,13 +211,53 @@ correctness before pushing a `runtime-v*` tag.
 
 ## Writing a new adapter
 
-1. Create a new standalone repo `molecule-ai-workspace-template-<runtime>`
-2. Copy `adapter.py` pattern from any existing adapter repo
-3. Change imports: `from molecule_runtime.adapters.base import BaseAdapter, AdapterConfig`
-4. Create `requirements.txt` with `molecule-ai-workspace-runtime>=0.1.0` + your deps
-5. Create `Dockerfile` with `ENV ADAPTER_MODULE=adapter` and
-   `ENTRYPOINT ["molecule-runtime"]`
-6. Register the runtime name in the platform's known runtimes list
+Use the GitHub template repo
+[`Molecule-AI/molecule-ai-workspace-template-starter`](https://github.com/Molecule-AI/molecule-ai-workspace-template-starter)
+— it ships with the canonical Dockerfile + adapter.py skeleton + config.yaml
+schema + the `repository_dispatch: [runtime-published]` cascade receiver
+already wired up. No follow-up setup PR required.
+
+```bash
+# Replace <runtime> with your runtime slug (lowercase, hyphenated).
+gh repo create Molecule-AI/molecule-ai-workspace-template-<runtime> \
+  --template Molecule-AI/molecule-ai-workspace-template-starter \
+  --public \
+  --description "Molecule AI workspace template: <runtime>"
+
+git clone https://github.com/Molecule-AI/molecule-ai-workspace-template-<runtime>
+cd molecule-ai-workspace-template-<runtime>
+```
+
+Then fill in the `TODO` markers in:
+
+| File | What to fill in |
+|---|---|
+| `adapter.py` | Rename class to `<Runtime>Adapter`. Fill in `name()`, `display_name()`, `description()`, `get_config_schema()`. Implement `setup()` and `create_executor()`. |
+| `requirements.txt` | Add your runtime's pip dependencies (e.g. `langgraph`, `crewai`, `claude-agent-sdk`). |
+| `Dockerfile` | Add runtime-specific apt deps (most runtimes don't need any). Replace ENTRYPOINT only if you need custom boot logic. |
+| `config.yaml` | Update top-level `name`/`runtime`/`description`. Add the models your runtime supports to `models[]`. |
+| `system-prompt.md` | Default agent prompt. |
+
+After `git push`:
+
+1. The template's `publish-image.yml` builds + pushes
+   `ghcr.io/molecule-ai/workspace-template-<runtime>:latest` automatically.
+2. The next `runtime-vX.Y.Z` tag on `molecule-core` cascades a
+   `repository_dispatch` event into your new template, rebuilding the image
+   against the latest runtime — no setup PR required.
+3. Register the runtime name in the platform's `RuntimeImages` map (in
+   `workspace-server/internal/provisioner/provisioner.go`) so it's
+   selectable in the canvas.
+
+## When the starter itself needs to evolve
+
+If the canonical shape changes (e.g. `config.yaml` schema gets a new field,
+the `BaseAdapter` interface adds a method, the reusable CI workflow
+signature changes), update the
+[starter](https://github.com/Molecule-AI/molecule-ai-workspace-template-starter)
+**first**. Existing templates can either migrate at their own pace or be
+touched in a coordinated cleanup PR. Either way, future templates pick up
+the new shape from day one.
 
 ## Migration note
 

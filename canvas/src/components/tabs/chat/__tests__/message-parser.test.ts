@@ -262,4 +262,36 @@ describe("extractFilesFromTask", () => {
     const files = extractFilesFromTask(task);
     expect(files[0]).toMatchObject({ name: "out.txt", uri: "workspace:/workspace/out.txt" });
   });
+
+  it("hydrates a notify-with-attachments response_body — both text caption AND file chips", () => {
+    // Pins the exact wire shape the platform's Notify handler persists
+    // when send_message_to_user passes attachments (activity.go writes
+    // response_body = {"result": <message>, "parts": [{kind:"file",...}]}).
+    // The chat history loader runs both extractors over this object on
+    // reload — without this contract holding, refreshing the page after
+    // an agent attached a file would lose either the caption or the chips.
+    const responseBody = {
+      result: "Done — see attached.",
+      parts: [
+        {
+          kind: "file",
+          file: {
+            name: "build-output.zip",
+            mimeType: "application/zip",
+            uri: "workspace:/tmp/build-output.zip",
+            size: 12345,
+          },
+        },
+      ],
+    };
+    expect(extractResponseText(responseBody)).toBe("Done — see attached.");
+    expect(extractFilesFromTask(responseBody)).toEqual([
+      {
+        name: "build-output.zip",
+        mimeType: "application/zip",
+        uri: "workspace:/tmp/build-output.zip",
+        size: 12345,
+      },
+    ]);
+  });
 });

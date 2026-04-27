@@ -1,4 +1,8 @@
 """Tests for preflight.py — workspace startup checks."""
+import sys
+import types
+
+import pytest
 
 from config import A2AConfig, RuntimeConfig, WorkspaceConfig
 from preflight import run_preflight, render_preflight_report, PreflightIssue, PreflightReport
@@ -19,16 +23,77 @@ def make_config(**overrides):
     return base
 
 
-def test_run_preflight_supported_runtime_passes(tmp_path):
-    """A supported runtime with present files should pass cleanly."""
+_UNSET = object()
+
+
+def install_fake_adapter(monkeypatch, name: str = "langgraph", *, raise_on_name: bool = False, no_class: bool = False, name_returns=_UNSET):
+    """Install a fake adapter module + ADAPTER_MODULE env var so the
+    runtime-discovery path in preflight finds it.
+
+    Args:
+      name: what Adapter.name() returns (default "langgraph" so the
+            base config's runtime field passes the equality check).
+      raise_on_name: if True, Adapter.name() raises (tests the catch path).
+      no_class: if True, the module imports but exports no Adapter symbol.
+      name_returns: override the literal value name() returns. Defaults
+                    to a sentinel so that None is a passable test value
+                    (else `if name_returns is not None` would skip the
+                    None branch — exactly the bug this sentinel avoids).
+    """
+    # Each call uses a unique module name so monkeypatch's sys.modules
+    # restoration doesn't accidentally reuse a prior test's fake when
+    # the same `name` is requested twice in one test session.
+    module_name = f"_fake_adapter_{name.replace('-', '_')}_{id(monkeypatch)}"
+    fake_mod = types.ModuleType(module_name)
+
+    if not no_class:
+        if raise_on_name:
+            class _Adapter:
+                @staticmethod
+                def name():
+                    raise RuntimeError("boom")
+        elif name_returns is not _UNSET:
+            class _Adapter:
+                @staticmethod
+                def name():
+                    return name_returns
+        else:
+            class _Adapter:
+                @staticmethod
+                def name():
+                    return name
+        fake_mod.Adapter = _Adapter
+
+    monkeypatch.setitem(sys.modules, module_name, fake_mod)
+    monkeypatch.setenv("ADAPTER_MODULE", module_name)
+
+
+@pytest.fixture(autouse=True)
+def _default_langgraph_adapter(monkeypatch, request):
+    """Pre-install a langgraph adapter so existing tests that build a
+    default WorkspaceConfig (runtime="langgraph") pass the discovery
+    check without each test having to set ADAPTER_MODULE manually.
+
+    Tests that need to assert a specific failure mode (no adapter, drift,
+    missing class, etc.) opt out via the `no_default_adapter` marker:
+
+        @pytest.mark.no_default_adapter
+        def test_…(monkeypatch):
+            ...
+    """
+    if "no_default_adapter" in request.keywords:
+        return
+    install_fake_adapter(monkeypatch, name="langgraph")
+
+
+def test_run_preflight_with_matching_adapter_passes(tmp_path):
+    """When ADAPTER_MODULE points to a module whose Adapter.name()
+    matches config.runtime, preflight passes cleanly. Default fixture
+    installs a langgraph adapter; the base config also says langgraph."""
     (tmp_path / "system-prompt.md").write_text("Base prompt.")
     (tmp_path / "skills").mkdir()
 
-    config = make_config(
-        prompt_files=["system-prompt.md"],
-        skills=[],
-    )
-
+    config = make_config(prompt_files=["system-prompt.md"], skills=[])
     report = run_preflight(config, str(tmp_path))
 
     assert report.ok is True
@@ -36,19 +101,110 @@ def test_run_preflight_supported_runtime_passes(tmp_path):
     assert report.warnings == []
 
 
-def test_run_preflight_unsupported_runtime_fails(tmp_path):
-    """Unsupported runtimes should fail before startup."""
+def test_run_preflight_unsupported_runtime_warns_about_drift(tmp_path):
+    """When the runtime requested is not what the installed adapter
+    reports, preflight returns the drift warning (not failure) — the
+    adapter wins in production. The PRIOR static-list behavior would
+    have hard-failed here, but the discovery-based check trusts the
+    adapter and surfaces the mismatch as actionable info."""
     (tmp_path / "system-prompt.md").write_text("Base prompt.")
+    # Default fixture installs Adapter.name() == "langgraph"; flip the
+    # config to a different name so the drift warning fires.
+    config = make_config(runtime="not-a-runtime", prompt_files=["system-prompt.md"])
 
-    config = make_config(
-        runtime="not-a-runtime",
-        prompt_files=["system-prompt.md"],
-    )
+    report = run_preflight(config, str(tmp_path))
+
+    assert report.ok is True  # drift, not fatal
+    assert any(issue.title == "Runtime" and "Drift" in issue.detail for issue in report.warnings)
+
+
+@pytest.mark.no_default_adapter
+def test_run_preflight_no_adapter_module_fails(tmp_path, monkeypatch):
+    """ADAPTER_MODULE unset → no adapter installed → preflight fails
+    with an operator-actionable message naming the env var."""
+    monkeypatch.delenv("ADAPTER_MODULE", raising=False)
+    (tmp_path / "system-prompt.md").write_text("Base prompt.")
+    config = make_config(prompt_files=["system-prompt.md"])
 
     report = run_preflight(config, str(tmp_path))
 
     assert report.ok is False
-    assert any(issue.title == "Runtime" for issue in report.failures)
+    runtime_failures = [i for i in report.failures if i.title == "Runtime"]
+    assert len(runtime_failures) == 1
+    assert "ADAPTER_MODULE" in runtime_failures[0].detail
+    assert "unset" in runtime_failures[0].detail
+
+
+@pytest.mark.no_default_adapter
+def test_run_preflight_adapter_module_unimportable_fails(tmp_path, monkeypatch):
+    """ADAPTER_MODULE set to a non-existent module → import error →
+    preflight fails with the underlying exception type + message."""
+    monkeypatch.setenv("ADAPTER_MODULE", "this_module_does_not_exist_for_test")
+    (tmp_path / "system-prompt.md").write_text("Base prompt.")
+    config = make_config(prompt_files=["system-prompt.md"])
+
+    report = run_preflight(config, str(tmp_path))
+
+    assert report.ok is False
+    assert any(
+        i.title == "Runtime" and "not importable" in i.detail
+        for i in report.failures
+    )
+
+
+@pytest.mark.no_default_adapter
+def test_run_preflight_adapter_module_missing_class_fails(tmp_path, monkeypatch):
+    """Module imports but doesn't export `Adapter` → fail with the
+    convention reminder. Pin the convention so a future refactor
+    that renames the class doesn't silently bypass discovery."""
+    install_fake_adapter(monkeypatch, name="langgraph", no_class=True)
+    (tmp_path / "system-prompt.md").write_text("Base prompt.")
+    config = make_config(prompt_files=["system-prompt.md"])
+
+    report = run_preflight(config, str(tmp_path))
+
+    assert report.ok is False
+    assert any(
+        i.title == "Runtime" and "no `Adapter` class" in i.detail
+        for i in report.failures
+    )
+
+
+@pytest.mark.no_default_adapter
+def test_run_preflight_adapter_name_raises_fails(tmp_path, monkeypatch):
+    """Adapter.name() throwing must be caught — the static method
+    must be side-effect-free per BaseAdapter contract."""
+    install_fake_adapter(monkeypatch, raise_on_name=True)
+    (tmp_path / "system-prompt.md").write_text("Base prompt.")
+    config = make_config(prompt_files=["system-prompt.md"])
+
+    report = run_preflight(config, str(tmp_path))
+
+    assert report.ok is False
+    assert any(
+        i.title == "Runtime" and "name() raised" in i.detail
+        for i in report.failures
+    )
+
+
+@pytest.mark.no_default_adapter
+def test_run_preflight_adapter_name_non_string_fails(tmp_path, monkeypatch):
+    """Adapter.name() returning None / int / etc. must fail — the
+    runtime identifier is a string by contract and downstream code
+    assumes that (config matching, log lines, etc.). Use 42 (int) as
+    the returned value so the assertion is unambiguous; None would
+    also work but int is more obviously a contract violation."""
+    install_fake_adapter(monkeypatch, name_returns=42)
+    (tmp_path / "system-prompt.md").write_text("Base prompt.")
+    config = make_config(prompt_files=["system-prompt.md"])
+
+    report = run_preflight(config, str(tmp_path))
+
+    assert report.ok is False
+    assert any(
+        i.title == "Runtime" and "non-empty string" in i.detail
+        for i in report.failures
+    )
 
 
 # ---------- required_env checks ----------

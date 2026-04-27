@@ -641,3 +641,91 @@ def test_load_skills_fail_open_if_no_scanner_wiring(tmp_path, monkeypatch):
     assert scan_kwargs[0]["fail_open"] is False, (
         "fail_open_if_no_scanner=False from config must be forwarded to scan_skill_dependencies"
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-skill runtime compatibility (#119)
+# ---------------------------------------------------------------------------
+# A skill manifest can declare `runtime: [claude-code]` to opt out of being
+# loaded into incompatible adapters. Default is universal — this is the
+# important contract: existing skill libraries do NOT need to be migrated
+# and continue to load into every adapter.
+
+
+def _write_skill(tmp_path, name: str, runtime_block: str = "") -> None:
+    skill_dir = tmp_path / "skills" / name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name.title()}\ndescription: x\n{runtime_block}---\n"
+        f"Body for {name}."
+    )
+
+
+def test_skill_metadata_runtime_default_universal():
+    meta = SkillMetadata(id="t", name="T", description="d")
+    assert meta.runtime == ["*"], "default runtime must be universal — no implicit filtering"
+
+
+def test_load_skills_no_runtime_field_is_universal(tmp_path):
+    """Skills without a `runtime` frontmatter field load into any adapter."""
+    _write_skill(tmp_path, "legacy")  # no runtime block
+    from unittest.mock import patch
+    with patch("skill_loader.loader.load_skill_tools", return_value=[]):
+        loaded = load_skills(str(tmp_path), ["legacy"], current_runtime="hermes")
+    assert len(loaded) == 1
+    assert loaded[0].metadata.runtime == ["*"]
+
+
+def test_load_skills_explicit_match_loads(tmp_path):
+    _write_skill(tmp_path, "claude-only", "runtime:\n  - claude-code\n")
+    from unittest.mock import patch
+    with patch("skill_loader.loader.load_skill_tools", return_value=[]):
+        loaded = load_skills(str(tmp_path), ["claude-only"], current_runtime="claude-code")
+    assert len(loaded) == 1
+
+
+def test_load_skills_explicit_mismatch_skips(tmp_path):
+    _write_skill(tmp_path, "claude-only", "runtime:\n  - claude-code\n")
+    from unittest.mock import patch
+    with patch("skill_loader.loader.load_skill_tools", return_value=[]):
+        loaded = load_skills(str(tmp_path), ["claude-only"], current_runtime="hermes")
+    assert loaded == [], "skill must be filtered out of incompatible runtime"
+
+
+def test_load_skills_runtime_string_sugar(tmp_path):
+    """Bare string `runtime: claude-code` is normalized to ['claude-code']."""
+    _write_skill(tmp_path, "sugary", "runtime: claude-code\n")
+    from unittest.mock import patch
+    with patch("skill_loader.loader.load_skill_tools", return_value=[]):
+        loaded = load_skills(str(tmp_path), ["sugary"], current_runtime="claude-code")
+    assert len(loaded) == 1
+    assert loaded[0].metadata.runtime == ["claude-code"]
+
+
+def test_load_skills_runtime_wildcard_matches_anything(tmp_path):
+    _write_skill(tmp_path, "wild", "runtime:\n  - '*'\n  - claude-code\n")
+    from unittest.mock import patch
+    with patch("skill_loader.loader.load_skill_tools", return_value=[]):
+        loaded = load_skills(str(tmp_path), ["wild"], current_runtime="hermes")
+    assert len(loaded) == 1, "wildcard must short-circuit the runtime check"
+
+
+def test_load_skills_no_current_runtime_loads_everything(tmp_path):
+    """When current_runtime is None (test/fallback), no filtering happens."""
+    _write_skill(tmp_path, "claude-only", "runtime:\n  - claude-code\n")
+    from unittest.mock import patch
+    with patch("skill_loader.loader.load_skill_tools", return_value=[]):
+        loaded = load_skills(str(tmp_path), ["claude-only"])
+    assert len(loaded) == 1, "absent current_runtime must preserve old behavior"
+
+
+def test_load_skills_malformed_runtime_treated_as_universal(tmp_path, caplog):
+    """A garbage runtime value warns + falls back to universal — never silently drops the skill."""
+    _write_skill(tmp_path, "garbage", "runtime: 123\n")
+    from unittest.mock import patch
+    import logging
+    with caplog.at_level(logging.WARNING, logger="skill_loader.loader"):
+        with patch("skill_loader.loader.load_skill_tools", return_value=[]):
+            loaded = load_skills(str(tmp_path), ["garbage"], current_runtime="hermes")
+    assert len(loaded) == 1, "malformed runtime must not silently filter"
+    assert any("invalid `runtime`" in r.message for r in caplog.records)

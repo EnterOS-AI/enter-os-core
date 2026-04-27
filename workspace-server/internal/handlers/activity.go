@@ -257,17 +257,52 @@ func scanSessionSearchRows(rows interface {
 	return items, nil
 }
 
+// NotifyAttachment is one file the agent wants to attach to its push.
+// URIs come from /workspaces/:id/chat/uploads (canonical "workspace:"
+// scheme) — the runtime's tool_send_message_to_user uploads any
+// caller-specified file path through that endpoint first to get a
+// shape the canvas can resolve via the existing Download path.
+type NotifyAttachment struct {
+	URI      string `json:"uri" binding:"required"`
+	Name     string `json:"name" binding:"required"`
+	MimeType string `json:"mimeType,omitempty"`
+	Size     int64  `json:"size,omitempty"`
+}
+
 // Notify handles POST /workspaces/:id/notify — agents push messages to the canvas chat.
 // This enables agents to send interim updates ("I'll check on it") and follow-up results
 // without waiting for the user to poll. Messages are broadcast via WebSocket only.
+//
+// Attachments: optional list of file references. Each renders as a
+// download chip in the canvas via the existing extractFilesFromTask
+// path. The runtime tool uploads file bytes to /chat/uploads first
+// and passes the returned URIs here, so this handler only stores
+// metadata — never raw bytes.
 func (h *ActivityHandler) Notify(c *gin.Context) {
 	workspaceID := c.Param("id")
 	var body struct {
-		Message string `json:"message" binding:"required"`
+		Message     string             `json:"message" binding:"required"`
+		Attachments []NotifyAttachment `json:"attachments,omitempty"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "message is required"})
 		return
+	}
+
+	// Per-element attachment validation: gin's go-playground/validator
+	// does NOT iterate slice elements without `dive`, so the inner
+	// `binding:"required"` tags on NotifyAttachment.URI/Name don't
+	// actually run. Without this loop, attachments: [{"uri":"","name":""}]
+	// would slip through, broadcast empty-URI chips that render
+	// blank/broken in the canvas, and persist them in activity_logs
+	// for every page reload to re-render. Validate explicitly.
+	for i, a := range body.Attachments {
+		if a.URI == "" || a.Name == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": fmt.Sprintf("attachment[%d]: uri and name are required", i),
+			})
+			return
+		}
 	}
 
 	// Verify workspace exists
@@ -280,11 +315,15 @@ func (h *ActivityHandler) Notify(c *gin.Context) {
 		return
 	}
 
-	h.broadcaster.BroadcastOnly(workspaceID, "AGENT_MESSAGE", map[string]interface{}{
+	broadcastPayload := map[string]interface{}{
 		"message":      body.Message,
 		"workspace_id": workspaceID,
 		"name":         wsName,
-	})
+	}
+	if len(body.Attachments) > 0 {
+		broadcastPayload["attachments"] = body.Attachments
+	}
+	h.broadcaster.BroadcastOnly(workspaceID, "AGENT_MESSAGE", broadcastPayload)
 
 	// Persist to activity_logs so the chat history loader restores this
 	// message after a page reload. Pre-fix, send_message_to_user pushes
@@ -305,7 +344,30 @@ func (h *ActivityHandler) Notify(c *gin.Context) {
 	// sees the message; persistence failure just means the message
 	// won't survive reload (pre-fix behavior). Don't fail the whole
 	// notify on a DB hiccup.
-	respJSON, _ := json.Marshal(map[string]interface{}{"result": body.Message})
+	// response_body shape — chosen to feed BOTH:
+	//   - extractResponseText: looks at body.result (string) and returns it
+	//   - extractFilesFromTask: looks at body.parts[] for kind=file
+	// so a chat reload after a notify-with-attachments restores both
+	// the text bubble AND the download chips.
+	respPayload := map[string]interface{}{"result": body.Message}
+	if len(body.Attachments) > 0 {
+		fileParts := make([]map[string]interface{}, 0, len(body.Attachments))
+		for _, a := range body.Attachments {
+			fileMeta := map[string]interface{}{"uri": a.URI, "name": a.Name}
+			if a.MimeType != "" {
+				fileMeta["mimeType"] = a.MimeType
+			}
+			if a.Size > 0 {
+				fileMeta["size"] = a.Size
+			}
+			fileParts = append(fileParts, map[string]interface{}{
+				"kind": "file",
+				"file": fileMeta,
+			})
+		}
+		respPayload["parts"] = fileParts
+	}
+	respJSON, _ := json.Marshal(respPayload)
 	preview := body.Message
 	if len(preview) > 80 {
 		preview = preview[:80] + "…"

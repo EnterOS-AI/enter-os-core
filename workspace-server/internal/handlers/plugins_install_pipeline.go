@@ -191,8 +191,15 @@ func (h *PluginsHandler) resolveAndStage(ctx context.Context, req installRequest
 		} else if errors.Is(err, context.DeadlineExceeded) {
 			status = http.StatusGatewayTimeout
 		}
+		// F1086 / #1206: do NOT interpolate err into the response — a
+		// resolver failure (github API rate-limit text, raw HTTP body,
+		// file system path from a local-fs resolver) routinely contains
+		// internal detail that has no business landing in the user's
+		// browser. The status code already differentiates the failure
+		// shape (404 not found vs 504 timeout vs 502 generic) for the
+		// caller; full detail stays in the log line above.
 		return nil, newHTTPErr(status, gin.H{
-			"error":  fmt.Sprintf("failed to fetch plugin from %s: %v", source.Scheme, err),
+			"error":  fmt.Sprintf("failed to fetch plugin from %s", source.Scheme),
 			"source": source.Raw(),
 		})
 	}

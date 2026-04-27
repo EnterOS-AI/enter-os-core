@@ -70,6 +70,21 @@ type ChannelBroadcaster interface {
 	FetchWorkspaceChannelContext(ctx context.Context, workspaceID string) string
 }
 
+// NativeSchedulerCheck returns true when the workspace's adapter has
+// declared `provides_native_scheduler=True` in its capabilities. The
+// scheduler skips polling-and-firing for these workspaces — the SDK
+// runs the schedule itself (Temporal, Durable Functions, etc.) and the
+// platform's polling would cause double-fire on every restart.
+//
+// Wired at construction by the router (production) or tests. nil is
+// allowed and treated as "no override" for every workspace, preserving
+// today's behavior — same default-false posture as
+// BaseAdapter.capabilities() in workspace/adapter_base.py.
+//
+// See project memory `project_runtime_native_pluggable.md` and
+// handlers.ProvidesNativeScheduler for the production wiring.
+type NativeSchedulerCheck func(workspaceID string) bool
+
 // Scheduler polls the workspace_schedules table and fires A2A messages
 // when a schedule's next_run_at has passed. Follows the same goroutine
 // pattern as registry.StartHealthSweep.
@@ -77,6 +92,11 @@ type Scheduler struct {
 	proxy       A2AProxy
 	broadcaster Broadcaster
 	channels    ChannelBroadcaster
+
+	// providesNativeScheduler, when non-nil and returning true, causes
+	// tick() to skip firing for this workspace. nil = always-fire (the
+	// pre-capability-primitive behavior). Constructor docs above.
+	providesNativeScheduler NativeSchedulerCheck
 
 	// lastTickAt records the wall-clock time of the most recent tick
 	// (whether it fired schedules or not). Read by Healthy() and the
@@ -100,6 +120,15 @@ func New(proxy A2AProxy, broadcaster Broadcaster) *Scheduler {
 // Called after both scheduler and channel manager are initialized.
 func (s *Scheduler) SetChannels(ch ChannelBroadcaster) {
 	s.channels = ch
+}
+
+// SetNativeSchedulerCheck wires the per-workspace native-scheduler
+// override lookup. Wired by the router after the scheduler is
+// constructed (handlers package owns the cache). Pass nil to disable
+// the skip — every schedule fires regardless of adapter declaration,
+// matching pre-capability-primitive behavior.
+func (s *Scheduler) SetNativeSchedulerCheck(f NativeSchedulerCheck) {
+	s.providesNativeScheduler = f
 }
 
 // LastTickAt returns the wall-clock time of the most recently completed tick.
@@ -229,6 +258,27 @@ func (s *Scheduler) tick(ctx context.Context) {
 		var sched scheduleRow
 		if err := rows.Scan(&sched.ID, &sched.WorkspaceID, &sched.Name, &sched.CronExpr, &sched.Timezone, &sched.Prompt); err != nil {
 			log.Printf("Scheduler: scan error: %v", err)
+			continue
+		}
+		// Skip workspaces whose adapter owns scheduling natively (e.g.
+		// SDKs with built-in cron / Temporal-style workflows). Without
+		// this skip, the platform's polling would fire the same
+		// schedule twice — once natively in the SDK, once via this
+		// loop. The skip drops only the FIRE; the schedule row stays
+		// in the DB and the platform still records it, so observability
+		// (next_run_at, last_run_at) is preserved per the principle.
+		// Pre-fix this branch was unconditional; nil check preserves
+		// behavior for callers that didn't wire the override.
+		if s.providesNativeScheduler != nil && s.providesNativeScheduler(sched.WorkspaceID) {
+			// Advance next_run_at so we don't tight-loop on the same
+			// row every tick. A non-firing schedule is still scheduled.
+			if nextTime, err := ComputeNextRun(sched.CronExpr, sched.Timezone, time.Now()); err == nil {
+				if _, execErr := db.DB.ExecContext(ctx,
+					`UPDATE workspace_schedules SET next_run_at=$1, updated_at=now() WHERE id=$2`,
+					nextTime, sched.ID); execErr != nil {
+					log.Printf("Scheduler: native-skip next_run_at UPDATE failed for schedule %s: %v", sched.ID, execErr)
+				}
+			}
 			continue
 		}
 		wg.Add(1)

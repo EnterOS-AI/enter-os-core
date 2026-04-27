@@ -38,7 +38,14 @@ jobs:
   canary:
     name: Canary smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 25 min headroom over the 15-min TLS-readiness deadline in
+    # tests/e2e/test_staging_full_saas.sh (#2107). Without the buffer
+    # the job is killed at the wall-clock 15:00 mark BEFORE the bash
+    # `fail` + diagnostic burst can fire, leaving every cancellation
+    # silent. Sibling staging E2E jobs run at 20-45 min — keeping
+    # canary tighter than them so a true wedge still surfaces here
+    # first.
+    timeout-minutes: 25
 
     env:
       MOLECULE_CP_URL: https://staging-api.moleculesai.app
@@ -188,14 +195,39 @@ jobs:
           ADMIN_TOKEN: ${{ secrets.MOLECULE_STAGING_ADMIN_TOKEN }}
         run: |
           set +e
+          # Slug prefix matches what test_staging_full_saas.sh emits
+          # in canary mode:
+          #   SLUG="e2e-canary-$(date +%Y%m%d)-${RUN_ID_SUFFIX}"
+          # Earlier this was `e2e-{today}-canary-` — that was the
+          # full-mode pattern (date FIRST, mode SECOND); canary slugs
+          # have mode FIRST, date SECOND. The mismatch silently
+          # never matched, leaving every cancelled-canary EC2 alive
+          # until the once-an-hour sweep eventually caught it
+          # (incident 2026-04-26 21:03Z: 1h25m EC2 leak before manual
+          # cleanup; same gap on three earlier cancellations today).
           orgs=$(curl -sS "$MOLECULE_CP_URL/cp/admin/orgs" \
             -H "Authorization: Bearer $ADMIN_TOKEN" 2>/dev/null \
             | python3 -c "
-          import json, sys
+          import json, sys, os, datetime
+          run_id = os.environ.get('GITHUB_RUN_ID', '')
           d = json.load(sys.stdin)
-          today = __import__('datetime').date.today().strftime('%Y%m%d')
+          # Scope to slugs from THIS canary run when GITHUB_RUN_ID is
+          # available; the canary workflow sets E2E_RUN_ID='canary-\${run_id}'
+          # so the slug suffix is '-canary-\${run_id}-...'. Mirrors the
+          # full-mode safety net's per-run scoping (e2e-staging-saas.yml)
+          # added after the 2026-04-21 cross-run cleanup incident.
+          # Sweep both today AND yesterday's UTC dates so a run that
+          # crosses midnight still cleans up its own slug — see the
+          # 2026-04-26→27 canvas-safety-net incident.
+          today = datetime.date.today()
+          yesterday = today - datetime.timedelta(days=1)
+          dates = (today.strftime('%Y%m%d'), yesterday.strftime('%Y%m%d'))
+          if run_id:
+              prefixes = tuple(f'e2e-canary-{d}-canary-{run_id}' for d in dates)
+          else:
+              prefixes = tuple(f'e2e-canary-{d}-' for d in dates)
           candidates = [o['slug'] for o in d.get('orgs', [])
-                        if o.get('slug','').startswith(f'e2e-{today}-canary-')
+                        if any(o.get('slug','').startswith(p) for p in prefixes)
                         and o.get('status') not in ('purged',)]
           print('\n'.join(candidates))
           " 2>/dev/null)

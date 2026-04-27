@@ -1,5 +1,7 @@
-"""Tests for executor_helpers.py — the shared helpers that back both
-CLIAgentExecutor (codex, ollama) and ClaudeSDKExecutor (claude-code).
+"""Tests for executor_helpers.py — the shared helpers that back the
+adapter executors. Post-#87 the executors live in template repos
+(claude-code, gemini-cli, etc.); this module stays in molecule-runtime
+because the helpers are runtime-agnostic.
 
 Covers 100% of the public surface:
 - get_mcp_server_path
@@ -21,6 +23,7 @@ Covers 100% of the public surface:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -84,6 +87,18 @@ def _install_mock_http_client(monkeypatch) -> AsyncMock:
 def test_get_mcp_server_path_default(monkeypatch):
     monkeypatch.delenv("A2A_MCP_SERVER_PATH", raising=False)
     assert get_mcp_server_path() == DEFAULT_MCP_SERVER_PATH
+
+
+def test_get_mcp_server_path_default_resolves_to_existing_file():
+    # Locks in the wheel-relative resolution: if a future refactor moves
+    # a2a_mcp_server.py out of the package directory or breaks the
+    # __file__-based lookup, Claude Code SDK silently fails to spawn the
+    # MCP subprocess and inter-agent tools (list_peers, delegate_task)
+    # vanish at runtime. This assertion catches that at unit-test time.
+    assert os.path.exists(DEFAULT_MCP_SERVER_PATH), (
+        f"DEFAULT_MCP_SERVER_PATH points at a missing file: "
+        f"{DEFAULT_MCP_SERVER_PATH}"
+    )
 
 
 def test_get_mcp_server_path_env_override(monkeypatch):
@@ -430,8 +445,26 @@ def test_get_a2a_instructions_mcp_default():
 
 def test_get_a2a_instructions_cli_variant():
     out = get_a2a_instructions(mcp=False)
-    assert "a2a_cli.py" in out
+    assert "a2a_cli" in out
     assert "MCP tools" not in out
+
+
+def test_a2a_cli_instructions_use_module_invocation_not_legacy_app_path():
+    # The CLI variant of the a2a instructions ships in the agent system
+    # prompt for non-MCP runtimes (Ollama, custom). The model copies the
+    # invocation form verbatim into shell calls, so any path drift here
+    # silently breaks delegation. The legacy /app/a2a_cli.py path was
+    # correct under the pre-#87 monolithic-template Docker layout but
+    # stops resolving once the runtime ships as a wheel — pin the
+    # canonical `python3 -m molecule_runtime.a2a_cli` form so future
+    # refactors can't silently regress it.
+    out = get_a2a_instructions(mcp=False)
+    assert "/app/a2a_cli.py" not in out, (
+        "Legacy /app/a2a_cli.py path leaked back into the CLI-variant "
+        "system prompt — agents on Ollama/custom runtimes would copy "
+        "this verbatim and every delegation would fail."
+    )
+    assert "python3 -m molecule_runtime.a2a_cli" in out
 
 
 def test_a2a_mcp_instructions_reference_existing_tools():

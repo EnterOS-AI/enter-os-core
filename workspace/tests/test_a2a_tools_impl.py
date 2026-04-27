@@ -128,6 +128,78 @@ class TestReportActivity:
             # Must not raise
             await a2a_tools.report_activity("a2a_send", summary="test")
 
+    async def test_error_detail_capped_at_max(self):
+        """Hermes-borrowed pattern: error_detail is capped INSIDE the helper
+        so a careless caller pasting a 1MB stack trace can't DoS the
+        activity_logs table. Cap value (4096) is set in
+        a2a_tools._MAX_ERROR_DETAIL_CHARS — pin it here so a future change
+        that drops the cap (or moves it to the call site only) regresses
+        loudly."""
+        import a2a_tools
+
+        huge = "X" * 50_000
+        mc = _make_http_mock()
+        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+            await a2a_tools.report_activity(
+                "a2a_receive",
+                target_id="ws-1",
+                summary="failed",
+                status="error",
+                error_detail=huge,
+            )
+        # Two POSTs (activity + heartbeat because summary is set); the
+        # error_detail rides the FIRST call (the activity one).
+        payload = mc.post.call_args_list[0].kwargs.get("json")
+        assert "error_detail" in payload
+        assert len(payload["error_detail"]) == a2a_tools._MAX_ERROR_DETAIL_CHARS
+        assert payload["error_detail"] == "X" * a2a_tools._MAX_ERROR_DETAIL_CHARS
+
+    async def test_error_detail_under_cap_passes_through(self):
+        """Defensive negative: short error_detail must NOT be padded or
+        truncated — only over-long values get clipped."""
+        import a2a_tools
+
+        short = "AssertionError: missing field"
+        mc = _make_http_mock()
+        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+            await a2a_tools.report_activity(
+                "a2a_receive", summary="x", status="error", error_detail=short
+            )
+        # First POST is the activity row; second is the heartbeat.
+        payload = mc.post.call_args_list[0].kwargs.get("json")
+        assert payload["error_detail"] == short
+
+    async def test_summary_capped_at_max(self):
+        """summary is shown verbatim in the canvas card and activity row;
+        cap at 256 so a giant string doesn't blow out the layout. Same
+        helper-side cap pattern as error_detail."""
+        import a2a_tools
+
+        huge = "Y" * 1000
+        mc = _make_http_mock()
+        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+            await a2a_tools.report_activity("a2a_send", summary=huge)
+        # Two POSTs (activity + heartbeat); inspect the first (activity).
+        first_payload = mc.post.call_args_list[0].kwargs.get("json")
+        assert len(first_payload["summary"]) == a2a_tools._MAX_SUMMARY_CHARS
+
+    async def test_response_text_NOT_capped(self):
+        """Negative pin: response_text is the agent's actual reply content.
+        Capping it would silently truncate user-visible output. Hermes'
+        cap discipline applies to error_detail + summary (telemetry
+        fields) only, not the payload itself."""
+        import a2a_tools
+
+        big_reply = "Z" * 20_000
+        mc = _make_http_mock()
+        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+            await a2a_tools.report_activity(
+                "a2a_receive", target_id="ws-1", response_text=big_reply
+            )
+        payload = mc.post.call_args.kwargs.get("json")
+        assert payload["response_body"]["result"] == big_reply
+        assert len(payload["response_body"]["result"]) == 20_000
+
 
 # ---------------------------------------------------------------------------
 # tool_delegate_task
@@ -369,6 +441,93 @@ class TestToolSendMessageToUser:
             result = await a2a_tools.tool_send_message_to_user("Hi!")
         assert "Error sending message" in result
         assert "platform unreachable" in result
+
+    # --- attachments ---
+
+    async def test_attachments_uploads_then_notifies_with_uris(self, tmp_path):
+        import a2a_tools
+        # Create a real file the tool will read off disk.
+        f = tmp_path / "build.zip"
+        f.write_bytes(b"zip-bytes-here")
+
+        # Mock client: first POST = chat/uploads (returns file metadata),
+        # second POST = notify.
+        upload_resp = _resp(200, {
+            "files": [{
+                "uri": "workspace:/workspace/.molecule/chat-uploads/abc-build.zip",
+                "name": "build.zip",
+                "mimeType": "application/zip",
+                "size": len(b"zip-bytes-here"),
+            }],
+        })
+        notify_resp = _resp(200, {})
+        mc = _make_http_mock(post_resp=notify_resp)
+        mc.post = AsyncMock(side_effect=[upload_resp, notify_resp])
+
+        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+            result = await a2a_tools.tool_send_message_to_user(
+                "Done — see attached.",
+                attachments=[str(f)],
+            )
+
+        assert "1 attachment" in result
+        # Verify the notify call carried attachment metadata, not bytes.
+        # Locate the call by URL suffix, not by index — a future refactor
+        # in _upload_chat_files that adds a pre-flight call would silently
+        # shift the array index and the assert would target the wrong call.
+        notify_calls = [
+            c for c in mc.post.await_args_list
+            if c.args and isinstance(c.args[0], str) and c.args[0].endswith("/notify")
+        ]
+        assert len(notify_calls) == 1, f"expected 1 notify POST, got {len(notify_calls)}"
+        notify_body = notify_calls[0].kwargs.get("json") or {}
+        assert notify_body.get("message") == "Done — see attached."
+        assert len(notify_body.get("attachments", [])) == 1
+        att = notify_body["attachments"][0]
+        assert att["uri"].startswith("workspace:/workspace/")
+        assert att["name"] == "build.zip"
+
+    async def test_attachment_path_missing_returns_error_no_notify(self):
+        # If a path doesn't exist on disk, fail fast — never POST notify
+        # with a half-rendered attachment chip.
+        import a2a_tools
+        mc = _make_http_mock()
+        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+            result = await a2a_tools.tool_send_message_to_user(
+                "Hi", attachments=["/no/such/file.zip"],
+            )
+        assert "not found" in result.lower()
+        # No post calls at all when the path validation fails.
+        assert mc.post.await_count == 0
+
+    async def test_attachments_upload_failure_returns_error_no_notify(self, tmp_path):
+        # Upload endpoint 5xxs — caller returns an error and never fires
+        # notify. Otherwise the user sees a chat bubble with a broken chip.
+        import a2a_tools
+        f = tmp_path / "x.bin"
+        f.write_bytes(b"x")
+        upload_resp = _resp(500, {"error": "boom"})
+        mc = _make_http_mock()
+        mc.post = AsyncMock(return_value=upload_resp)
+
+        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+            result = await a2a_tools.tool_send_message_to_user(
+                "Hi", attachments=[str(f)],
+            )
+        assert "Error" in result
+        assert "500" in result
+        # Exactly one POST — the upload — and no notify follow-up.
+        assert mc.post.await_count == 1
+
+    async def test_no_attachments_param_omits_attachments_field(self):
+        # Backwards-compat: callers passing only `message` should not see
+        # an `attachments` field added to the notify body.
+        import a2a_tools
+        mc = _make_http_mock(post_resp=_resp(200, {}))
+        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+            await a2a_tools.tool_send_message_to_user("plain text")
+        body = mc.post.await_args.kwargs.get("json") or {}
+        assert body == {"message": "plain text"}
 
 
 # ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useCanvasStore, type WorkspaceNodeData } from "@/store/canvas";
+import { pruneStaleKeys } from "./canvas/useCanvasViewport";
 import { api } from "@/lib/api";
 import { showToast } from "./Toaster";
 import { ConsoleModal } from "./ConsoleModal";
@@ -125,11 +126,7 @@ export function ProvisioningTimeout({
 
     // Remove tracking for nodes that are no longer provisioning
     const activeIds = new Set(parsedProvisioningNodes.map((n) => n.id));
-    for (const id of tracking.keys()) {
-      if (!activeIds.has(id)) {
-        tracking.delete(id);
-      }
-    }
+    pruneStaleKeys(tracking, activeIds);
 
     // Also remove from timedOut list if no longer provisioning, and
     // clear `dismissed` entries for workspaces that finished so a

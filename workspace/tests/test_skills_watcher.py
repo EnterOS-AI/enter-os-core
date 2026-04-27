@@ -181,7 +181,7 @@ class TestReloadSkill:
             tools=[],
         )
 
-        def fake_load_skills(config_path, skill_names):
+        def fake_load_skills(config_path, skill_names, **kwargs):
             return [fake_skill]
 
         monkeypatch.setattr(_watcher_mod, "_load_skills_impl",
@@ -218,7 +218,7 @@ class TestReloadSkill:
         )
 
         skills_mod = ModuleType("skill_loader.loader")
-        skills_mod.load_skills = lambda cp, names: [fake_skill]
+        skills_mod.load_skills = lambda cp, names, **_: [fake_skill]
         monkeypatch.setitem(sys.modules, "skill_loader.loader", skills_mod)
 
         await w._reload_skill("sk2", ["sk2/SKILL.md"])
@@ -245,7 +245,7 @@ class TestReloadSkill:
             tools=[],
         )
         skills_mod = ModuleType("skill_loader.loader")
-        skills_mod.load_skills = lambda cp, names: [fake_skill]
+        skills_mod.load_skills = lambda cp, names, **_: [fake_skill]
         monkeypatch.setitem(sys.modules, "skill_loader.loader", skills_mod)
 
         await w._reload_skill("audited", ["audited/SKILL.md"])
@@ -317,7 +317,7 @@ class TestWatcherLifecycle:
             tools=[],
         )
         skills_mod = ModuleType("skill_loader.loader")
-        skills_mod.load_skills = lambda cp, names: [fake_skill]
+        skills_mod.load_skills = lambda cp, names, **_: [fake_skill]
         monkeypatch.setitem(sys.modules, "skill_loader.loader", skills_mod)
 
         _watcher_mod.POLL_INTERVAL  = 0.01
@@ -378,7 +378,7 @@ class TestEvictStaleModules:
             tools=[],
         )
         skills_mod = ModuleType("skill_loader.loader")
-        skills_mod.load_skills = lambda cp, names: [fake_skill]
+        skills_mod.load_skills = lambda cp, names, **_: [fake_skill]
         monkeypatch.setitem(sys.modules, "skill_loader.loader", skills_mod)
 
         w = SkillsWatcher(str(tmp_path), ["sk"])
@@ -401,7 +401,7 @@ class TestAuditEventExceptionSuppressed:
             tools=[],
         )
         skills_mod = ModuleType("skill_loader.loader")
-        skills_mod.load_skills = lambda cp, names: [fake_skill]
+        skills_mod.load_skills = lambda cp, names, **_: [fake_skill]
         monkeypatch.setitem(sys.modules, "skill_loader.loader", skills_mod)
 
         # Make tools.audit.log_event raise an exception
@@ -429,7 +429,7 @@ class TestOnReloadCallbackException:
             tools=[],
         )
         skills_mod = ModuleType("skill_loader.loader")
-        skills_mod.load_skills = lambda cp, names: [fake_skill]
+        skills_mod.load_skills = lambda cp, names, **_: [fake_skill]
         monkeypatch.setitem(sys.modules, "skill_loader.loader", skills_mod)
 
         def failing_callback(skill):
@@ -451,7 +451,7 @@ class TestOnReloadCallbackException:
             tools=[],
         )
         skills_mod = ModuleType("skill_loader.loader")
-        skills_mod.load_skills = lambda cp, names: [fake_skill]
+        skills_mod.load_skills = lambda cp, names, **_: [fake_skill]
         monkeypatch.setitem(sys.modules, "skill_loader.loader", skills_mod)
 
         async def failing_async_callback(skill):

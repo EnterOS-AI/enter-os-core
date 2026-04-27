@@ -22,13 +22,38 @@ import (
 // workspace-scoped filtering (handler falls back to unfiltered list).
 type RuntimeLookup func(workspaceID string) (string, error)
 
+// pluginSources is the contract PluginsHandler uses to talk to the
+// plugin source registry. Extracted as an interface (#1814) so tests can
+// substitute a stub without standing up the real *plugins.Registry +
+// every concrete resolver. Production wires *plugins.Registry directly,
+// which satisfies this interface — see the compile-time assertion below.
+//
+// Method set is intentionally narrow — only what handler code calls.
+// Register is included because WithSourceResolver and NewPluginsHandler
+// both invoke it; a stub that doesn't need to record registrations can
+// implement it as a no-op.
+type pluginSources interface {
+	Register(resolver plugins.SourceResolver)
+	Resolve(source plugins.Source) (plugins.SourceResolver, error)
+	Schemes() []string
+}
+
+// Compile-time assertion: *plugins.Registry satisfies pluginSources.
+// Catches a future method-signature drift at build time instead of when
+// router wiring runs in main().
+var _ pluginSources = (*plugins.Registry)(nil)
+
 // PluginsHandler manages the plugin registry and per-workspace plugin installation.
 type PluginsHandler struct {
-	pluginsDir    string            // host path to plugins/ registry
-	docker        *client.Client    // Docker client for container operations
-	restartFunc   func(string)      // auto-restart workspace after install/uninstall
-	runtimeLookup RuntimeLookup     // workspace_id → runtime (optional)
-	sources       *plugins.Registry // pluggable install sources (local, github, clawhub, …)
+	pluginsDir    string         // host path to plugins/ registry
+	docker        *client.Client // Docker client for container operations
+	restartFunc   func(string)   // auto-restart workspace after install/uninstall
+	runtimeLookup RuntimeLookup  // workspace_id → runtime (optional)
+	// sources narrowed from `*plugins.Registry` to the pluginSources
+	// interface (#1814) so tests can substitute a stub. Production
+	// callers still pass *plugins.Registry, which satisfies the
+	// interface — see the compile-time assertion above.
+	sources pluginSources
 }
 
 // NewPluginsHandler constructs a PluginsHandler with the default source

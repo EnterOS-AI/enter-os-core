@@ -97,6 +97,13 @@ jobs:
           echo "Migrations OK"
       - name: Run E2E API tests
         run: bash tests/e2e/test_api.sh
+      - name: Run notify-with-attachments E2E
+        run: bash tests/e2e/test_notify_attachments_e2e.sh
+      - name: Run priority-runtimes E2E (claude-code + hermes — skips when keys absent)
+        # Validates the test script itself runs cleanly even with no LLM
+        # keys (both phases skip gracefully). The wire-real coverage with
+        # actual keys runs in canary-staging.yml + e2e-staging-saas.yml.
+        run: bash tests/e2e/test_priority_runtimes_e2e.sh
       - name: Dump platform log on failure
         if: failure()
         run: cat workspace-server/platform.log || true

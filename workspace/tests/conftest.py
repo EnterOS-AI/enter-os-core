@@ -75,9 +75,13 @@ def _make_a2a_mocks():
 
     types_mod.Part = Part
 
-    # a2a.helpers (v1: moved from a2a.utils)
+    # a2a.helpers (v1: moved from a2a.utils, renamed new_agent_text_message
+    # → new_text_message). Mock both names — production code only calls
+    # new_text_message, but if any test still references the old name it
+    # gets the same lambda for backward compat during the rename rollout.
     helpers_mod = ModuleType("a2a.helpers")
-    helpers_mod.new_agent_text_message = lambda text, **kwargs: text
+    helpers_mod.new_text_message = lambda text, **kwargs: text
+    helpers_mod.new_agent_text_message = helpers_mod.new_text_message
 
     # Register all module paths
     a2a_mod = ModuleType("a2a")
@@ -209,53 +213,14 @@ def _make_tools_mocks():
     sys.modules["builtin_tools.security"] = _sec_mod
 
 
-def _make_claude_agent_sdk_mock():
-    """Stub claude_agent_sdk so claude_sdk_executor can be imported without
-    the real SDK installed. Tests that exercise execute() patch query().
-
-    Installed at collection time so a top-level `import claude_agent_sdk`
-    in claude_sdk_executor.py resolves to this stub. Real tests can override
-    individual attributes via patch().
-    """
-    mod = ModuleType("claude_agent_sdk")
-
-    class _StubTextBlock:
-        def __init__(self, text=""):
-            self.text = text
-
-    class _StubAssistantMessage:
-        def __init__(self, blocks=None):
-            self.content = blocks or []
-
-    class _StubResultMessage:
-        def __init__(self, session_id=None, result=None):
-            self.session_id = session_id
-            self.result = result
-
-    class _StubOptions:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-    async def _stub_query(prompt, options):  # pragma: no cover — overridden in tests
-        yield _StubAssistantMessage([_StubTextBlock("stub")])
-        yield _StubResultMessage(session_id="stub-session")
-
-    mod.TextBlock = _StubTextBlock
-    mod.AssistantMessage = _StubAssistantMessage
-    mod.ResultMessage = _StubResultMessage
-    mod.ClaudeAgentOptions = _StubOptions
-    mod.query = _stub_query
-    sys.modules["claude_agent_sdk"] = mod
-
-
 # Install mocks before any test collection imports a2a_executor
 if "a2a" not in sys.modules:
     _make_a2a_mocks()
 
-# Install claude_agent_sdk stub unconditionally: the real SDK ships with
-# workspace-template:claude-code but tests run outside the container.
-if "claude_agent_sdk" not in sys.modules:
-    _make_claude_agent_sdk_mock()
+# Note: the claude_agent_sdk stub was removed alongside
+# workspace/claude_sdk_executor.py (#87 Phase 2). The executor + its
+# tests now live in the claude-code template repo, where the real SDK
+# IS installed via Dockerfile, so no stub is needed.
 
 if "langchain_core" not in sys.modules:
     _make_langchain_mocks()

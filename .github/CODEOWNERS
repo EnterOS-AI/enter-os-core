@@ -1,0 +1,20 @@
+# Default reviewer routing for molecule-core.
+#
+# `*` matches every changed path, so every PR auto-requests review from
+# @hongmingwang-moleculeai. The agent-PR pattern is that the
+# HongmingWang-Rabbit (agent) account authors PRs; this file routes
+# them into the personal account's review queue automatically — no
+# manual `gh pr edit --add-reviewer` per PR.
+#
+# Why CODEOWNERS instead of branch-protection's review-from-anyone gate:
+# the gate just says "1 review needed"; CODEOWNERS specifies *which*
+# reviewer the request goes to. Without it, agent PRs sit unreviewed
+# until a human happens to look at the queue.
+#
+# Note: `require_code_owner_reviews` on the staging branch protection
+# is currently OFF, so the routing is informational rather than
+# enforced. Flip it on (in branch protection settings) if you want
+# CODEOWNERS approval to be the *required* review type. Until then,
+# any approving review still satisfies the 1-review gate — this just
+# makes sure the right person sees it.
+*  @hongmingwang-moleculeai

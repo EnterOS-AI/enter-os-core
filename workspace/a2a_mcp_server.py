@@ -113,13 +113,45 @@ TOOLS = [
     },
     {
         "name": "send_message_to_user",
-        "description": "Send a message directly to the user's canvas chat — pushed instantly via WebSocket. Use this to: (1) acknowledge a task immediately ('Got it, I'll start working on this'), (2) send interim progress updates while doing long work, (3) deliver follow-up results after delegation completes. The message appears in the user's chat as if you're proactively reaching out.",
+        "description": "Send a message directly to the user's canvas chat — pushed instantly via WebSocket. Use this to: (1) acknowledge a task immediately ('Got it, I'll start working on this'), (2) send interim progress updates while doing long work, (3) deliver follow-up results after delegation completes, (4) attach files (zip, pdf, csv, image) for the user to download via the `attachments` field (NEVER paste file URLs in `message`). The message appears in the user's chat as if you're proactively reaching out.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "message": {
                     "type": "string",
-                    "description": "The message to send to the user",
+                    # The "no URLs in message text" rule is the single biggest
+                    # cause of bad chat UX: agents drop catbox.moe / file://
+                    # / temporary upload-host links into the prose, the
+                    # canvas renders them as plain markdown links the user
+                    # can't preview, and SaaS deployments often can't even
+                    # reach those external hosts. Every download MUST go
+                    # through the structured `attachments` field below.
+                    "description": (
+                        "Caption text for the chat bubble. Required even when sending "
+                        "attachments — set to a short label like 'Here's the build:' "
+                        "or 'Done — see attached.'\n\n"
+                        "DO NOT paste file URLs, download links, or container paths in "
+                        "this string. Files MUST go through the `attachments` field, "
+                        "which renders as a clickable download chip and works on SaaS "
+                        "deployments where external file-host URLs (catbox.moe, file://, "
+                        "etc.) are unreachable from the user's browser."
+                    ),
+                },
+                "attachments": {
+                    "type": "array",
+                    "description": (
+                        "REQUIRED for any file delivery. Pass absolute file paths inside "
+                        "THIS container (e.g. ['/tmp/build.zip', '/workspace/report.pdf']) "
+                        "— the platform uploads each file and returns a download chip "
+                        "with the file's icon + name + size in the user's chat. The chip "
+                        "works in SaaS deployments because the URL is platform-served, "
+                        "not an external host.\n\n"
+                        "USE THIS instead of: pasting URLs in `message`, base64-encoding "
+                        "in the body, or telling the user to look at a path on disk. "
+                        "If the file isn't already on disk, write it first (Bash, Write "
+                        "tool, etc.) then pass its path here. 25 MB per file cap."
+                    ),
+                    "items": {"type": "string"},
                 },
             },
             "required": ["message"],
@@ -127,7 +159,7 @@ TOOLS = [
     },
     {
         "name": "commit_memory",
-        "description": "Save important information to persistent memory. Use this to remember decisions, conversation context, task results, and anything that should survive a restart. Scope: LOCAL (this workspace only), TEAM (parent + siblings), GLOBAL (entire org).",
+        "description": "Append a new memory row to persistent storage. Each call CREATES a row — does not overwrite existing memories with the same content. Use to remember decisions, task results, and context that should survive a restart. Scope: LOCAL (this workspace only), TEAM (parent + siblings), GLOBAL (entire org). GLOBAL writes require tier-0 (root) workspace; lower-tier callers get an RBAC error.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -146,7 +178,7 @@ TOOLS = [
     },
     {
         "name": "recall_memory",
-        "description": "Search persistent memory for previously saved information. Returns all matching memories. Use this at the start of conversations to recall prior context.",
+        "description": "Substring-search persistent memory and return ALL matching rows (no pagination). Empty query returns every memory accessible at the given scope. Server-side filter is case-insensitive substring match on `content`. Use at the start of conversations to recall prior context — calling once with empty query is cheap and avoids missing relevant memories that don't match a narrow keyword.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -185,7 +217,17 @@ async def handle_tool_call(name: str, arguments: dict) -> str:
             arguments.get("task_id", ""),
         )
     elif name == "send_message_to_user":
-        return await tool_send_message_to_user(arguments.get("message", ""))
+        raw_attachments = arguments.get("attachments")
+        attachments: list[str] | None = None
+        if isinstance(raw_attachments, list):
+            # Defensive: filter to strings only — claude-code SDK occasionally
+            # emits dicts here when the model misreads the schema. Drop the
+            # bad entries rather than 500 the whole call.
+            attachments = [p for p in raw_attachments if isinstance(p, str) and p]
+        return await tool_send_message_to_user(
+            arguments.get("message", ""),
+            attachments=attachments,
+        )
     elif name == "list_peers":
         return await tool_list_peers()
     elif name == "get_workspace_info":

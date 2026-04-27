@@ -9,6 +9,7 @@ import { api } from "@/lib/api";
 import { showToast } from "@/components/Toaster";
 import type { WorkspaceData, WSMessage } from "./socket";
 import { handleCanvasEvent } from "./canvas-events";
+import { markDeleted, wasRecentlyDeleted } from "./deleteTombstones";
 import {
   buildNodesAndEdges,
   computeAutoLayout,
@@ -832,6 +833,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         }
       }
     }
+    // Tombstone removed ids so an in-flight GET /workspaces can't
+    // resurrect them via hydrate (#2069).
+    markDeleted(removed);
     set({
       nodes: nodes.filter((n) => !removed.has(n.id)),
       edges: edges.filter((e) => !removed.has(e.source) && !removed.has(e.target)),
@@ -843,7 +847,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   },
 
   hydrate: (workspaces: WorkspaceData[]) => {
-    const layoutOverrides = computeAutoLayout(workspaces);
+    // Drop ids tombstoned by a recent removeSubtree (#2069 — stale
+    // in-flight GET /workspaces).
+    const live = workspaces.filter((w) => !wasRecentlyDeleted(w.id));
+    const layoutOverrides = computeAutoLayout(live);
     // Carry the live measured/grown parent sizes from the existing
     // store into the rebuild. buildNodesAndEdges runs an auto-rescue
     // pass on each child to detach orphans whose stored relative
@@ -864,7 +871,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       }
     }
     const { nodes, edges } = buildNodesAndEdges(
-      workspaces,
+      live,
       layoutOverrides,
       currentParentSizes,
     );

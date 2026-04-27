@@ -598,6 +598,143 @@ describe("handleCanvasEvent – AGENT_MESSAGE", () => {
 
     expect(set).not.toHaveBeenCalled();
   });
+
+  // Attachment passthrough — the broadcast payload's `attachments` array
+  // is the wire format the platform's Notify handler emits (activity.go:
+  // 318-326). These tests pin the canvas-side filtering / shape coercion
+  // so the chat reliably renders download chips for agent-sent files.
+
+  it("passes through valid attachments onto the new message", () => {
+    const node = makeNode("ws-1");
+    const { get, set } = makeStore([node], [], null, {});
+    const att = {
+      uri: "workspace:/tmp/build.zip",
+      name: "build.zip",
+      mimeType: "application/zip",
+      size: 12345,
+    };
+
+    handleCanvasEvent(
+      makeMsg({
+        event: "AGENT_MESSAGE",
+        workspace_id: "ws-1",
+        payload: { message: "see attached", attachments: [att] },
+      }),
+      get,
+      set,
+    );
+
+    const { agentMessages } = set.mock.calls[0][0] as {
+      agentMessages: Record<string, Array<{ content: string; attachments?: Array<{ uri: string; name: string; mimeType?: string; size?: number }> }>>;
+    };
+    const msg = agentMessages["ws-1"][0];
+    expect(msg.attachments).toEqual([att]);
+  });
+
+  it("appends an attachments-only message (empty content) when at least one attachment present", () => {
+    // Regression: previously the AGENT_MESSAGE handler short-circuited on
+    // empty `message`, dropping a notify whose intent was "here's the
+    // file" with no caption. The fix renders the bubble whenever EITHER
+    // text or attachments are present.
+    const node = makeNode("ws-1");
+    const { get, set } = makeStore([node], [], null, {});
+
+    handleCanvasEvent(
+      makeMsg({
+        event: "AGENT_MESSAGE",
+        workspace_id: "ws-1",
+        payload: {
+          message: "",
+          attachments: [{ uri: "workspace:/x.txt", name: "x.txt" }],
+        },
+      }),
+      get,
+      set,
+    );
+
+    expect(set).toHaveBeenCalledOnce();
+    const { agentMessages } = set.mock.calls[0][0] as {
+      agentMessages: Record<string, Array<{ content: string; attachments?: unknown[] }>>;
+    };
+    expect(agentMessages["ws-1"]).toHaveLength(1);
+    expect(agentMessages["ws-1"][0].content).toBe("");
+    expect(agentMessages["ws-1"][0].attachments).toHaveLength(1);
+  });
+
+  it("filters out attachments with empty uri or name (defence-in-depth for missing gin `dive`)", () => {
+    // Server-side per-element validation rejects empty uri/name, but the
+    // canvas defence-in-depth filter exists because the broadcast path
+    // skips that handler — a malformed broadcast (or a future regression)
+    // could still emit empty entries. Drop them rather than rendering
+    // blank/broken chips.
+    const node = makeNode("ws-1");
+    const { get, set } = makeStore([node], [], null, {});
+
+    handleCanvasEvent(
+      makeMsg({
+        event: "AGENT_MESSAGE",
+        workspace_id: "ws-1",
+        payload: {
+          message: "ok",
+          attachments: [
+            { uri: "workspace:/good.txt", name: "good.txt" },
+            { uri: "", name: "missing-uri" },
+            { uri: "workspace:/missing-name", name: "" },
+            { uri: "workspace:/wrong-types", name: 42 },  // non-string name
+          ],
+        },
+      }),
+      get,
+      set,
+    );
+
+    const { agentMessages } = set.mock.calls[0][0] as {
+      agentMessages: Record<string, Array<{ attachments?: Array<{ name: string }> }>>;
+    };
+    const atts = agentMessages["ws-1"][0].attachments!;
+    expect(atts).toHaveLength(1);
+    expect(atts[0].name).toBe("good.txt");
+  });
+
+  it("ignores non-array attachments payloads", () => {
+    const node = makeNode("ws-1");
+    const { get, set } = makeStore([node], [], null, {});
+
+    handleCanvasEvent(
+      makeMsg({
+        event: "AGENT_MESSAGE",
+        workspace_id: "ws-1",
+        payload: { message: "hi", attachments: "not-an-array" },
+      }),
+      get,
+      set,
+    );
+
+    const { agentMessages } = set.mock.calls[0][0] as {
+      agentMessages: Record<string, Array<{ content: string; attachments?: unknown[] }>>;
+    };
+    expect(agentMessages["ws-1"][0].content).toBe("hi");
+    // No attachments key when input was malformed (rather than [] which
+    // would render an empty "0 files" header in some chat UIs).
+    expect("attachments" in agentMessages["ws-1"][0]).toBe(false);
+  });
+
+  it("is a no-op when both message and attachments are empty", () => {
+    const node = makeNode("ws-1");
+    const { get, set } = makeStore([node]);
+
+    handleCanvasEvent(
+      makeMsg({
+        event: "AGENT_MESSAGE",
+        workspace_id: "ws-1",
+        payload: { message: "", attachments: [] },
+      }),
+      get,
+      set,
+    );
+
+    expect(set).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

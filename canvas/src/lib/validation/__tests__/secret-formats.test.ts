@@ -143,7 +143,10 @@ describe('inferGroup', () => {
 
 describe('maskSecretValue', () => {
   it('masks ghp_ prefixed values showing prefix and last 4', () => {
-    const value = 'ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
+    // Built via concatenation, not as a literal continuous string —
+    // a literal `ghp_` + 36+ alphanumerics matches the secret-scan
+    // workflow's own regex and false-positives merge_group / push runs.
+    const value = 'ghp_' + 'x'.repeat(40);
     const masked = maskSecretValue(value);
     expect(masked.startsWith('ghp_')).toBe(true);
     expect(masked.endsWith(value.slice(-4))).toBe(true);
@@ -151,7 +154,7 @@ describe('maskSecretValue', () => {
   });
 
   it('masks github_pat_ prefixed values', () => {
-    const value = 'github_pat_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
+    const value = 'github_pat_' + 'x'.repeat(82);
     const masked = maskSecretValue(value);
     expect(masked.startsWith('github_pat_')).toBe(true);
     expect(masked.endsWith(value.slice(-4))).toBe(true);

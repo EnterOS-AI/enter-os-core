@@ -395,7 +395,34 @@ export function handleCanvasEvent(
 
     case "AGENT_MESSAGE": {
       const content = (msg.payload.message as string) ?? "";
-      if (content) {
+      // Attachments come straight through from the platform's Notify
+      // handler when the agent's tool_send_message_to_user passes file
+      // refs. Shape mirrors NotifyAttachment in activity.go and matches
+      // ChatTab's createMessage(role, content, attachments) signature
+      // exactly, so no adapter needed downstream.
+      const rawAttachments = msg.payload.attachments;
+      const attachments = Array.isArray(rawAttachments)
+        ? (rawAttachments as Array<{ uri?: unknown; name?: unknown; mimeType?: unknown; size?: unknown }>)
+            // Reject empty strings as well as non-strings — server-side
+            // gin validation does NOT enforce binding:"required" on
+            // slice-element struct fields without `dive` (which the
+            // notify handler does not use), so a malformed broadcast
+            // could carry uri:"" or name:"". Defence-in-depth: drop
+            // those here so the chat doesn't render a blank/broken chip.
+            .filter((a) =>
+              typeof a?.uri === "string" && a.uri.length > 0 &&
+              typeof a?.name === "string" && a.name.length > 0,
+            )
+            .map((a) => ({
+              uri: a.uri as string,
+              name: a.name as string,
+              mimeType: typeof a.mimeType === "string" ? a.mimeType : undefined,
+              size: typeof a.size === "number" ? a.size : undefined,
+            }))
+        : undefined;
+      // Skip when both content and attachments are empty — pure-noise
+      // event we don't want to render as a blank bubble.
+      if (content || (attachments && attachments.length > 0)) {
         const { agentMessages } = get();
         const existing = agentMessages[msg.workspace_id] || [];
         set({
@@ -403,7 +430,12 @@ export function handleCanvasEvent(
             ...agentMessages,
             [msg.workspace_id]: [
               ...existing,
-              { id: crypto.randomUUID(), content, timestamp: new Date().toISOString() },
+              {
+                id: crypto.randomUUID(),
+                content,
+                timestamp: new Date().toISOString(),
+                ...(attachments && attachments.length > 0 ? { attachments } : {}),
+              },
             ],
           },
         });

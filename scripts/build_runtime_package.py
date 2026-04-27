@@ -42,8 +42,13 @@ from pathlib import Path
 # matches one of these) gets rewritten to use the package prefix.
 #
 # Closed list (not "every .py we copy") because a typo in workspace/ would
-# otherwise leak into a wrong rewrite. Update this when adding a new
-# top-level module to workspace/.
+# otherwise leak into a wrong rewrite. The set is asserted against
+# `workspace/*.py` at build time — if the disk contents drift from this
+# list (new module added, old one removed), the build fails loud instead
+# of silently shipping unrewritten imports. That gap caused 0.1.16 to
+# ship `from transcript_auth import ...` (unrewritten — module added
+# without updating this set), which broke every workspace startup with
+# `ModuleNotFoundError: No module named 'transcript_auth'`.
 TOP_LEVEL_MODULES = {
     "a2a_cli",
     "a2a_client",
@@ -53,15 +58,12 @@ TOP_LEVEL_MODULES = {
     "adapter_base",
     "agent",
     "agents_md",
-    "claude_sdk_executor",
-    "cli_executor",
     "config",
     "consolidation",
     "coordinator",
     "events",
     "executor_helpers",
     "heartbeat",
-    "hermes_executor",
     "initial_prompt",
     "main",
     "molecule_ai_status",
@@ -69,7 +71,10 @@ TOP_LEVEL_MODULES = {
     "plugins",
     "preflight",
     "prompt",
+    "runtime_wedge",
     "shared_runtime",
+    "transcript_auth",
+    "watcher",
 }
 
 # Subdirectory packages — these are already real packages (they have or will
@@ -77,6 +82,7 @@ TOP_LEVEL_MODULES = {
 SUBPACKAGES = {
     "adapters",
     "builtin_tools",
+    "lib",
     "plugins_registry",
     "policies",
     "skill_loader",
@@ -100,8 +106,7 @@ EXCLUDE_FILES = {
 EXCLUDE_DIRS = {
     "__pycache__",
     "tests",
-    "lib",
-    "molecule_audit",
+    "molecule_audit",  # only used by tests; not on production import path
     "scripts",
 }
 
@@ -249,6 +254,52 @@ def main() -> int:
     if not src.is_dir():
         print(f"error: source not a directory: {src}", file=sys.stderr)
         return 2
+
+    # Drift gate: assert TOP_LEVEL_MODULES matches workspace/*.py.
+    # Without this, a new top-level module added to workspace/ ships
+    # with unrewritten `from <name> import` statements that explode at
+    # runtime with ModuleNotFoundError. (See 0.1.16 transcript_auth
+    # incident — closed list silently went stale.)
+    on_disk_modules = {
+        f.stem for f in src.glob("*.py")
+        if f.stem not in {"__init__", "conftest"}
+    }
+    missing = on_disk_modules - TOP_LEVEL_MODULES
+    stale = TOP_LEVEL_MODULES - on_disk_modules
+    if missing or stale:
+        print("error: TOP_LEVEL_MODULES drifted from workspace/*.py contents:", file=sys.stderr)
+        if missing:
+            print(f"  in workspace/ but NOT in TOP_LEVEL_MODULES (will ship un-rewritten): {sorted(missing)}", file=sys.stderr)
+        if stale:
+            print(f"  in TOP_LEVEL_MODULES but NOT in workspace/ (no-op, but misleading): {sorted(stale)}", file=sys.stderr)
+        print("  Edit scripts/build_runtime_package.py:TOP_LEVEL_MODULES to match.", file=sys.stderr)
+        return 3
+
+    # Same drift gate for SUBPACKAGES — catches the inverse class of
+    # bug where a workspace/ subdirectory is referenced by main.py
+    # (`from lib.pre_stop import ...`) but is either missing from
+    # SUBPACKAGES (so the rewriter doesn't qualify the import) or
+    # accidentally listed in EXCLUDE_DIRS (so the directory itself
+    # isn't shipped). 0.1.16-0.1.19 had `lib` in EXCLUDE_DIRS while
+    # main.py imported from it — `ModuleNotFoundError: No module
+    # named 'lib'` at every workspace startup.
+    on_disk_subpkgs = {
+        d.name for d in src.iterdir()
+        if d.is_dir()
+        and d.name not in EXCLUDE_DIRS
+        and d.name not in {"__pycache__"}
+        and (d / "__init__.py").exists()
+    }
+    sub_missing = on_disk_subpkgs - SUBPACKAGES
+    sub_stale = SUBPACKAGES - on_disk_subpkgs
+    if sub_missing or sub_stale:
+        print("error: SUBPACKAGES drifted from workspace/ subdirectories:", file=sys.stderr)
+        if sub_missing:
+            print(f"  in workspace/ but NOT in SUBPACKAGES (will ship un-rewritten or be excluded): {sorted(sub_missing)}", file=sys.stderr)
+        if sub_stale:
+            print(f"  in SUBPACKAGES but NOT in workspace/ (no-op, but misleading): {sorted(sub_stale)}", file=sys.stderr)
+        print("  Edit scripts/build_runtime_package.py:SUBPACKAGES + EXCLUDE_DIRS to match.", file=sys.stderr)
+        return 3
 
     pkg_dir = out / "molecule_runtime"
     print(f"[build] source: {src}")

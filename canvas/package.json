@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.15",
@@ -35,9 +36,10 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.0.1",
+    "@vitest/coverage-v8": "^4.1.5",
     "autoprefixer": "^10.4.0",
     "jsdom": "^25.0.0",
-    "postcss": "^8.4.0",
+    "postcss": "^8.5.12",
     "tailwindcss": "^3.4.0",
     "typescript": "^5.7.0",
     "vitest": "^4.1.2"

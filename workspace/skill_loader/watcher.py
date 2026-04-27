@@ -67,10 +67,12 @@ class SkillsWatcher:
         config_path: str,
         skill_names: list[str],
         on_reload: Callable | None = None,
+        current_runtime: str | None = None,
     ) -> None:
         self.config_path = config_path
         self.skill_names = list(skill_names)
         self.on_reload   = on_reload
+        self.current_runtime = current_runtime
         self._hashes: dict[str, str] = {}   # rel_path → sha256 hex
         self._running = False
 
@@ -169,7 +171,7 @@ class SkillsWatcher:
 
         try:
             from skill_loader.loader import load_skills
-            loaded = load_skills(self.config_path, [skill_name])
+            loaded = load_skills(self.config_path, [skill_name], current_runtime=self.current_runtime)
 
             if loaded:
                 skill = loaded[0]

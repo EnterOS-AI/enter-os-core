@@ -283,6 +283,248 @@ class TestA2ASuccess:
         assert "artifact text" in status["result"]
 
 
+class TestA2AQueued:
+    """HTTP 202 + {queued: true} comes back when the peer's a2a-proxy
+    accepted the request but the peer is mid-task. Pre-fix the runtime
+    treated this as 'no 200 → fall through to FAILED', which led the
+    LLM to conclude the peer was permanently unavailable and bypass
+    delegation entirely. Post-fix the status is QUEUED and the LLM
+    sees explicit guidance to wait."""
+
+    @pytest.mark.asyncio
+    async def test_queued_marks_status_queued_not_failed(self, delegation_mocks):
+        mod, *_ = delegation_mocks
+        _, mock_cls = _make_mock_client(
+            a2a_status=202,
+            a2a_payload={"queued": True, "summary": "Delegation queued — target at capacity"},
+        )
+
+        with patch("httpx.AsyncClient", mock_cls):
+            status = await _invoke_and_wait(mod)
+
+        assert status["status"] == "queued", f"expected queued, got {status}"
+        # No 'error' field on queued (it's not a failure)
+        assert "error" not in status or not status.get("error")
+
+    @pytest.mark.asyncio
+    async def test_queued_does_not_retry(self, delegation_mocks):
+        # The retry loop is for transient transport errors. A 202+queued
+        # is NOT a failure to retry against — the platform's drain will
+        # deliver the eventual reply. Retrying would just re-queue the
+        # same task and double-count it.
+        mod, *_ = delegation_mocks
+        client, mock_cls = _make_mock_client(
+            a2a_status=202,
+            a2a_payload={"queued": True},
+        )
+
+        with patch("httpx.AsyncClient", mock_cls):
+            await _invoke_and_wait(mod)
+
+        # The mock is shared across all AsyncClient calls (record, A2A,
+        # notify, update), so total post count includes platform-sync
+        # bookkeeping POSTs too. Only count the A2A POST itself —
+        # identified by URL matching the target's /a2a endpoint.
+        a2a_calls = [
+            c for c in client.post.await_args_list
+            if c.args and c.args[0] == "http://peer:8000"
+        ]
+        assert len(a2a_calls) == 1, (
+            f"queued should not retry the A2A POST; got {len(a2a_calls)} A2A calls"
+        )
+
+    @pytest.mark.asyncio
+    async def test_202_without_queued_flag_falls_through(self, delegation_mocks):
+        # A bare 202 with no {queued: true} marker is NOT the platform's
+        # queue signal — could be a misbehaving proxy or a future protocol
+        # revision. Don't treat it as queued. Falls through to the existing
+        # retry-then-FAILED path.
+        mod, *_ = delegation_mocks
+        _, mock_cls = _make_mock_client(
+            a2a_status=202,
+            a2a_payload={"some_other_field": "value"},
+        )
+
+        with patch("httpx.AsyncClient", mock_cls):
+            status = await _invoke_and_wait(mod)
+
+        assert status["status"] == "failed", (
+            f"bare 202 should not be treated as queued, expected failed, got {status}"
+        )
+
+
+class TestQueuedLazyRefresh:
+    """When a delegation is QUEUED, check_delegation_status must lazily
+    refresh from the platform's GET /delegations to pick up drain-stitch
+    completions. Without this refresh, the LLM sees "queued" forever
+    because the platform never pushes back to the runtime.
+
+    Pre-fix the docstring told the LLM to wait on QUEUED. With no refresh
+    path, "wait" was permanent. These tests pin the refresh behavior so
+    the docstring is actually load-bearing."""
+
+    @pytest.mark.asyncio
+    async def test_queued_resolves_to_completed_via_lazy_refresh(self, delegation_mocks):
+        mod, *_ = delegation_mocks
+        # Step 1: invoke delegation, peer returns 202+queued, local
+        # status becomes QUEUED.
+        _, mock_cls_queued = _make_mock_client(
+            a2a_status=202,
+            a2a_payload={"queued": True},
+        )
+        with patch("httpx.AsyncClient", mock_cls_queued):
+            initial = await _invoke_and_wait(mod)
+        assert initial["status"] == "queued"
+        task_id = next(iter(mod._delegations))
+
+        # Step 2: simulate platform's drain having stitched a completed
+        # result. GET /workspaces/<self>/delegations now returns a
+        # 'completed' delegate_result row matching our task_id.
+        list_response = MagicMock()
+        list_response.status_code = 200
+        list_response.json.return_value = [
+            {
+                "delegation_id": task_id,
+                "type": "delegation",
+                "status": "completed",
+                "summary": "Delegation completed (peer reply)",
+                "response_preview": "the peer's actual reply text",
+                "source_id": "ws-self",
+                "target_id": "target",
+            },
+        ]
+        refresh_client = AsyncMock()
+        refresh_client.get = AsyncMock(return_value=list_response)
+        refresh_client.post = AsyncMock(return_value=MagicMock(status_code=200))
+        refresh_cls = MagicMock()
+        refresh_cls.return_value.__aenter__ = AsyncMock(return_value=refresh_client)
+        refresh_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", refresh_cls):
+            fn = mod.check_delegation_status
+            if hasattr(fn, "ainvoke"):
+                refreshed = await fn.ainvoke({"task_id": task_id})
+            else:
+                refreshed = await fn(task_id=task_id)
+
+        assert refreshed["status"] == "completed", (
+            f"lazy refresh should advance QUEUED → completed; got {refreshed}"
+        )
+        assert refreshed.get("result") == "the peer's actual reply text"
+
+    @pytest.mark.asyncio
+    async def test_queued_resolves_to_failed_via_lazy_refresh(self, delegation_mocks):
+        mod, *_ = delegation_mocks
+        _, mock_cls_queued = _make_mock_client(
+            a2a_status=202,
+            a2a_payload={"queued": True},
+        )
+        with patch("httpx.AsyncClient", mock_cls_queued):
+            await _invoke_and_wait(mod)
+        task_id = next(iter(mod._delegations))
+
+        list_response = MagicMock()
+        list_response.status_code = 200
+        list_response.json.return_value = [
+            {
+                "delegation_id": task_id,
+                "type": "delegation",
+                "status": "failed",
+                "error": "peer timed out after 30 min",
+                "source_id": "ws-self",
+                "target_id": "target",
+            },
+        ]
+        refresh_client = AsyncMock()
+        refresh_client.get = AsyncMock(return_value=list_response)
+        refresh_client.post = AsyncMock(return_value=MagicMock(status_code=200))
+        refresh_cls = MagicMock()
+        refresh_cls.return_value.__aenter__ = AsyncMock(return_value=refresh_client)
+        refresh_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", refresh_cls):
+            fn = mod.check_delegation_status
+            if hasattr(fn, "ainvoke"):
+                refreshed = await fn.ainvoke({"task_id": task_id})
+            else:
+                refreshed = await fn(task_id=task_id)
+
+        assert refreshed["status"] == "failed"
+        assert refreshed.get("error") == "peer timed out after 30 min"
+
+    @pytest.mark.asyncio
+    async def test_queued_stays_queued_when_platform_not_resolved(self, delegation_mocks):
+        # Realistic case: LLM polls before platform's drain has fired.
+        # Refresh sees only the queued row → no state change. Subsequent
+        # poll will retry.
+        mod, *_ = delegation_mocks
+        _, mock_cls_queued = _make_mock_client(
+            a2a_status=202,
+            a2a_payload={"queued": True},
+        )
+        with patch("httpx.AsyncClient", mock_cls_queued):
+            await _invoke_and_wait(mod)
+        task_id = next(iter(mod._delegations))
+
+        list_response = MagicMock()
+        list_response.status_code = 200
+        list_response.json.return_value = [
+            {
+                "delegation_id": task_id,
+                "type": "delegation",
+                "status": "queued",  # not yet resolved
+                "summary": "Delegation queued — target at capacity",
+                "source_id": "ws-self",
+                "target_id": "target",
+            },
+        ]
+        refresh_client = AsyncMock()
+        refresh_client.get = AsyncMock(return_value=list_response)
+        refresh_client.post = AsyncMock(return_value=MagicMock(status_code=200))
+        refresh_cls = MagicMock()
+        refresh_cls.return_value.__aenter__ = AsyncMock(return_value=refresh_client)
+        refresh_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", refresh_cls):
+            fn = mod.check_delegation_status
+            if hasattr(fn, "ainvoke"):
+                refreshed = await fn.ainvoke({"task_id": task_id})
+            else:
+                refreshed = await fn(task_id=task_id)
+
+        assert refreshed["status"] == "queued"
+
+    @pytest.mark.asyncio
+    async def test_refresh_is_safe_when_platform_unreachable(self, delegation_mocks):
+        # Platform GET fails (network blip). Refresh must not raise —
+        # local state stays QUEUED so the next poll retries.
+        mod, *_ = delegation_mocks
+        _, mock_cls_queued = _make_mock_client(
+            a2a_status=202,
+            a2a_payload={"queued": True},
+        )
+        with patch("httpx.AsyncClient", mock_cls_queued):
+            await _invoke_and_wait(mod)
+        task_id = next(iter(mod._delegations))
+
+        refresh_client = AsyncMock()
+        refresh_client.get = AsyncMock(side_effect=httpx.ConnectError("network down"))
+        refresh_client.post = AsyncMock(return_value=MagicMock(status_code=200))
+        refresh_cls = MagicMock()
+        refresh_cls.return_value.__aenter__ = AsyncMock(return_value=refresh_client)
+        refresh_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", refresh_cls):
+            fn = mod.check_delegation_status
+            if hasattr(fn, "ainvoke"):
+                refreshed = await fn.ainvoke({"task_id": task_id})
+            else:
+                refreshed = await fn(task_id=task_id)
+
+        # Doesn't raise; local state preserved.
+        assert refreshed["status"] == "queued"
+
+
 class TestA2AErrors:
 
     @pytest.mark.asyncio
