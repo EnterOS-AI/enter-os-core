@@ -5,8 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "@/lib/api";
 import { useCanvasStore, type WorkspaceNodeData } from "@/store/canvas";
-import { WS_URL } from "@/store/socket";
-import { closeWebSocketGracefully } from "@/lib/ws-close";
+import { useSocketEvent } from "@/hooks/useSocketEvent";
 import { type ChatMessage, type ChatAttachment, createMessage, appendMessageDeduped } from "./chat/types";
 import { uploadChatFiles, downloadChatFile } from "./chat/uploads";
 import { AttachmentChip, PendingAttachmentPill } from "./chat/AttachmentViews";
@@ -263,6 +262,32 @@ function MyChatPanel({ workspaceId, data }: Props) {
   // from the closure and lets a second `sendMessage` enter. A ref
   // observes the latest value synchronously.
   const sendInFlightRef = useRef(false);
+  // Monotonic token bumped on every sendMessage entry. Each .then()/
+  // .catch() captures its own token in closure and bails if a newer
+  // send has superseded it — prevents a late HTTP response for an
+  // earlier message from clobbering the flags / appending text that
+  // belong to a newer in-flight send. Race scenario the token closes:
+  // (1) send msg #1 (2) WS push for msg #1 arrives, releases guards
+  // (3) user sends msg #2 (4) HTTP for msg #1 finally lands — without
+  // the token check, .then() sees sendingFromAPIRef=true (set by
+  // msg #2's send), enters the main body, and processes msg #1's body
+  // as if it were msg #2's reply.
+  const sendTokenRef = useRef(0);
+
+  // Release every in-flight send guard at once. Used by every site
+  // that ends a send: pendingAgentMsgs WS push, ACTIVITY_LOGGED
+  // a2a_receive ok/error WS event, HTTP .then() success, and HTTP
+  // .catch() success. Keep these in lockstep — a future contributor
+  // adding a new "I saw the reply" path that only clears `sending` +
+  // `sendingFromAPIRef` (the natural pair) silently re-introduces
+  // the post-WS Send-button freeze, because the disabled-button
+  // logic can't see `sendInFlightRef` and so the visible state diverges
+  // from the synchronous re-entry guard at line 464.
+  const releaseSendGuards = useCallback(() => {
+    setSending(false);
+    sendingFromAPIRef.current = false;
+    sendInFlightRef.current = false;
+  }, []);
 
   // Load chat history from database on mount
   useEffect(() => {
@@ -311,8 +336,11 @@ function MyChatPanel({ workspaceId, data }: Props) {
       setMessages((prev) => appendMessageDeduped(prev, createMessage("agent", m.content, m.attachments)));
     }
     if (sendingFromAPIRef.current && msgs.length > 0) {
-      setSending(false);
-      sendingFromAPIRef.current = false;
+      // Reply arrived via WS push (e.g. claude-code SDK). Release all
+      // three guards together — without sendInFlightRef the next
+      // sendMessage() silently no-ops at the synchronous re-entry
+      // check.
+      releaseSendGuards();
     }
   }, [pendingAgentMsgs, workspaceId]);
 
@@ -336,22 +364,25 @@ function MyChatPanel({ workspaceId, data }: Props) {
     return () => clearInterval(timer);
   }, [sending]);
 
-  // Live activity feed via WebSocket while sending
+  // Live activity feed seed — clears when not sending. The actual
+  // event subscription is unconditional below (useSocketEvent at the
+  // top level — hooks can't be conditional). The handler gates on
+  // `sending` itself so it's a no-op when idle.
   useEffect(() => {
     if (!sending) {
       setActivityLog([]);
       return;
     }
     setActivityLog([`Processing with ${runtimeDisplayName(data.runtime)}...`]);
+  }, [sending, data.runtime]);
 
-    const ws = new WebSocket(WS_URL);
-    ws.onerror = () => {
-      // Don't crash — activity feed is non-essential, just log
-      console.warn("ChatTab activity feed WS error");
-    };
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
+  // Subscribe to global WS via the singleton ReconnectingSocket (no
+  // per-component WebSocket — the previous pattern dropped events
+  // silently on any reconnect because each panel's raw socket had no
+  // onclose handler).
+  useSocketEvent((msg) => {
+    if (!sending) return;
+    try {
         if (msg.event === "ACTIVITY_LOGGED") {
           // Filter to events for THIS workspace. The platform's
           // BroadcastOnly fires to every connected client, and
@@ -382,15 +413,13 @@ function MyChatPanel({ workspaceId, data }: Props) {
               // via pendingAgentMsgs or the HTTP .then()).
               const own = (targetId || msg.workspace_id) === workspaceId;
               if (own && sendingFromAPIRef.current) {
-                setSending(false);
-                sendingFromAPIRef.current = false;
+                releaseSendGuards();
               }
             } else if (status === "error") {
               line = `⚠ ${targetName} error`;
               const own = (targetId || msg.workspace_id) === workspaceId;
               if (own && sendingFromAPIRef.current) {
-                setSending(false);
-                sendingFromAPIRef.current = false;
+                releaseSendGuards();
                 setError("Agent error (Exception) — see workspace logs for details.");
               }
             }
@@ -420,13 +449,8 @@ function MyChatPanel({ workspaceId, data }: Props) {
         // A2A_RESPONSE is already consumed by the store and its text is
         // appended to messages via the pendingAgentMsgs effect above; we
         // don't need to duplicate it here.
-      } catch { /* ignore */ }
-    };
-
-    return () => {
-      closeWebSocketGracefully(ws);
-    };
-  }, [sending, workspaceId, resolveWorkspaceName]);
+    } catch { /* ignore */ }
+  });
 
   const sendMessage = async () => {
     const text = input.trim();
@@ -462,6 +486,10 @@ function MyChatPanel({ workspaceId, data }: Props) {
     setSending(true);
     sendingFromAPIRef.current = true;
     setError(null);
+    // Capture this send's token so the .then()/.catch() callbacks can
+    // detect a newer send that may have superseded them. See the
+    // sendTokenRef declaration for the race scenario this closes.
+    const myToken = ++sendTokenRef.current;
 
     // Build conversation history from prior messages (last 20)
     const history = messages
@@ -507,10 +535,18 @@ function MyChatPanel({ workspaceId, data }: Props) {
       },
     }, { timeoutMs: 120_000 })
       .then((resp) => {
+        // Bail without touching any flags if a newer sendMessage has
+        // already run — its myToken bumped sendTokenRef, so this is
+        // a stale callback for an earlier message. The newer send
+        // owns the in-flight guards now.
+        if (sendTokenRef.current !== myToken) return;
         // Skip if the WS A2A_RESPONSE event already handled this response.
         // Both paths (WS + HTTP) check sendingFromAPIRef — whichever clears
         // it first wins, the other becomes a no-op (no duplicate messages).
-        if (!sendingFromAPIRef.current) return;
+        if (!sendingFromAPIRef.current) {
+          sendInFlightRef.current = false;
+          return;
+        }
         const replyText = extractReplyText(resp);
         const replyFiles = extractFilesFromTask((resp?.result ?? {}) as Record<string, unknown>);
         if (replyText || replyFiles.length > 0) {
@@ -518,11 +554,11 @@ function MyChatPanel({ workspaceId, data }: Props) {
             appendMessageDeduped(prev, createMessage("agent", replyText, replyFiles)),
           );
         }
-        setSending(false);
-        sendingFromAPIRef.current = false;
-        sendInFlightRef.current = false;
+        releaseSendGuards();
       })
       .catch(() => {
+        // Stale-callback guard — same rationale as .then().
+        if (sendTokenRef.current !== myToken) return;
         // Same dedup guard as .then(): if a WS path (pendingAgentMsgs
         // or ACTIVITY_LOGGED a2a_receive ok) already delivered the
         // reply, sendingFromAPIRef is already false and there's
@@ -534,9 +570,7 @@ function MyChatPanel({ workspaceId, data }: Props) {
           sendInFlightRef.current = false;
           return;
         }
-        setSending(false);
-        sendingFromAPIRef.current = false;
-        sendInFlightRef.current = false;
+        releaseSendGuards();
         setError("Failed to send message — agent may be unreachable");
       });
   };

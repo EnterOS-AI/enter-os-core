@@ -5,8 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "@/lib/api";
 import { useCanvasStore, type WorkspaceNodeData } from "@/store/canvas";
-import { WS_URL } from "@/store/socket";
-import { closeWebSocketGracefully } from "@/lib/ws-close";
+import { useSocketEvent } from "@/hooks/useSocketEvent";
 import { showToast } from "../../Toaster";
 import { extractResponseText, extractRequestText } from "./message-parser";
 import { inferA2AErrorHint } from "./a2aErrorHint";
@@ -239,16 +238,15 @@ export function AgentCommsPanel({ workspaceId }: { workspaceId: string }) {
       });
   }, [workspaceId]);
 
-  // Live updates via WebSocket
-  useEffect(() => {
-    const ws = new WebSocket(WS_URL);
-    ws.onerror = () => {
-      console.warn("AgentCommsPanel WS error");
-    };
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.workspace_id !== workspaceId) return;
+  // Live updates routed through the global ReconnectingSocket. The
+  // previous pattern of `new WebSocket(WS_URL)` per panel had no
+  // onclose / no reconnect, so any drop (idle timeout, browser
+  // background-tab throttle) silently stopped delivering events until
+  // the panel re-mounted. Routing through useSocketEvent inherits the
+  // store socket's reconnect, backoff, and HTTP fallback for free.
+  useSocketEvent((msg) => {
+    try {
+      if (msg.workspace_id !== workspaceId) return;
 
         // Two live-update paths:
         //   1. ACTIVITY_LOGGED — fired by the LogActivity helper for
@@ -357,12 +355,8 @@ export function AgentCommsPanel({ workspaceId }: { workspaceId: string }) {
           seenKeys.current.add(key);
           setMessages((prev) => [...prev, m]);
         }
-      } catch { /* ignore */ }
-    };
-    return () => {
-      closeWebSocketGracefully(ws);
-    };
-  }, [workspaceId]);
+    } catch { /* ignore */ }
+  });
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
