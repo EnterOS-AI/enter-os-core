@@ -41,7 +41,7 @@ from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
 from a2a.types import Part
 # KI-009: a2a-sdk v1 renames a2a.utils → a2a.helpers; TextPart removed (Part takes text= directly)
-from a2a.helpers import new_agent_text_message
+from a2a.helpers import new_text_message
 from shared_runtime import (
     extract_history as _extract_history,
     extract_message_text,
@@ -231,7 +231,7 @@ class LangGraphA2AExecutor(AgentExecutor):
             parts = getattr(getattr(context, "message", None), "parts", None)
             logger.warning("A2A execute: no text content in message parts: %s", parts)
             await event_queue.enqueue_event(
-                new_agent_text_message("Error: message contained no text content.")
+                new_text_message("Error: message contained no text content.")
             )
             return ""
 
@@ -246,7 +246,7 @@ class LangGraphA2AExecutor(AgentExecutor):
                 )
             except PromptInjectionError as exc:
                 await event_queue.enqueue_event(
-                    new_agent_text_message(f"Request blocked: {exc}")
+                    new_text_message(f"Request blocked: {exc}")
                 )
                 return ""
 
@@ -462,21 +462,21 @@ class LangGraphA2AExecutor(AgentExecutor):
                         contextId=context_id,
                     )
                 else:
-                    msg = new_agent_text_message(final_text, task_id=task_id, context_id=context_id)
+                    msg = new_text_message(final_text, task_id=task_id, context_id=context_id)
                 # Attach tool_trace via metadata when supported. Guarded with
                 # hasattr because some test mocks return a plain string here.
                 if tool_trace and hasattr(msg, "metadata"):
                     try:
                         msg.metadata = {"tool_trace": tool_trace}
                     except (AttributeError, TypeError):
-                        # `new_agent_text_message()` returns a plain string in
+                        # `new_text_message()` returns a plain string in
                         # MagicMock paths in tests, where assignment to
                         # .metadata raises despite hasattr being true (the
                         # mock has the attribute as a property). Suppression
                         # is intentional — production Message objects always
                         # accept the assignment. See #1787 + commit dcbcf19
                         # for the original test-mock motivation.
-                        logger.debug("metadata attach skipped (non-Message return from new_agent_text_message)")
+                        logger.debug("metadata attach skipped (non-Message return from new_text_message)")
                 await event_queue.enqueue_event(msg)
                 _result = final_text
 
@@ -491,7 +491,7 @@ class LangGraphA2AExecutor(AgentExecutor):
                 # Emit a Message so both streaming and non-streaming clients
                 # receive an error response rather than hanging.
                 await event_queue.enqueue_event(
-                    new_agent_text_message(
+                    new_text_message(
                         f"Agent error: {e}", task_id=task_id, context_id=context_id
                     )
                 )
