@@ -75,9 +75,13 @@ def _make_a2a_mocks():
 
     types_mod.Part = Part
 
-    # a2a.helpers (v1: moved from a2a.utils)
+    # a2a.helpers (v1: moved from a2a.utils, renamed new_agent_text_message
+    # → new_text_message). Mock both names — production code only calls
+    # new_text_message, but if any test still references the old name it
+    # gets the same lambda for backward compat during the rename rollout.
     helpers_mod = ModuleType("a2a.helpers")
-    helpers_mod.new_agent_text_message = lambda text, **kwargs: text
+    helpers_mod.new_text_message = lambda text, **kwargs: text
+    helpers_mod.new_agent_text_message = helpers_mod.new_text_message
 
     # Register all module paths
     a2a_mod = ModuleType("a2a")
