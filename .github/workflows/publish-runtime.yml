@@ -41,9 +41,19 @@ on:
     branches:
       - staging
     paths:
-      # Auto-publish when staging gets workspace/ changes. Path filter
-      # ONLY applies to branch pushes — tag pushes still fire regardless.
+      # Auto-publish when staging gets changes that affect what gets
+      # published. Path filter ONLY applies to branch pushes — tag pushes
+      # still fire regardless.
+      #
+      # workspace/** is the source-of-truth for runtime code.
+      # scripts/build_runtime_package.py is the build script — changes to
+      # it (e.g. a fix to the import rewriter or a manifest emit) directly
+      # affect what ships in the wheel even if no workspace/ file changes.
+      # The 2026-04-27 lib/ subpackage incident missed an auto-publish for
+      # exactly this reason — PR #2174 only changed scripts/ and the
+      # operator had to remember a manual dispatch.
       - "workspace/**"
+      - "scripts/build_runtime_package.py"
   workflow_dispatch:
     inputs:
       version:
@@ -184,6 +194,31 @@ jobs:
     needs: publish
     runs-on: ubuntu-latest
     steps:
+      - name: Wait for PyPI to propagate the new version
+        # PyPI accepts the upload, then takes a few seconds to make it
+        # available via the package index. If the cascade fires too
+        # fast, downstream template builds run `pip install` against
+        # an index that hasn't seen the new version yet — they resolve
+        # to the previous one, and docker layer cache then locks that
+        # in for subsequent rebuilds (the cache trap that bit us five
+        # times tonight).
+        #
+        # Poll PyPI's JSON API for up to 60s. Cheap (~50ms per poll),
+        # avoids over-trusting "publish job said success."
+        env:
+          RUNTIME_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set -eu
+          for i in $(seq 1 30); do
+            if curl -fsS "https://pypi.org/pypi/molecule-ai-workspace-runtime/${RUNTIME_VERSION}/json" >/dev/null 2>&1; then
+              echo "::notice::✓ PyPI serving ${RUNTIME_VERSION} after ${i} polls"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::PyPI never propagated ${RUNTIME_VERSION} within 60s — refusing to fan out cascade against stale index"
+          exit 1
+
       - name: Fan out repository_dispatch
         env:
           # Fine-grained PAT with `actions:write` on the 8 template repos.
