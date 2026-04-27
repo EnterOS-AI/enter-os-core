@@ -1,6 +1,6 @@
 # Ecosystem Watch — Phase 30 Competitive Tracking
 **Created by:** PMM
-**Date:** 2026-04-21
+**Date:** 2026-04-27
 **Status:** ACTIVE — competitor monitoring in progress
 **Phase:** 30 — Remote Workspaces + Cross-Network Federation
 
@@ -118,7 +118,7 @@ Track competitor releases and market events that affect Phase 30 positioning. En
 - **Check frequency:** Every marketing cycle
 - **Trigger:** Any competitor shipping something that invalidates a Phase 30 positioning claim
 - **File location:** `docs/ecosystem-watch.md` (origin/main)
-- **Last updated by:** PMM | 2026-04-23 (LangGraph PRs verified OPEN; new feat PRs #1730/#1702/#1731 logged; release note written)
+- **Last updated by:** PMM | 2026-04-27 (weekly refresh — all competitor versions, stars, and PRs verified current; Clawith v1.9.0 added)
 
 ---
 
