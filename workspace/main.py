@@ -188,6 +188,12 @@ async def main():  # pragma: no cover
         capabilities=AgentCapabilities(
             streaming=config.a2a.streaming,
             push_notifications=config.a2a.push_notifications,
+            # Note: state_transition_history (a 0.x capability flag) was
+            # removed in a2a-sdk 1.0. Per the SDK's own
+            # a2a/compat/v0_3/conversions.py: "No longer supported in
+            # v1.0". The capability is now universal — Task.history is
+            # always available and tasks/get accepts historyLength via
+            # apply_history_length(). Don't add this kwarg back.
         ),
         skills=[
             AgentSkill(
