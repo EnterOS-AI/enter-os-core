@@ -23,6 +23,7 @@ Covers 100% of the public surface:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -86,6 +87,18 @@ def _install_mock_http_client(monkeypatch) -> AsyncMock:
 def test_get_mcp_server_path_default(monkeypatch):
     monkeypatch.delenv("A2A_MCP_SERVER_PATH", raising=False)
     assert get_mcp_server_path() == DEFAULT_MCP_SERVER_PATH
+
+
+def test_get_mcp_server_path_default_resolves_to_existing_file():
+    # Locks in the wheel-relative resolution: if a future refactor moves
+    # a2a_mcp_server.py out of the package directory or breaks the
+    # __file__-based lookup, Claude Code SDK silently fails to spawn the
+    # MCP subprocess and inter-agent tools (list_peers, delegate_task)
+    # vanish at runtime. This assertion catches that at unit-test time.
+    assert os.path.exists(DEFAULT_MCP_SERVER_PATH), (
+        f"DEFAULT_MCP_SERVER_PATH points at a missing file: "
+        f"{DEFAULT_MCP_SERVER_PATH}"
+    )
 
 
 def test_get_mcp_server_path_env_override(monkeypatch):
