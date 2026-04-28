@@ -33,13 +33,19 @@ name: Auto-sync main → staging
 #
 # Loop safety:
 #
-# Pushing the synced staging triggers `auto-promote-staging.yml`,
-# which checks gates on staging's new tip and, if green, ff-pushes
-# staging to main. Since staging now == main (ff case) or ⊇ main
-# (merge case where promote then advances), the resulting push to
-# main is either a no-op (no actual ref change → no push event) or
-# advances main further. In the latter case auto-sync fires again,
-# sees main already in staging's ancestry, no-ops. No infinite loop.
+# `GITHUB_TOKEN`-authored pushes do NOT trigger downstream workflow
+# runs by default (GitHub Actions safety). So when this workflow
+# pushes the synced staging, `auto-promote-staging.yml` is NOT
+# triggered by that push. The next developer push to staging triggers
+# auto-promote normally. No loop is even theoretically possible.
+#
+# Concurrency:
+#
+# Two pushes to main in quick succession (e.g., manual UI merge
+# immediately followed by auto-promote-staging's ff-merge) would
+# otherwise race two auto-sync runs against the same staging branch
+# — second push fails non-fast-forward. The concurrency group
+# serializes them so the second run sees the first's result.
 
 on:
   push:
@@ -47,6 +53,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:
+  group: auto-sync-main-to-staging
+  cancel-in-progress: false
 
 jobs:
   sync-staging:
@@ -82,7 +92,7 @@ jobs:
             echo "::notice::staging is missing main's tip — sync needed"
           fi
 
-      - name: Fast-forward staging → main
+      - name: Fast-forward staging to main
         if: steps.check.outputs.needs_sync == 'true'
         id: ff
         run: |
@@ -96,15 +106,18 @@ jobs:
           fi
 
       - name: Merge main into staging (when ff fails)
-        if: |
-          steps.check.outputs.needs_sync == 'true' &&
-          steps.ff.outputs.did_ff != 'true'
+        if: steps.check.outputs.needs_sync == 'true' && steps.ff.outputs.did_ff != 'true'
         run: |
           set -euo pipefail
           # ff failed because staging has commits main doesn't — typical
           # in-flight feature work. Create a merge commit so staging
           # absorbs main's tip while keeping its own history.
           if ! git merge --no-ff origin/main -m "chore: sync main → staging (auto)"; then
+            # Hygiene: leave the work tree clean before failing. Doesn't
+            # affect future runs (each gets a fresh checkout) but a
+            # half-merged tree is an unpleasant artifact to debug if
+            # anyone ever shells into the runner.
+            git merge --abort || true
             {
               echo "## ❌ Conflict"
               echo
