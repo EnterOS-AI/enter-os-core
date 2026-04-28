@@ -1,0 +1,114 @@
+name: Auto-promote :latest on E2E green
+
+# Retags `ghcr.io/molecule-ai/{platform,platform-tenant}:staging-<sha>`
+# → `:latest` whenever E2E Staging SaaS passes for a `main` push.
+#
+# This is the doc-aligned alternative to the (deferred) Phase 2 canary
+# fleet — staging E2E catches ~90% of what canary would catch at 0%
+# ongoing infra cost. See `molecule-controlplane/docs/canary-tenants.md`
+# section "Do we actually need canary right now?" — recommended
+# sequencing for the current scale (≤20 paying tenants).
+#
+# Why a separate workflow rather than folding into e2e-staging-saas.yml:
+#   - Keeps test concerns separate from release concerns.
+#   - Disabling promote (e.g. during an incident) is one toggle, not an
+#     edit to the long E2E workflow file.
+#   - When Phase 2 canary work eventually lands, the canary path can
+#     replace this file's trigger without touching the E2E workflow.
+#
+# Why trigger on `main` only:
+#   - `:latest` is what prod tenants pull. We only want SHAs that have
+#     reached `main` (via auto-promote-staging) to advance `:latest`.
+#   - Triggering on staging would let a staging-only revert advance
+#     `:latest` to a SHA that never reaches `main`, breaking the
+#     "production runs what's on `main`" invariant.
+
+on:
+  workflow_run:
+    workflows: ['E2E Staging SaaS (full lifecycle)']
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Short sha to promote (override; defaults to upstream workflow_run head_sha)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/molecule-ai/platform
+  TENANT_IMAGE_NAME: ghcr.io/molecule-ai/platform-tenant
+
+jobs:
+  promote:
+    # Skip if E2E failed — `:latest` stays on the prior known-good
+    # digest. Manual dispatch always proceeds (the operator already
+    # decided to promote).
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compute short sha
+        id: sha
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.sha }}" ]; then
+            FULL="${{ github.event.inputs.sha }}"
+          else
+            FULL="${{ github.event.workflow_run.head_sha }}"
+          fi
+          echo "short=${FULL:0:7}" >> "$GITHUB_OUTPUT"
+          echo "full=${FULL}" >> "$GITHUB_OUTPUT"
+
+      - uses: imjasonh/setup-crane@v0.4
+
+      - name: GHCR login
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Verify :staging-<sha> exists for both images
+        # Better to fail fast with a clear message than to half-tag
+        # (platform retagged but platform-tenant missing → tenants pull
+        # a stale image).
+        run: |
+          set -euo pipefail
+          for img in "${IMAGE_NAME}" "${TENANT_IMAGE_NAME}"; do
+            tag="${img}:staging-${{ steps.sha.outputs.short }}"
+            if ! crane manifest "$tag" >/dev/null 2>&1; then
+              echo "::error::Missing tag: $tag"
+              echo "::error::publish-workspace-server-image must complete on this SHA before auto-promote-on-e2e can retag :latest."
+              exit 1
+            fi
+            echo "  ok: $tag exists"
+          done
+
+      - name: Retag platform :staging-<sha> → :latest
+        run: |
+          crane tag "${IMAGE_NAME}:staging-${{ steps.sha.outputs.short }}" latest
+
+      - name: Retag tenant :staging-<sha> → :latest
+        run: |
+          crane tag "${TENANT_IMAGE_NAME}:staging-${{ steps.sha.outputs.short }}" latest
+
+      - name: Summary
+        run: |
+          {
+            echo "## E2E green → :latest promoted"
+            echo
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "- Trigger: manual dispatch"
+            else
+              echo "- Upstream E2E run: ${{ github.event.workflow_run.html_url }}"
+            fi
+            echo "- platform:staging-${{ steps.sha.outputs.short }} → :latest"
+            echo "- platform-tenant:staging-${{ steps.sha.outputs.short }} → :latest"
+            echo
+            echo "Tenant fleet auto-pulls within 5 min via IMAGE_AUTO_REFRESH=true."
+            echo "Force immediate fanout: dispatch redeploy-tenants-on-main.yml."
+          } >> "$GITHUB_STEP_SUMMARY"
