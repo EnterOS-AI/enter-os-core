@@ -212,6 +212,56 @@ jobs:
               default_output_modes=['text/plain', 'application/json'],
           )
           print('✓ AgentCard call-shape smoke passed')
+
+          # Well-known agent-card path probe alignment. main.py's
+          # _send_initial_prompt() polls AGENT_CARD_WELL_KNOWN_PATH
+          # to know when the local A2A server is ready. If the SDK
+          # ever splits the constant value from the path that
+          # create_agent_card_routes() actually mounts at, every
+          # workspace silently drops its initial_prompt:
+          #   - Probe gets 404 every attempt.
+          #   - Falls through to 'server not ready after 30s,
+          #     skipping' even though the server is fine.
+          #   - The user hits a fresh chat with no kickoff context.
+          # This was the #2193 incident class — the v0.x → v1.x
+          # rename of /.well-known/agent.json → /.well-known/agent-card.json
+          # plus the constant itself moving to a2a.utils.constants.
+          # source-tree pytest (test_agent_card_well_known_path.py)
+          # catches main.py-side regressions; this catches the
+          # SDK-side ones BEFORE PyPI upload.
+          from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
+          from a2a.server.routes import create_agent_card_routes
+          mounted_paths = [
+              getattr(r, 'path', None)
+              for r in create_agent_card_routes(
+                  AgentCard(
+                      name='wk-smoke',
+                      description='well-known mount alignment',
+                      version='0.0.0-smoke',
+                  )
+              )
+          ]
+          assert AGENT_CARD_WELL_KNOWN_PATH in mounted_paths, (
+              f'AGENT_CARD_WELL_KNOWN_PATH ({AGENT_CARD_WELL_KNOWN_PATH!r}) '
+              f'is NOT among paths mounted by create_agent_card_routes '
+              f'({mounted_paths!r}). The SDK constant and its own route '
+              f'factory have drifted — workspace probes will 404 forever, '
+              f'silently dropping every workspace initial_prompt.'
+          )
+          print(f'✓ well-known mount alignment OK ({AGENT_CARD_WELL_KNOWN_PATH})')
+
+          # Message helper smoke. a2a-sdk renamed
+          # new_agent_text_message → new_text_message in the v1.x
+          # protobuf-flat migration (per the v0→v1 cheat sheet). main.py
+          # and a2a_executor.py call new_text_message in hot paths; if
+          # the import breaks, every reply errors with ImportError before
+          # the message even leaves the workspace. Importing here
+          # catches a future v2.x rename at publish time.
+          from a2a.helpers import new_text_message
+          msg = new_text_message('smoke')
+          assert msg is not None, 'new_text_message returned None'
+          print('✓ message helper import + call OK')
+
           print('✓ smoke import passed')
           "
 
