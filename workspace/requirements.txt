@@ -36,4 +36,4 @@ sqlalchemy>=2.0.0
 # tasks survive crashes and can resume.  The module and TemporalWorkflowWrapper
 # load cleanly without this package — all paths fall back to direct execution.
 # Requires a running Temporal server; set TEMPORAL_HOST=<host>:7233 to enable.
-temporalio>=1.7.0
+temporalio>=1.26.0
