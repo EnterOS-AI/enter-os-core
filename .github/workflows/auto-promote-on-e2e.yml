@@ -109,20 +109,30 @@ jobs:
           echo "short=${FULL:0:7}" >> "$GITHUB_OUTPUT"
           echo "full=${FULL}" >> "$GITHUB_OUTPUT"
 
-      - name: Gate — E2E Staging SaaS must not be red for this SHA
-        # When upstream IS E2E success, we already know it's green
-        # (filtered by the job-level `if` already). When upstream is
-        # publish, look up E2E state for the same SHA. Three outcomes:
+      - name: Gate — E2E Staging SaaS state for this SHA
+        # When upstream IS E2E success, we know it's green (filtered by
+        # the job-level `if` already). When upstream is publish, look up
+        # E2E state for the same SHA. Four buckets:
         #
         #   - completed/success: E2E confirmed safe → proceed
         #   - completed/failure|cancelled|timed_out: E2E found a
-        #     regression → ABORT, `:latest` stays put
-        #   - none|in_progress|skipped: proceed; either E2E was paths-
-        #     filtered out (no run) or it's racing with publish (in
-        #     which case staging gates already greenlit this SHA, so
-        #     the publish signal alone is acceptable)
+        #     regression → ABORT (exit 1), `:latest` stays put
+        #   - in_progress|queued|requested: E2E is RACING with publish
+        #     for a runtime-touching SHA. publish typically completes
+        #     ~5-10min before E2E (~10-15min). If we promote on the
+        #     publish signal here, a later E2E failure can't roll back
+        #     `:latest` — it'd already be wrongly advanced. So we DEFER:
+        #     skip subsequent steps (proceed=false) and let E2E's own
+        #     completion event re-fire this workflow, which then takes
+        #     the upstream-is-E2E path. exit 0 so the run shows as
+        #     success rather than a noisy fake-failure.
+        #   - none/none: E2E was paths-filtered out for this SHA (the
+        #     change touched canvas/cmd/sweep/etc. — paths covered by
+        #     publish but not by E2E). pre-merge gates on staging
+        #     already validated this SHA → proceed.
         #
         # Manual dispatch skips this check — operator override.
+        id: gate
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -133,17 +143,18 @@ jobs:
           set -euo pipefail
 
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
             echo "::notice::Manual dispatch — skipping E2E gate (operator override)"
             exit 0
           fi
 
           if [ "$UPSTREAM_NAME" = "E2E Staging SaaS (full lifecycle)" ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
             echo "::notice::Upstream is E2E itself (success per job-level if) — gate trivially satisfied"
             exit 0
           fi
 
-          # Upstream is publish-workspace-server-image. Check E2E state
-          # for the same SHA.
+          # Upstream is publish-workspace-server-image. Check E2E state.
           RESULT=$(gh run list \
             --repo "$REPO" \
             --workflow e2e-staging-saas.yml \
@@ -157,25 +168,53 @@ jobs:
           echo "E2E Staging SaaS for ${SHA:0:7}: $RESULT"
 
           case "$RESULT" in
+            completed/success)
+              echo "proceed=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::E2E green for this SHA — proceeding with promote"
+              ;;
             completed/failure|completed/cancelled|completed/timed_out)
+              echo "proceed=false" >> "$GITHUB_OUTPUT"
               {
                 echo "## ❌ Auto-promote aborted — E2E Staging SaaS failed"
                 echo
-                echo "E2E Staging SaaS run for \`${SHA:0:7}\` ended in: \`$RESULT\`"
+                echo "E2E Staging SaaS for \`${SHA:0:7}\`: \`$RESULT\`"
                 echo "\`:latest\` stays on the prior known-good digest."
                 echo
                 echo "If the failure was a flake, manually dispatch this workflow with the same sha to override."
               } >> "$GITHUB_STEP_SUMMARY"
               exit 1
               ;;
+            in_progress/*|queued/*|requested/*|waiting/*|pending/*)
+              echo "proceed=false" >> "$GITHUB_OUTPUT"
+              {
+                echo "## ⏳ Auto-promote deferred — E2E Staging SaaS still running"
+                echo
+                echo "Publish completed before E2E for \`${SHA:0:7}\` (state: \`$RESULT\`)."
+                echo "Skipping retag here — E2E's own completion event will re-fire this workflow."
+                echo "If E2E ends green, that run promotes \`:latest\`. If red, it aborts."
+              } >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            none/none)
+              echo "proceed=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::E2E paths-filtered out for this SHA — pre-merge staging gates carry"
+              ;;
             *)
-              echo "::notice::E2E state '$RESULT' — proceeding with promote"
+              echo "proceed=false" >> "$GITHUB_OUTPUT"
+              {
+                echo "## ❓ Auto-promote aborted — unexpected E2E state"
+                echo
+                echo "E2E Staging SaaS for \`${SHA:0:7}\`: \`$RESULT\` (unhandled)"
+                echo "Manual investigation needed; re-dispatch with the same sha once resolved."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
               ;;
           esac
 
-      - uses: imjasonh/setup-crane@31b88efe9de28ae0ffa220711af4b60be9435f6e # v0.4
+      - if: steps.gate.outputs.proceed == 'true'
+        uses: imjasonh/setup-crane@31b88efe9de28ae0ffa220711af4b60be9435f6e # v0.4
 
       - name: GHCR login
+        if: steps.gate.outputs.proceed == 'true'
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | \
             crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
@@ -184,6 +223,7 @@ jobs:
         # Better to fail fast with a clear message than to half-tag
         # (platform retagged but platform-tenant missing → tenants pull
         # a stale image).
+        if: steps.gate.outputs.proceed == 'true'
         run: |
           set -euo pipefail
           for img in "${IMAGE_NAME}" "${TENANT_IMAGE_NAME}"; do
@@ -197,14 +237,17 @@ jobs:
           done
 
       - name: Retag platform :staging-<sha> → :latest
+        if: steps.gate.outputs.proceed == 'true'
         run: |
           crane tag "${IMAGE_NAME}:staging-${{ steps.sha.outputs.short }}" latest
 
       - name: Retag tenant :staging-<sha> → :latest
+        if: steps.gate.outputs.proceed == 'true'
         run: |
           crane tag "${TENANT_IMAGE_NAME}:staging-${{ steps.sha.outputs.short }}" latest
 
       - name: Summary
+        if: steps.gate.outputs.proceed == 'true'
         run: |
           {
             echo "## :latest promoted to ${{ steps.sha.outputs.short }}"
