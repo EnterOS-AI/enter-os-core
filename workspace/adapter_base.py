@@ -421,8 +421,8 @@ class BaseAdapter(ABC):
         from coordinator import get_children, get_parent_context, build_children_description
         from prompt import build_system_prompt, get_peer_capabilities, get_platform_instructions
         from builtin_tools.approval import request_approval
-        from builtin_tools.delegation import delegate_to_workspace, check_delegation_status
-        from builtin_tools.memory import commit_memory, search_memory
+        from builtin_tools.delegation import delegate_task, delegate_task_async, check_task_status
+        from builtin_tools.memory import commit_memory, recall_memory
         from builtin_tools.sandbox import run_code
 
         platform_url = os.environ.get("PLATFORM_URL", "http://host.docker.internal:8080")
@@ -455,8 +455,19 @@ class BaseAdapter(ABC):
                     seen_skill_ids.add(skill.metadata.id)
         logger.info(f"Loaded {len(loaded_skills)} skills: {[s.metadata.id for s in loaded_skills]}")
 
-        # Assemble tools: 6 core + skill tools
-        all_tools = [delegate_to_workspace, check_delegation_status, request_approval, commit_memory, search_memory, run_code]
+        # Assemble tools: 7 core + skill tools.
+        # Tool naming is unified across MCP and LangChain runtimes so the
+        # platform-injected docs (get_a2a_instructions, get_hma_instructions)
+        # name tools that actually exist in both worlds:
+        #   delegate_task        — sync, returns peer's response text
+        #   delegate_task_async  — async, returns task_id
+        #   check_task_status    — poll an async delegation
+        #   commit_memory        — write to HMA with scope
+        #   recall_memory        — read from HMA (LOCAL+TEAM+GLOBAL)
+        all_tools = [
+            delegate_task, delegate_task_async, check_task_status,
+            request_approval, commit_memory, recall_memory, run_code,
+        ]
         for skill in loaded_skills:
             all_tools.extend(skill.tools)
 

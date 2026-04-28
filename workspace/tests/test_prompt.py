@@ -202,7 +202,7 @@ def test_peer_capabilities_format(tmp_path):
     assert "## Your Peers" in result
     assert "**Echo Agent** (id: `peer-1`, status: online)" in result
     assert "Skills: echo, repeat" in result
-    assert "delegate_to_workspace" in result
+    assert "delegate_task_async" in result
     # peer-2 has no agent_card but DOES have a DB name + status — must
     # still render so coordinators can delegate to freshly-created peers
     # whose A2A discovery hasn't populated a card yet (regression of the
@@ -469,3 +469,42 @@ def test_tool_instructions_precede_peer_section(tmp_path):
     a2a_idx = result.index("## Inter-Agent Communication")
     peers_idx = result.index("## Your Peers")
     assert a2a_idx < peers_idx, "A2A instructions must come before the peer list"
+
+
+def test_a2a_doc_lists_unified_tool_names(tmp_path):
+    """Pin tool naming alignment: A2A docs reference the actual @tool symbols.
+
+    Regression for the CP review finding (Issue 1+3): the LangChain runtimes
+    used to expose `delegate_to_workspace` / `check_delegation_status` while
+    the docs referenced MCP-world names (`delegate_task`, `check_task_status`).
+    Workers saw docs for tools that didn't exist. After the rename, both
+    sides use the unified names; this test fails if either side drifts.
+    """
+    (tmp_path / "system-prompt.md").write_text("Base.")
+    result = build_system_prompt(
+        config_path=str(tmp_path),
+        workspace_id="ws-1",
+        loaded_skills=[],
+        peers=[],
+    )
+
+    for name in ("delegate_task", "delegate_task_async", "check_task_status"):
+        assert name in result, f"{name} missing from injected A2A docs"
+    # The pre-rename names must NOT appear — they would mislead workers.
+    assert "delegate_to_workspace" not in result
+    assert "check_delegation_status" not in result
+
+
+def test_hma_doc_lists_unified_tool_names(tmp_path):
+    """commit_memory and recall_memory are the unified HMA tool names."""
+    (tmp_path / "system-prompt.md").write_text("Base.")
+    result = build_system_prompt(
+        config_path=str(tmp_path),
+        workspace_id="ws-1",
+        loaded_skills=[],
+        peers=[],
+    )
+
+    for name in ("commit_memory", "recall_memory"):
+        assert name in result, f"{name} missing from injected HMA docs"
+    assert "search_memory" not in result, "old search_memory name leaked back into docs"

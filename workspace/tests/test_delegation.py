@@ -4,7 +4,7 @@ The delegation tool now returns immediately with a task_id and runs the
 A2A request in the background. Tests verify:
 1. Immediate return with task_id
 2. Background task completion
-3. check_delegation_status retrieval
+3. check_task_status retrieval
 4. Error handling (RBAC, discovery, network)
 """
 
@@ -109,22 +109,22 @@ def delegation_mocks(monkeypatch):
 
 
 async def _invoke(mod, workspace_id="target", task="do stuff"):
-    """Call delegate_to_workspace and return the immediate result."""
-    fn = mod.delegate_to_workspace
+    """Call delegate_task_async and return the immediate result."""
+    fn = mod.delegate_task_async
     if hasattr(fn, "ainvoke"):
         return await fn.ainvoke({"workspace_id": workspace_id, "task": task})
     return await fn(workspace_id=workspace_id, task=task)
 
 
 async def _invoke_and_wait(mod, workspace_id="target", task="do stuff"):
-    """Call delegate_to_workspace, wait for background task, return status."""
+    """Call delegate_task_async, wait for background task, return status."""
     result = await _invoke(mod, workspace_id, task)
     # Wait for all background tasks to complete
     if mod._background_tasks:
         await asyncio.gather(*mod._background_tasks, return_exceptions=True)
     # Get final status
     if "task_id" in result:
-        fn = mod.check_delegation_status
+        fn = mod.check_task_status
         if hasattr(fn, "ainvoke"):
             return await fn.ainvoke({"task_id": result["task_id"]})
         return await fn(task_id=result["task_id"])
@@ -182,7 +182,7 @@ class TestAsyncDelegation:
             await _invoke(mod, workspace_id="ws-a", task="task A")
             await _invoke(mod, workspace_id="ws-b", task="task B")
 
-        fn = mod.check_delegation_status
+        fn = mod.check_task_status
         if hasattr(fn, "ainvoke"):
             result = await fn.ainvoke({"task_id": ""})
         else:
@@ -194,7 +194,7 @@ class TestAsyncDelegation:
     async def test_check_delegation_not_found(self, delegation_mocks):
         mod, *_ = delegation_mocks
 
-        fn = mod.check_delegation_status
+        fn = mod.check_task_status
         if hasattr(fn, "ainvoke"):
             result = await fn.ainvoke({"task_id": "nonexistent"})
         else:
@@ -354,7 +354,7 @@ class TestA2AQueued:
 
 
 class TestQueuedLazyRefresh:
-    """When a delegation is QUEUED, check_delegation_status must lazily
+    """When a delegation is QUEUED, check_task_status must lazily
     refresh from the platform's GET /delegations to pick up drain-stitch
     completions. Without this refresh, the LLM sees "queued" forever
     because the platform never pushes back to the runtime.
@@ -401,7 +401,7 @@ class TestQueuedLazyRefresh:
         refresh_cls.return_value.__aexit__ = AsyncMock(return_value=False)
 
         with patch("httpx.AsyncClient", refresh_cls):
-            fn = mod.check_delegation_status
+            fn = mod.check_task_status
             if hasattr(fn, "ainvoke"):
                 refreshed = await fn.ainvoke({"task_id": task_id})
             else:
@@ -443,7 +443,7 @@ class TestQueuedLazyRefresh:
         refresh_cls.return_value.__aexit__ = AsyncMock(return_value=False)
 
         with patch("httpx.AsyncClient", refresh_cls):
-            fn = mod.check_delegation_status
+            fn = mod.check_task_status
             if hasattr(fn, "ainvoke"):
                 refreshed = await fn.ainvoke({"task_id": task_id})
             else:
@@ -486,7 +486,7 @@ class TestQueuedLazyRefresh:
         refresh_cls.return_value.__aexit__ = AsyncMock(return_value=False)
 
         with patch("httpx.AsyncClient", refresh_cls):
-            fn = mod.check_delegation_status
+            fn = mod.check_task_status
             if hasattr(fn, "ainvoke"):
                 refreshed = await fn.ainvoke({"task_id": task_id})
             else:
@@ -515,7 +515,7 @@ class TestQueuedLazyRefresh:
         refresh_cls.return_value.__aexit__ = AsyncMock(return_value=False)
 
         with patch("httpx.AsyncClient", refresh_cls):
-            fn = mod.check_delegation_status
+            fn = mod.check_task_status
             if hasattr(fn, "ainvoke"):
                 refreshed = await fn.ainvoke({"task_id": task_id})
             else:

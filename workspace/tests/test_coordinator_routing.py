@@ -28,7 +28,7 @@ async def test_route_task_to_team_delegates_preferred_member(monkeypatch):
 
     delegate = MagicMock()
     delegate.ainvoke = AsyncMock(return_value={"ok": True})
-    monkeypatch.setattr(sys.modules["builtin_tools.delegation"], "delegate_to_workspace", delegate)
+    monkeypatch.setattr(sys.modules["builtin_tools.delegation"], "delegate_task_async", delegate)
 
     result = await coordinator.route_task_to_team(
         "Do the thing",
@@ -58,4 +58,4 @@ def test_build_children_description_reuses_shared_renderer():
     assert "## Your Team (sub-workspaces you coordinate)" in description
     assert "**Alpha** (id: `child-1`, status: online)" in description
     assert "Skills: research" in description
-    assert "delegate_to_workspace" in description
+    assert "delegate_task_async" in description

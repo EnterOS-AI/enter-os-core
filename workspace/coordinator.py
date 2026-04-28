@@ -81,7 +81,7 @@ def build_children_description(children: list[dict]) -> str:
         children,
         heading="## Your Team (sub-workspaces you coordinate)",
         instruction=(
-            "Use the `delegate_to_workspace` tool to send tasks to the chosen member. "
+            "Use the `delegate_task_async` tool to send tasks to the chosen member. "
             "Only delegate to members listed above."
         ),
     )
@@ -92,7 +92,7 @@ def build_children_description(children: list[dict]) -> str:
             "",
             "### Coordination Rules — MANDATORY",
             "1. You are a COORDINATOR. Your ONLY job is to delegate and synthesize. NEVER do the work yourself.",
-            "2. For EVERY task, use `delegate_to_workspace` to send it to the appropriate team member(s). "
+            "2. For EVERY task, use `delegate_task_async` to send it to the appropriate team member(s). "
             "Do this BEFORE writing any analysis, code, or research yourself.",
             "3. If a task spans multiple members, delegate to ALL of them in parallel and aggregate results.",
             "4. If ALL members are offline/paused, tell the caller which members are unavailable. "
@@ -120,7 +120,7 @@ async def route_task_to_team(
         task: The task description to route.
         preferred_member_id: Optional — directly delegate to this member.
     """
-    from builtin_tools.delegation import delegate_to_workspace as delegate
+    from builtin_tools.delegation import delegate_task_async as delegate
 
     children = await get_children()
     decision = build_team_routing_payload(
