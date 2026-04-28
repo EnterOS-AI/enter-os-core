@@ -79,6 +79,7 @@ jobs:
       id-token: write   # PyPI Trusted Publisher (OIDC) — no PYPI_TOKEN needed
     outputs:
       version: ${{ steps.version.outputs.version }}
+      wheel_sha256: ${{ steps.wheel_hash.outputs.wheel_sha256 }}
     steps:
       - uses: actions/checkout@v4
 
@@ -128,6 +129,28 @@ jobs:
       - name: Build wheel + sdist
         working-directory: ${{ runner.temp }}/runtime-build
         run: python -m build
+
+      - name: Capture wheel SHA256 for cascade content-verification
+        # Recorded BEFORE upload so the cascade probe can verify the
+        # bytes Fastly serves under the new version's URL match what
+        # we built. Closes a hole left by #2197: that probe verified
+        # pip can resolve the version (catches propagation lag) but
+        # not that the wheel content matches (would silently pass a
+        # Fastly stale-content scenario where the new version's URL
+        # serves an old wheel binary).
+        id: wheel_hash
+        working-directory: ${{ runner.temp }}/runtime-build
+        run: |
+          set -eu
+          WHEEL=$(ls dist/*.whl 2>/dev/null | head -1)
+          if [ -z "$WHEEL" ]; then
+            echo "::error::No .whl in dist/ — `python -m build` must have failed silently"
+            exit 1
+          fi
+          HASH=$(sha256sum "$WHEEL" | awk '{print $1}')
+          echo "wheel_sha256=${HASH}" >> "$GITHUB_OUTPUT"
+          echo "Local wheel SHA256 (pre-upload): ${HASH}"
+          echo "Wheel filename: $(basename "$WHEEL")"
 
       - name: Verify package contents (sanity)
         working-directory: ${{ runner.temp }}/runtime-build
@@ -301,31 +324,41 @@ jobs:
         # resolution in for subsequent rebuilds (the cache trap that
         # bit us five times in one night).
         #
-        # Ground truth: do an actual `pip install --no-cache-dir
-        # PACKAGE==VERSION` from a fresh venv. If pip can resolve and
-        # install the exact version we just published, every receiver
-        # template will too — no more guessing about which surface is
-        # lagging. Slower per poll (~3-5s for venv+resolve vs 50ms for
-        # curl) but the loop budget covers it.
+        # Two-stage probe per poll:
+        #   (a) `pip install --no-cache-dir PACKAGE==VERSION` — succeeds
+        #       only when the version is resolvable. Catches surface (1)
+        #       and (2) propagation lag.
+        #   (b) `pip download` of the same wheel + SHA256 compare against
+        #       the just-built dist's hash. Catches surface (3) lag AND
+        #       Fastly serving stale content under the new version's URL
+        #       (a separate Fastly-corruption mode that pip-install alone
+        #       can't see, since pip install resolves+unpacks against
+        #       whatever bytes Fastly returns and never inspects them).
+        # Both must pass before the cascade fans out.
         #
-        # The venv is reused across polls; only `pip install` runs in
-        # the loop, with --force-reinstall so the previous poll's
-        # cached install doesn't mask propagation lag.
+        # The venv is reused across polls; only `pip install`/`pip
+        # download` run in the loop, with --force-reinstall +
+        # --no-cache-dir so the previous poll's cached state doesn't
+        # mask propagation lag.
         env:
           RUNTIME_VERSION: ${{ needs.publish.outputs.version }}
+          EXPECTED_SHA256: ${{ needs.publish.outputs.wheel_sha256 }}
         run: |
           set -eu
+          if [ -z "$EXPECTED_SHA256" ]; then
+            echo "::error::publish job did not expose wheel_sha256 — cannot verify wheel content. Refusing to fan out cascade."
+            exit 1
+          fi
           python -m venv /tmp/propagation-probe
           PROBE=/tmp/propagation-probe/bin
           $PROBE/pip install --upgrade --quiet pip
-          # Poll budget: 30 attempts × 4s ≈ 2 min. Generous vs PyPI's
-          # typical few-seconds propagation; failures past this are
-          # signal of a real PyPI / Fastly issue, not just lag.
+          # Poll budget: 30 attempts × (~3-5s pip install + ~3s pip
+          # download + 4s sleep) ≈ 5-6 min wall on a slow GH runner.
+          # Generous vs PyPI's typical few-seconds propagation;
+          # failures past this are signal of a real PyPI / Fastly
+          # issue, not just lag.
           for i in $(seq 1 30); do
-            # --no-cache-dir + --force-reinstall: never trust pip's
-            # local cache or a previous successful install — every poll
-            # must hit the live PyPI surfaces. Suppress install output
-            # except on the final printed success line.
+            # Stage (a): can pip resolve and install the version?
             if $PROBE/pip install \
                   --quiet \
                   --no-cache-dir \
@@ -336,13 +369,41 @@ jobs:
               INSTALLED=$($PROBE/pip show molecule-ai-workspace-runtime 2>/dev/null \
                           | awk -F': ' '/^Version:/{print $2}')
               if [ "$INSTALLED" = "$RUNTIME_VERSION" ]; then
-                echo "::notice::✓ pip resolves molecule-ai-workspace-runtime==${RUNTIME_VERSION} after ${i} poll(s)"
-                exit 0
+                # Stage (b): does Fastly serve the bytes we uploaded?
+                # `pip download` writes the actual .whl file to disk so
+                # we can sha256sum it (vs `pip install` which unpacks
+                # and discards).
+                rm -rf /tmp/probe-dl
+                mkdir -p /tmp/probe-dl
+                if $PROBE/pip download \
+                      --quiet \
+                      --no-cache-dir \
+                      --no-deps \
+                      --dest /tmp/probe-dl \
+                      "molecule-ai-workspace-runtime==${RUNTIME_VERSION}" \
+                      >/dev/null 2>&1; then
+                  WHEEL=$(ls /tmp/probe-dl/*.whl 2>/dev/null | head -1)
+                  if [ -n "$WHEEL" ]; then
+                    ACTUAL=$(sha256sum "$WHEEL" | awk '{print $1}')
+                    if [ "$ACTUAL" = "$EXPECTED_SHA256" ]; then
+                      echo "::notice::✓ pip resolves AND wheel content matches after ${i} poll(s) (sha256=${EXPECTED_SHA256})"
+                      exit 0
+                    fi
+                    # Hash mismatch: PyPI accepted our upload but Fastly
+                    # is serving different bytes under the version's URL.
+                    # Most often this is propagation lag of the BINARY
+                    # surface — the version is resolvable but the wheel
+                    # cache hasn't caught up. Retry.
+                    echo "::warning::poll ${i}: wheel content mismatch (got ${ACTUAL:0:12}…, want ${EXPECTED_SHA256:0:12}…) — Fastly likely still serving stale binary, retrying"
+                  fi
+                fi
               fi
             fi
             sleep 4
           done
-          echo "::error::pip never resolved molecule-ai-workspace-runtime==${RUNTIME_VERSION} within 2 min — refusing to fan out cascade against stale PyPI surfaces"
+          echo "::error::pip never resolved molecule-ai-workspace-runtime==${RUNTIME_VERSION} with matching wheel content within ~5 min."
+          echo "::error::Expected wheel SHA256: ${EXPECTED_SHA256}"
+          echo "::error::Refusing to fan out cascade against stale or corrupt PyPI surfaces."
           exit 1
 
       - name: Fan out repository_dispatch
