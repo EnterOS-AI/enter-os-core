@@ -318,9 +318,24 @@ jobs:
           python -m venv /tmp/propagation-probe
           PROBE=/tmp/propagation-probe/bin
           $PROBE/pip install --upgrade --quiet pip
-          # Poll budget: 30 attempts × 4s ≈ 2 min. Generous vs PyPI's
+          # Poll budget: 30 attempts × (~3-5s pip install + 4s sleep)
+          # ≈ 4-5 min wall on a slow GH runner. Generous vs PyPI's
           # typical few-seconds propagation; failures past this are
           # signal of a real PyPI / Fastly issue, not just lag.
+          #
+          # Caveat: --no-cache-dir busts pip's local cache, but it does
+          # NOT bust upstream Fastly CDN caches. If Fastly serves a
+          # stale 404 for the new version, this probe correctly fails
+          # and retries (the live propagation case we're protecting
+          # against). If Fastly serves stale CONTENT under the new
+          # version's URL — i.e. PyPI accepts the upload, the metadata
+          # endpoint shows the new version, but Fastly's edge is still
+          # caching an older wheel under the same path — this probe
+          # would resolve `==VERSION` successfully against that stale
+          # body and exit 0 with the wrong content. That's a separate
+          # PyPI-corruption failure mode, not a propagation lag — we
+          # don't currently validate wheel hash against the just-
+          # uploaded dist. Tracked as a follow-up.
           for i in $(seq 1 30); do
             # --no-cache-dir + --force-reinstall: never trust pip's
             # local cache or a previous successful install — every poll
@@ -342,7 +357,7 @@ jobs:
             fi
             sleep 4
           done
-          echo "::error::pip never resolved molecule-ai-workspace-runtime==${RUNTIME_VERSION} within 2 min — refusing to fan out cascade against stale PyPI surfaces"
+          echo "::error::pip never resolved molecule-ai-workspace-runtime==${RUNTIME_VERSION} within ~4 min — refusing to fan out cascade against stale PyPI surfaces"
           exit 1
 
       - name: Fan out repository_dispatch

@@ -121,9 +121,14 @@ jobs:
       - name: Build wheel from PR source (mirrors publish-runtime.yml)
         # Use a fixed test version so the wheel filename is predictable.
         # Doesn't reach PyPI — this build is local-only for the smoke.
-        # Keep the build invocation byte-identical with publish-runtime.yml's
-        # build step so we test the SAME artifact pipeline; if they drift,
-        # the gate stops catching what publish actually ships.
+        # Use the SAME build script with the SAME args as
+        # publish-runtime.yml's build step. The temp dir path differs
+        # (`/tmp/runtime-build` here vs `${{ runner.temp }}/runtime-build`
+        # in publish-runtime.yml — they coincide on ubuntu-latest but
+        # the call sites are not byte-identical). The smoke import is
+        # also intentionally narrower than publish's: this gate exists
+        # to catch SDK-version-import drift specifically; full invariant
+        # coverage lives in publish-runtime.yml's own pre-PyPI smoke.
         run: |
           python scripts/build_runtime_package.py \
             --version "0.0.0.dev0+pin-compat" \
