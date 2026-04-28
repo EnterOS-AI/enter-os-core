@@ -1,27 +1,73 @@
 name: E2E API Smoke Test
 # Extracted from ci.yml so workflow-level concurrency can protect this job
 # from run-level cancellation (issue #458).
+#
+# Trigger model (changed 2026-04-28 — see auto-promote gap below):
+#
+# This workflow always FIRES on push/pull_request to staging+main, but
+# only does real work when paths under `workspace-server/`,
+# `tests/e2e/`, or this workflow file changed. The detect-changes job
+# uses dorny/paths-filter to decide; the e2e-api job runs only if
+# changes match. Otherwise the no-op job emits success so the workflow
+# always produces a `completed/success` run record.
+#
+# Why: auto-promote-staging.yml's gate-check (line 99) treats "workflow
+# didn't run" as failure, which dead-locked any platform-only or
+# test-only push to staging that didn't touch workspace-server paths.
+# Dropping the path filter on the trigger and gating real work
+# internally guarantees the workflow always emits a result that the
+# auto-promote chain can read. Same pattern applied to
+# e2e-staging-canvas.yml in the same PR.
 
 on:
   push:
     branches: [main, staging]
-    paths:
-      - 'workspace-server/**'
-      - 'tests/e2e/**'
-      - '.github/workflows/e2e-api.yml'
   pull_request:
     branches: [main, staging]
-    paths:
-      - 'workspace-server/**'
-      - 'tests/e2e/**'
-      - '.github/workflows/e2e-api.yml'
+  workflow_dispatch:
 
 concurrency:
   group: e2e-api-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      api: ${{ steps.decide.outputs.api }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            api:
+              - 'workspace-server/**'
+              - 'tests/e2e/**'
+              - '.github/workflows/e2e-api.yml'
+      - id: decide
+        # Always run real work for manual dispatch — no diff context to
+        # filter against and ops dispatching this expects the suite to
+        # actually exercise the platform.
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "api=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "api=${{ steps.filter.outputs.api }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  no-op:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.api != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "No workspace-server / tests/e2e / workflow changes — E2E API gate satisfied without running tests."
+          echo "::notice::E2E API Smoke Test no-op pass (paths filter excluded this commit)."
+
   e2e-api:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.api == 'true'
     name: E2E API Smoke Test
     runs-on: ubuntu-latest
     timeout-minutes: 15
