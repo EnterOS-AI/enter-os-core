@@ -289,28 +289,60 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Wait for PyPI to propagate the new version
-        # PyPI accepts the upload, then takes a few seconds to make it
-        # available via the package index. If the cascade fires too
-        # fast, downstream template builds run `pip install` against
-        # an index that hasn't seen the new version yet — they resolve
-        # to the previous one, and docker layer cache then locks that
-        # in for subsequent rebuilds (the cache trap that bit us five
-        # times tonight).
+        # PyPI accepts the upload, then takes a few seconds to make the
+        # new version visible across all THREE surfaces pip touches:
+        #   1. /pypi/<pkg>/<ver>/json — metadata endpoint
+        #   2. /simple/<pkg>/         — pip's primary download index
+        #   3. files.pythonhosted.org — CDN-fronted wheel binary
+        # Each has its own cache. The previous check polled only (1)
+        # and would let the cascade fire while (2) or (3) still served
+        # the previous version, so downstream `pip install` resolved
+        # to the old wheel. Docker layer cache then locked that stale
+        # resolution in for subsequent rebuilds (the cache trap that
+        # bit us five times in one night).
         #
-        # Poll PyPI's JSON API for up to 60s. Cheap (~50ms per poll),
-        # avoids over-trusting "publish job said success."
+        # Ground truth: do an actual `pip install --no-cache-dir
+        # PACKAGE==VERSION` from a fresh venv. If pip can resolve and
+        # install the exact version we just published, every receiver
+        # template will too — no more guessing about which surface is
+        # lagging. Slower per poll (~3-5s for venv+resolve vs 50ms for
+        # curl) but the loop budget covers it.
+        #
+        # The venv is reused across polls; only `pip install` runs in
+        # the loop, with --force-reinstall so the previous poll's
+        # cached install doesn't mask propagation lag.
         env:
           RUNTIME_VERSION: ${{ needs.publish.outputs.version }}
         run: |
           set -eu
+          python -m venv /tmp/propagation-probe
+          PROBE=/tmp/propagation-probe/bin
+          $PROBE/pip install --upgrade --quiet pip
+          # Poll budget: 30 attempts × 4s ≈ 2 min. Generous vs PyPI's
+          # typical few-seconds propagation; failures past this are
+          # signal of a real PyPI / Fastly issue, not just lag.
           for i in $(seq 1 30); do
-            if curl -fsS "https://pypi.org/pypi/molecule-ai-workspace-runtime/${RUNTIME_VERSION}/json" >/dev/null 2>&1; then
-              echo "::notice::✓ PyPI serving ${RUNTIME_VERSION} after ${i} polls"
-              exit 0
+            # --no-cache-dir + --force-reinstall: never trust pip's
+            # local cache or a previous successful install — every poll
+            # must hit the live PyPI surfaces. Suppress install output
+            # except on the final printed success line.
+            if $PROBE/pip install \
+                  --quiet \
+                  --no-cache-dir \
+                  --force-reinstall \
+                  --no-deps \
+                  "molecule-ai-workspace-runtime==${RUNTIME_VERSION}" \
+                  >/dev/null 2>&1; then
+              INSTALLED=$($PROBE/pip show molecule-ai-workspace-runtime 2>/dev/null \
+                          | awk -F': ' '/^Version:/{print $2}')
+              if [ "$INSTALLED" = "$RUNTIME_VERSION" ]; then
+                echo "::notice::✓ pip resolves molecule-ai-workspace-runtime==${RUNTIME_VERSION} after ${i} poll(s)"
+                exit 0
+              fi
             fi
-            sleep 2
+            sleep 4
           done
-          echo "::error::PyPI never propagated ${RUNTIME_VERSION} within 60s — refusing to fan out cascade against stale index"
+          echo "::error::pip never resolved molecule-ai-workspace-runtime==${RUNTIME_VERSION} within 2 min — refusing to fan out cascade against stale PyPI surfaces"
           exit 1
 
       - name: Fan out repository_dispatch
