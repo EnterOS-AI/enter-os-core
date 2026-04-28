@@ -203,8 +203,11 @@ def test_peer_capabilities_format(tmp_path):
     assert "**Echo Agent** (id: `peer-1`, status: online)" in result
     assert "Skills: echo, repeat" in result
     assert "delegate_to_workspace" in result
-    # peer-2 has no agent_card so it's skipped
-    assert "Silent Agent" not in result
+    # peer-2 has no agent_card but DOES have a DB name + status — must
+    # still render so coordinators can delegate to freshly-created peers
+    # whose A2A discovery hasn't populated a card yet (regression of the
+    # 2026-04-27 Design Director discovery bug).
+    assert "**Silent Agent** (id: `peer-2`, status: offline)" in result
 
 
 def test_peer_with_json_string_agent_card(tmp_path):

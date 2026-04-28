@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from a2a.server.agent_execution import RequestContext
@@ -89,33 +90,46 @@ def append_peer_guidance(
 
 
 def summarize_peer_cards(peers: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return compact peer metadata for prompt rendering."""
+    """Return compact peer metadata for prompt rendering.
+
+    Falls back to the registry row's `name` and `role` when `agent_card` is
+    null or unparseable so peers stay visible to delegators even before
+    their A2A discovery roundtrip has populated a card. Without this
+    fallback a coordinator-tier workspace with N freshly-created worker
+    peers would render an empty `## Your Peers` section and refuse to
+    delegate (the regression behind the 2026-04-27 Design Director
+    discovery bug).
+    """
     summaries: list[dict[str, Any]] = []
     for peer in peers:
         agent_card = peer.get("agent_card")
-        if not agent_card:
-            continue
         if isinstance(agent_card, str):
             try:
-                import json
-
                 agent_card = json.loads(agent_card)
             except Exception:
-                continue
+                agent_card = None
         if not isinstance(agent_card, dict):
-            continue
+            agent_card = None
 
-        skills = agent_card.get("skills", [])
+        if agent_card:
+            skills_raw = agent_card.get("skills") or []
+            skills = [
+                s.get("name", s.get("id", ""))
+                for s in skills_raw
+                if isinstance(s, dict)
+            ]
+            name = agent_card.get("name") or peer.get("name") or "Unknown"
+        else:
+            skills = []
+            name = peer.get("name") or "Unknown"
+
         summaries.append(
             {
                 "id": peer.get("id", "unknown"),
-                "name": agent_card.get("name", peer.get("name", "Unknown")),
+                "name": name,
+                "role": peer.get("role") or "",
                 "status": peer.get("status", "unknown"),
-                "skills": [
-                    s.get("name", s.get("id", ""))
-                    for s in skills
-                    if isinstance(s, dict)
-                ],
+                "skills": skills,
             }
         )
     return summaries
@@ -140,6 +154,8 @@ def build_peer_section(
         parts.append(f"- **{peer['name']}** (id: `{peer['id']}`, status: {peer['status']})")
         if peer["skills"]:
             parts.append(f"  Skills: {', '.join(peer['skills'])}")
+        elif peer.get("role"):
+            parts.append(f"  Role: {peer['role']}")
         parts.append("")
     parts.append(instruction)
     return "\n".join(parts)
