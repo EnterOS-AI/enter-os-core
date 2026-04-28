@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
-	"github.com/Molecule-AI/molecule-monorepo/platform/internal/wsauth"
 	"github.com/lib/pq"
 )
 
@@ -334,17 +333,34 @@ const staleTokenGrace = 5 * time.Minute
 //     mode there is no Docker daemon and the sweeper doesn't run, so an
 //     empty container list cannot be confused with "no Docker at all"
 //     here (which would otherwise revoke every workspace's tokens).
+//     The function also short-circuits on a nil reaper as a belt-and-
+//     braces guard against a future refactor wiring it incorrectly.
 //
 //  2. staleTokenGrace skips tokens that were issued or used in the
 //     last 5 minutes. Bounds the race with mid-provisioning (token
 //     issued moments before docker run completes) and brief restart
 //     windows.
 //
-//  3. The DB query joins on workspaces.status != 'removed' so deleted
-//     workspaces are not revoked here — those are handled at delete
-//     time by the explicit RevokeAllForWorkspace call.
+//  3. CRITICAL: the staleness predicate is enforced AT THE UPDATE,
+//     not just at the SELECT. This closes a TOCTOU race against
+//     workspace_provision.go:issueAndInjectToken — the platform's
+//     restart endpoint Stops the container synchronously then dispatches
+//     re-provisioning to a goroutine, so a stale-on-SELECT workspace
+//     can have a fresh token inserted by issueAndInjectToken between
+//     our SELECT and our UPDATE. A predicate-only `WHERE workspace_id
+//     = $1 AND revoked_at IS NULL` UPDATE would catch that fresh token
+//     too. Carrying COALESCE(last_used_at, created_at) < now() - grace
+//     in the UPDATE makes the operation idempotent against fresh
+//     inserts: a token created within the grace window cannot match.
 //
-//  4. Each revocation is logged with the workspace ID so operators can
+//  4. The DB query joins on workspaces.status NOT IN ('removed',
+//     'provisioning') so deleted and mid-restart workspaces are not
+//     revoked here — those are handled at delete time and by
+//     issueAndInjectToken respectively. (`status = 'provisioning'` is
+//     set synchronously in workspace_restart.go before the async
+//     re-provision begins, so it's a reliable in-flight signal.)
+//
+//  5. Each revocation is logged with the workspace ID so operators can
 //     correlate "workspace just lost auth" with this sweeper, not blame
 //     a network blip.
 //
@@ -352,6 +368,15 @@ const staleTokenGrace = 5 * time.Minute
 // next sweep cycle (60s out) retries. Worst case: a workspace stays
 // 401-blocked an extra minute.
 func sweepStaleTokensWithoutContainer(ctx context.Context, reaper OrphanReaper) {
+	// Defence-in-depth (F2): a future refactor that wires the sweeper
+	// in CP/SaaS mode without checking prov would otherwise hit this
+	// pass with a nil reaper. The StartOrphanSweeper entry point
+	// already short-circuits on nil, but we don't want to depend on
+	// every future caller doing the same.
+	if reaper == nil {
+		return
+	}
+
 	prefixes, err := reaper.ListWorkspaceContainerIDPrefixes(ctx)
 	if err != nil {
 		log.Printf("Orphan sweeper: ListWorkspaceContainerIDPrefixes failed: %v — skipping stale-token pass", err)
@@ -361,6 +386,14 @@ func sweepStaleTokensWithoutContainer(ctx context.Context, reaper OrphanReaper) 
 	// Same hex-and-dash filter as the other passes — anything that
 	// can't be a workspace UUID prefix doesn't belong in a SQL LIKE
 	// pattern.
+	//
+	// NOTE: an empty `likes` array is intentionally NOT a short-circuit.
+	// "No workspace containers" is the load-bearing case for this pass
+	// (operator nuked everything). The `cardinality($1) = 0` clause in
+	// the SELECT below treats empty likes as "no LIKE filter" → every
+	// stale-token workspace becomes a candidate. The first two passes'
+	// early-return-on-empty-prefixes pattern would defeat this entire
+	// pass's purpose.
 	likes := make([]string, 0, len(prefixes))
 	for _, p := range prefixes {
 		if !isLikelyWorkspaceID(p) {
@@ -379,18 +412,19 @@ func sweepStaleTokensWithoutContainer(ctx context.Context, reaper OrphanReaper) 
 	// make_interval(secs => $2) avoids the time.Duration.String() →
 	// `"5m0s"` mismatch with Postgres interval grammar; passing seconds
 	// as an int keeps the binding portable.
+	graceSeconds := int(staleTokenGrace.Seconds())
 	rows, qErr := db.DB.QueryContext(ctx, `
 		SELECT DISTINCT t.workspace_id::text
 		  FROM workspace_auth_tokens t
 		  JOIN workspaces w ON w.id = t.workspace_id
 		 WHERE t.revoked_at IS NULL
-		   AND w.status != 'removed'
+		   AND w.status NOT IN ('removed', 'provisioning')
 		   AND COALESCE(t.last_used_at, t.created_at) < now() - make_interval(secs => $2)
 		   AND (
 		         cardinality($1::text[]) = 0
 		      OR NOT (t.workspace_id::text LIKE ANY($1::text[]))
 		   )
-	`, pq.Array(likes), int(staleTokenGrace.Seconds()))
+	`, pq.Array(likes), graceSeconds)
 	if qErr != nil {
 		log.Printf("Orphan sweeper: stale-token query failed: %v — skipping stale-token pass", qErr)
 		return
@@ -411,12 +445,28 @@ func sweepStaleTokensWithoutContainer(ctx context.Context, reaper OrphanReaper) 
 		return
 	}
 
+	// Per-workspace UPDATE with the SAME staleness predicate as the
+	// SELECT, so any token inserted between SELECT and UPDATE (e.g.
+	// issueAndInjectToken racing during a user-triggered restart of a
+	// long-idle workspace) is automatically excluded — its created_at
+	// is fresh and won't satisfy `< now() - grace`.
+	//
+	// We deliberately bypass wsauth.RevokeAllForWorkspace here because
+	// that helper revokes EVERY live token for the workspace; we want
+	// "every STALE live token", which is a different (safer) operation.
 	for _, wsID := range staleWorkspaceIDs {
 		log.Printf("Orphan sweeper: revoking stale tokens for workspace %s (no live container; volume likely wiped)", wsID)
-		if revokeErr := wsauth.RevokeAllForWorkspace(ctx, db.DB, wsID); revokeErr != nil {
+		_, revokeErr := db.DB.ExecContext(ctx, `
+			UPDATE workspace_auth_tokens
+			   SET revoked_at = now()
+			 WHERE workspace_id = $1
+			   AND revoked_at IS NULL
+			   AND COALESCE(last_used_at, created_at) < now() - make_interval(secs => $2)
+		`, wsID, graceSeconds)
+		if revokeErr != nil {
 			// Non-fatal — next sweep retries. Bail on the loop so a
 			// systemic DB error doesn't spam the log on every iteration.
-			log.Printf("Orphan sweeper: RevokeAllForWorkspace(%s) failed: %v — will retry next cycle", wsID, revokeErr)
+			log.Printf("Orphan sweeper: stale-token revoke for %s failed: %v — will retry next cycle", wsID, revokeErr)
 			return
 		}
 	}

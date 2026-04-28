@@ -19,8 +19,12 @@ import (
 // Centralising the regex here keeps the existing test suite readable —
 // individual tests don't have to spell out a query they're not actually
 // asserting against.
+//
+// The regex is anchored at the start of the query AND requires the
+// status-filter to keep us from accidentally matching a future query
+// that opens with the same column name. R3 from the review.
 func expectStaleTokenSweepNoOp(mock sqlmock.Sqlmock) {
-	mock.ExpectQuery(`SELECT DISTINCT t\.workspace_id::text\s+FROM workspace_auth_tokens`).
+	mock.ExpectQuery(`(?s)^\s*SELECT DISTINCT t\.workspace_id::text\s+FROM workspace_auth_tokens.*status NOT IN \('removed', 'provisioning'\)`).
 		WillReturnRows(sqlmock.NewRows([]string{"workspace_id"}))
 }
 
@@ -481,13 +485,19 @@ func TestSweepOnce_StaleTokenRevokeFiresWhenNoContainer(t *testing.T) {
 			AddRow("abc123def456-0000-0000-0000-000000000000"))
 
 	// Third-pass query returns the orphaned workspace.
-	mock.ExpectQuery(`SELECT DISTINCT t\.workspace_id::text\s+FROM workspace_auth_tokens`).
+	// Tight regex pins the safety guards: status-filter excludes
+	// 'removed' and 'provisioning' (R2 + the C1 fix), and the
+	// staleness predicate appears in the SELECT.
+	mock.ExpectQuery(`(?s)^\s*SELECT DISTINCT t\.workspace_id::text\s+FROM workspace_auth_tokens.*status NOT IN \('removed', 'provisioning'\).*COALESCE\(t\.last_used_at, t\.created_at\) < now\(\) - make_interval`).
 		WillReturnRows(sqlmock.NewRows([]string{"workspace_id"}).
 			AddRow(orphanedID))
 
-	// Revoke executes one UPDATE.
-	mock.ExpectExec(`UPDATE workspace_auth_tokens\s+SET revoked_at`).
-		WithArgs(orphanedID).
+	// Revoke executes one UPDATE — and the UPDATE itself MUST also
+	// carry the staleness predicate (closes the C1 TOCTOU race
+	// against issueAndInjectToken inserting a fresh token between
+	// our SELECT and our UPDATE).
+	mock.ExpectExec(`(?s)UPDATE workspace_auth_tokens\s+SET revoked_at = now\(\)\s+WHERE workspace_id = \$1\s+AND revoked_at IS NULL\s+AND COALESCE\(last_used_at, created_at\) < now\(\) - make_interval`).
+		WithArgs(orphanedID, 300).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	sweepOnce(context.Background(), reaper)
@@ -534,12 +544,12 @@ func TestSweepOnce_StaleTokenRevokeFailureBailsLoop(t *testing.T) {
 
 	// Third-pass returns two stale-token workspaces; the first revoke
 	// errors. Loop must bail without attempting the second.
-	mock.ExpectQuery(`SELECT DISTINCT t\.workspace_id::text\s+FROM workspace_auth_tokens`).
+	mock.ExpectQuery(`(?s)^\s*SELECT DISTINCT t\.workspace_id::text\s+FROM workspace_auth_tokens.*status NOT IN \('removed', 'provisioning'\)`).
 		WillReturnRows(sqlmock.NewRows([]string{"workspace_id"}).
 			AddRow("aaaa1111-0000-0000-0000-000000000000").
 			AddRow("bbbb2222-0000-0000-0000-000000000000"))
-	mock.ExpectExec(`UPDATE workspace_auth_tokens\s+SET revoked_at`).
-		WithArgs("aaaa1111-0000-0000-0000-000000000000").
+	mock.ExpectExec(`(?s)UPDATE workspace_auth_tokens\s+SET revoked_at = now\(\)\s+WHERE workspace_id = \$1\s+AND revoked_at IS NULL\s+AND COALESCE\(last_used_at, created_at\) < now\(\) - make_interval`).
+		WithArgs("aaaa1111-0000-0000-0000-000000000000", 300).
 		WillReturnError(errors.New("connection reset"))
 	// No second ExpectExec: if the loop tries it, sqlmock fails
 	// "unexpected call".
@@ -561,10 +571,63 @@ func TestSweepOnce_StaleTokenQueryErrorIsNonFatal(t *testing.T) {
 
 	reaper := &fakeReaper{listResponse: nil}
 
-	mock.ExpectQuery(`SELECT DISTINCT t\.workspace_id::text\s+FROM workspace_auth_tokens`).
+	mock.ExpectQuery(`(?s)^\s*SELECT DISTINCT t\.workspace_id::text\s+FROM workspace_auth_tokens.*status NOT IN \('removed', 'provisioning'\)`).
 		WillReturnError(errors.New("connection reset"))
 
 	sweepOnce(context.Background(), reaper)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// TestSweepOnce_StaleTokenRevokeUsesStalenessPredicate — pin the C1
+// race fix: the per-workspace UPDATE must carry the staleness
+// predicate so a token inserted by issueAndInjectToken between our
+// SELECT and our UPDATE is automatically excluded (its created_at is
+// fresh and won't satisfy `< now() - grace`).
+//
+// This test asserts the SHAPE of the UPDATE (predicate present, grace
+// argument bound). A real-Postgres integration test would prove the
+// race resolution end-to-end; this catches the regression where
+// someone "simplifies" the UPDATE back to a predicate-only revoke.
+func TestSweepOnce_StaleTokenRevokeUsesStalenessPredicate(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	const orphanedID = "deadbeef-0000-0000-0000-000000000000"
+	reaper := &fakeReaper{listResponse: nil}
+
+	mock.ExpectQuery(`(?s)^\s*SELECT DISTINCT t\.workspace_id::text\s+FROM workspace_auth_tokens.*status NOT IN \('removed', 'provisioning'\)`).
+		WillReturnRows(sqlmock.NewRows([]string{"workspace_id"}).
+			AddRow(orphanedID))
+
+	// The UPDATE regex requires every guard: workspace_id binding,
+	// revoked_at IS NULL, AND the staleness predicate using the SAME
+	// COALESCE expression as the SELECT. Loosening any of these
+	// would re-open the C1 race, and this regex would no longer match.
+	mock.ExpectExec(`(?s)UPDATE workspace_auth_tokens\s+SET revoked_at = now\(\)\s+WHERE workspace_id = \$1\s+AND revoked_at IS NULL\s+AND COALESCE\(last_used_at, created_at\) < now\(\) - make_interval\(secs => \$2\)`).
+		WithArgs(orphanedID, 300).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	sweepOnce(context.Background(), reaper)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// TestSweepStaleTokens_NilReaperEarlyExit — defence-in-depth (F2):
+// even though StartOrphanSweeper short-circuits on nil reaper, the
+// individual pass also early-exits. Protects against future refactors
+// that wire the pass without the outer guard.
+func TestSweepStaleTokens_NilReaperEarlyExit(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	// No DB queries expected. If the early-return is removed, sqlmock
+	// fails on the unexpected SELECT.
+	sweepStaleTokensWithoutContainer(context.Background(), nil)
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet sqlmock expectations: %v", err)
