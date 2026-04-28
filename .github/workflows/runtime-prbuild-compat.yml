@@ -1,0 +1,100 @@
+name: Runtime PR-Built Compatibility
+
+# Companion to `runtime-pin-compat.yml`. That workflow tests what's
+# CURRENTLY PUBLISHED on PyPI; this workflow tests what WOULD BE
+# PUBLISHED if THIS PR merges.
+#
+# Why two workflows: the chicken-and-egg #128 fix added a "PR-built
+# wheel" job to the original runtime-pin-compat.yml, but both jobs
+# shared a `paths:` filter that was the union of their needs
+# (`workspace/**`). That meant the PyPI-latest job ran on every doc
+# edit even though the upstream PyPI artifact can't change with our
+# workspace/ source. Splitting the two means each gets a narrow
+# `paths:` filter that matches the inputs it actually depends on.
+#
+# Catches the failure mode where a PR adds an import requiring a newer
+# SDK than `workspace/requirements.txt` pins:
+#   1. Pip resolves the existing PyPI wheel + the old SDK pin → smoke
+#      passes (it imports the OLD main.py from the wheel, not the PR's
+#      new main.py).
+#   2. Merge → publish-runtime.yml ships a wheel WITH the new import.
+#   3. Tenant images redeploy → all crash on first boot with
+#      ImportError.
+#
+# By building from the PR's source and smoke-importing THAT wheel, we
+# fail at PR-time instead of after publish.
+
+on:
+  push:
+    branches: [main, staging]
+    paths:
+      # Broad filter: this workflow's verdict can change whenever any
+      # workspace/ source file changes (because the wheel we build is
+      # produced from those files), or when the build script itself
+      # changes (it controls the wheel layout).
+      - 'workspace/**'
+      - 'scripts/build_runtime_package.py'
+      - '.github/workflows/runtime-prbuild-compat.yml'
+  pull_request:
+    branches: [main, staging]
+    paths:
+      - 'workspace/**'
+      - 'scripts/build_runtime_package.py'
+      - '.github/workflows/runtime-prbuild-compat.yml'
+  workflow_dispatch:
+  # Required-check support: when this becomes a branch-protection gate,
+  # merge_group runs let the queue green-check this in addition to PRs.
+  merge_group:
+    types: [checks_requested]
+  # No cron: the same pre-merge run already covered the commit, and
+  # re-running daily wouldn't surface anything new (workspace/ doesn't
+  # change between cron firings unless a PR already passed this gate).
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  local-build-install:
+    # Builds the wheel from THIS PR's workspace/ + scripts/ and tests
+    # IT — the artifact that WOULD be published if this PR merges.
+    name: PR-built wheel + import smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: workspace/requirements.txt
+      - name: Install build tooling
+        run: pip install build
+      - name: Build wheel from PR source (mirrors publish-runtime.yml)
+        # Use a fixed test version so the wheel filename is predictable.
+        # Doesn't reach PyPI — this build is local-only for the smoke.
+        # Use the SAME build script with the SAME args as
+        # publish-runtime.yml's build step. The temp dir path differs
+        # (`/tmp/runtime-build` here vs `${{ runner.temp }}/runtime-build`
+        # in publish-runtime.yml — they coincide on ubuntu-latest but
+        # the call sites are not byte-identical). The smoke import is
+        # also intentionally narrower than publish's: this gate exists
+        # to catch SDK-version-import drift specifically; full invariant
+        # coverage lives in publish-runtime.yml's own pre-PyPI smoke.
+        run: |
+          python scripts/build_runtime_package.py \
+            --version "0.0.0.dev0+pin-compat" \
+            --out /tmp/runtime-build
+          cd /tmp/runtime-build && python -m build
+      - name: Install built wheel + workspace requirements
+        run: |
+          python -m venv /tmp/venv-built
+          /tmp/venv-built/bin/pip install --upgrade pip
+          /tmp/venv-built/bin/pip install /tmp/runtime-build/dist/*.whl
+          /tmp/venv-built/bin/pip install -r workspace/requirements.txt
+          /tmp/venv-built/bin/pip show molecule-ai-workspace-runtime a2a-sdk \
+            | grep -E '^(Name|Version):'
+      - name: Smoke import the PR-built wheel
+        env:
+          WORKSPACE_ID: 00000000-0000-0000-0000-000000000001
+        run: |
+          /tmp/venv-built/bin/python -c "from molecule_runtime.main import main_sync; print('PR-built runtime imports OK')"
