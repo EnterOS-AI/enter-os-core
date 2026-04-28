@@ -61,13 +61,30 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Required gate workflow names. Must match the `name:` field
-          # in the respective .github/workflows/*.yml files.
+          # Required gate workflow files. Use file paths (relative to
+          # .github/workflows/) rather than display names because:
+          #
+          #   1. `gh run list --workflow=<name>` is ambiguous when two
+          #      workflows have the same `name:` — observed 2026-04-28
+          #      with "CodeQL" matching both `codeql.yml` (explicit) and
+          #      GitHub's UI-configured Code-quality default setup
+          #      (internal "codeql"). gh CLI returns "could not resolve
+          #      to a unique workflow" → empty result → gate evaluated
+          #      as missing/none → auto-promote dead-locked despite all
+          #      checks actually passing.
+          #
+          #   2. File paths are the unique identifier for workflows;
+          #      `name:` is just a display string and can collide.
+          #
+          # When adding/removing a gate, update this list AND the
+          # branch-protection required-checks list (which uses check-run
+          # display names, not workflow names; the two are decoupled and
+          # should be kept in sync manually).
           GATES=(
-            "CI"
-            "E2E Staging Canvas (Playwright)"
-            "E2E API Smoke Test"
-            "CodeQL"
+            "ci.yml"
+            "e2e-staging-canvas.yml"
+            "e2e-api.yml"
+            "codeql.yml"
           )
 
           echo "head_sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
