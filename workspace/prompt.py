@@ -4,6 +4,7 @@ import logging
 import os
 from pathlib import Path
 
+from executor_helpers import get_a2a_instructions, get_hma_instructions
 from skill_loader.loader import LoadedSkill
 from shared_runtime import build_peer_section
 
@@ -68,6 +69,7 @@ def build_system_prompt(
     plugin_prompts: list[str] | None = None,
     parent_context: list[dict] | None = None,
     platform_instructions: str = "",
+    a2a_mcp: bool = True,
 ) -> str:
     """Build the complete system prompt.
 
@@ -153,6 +155,20 @@ def build_system_prompt(
                 parts.append(skill.metadata.description)
             parts.append(skill.instructions)
             parts.append("")
+
+    # Platform tool instructions: A2A (inter-agent communication) and HMA
+    # (persistent memory). These document how to call delegate_task,
+    # commit_memory, etc — without them, agents see the tools registered
+    # but have no instructions on when/how to use them. Placed between
+    # Skills and Peers so the A2A docs precede the peer list (which is
+    # the data shape the A2A tools operate over).
+    #
+    # a2a_mcp=True: MCP tool variant (claude-code, hermes, langchain,
+    # crewai). a2a_mcp=False: CLI subprocess variant (ollama, custom
+    # runtimes that don't speak MCP). Default True matches the
+    # MCP-capable majority; CLI-only adapters override at the call site.
+    parts.append(get_a2a_instructions(mcp=a2a_mcp))
+    parts.append(get_hma_instructions())
 
     # Add peer capabilities with a single shared renderer.
     peer_section = build_peer_section(peers)

@@ -395,3 +395,77 @@ async def test_get_peer_capabilities_exception():
         result = await get_peer_capabilities("http://platform:8080", "ws-abc")
 
     assert result == []
+
+
+# Regression tests for the A2A + HMA tool-instruction injection. Pre-fix,
+# get_a2a_instructions() and get_hma_instructions() were defined in
+# executor_helpers.py but never called from build_system_prompt — workers
+# saw the platform's delegate_task / commit_memory tools registered but
+# had no documentation telling them how to use them.
+
+def test_a2a_instructions_injected_default_mcp(tmp_path):
+    """build_system_prompt embeds A2A MCP-variant instructions by default."""
+    (tmp_path / "system-prompt.md").write_text("Base.")
+
+    result = build_system_prompt(
+        config_path=str(tmp_path),
+        workspace_id="ws-1",
+        loaded_skills=[],
+        peers=[],
+    )
+
+    assert "## Inter-Agent Communication" in result
+    assert "delegate_task" in result
+    assert "list_peers" in result
+    assert "send_message_to_user" in result
+
+
+def test_a2a_instructions_cli_variant_when_disabled(tmp_path):
+    """a2a_mcp=False emits the CLI subprocess variant for non-MCP runtimes."""
+    (tmp_path / "system-prompt.md").write_text("Base.")
+
+    result = build_system_prompt(
+        config_path=str(tmp_path),
+        workspace_id="ws-1",
+        loaded_skills=[],
+        peers=[],
+        a2a_mcp=False,
+    )
+
+    assert "## Inter-Agent Communication" in result
+    assert "molecule_runtime.a2a_cli" in result
+    # MCP-only details must NOT leak into the CLI variant.
+    assert "send_message_to_user" not in result
+
+
+def test_hma_instructions_injected(tmp_path):
+    """build_system_prompt embeds HMA persistent-memory instructions."""
+    (tmp_path / "system-prompt.md").write_text("Base.")
+
+    result = build_system_prompt(
+        config_path=str(tmp_path),
+        workspace_id="ws-1",
+        loaded_skills=[],
+        peers=[],
+    )
+
+    assert "## Hierarchical Memory (HMA)" in result
+    assert "commit_memory" in result
+    assert "recall_memory" in result
+
+
+def test_tool_instructions_precede_peer_section(tmp_path):
+    """A2A docs must precede the peer list — peer IDs are operands of A2A tools."""
+    (tmp_path / "system-prompt.md").write_text("Base.")
+
+    peers = [{"id": "p1", "name": "Worker", "status": "active", "agent_card": None}]
+    result = build_system_prompt(
+        config_path=str(tmp_path),
+        workspace_id="ws-1",
+        loaded_skills=[],
+        peers=peers,
+    )
+
+    a2a_idx = result.index("## Inter-Agent Communication")
+    peers_idx = result.index("## Your Peers")
+    assert a2a_idx < peers_idx, "A2A instructions must come before the peer list"
