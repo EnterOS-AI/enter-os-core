@@ -13,16 +13,23 @@ name: E2E Staging Canvas (Playwright)
 # workflow — mirrors what PR #1891 does for e2e-api.yml.
 
 on:
+  # Trigger model (changed 2026-04-28 — see auto-promote gap below):
+  #
+  # Always fires on push/pull_request; only does real work when canvas/
+  # or this workflow file changed. The detect-changes job uses
+  # dorny/paths-filter to decide; the playwright job runs only if
+  # changes match. Otherwise no-op emits success so the workflow always
+  # produces a `completed/success` run record.
+  #
+  # Why: auto-promote-staging.yml's gate-check (line 99) treats
+  # "workflow didn't run" as failure, which dead-locked platform-only
+  # pushes to staging. Dropping the trigger path filter and gating real
+  # work internally guarantees a result the auto-promote chain can
+  # read. Same pattern applied to e2e-api.yml in the same PR.
   push:
     branches: [main, staging]
-    paths:
-      - 'canvas/**'
-      - '.github/workflows/e2e-staging-canvas.yml'
   pull_request:
     branches: [main, staging]
-    paths:
-      - 'canvas/**'
-      - '.github/workflows/e2e-staging-canvas.yml'
   workflow_dispatch:
   schedule:
     # Weekly on Sunday 08:00 UTC — catches Chrome / Playwright / Next.js
@@ -34,7 +41,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      canvas: ${{ steps.decide.outputs.canvas }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            canvas:
+              - 'canvas/**'
+              - '.github/workflows/e2e-staging-canvas.yml'
+      - id: decide
+        # Always run real tests for manual dispatch and the weekly cron —
+        # both exist precisely to exercise the suite, regardless of diff.
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "canvas=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "canvas=${{ steps.filter.outputs.canvas }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  no-op:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.canvas != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "No canvas / workflow changes — E2E Staging Canvas gate satisfied without running tests."
+          echo "::notice::E2E Staging Canvas no-op pass (paths filter excluded this commit)."
+
   playwright:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.canvas == 'true'
     name: Canvas tabs E2E
     runs-on: ubuntu-latest
     timeout-minutes: 40
