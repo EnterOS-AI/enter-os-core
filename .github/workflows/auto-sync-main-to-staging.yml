@@ -17,35 +17,45 @@ name: Auto-sync main → staging
 # bridges). Each time the bridge needed update-branch + a re-CI
 # round before merging. Operationally annoying and avoidable.
 #
-# This workflow closes the gap automatically:
+# Architecture:
 #
-#   1. Push to main fires (regardless of source: auto-promote, UI
-#      merge, API merge, direct push).
-#   2. Check whether main is already in staging's ancestry — if
-#      yes, no-op (auto-promote-staging already kept them in sync
-#      via fast-forward).
-#   3. If not, try fast-forward staging to main first (works when
-#      staging hasn't diverged with its own commits).
-#   4. If ff fails (staging has commits main doesn't — feature work
-#      in flight), do a real merge with a "chore: sync" commit so
-#      staging absorbs main's tip while keeping its own history.
-#   5. Push staging.
+# This repo's `staging` branch is protected by a `merge_queue`
+# ruleset (id 15500102) that blocks ALL direct pushes — no bypass
+# even for org admins or the GitHub Actions integration. Direct
+# `git push origin staging` returns GH013. So instead of pushing
+# directly, this workflow:
+#
+#   1. Checks if main is already in staging's ancestry → no-op.
+#   2. Creates an `auto-sync/main-<sha>` branch from staging.
+#   3. Tries `git merge --ff-only origin/main` → if staging hasn't
+#      diverged this is a clean ff.
+#   4. Otherwise `git merge --no-ff origin/main` to absorb main's
+#      tip while keeping staging's history.
+#   5. Pushes the auto-sync branch.
+#   6. Opens a PR (base=staging, head=auto-sync/main-<sha>) and
+#      enables auto-merge so the merge queue lands it.
+#
+# This mirrors the path human PRs take through staging — same
+# rules, same gates, no special-case bypass.
 #
 # Loop safety:
 #
-# `GITHUB_TOKEN`-authored pushes do NOT trigger downstream workflow
-# runs by default (GitHub Actions safety). So when this workflow
-# pushes the synced staging, `auto-promote-staging.yml` is NOT
-# triggered by that push. The next developer push to staging triggers
-# auto-promote normally. No loop is even theoretically possible.
+# `GITHUB_TOKEN`-authored merges (including the merge queue's land
+# of the auto-sync PR) do NOT trigger downstream workflow runs
+# (GitHub Actions safety). So when the auto-sync PR lands on
+# staging, `auto-promote-staging.yml` is NOT triggered by that
+# push. The next developer push to staging triggers auto-promote
+# normally. No loop possible.
 #
 # Concurrency:
 #
 # Two pushes to main in quick succession (e.g., manual UI merge
-# immediately followed by auto-promote-staging's ff-merge) would
-# otherwise race two auto-sync runs against the same staging branch
-# — second push fails non-fast-forward. The concurrency group
-# serializes them so the second run sees the first's result.
+# immediately followed by auto-promote-staging's ff-merge) could
+# otherwise open two overlapping auto-sync PRs. The concurrency
+# group serializes runs; the second waits for the first to exit.
+# (The first run exits after opening + auto-merge-queueing the PR,
+# not after the merge actually completes — so multiple PRs can be
+# open simultaneously, but the merge queue handles them serially.)
 
 on:
   push:
@@ -53,6 +63,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: auto-sync-main-to-staging
@@ -60,7 +71,8 @@ concurrency:
 
 jobs:
   sync-staging:
-    runs-on: ubuntu-latest
+    # Self-hosted Mac mini matches the rest of this repo's workflows.
+    runs-on: [self-hosted, macos, arm64]
     steps:
       - name: Checkout staging
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -85,65 +97,117 @@ jobs:
               echo "## ✅ No-op"
               echo
               echo "staging already contains \`origin/main\` ($(git rev-parse --short=8 origin/main))."
-              echo "auto-promote-staging or a previous auto-sync run already kept them aligned."
             } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "needs_sync=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::staging is missing main's tip — sync needed"
+            MAIN_SHORT=$(git rev-parse --short=8 origin/main)
+            echo "main_short=${MAIN_SHORT}" >> "$GITHUB_OUTPUT"
+            echo "branch=auto-sync/main-${MAIN_SHORT}" >> "$GITHUB_OUTPUT"
+            echo "::notice::staging is missing main's tip (${MAIN_SHORT}) — opening sync PR"
           fi
 
-      - name: Fast-forward staging to main
+      - name: Create auto-sync branch + merge main
         if: steps.check.outputs.needs_sync == 'true'
-        id: ff
+        id: prep
         run: |
           set -euo pipefail
+          BRANCH="${{ steps.check.outputs.branch }}"
+
+          # If a previous auto-sync run already opened a branch for the
+          # same main sha, prefer reusing it (idempotent behavior on
+          # workflow restart). Force-update from latest staging anyway
+          # so it absorbs any staging-side commits that landed since.
+          git checkout -B "$BRANCH"
+
           if git merge --ff-only origin/main; then
             echo "did_ff=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Fast-forwarded staging to origin/main"
+            echo "::notice::Fast-forwarded ${BRANCH} to origin/main"
           else
             echo "did_ff=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::ff failed — staging has its own commits; will create merge"
+            if ! git merge --no-ff origin/main -m "chore: sync main → staging (auto)"; then
+              # Hygiene: leave the work tree clean before failing.
+              git merge --abort || true
+              {
+                echo "## ❌ Conflict"
+                echo
+                echo "Auto-merge \`main → staging\` failed with conflicts."
+                echo "A human needs to resolve manually."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
           fi
 
-      - name: Merge main into staging (when ff fails)
-        if: steps.check.outputs.needs_sync == 'true' && steps.ff.outputs.did_ff != 'true'
-        run: |
-          set -euo pipefail
-          # ff failed because staging has commits main doesn't — typical
-          # in-flight feature work. Create a merge commit so staging
-          # absorbs main's tip while keeping its own history.
-          if ! git merge --no-ff origin/main -m "chore: sync main → staging (auto)"; then
-            # Hygiene: leave the work tree clean before failing. Doesn't
-            # affect future runs (each gets a fresh checkout) but a
-            # half-merged tree is an unpleasant artifact to debug if
-            # anyone ever shells into the runner.
-            git merge --abort || true
-            {
-              echo "## ❌ Conflict"
-              echo
-              echo "Auto-merge \`main → staging\` failed with conflicts."
-              echo "A human needs to resolve manually:"
-              echo
-              echo "    git checkout staging"
-              echo "    git merge origin/main"
-              echo "    # resolve, commit, push"
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-
-      - name: Push staging
+      - name: Push auto-sync branch
         if: steps.check.outputs.needs_sync == 'true'
         run: |
           set -euo pipefail
-          git push origin staging
-          {
-            if [ "${{ steps.ff.outputs.did_ff }}" = "true" ]; then
-              echo "## ✅ staging fast-forwarded"
-              echo
-              echo "staging is now at \`$(git rev-parse --short=8 HEAD)\` (== origin/main)."
+          # Force-with-lease so a concurrent auto-sync run can't
+          # silently clobber an in-flight branch we just updated. If a
+          # different writer touched the branch, we abort and the next
+          # run picks up the latest state.
+          git push --force-with-lease origin "${{ steps.check.outputs.branch }}"
+
+      - name: Open auto-sync PR + enable auto-merge
+        if: steps.check.outputs.needs_sync == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.check.outputs.branch }}
+          MAIN_SHORT: ${{ steps.check.outputs.main_short }}
+          DID_FF: ${{ steps.prep.outputs.did_ff }}
+        run: |
+          set -euo pipefail
+
+          # Find existing PR for this branch (idempotent on workflow
+          # restart) before creating a new one.
+          PR_NUM=$(gh pr list --head "$BRANCH" --base staging --state open --json number --jq '.[0].number // ""')
+
+          if [ -z "$PR_NUM" ]; then
+            # Body lives in a temp file to keep the multi-line content
+            # out of the YAML block scalar (un-indented newlines inside
+            # an inline shell string break YAML parsing).
+            BODY_FILE=$(mktemp)
+            if [ "$DID_FF" = "true" ]; then
+              TITLE="chore: sync main → staging (auto, ff to ${MAIN_SHORT})"
+              cat > "$BODY_FILE" <<EOFBODY
+          Automated fast-forward of \`staging\` to \`origin/main\` (\`${MAIN_SHORT}\`). Staging has no in-flight commits that diverge from main. Merge queue lands this; no human action needed.
+
+          This PR is auto-generated by \`.github/workflows/auto-sync-main-to-staging.yml\` on every push to \`main\`. It exists because this repo's \`staging\` branch has a \`merge_queue\` ruleset that blocks direct pushes — even from the GitHub Actions integration.
+          EOFBODY
             else
-              echo "## ✅ staging absorbed main"
-              echo
-              echo "staging is now at \`$(git rev-parse --short=8 HEAD)\` with a merge commit absorbing main's tip."
+              TITLE="chore: sync main → staging (auto, merge ${MAIN_SHORT})"
+              cat > "$BODY_FILE" <<EOFBODY
+          Automated merge of \`origin/main\` (\`${MAIN_SHORT}\`) into \`staging\`. Staging has commits main doesn't, so this is a non-ff merge that absorbs main's tip. Merge queue lands this.
+
+          This PR is auto-generated by \`.github/workflows/auto-sync-main-to-staging.yml\` on every push to \`main\`.
+          EOFBODY
             fi
+
+            # gh pr create prints the URL on stdout; extract the PR number.
+            PR_URL=$(gh pr create \
+              --base staging \
+              --head "$BRANCH" \
+              --title "$TITLE" \
+              --body-file "$BODY_FILE")
+            PR_NUM=$(echo "$PR_URL" | grep -oE '[0-9]+$' | tail -1)
+            rm -f "$BODY_FILE"
+            echo "::notice::Opened PR #${PR_NUM}"
+          else
+            echo "::notice::Re-using existing PR #${PR_NUM} for ${BRANCH}"
+          fi
+
+          # Enable auto-merge — the merge queue picks it up once
+          # required gates are green. Use --merge for merge commits
+          # (matches the rest of this repo's PR convention).
+          if ! gh pr merge "$PR_NUM" --auto --merge 2>&1; then
+            echo "::warning::Failed to enable auto-merge on PR #${PR_NUM} — operator may need to merge manually."
+          fi
+
+          {
+            echo "## ✅ Auto-sync PR opened"
+            echo
+            echo "- Branch: \`$BRANCH\`"
+            echo "- PR: #$PR_NUM"
+            echo "- Strategy: $([ "$DID_FF" = "true" ] && echo "ff" || echo "merge commit")"
+            echo
+            echo "Merge queue lands the PR once required gates are green; no human action needed unless gates fail."
           } >> "$GITHUB_STEP_SUMMARY"
