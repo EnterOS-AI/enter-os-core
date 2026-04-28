@@ -1,31 +1,68 @@
-name: Auto-promote :latest on E2E green
+name: Auto-promote :latest after main image build
 
 # Retags `ghcr.io/molecule-ai/{platform,platform-tenant}:staging-<sha>`
-# → `:latest` whenever E2E Staging SaaS passes for a `main` push.
+# → `:latest` after either the image build or E2E completes on a `main`
+# push, gated on E2E Staging SaaS not being red for that SHA.
 #
-# This is the doc-aligned alternative to the (deferred) Phase 2 canary
-# fleet — staging E2E catches ~90% of what canary would catch at 0%
-# ongoing infra cost. See `molecule-controlplane/docs/canary-tenants.md`
-# section "Do we actually need canary right now?" — recommended
-# sequencing for the current scale (≤20 paying tenants).
+# Why two triggers:
 #
-# Why a separate workflow rather than folding into e2e-staging-saas.yml:
-#   - Keeps test concerns separate from release concerns.
-#   - Disabling promote (e.g. during an incident) is one toggle, not an
-#     edit to the long E2E workflow file.
-#   - When Phase 2 canary work eventually lands, the canary path can
-#     replace this file's trigger without touching the E2E workflow.
+#   `publish-workspace-server-image` and `e2e-staging-saas` are both
+#   paths-filtered, but with DIFFERENT path sets:
 #
-# Why trigger on `main` only:
-#   - `:latest` is what prod tenants pull. We only want SHAs that have
-#     reached `main` (via auto-promote-staging) to advance `:latest`.
-#   - Triggering on staging would let a staging-only revert advance
-#     `:latest` to a SHA that never reaches `main`, breaking the
-#     "production runs what's on `main`" invariant.
+#     publish-workspace-server-image:
+#       workspace-server/**, canvas/**, manifest.json
+#
+#     e2e-staging-saas (full lifecycle):
+#       workspace-server/internal/handlers/{registry,workspace_provision,
+#       a2a_proxy}.go, workspace-server/internal/middleware/**,
+#       workspace-server/internal/provisioner/**, tests/e2e/test_staging_full_saas.sh
+#
+#   The E2E set is a strict SUBSET of the publish set. So:
+#     - canvas/** changes → publish fires, E2E does not
+#     - workspace-server/cmd/** changes → publish fires, E2E does not
+#     - workspace-server/internal/sweep/** → publish fires, E2E does not
+#
+#   The previous version triggered ONLY on E2E completion, which meant
+#   non-E2E-path changes (canvas, cmd, sweep, etc.) rebuilt the image
+#   but never advanced `:latest`. Result: as of 2026-04-28 this workflow
+#   had run zero times since merge despite eight main pushes — `:latest`
+#   was ~7 hours / 9 PRs behind main with no human realising. See
+#   `molecule-core` Slack discussion 2026-04-28.
+#
+#   Adding `publish-workspace-server-image` as a second trigger closes
+#   the gap: any image rebuild on main eligibly advances `:latest`.
+#
+# Why E2E remains a kill-switch (not the trigger):
+#
+#   When E2E DID run for this SHA and ended red, we abort — `:latest`
+#   stays on the prior known-good digest. When E2E didn't run (paths
+#   filtered out), we proceed: pre-merge gates already validated this
+#   SHA on staging via auto-promote-staging requiring CI + E2E Canvas +
+#   E2E API + CodeQL all green. Image content for non-E2E-paths
+#   (canvas, cmd, sweep) is exercised by those staging gates.
+#
+# Why `main` only:
+#
+#   `:latest` is what prod tenants pull. We only want SHAs that have
+#   reached main (via auto-promote-staging) to advance `:latest`.
+#   Triggering on staging would let a staging-only revert advance
+#   `:latest` to a SHA that never reaches main, breaking the "production
+#   runs what's on main" invariant.
+#
+# Idempotency:
+#
+#   When a SHA touches paths that match BOTH publish and E2E, both
+#   workflows fire and complete. Both trigger this workflow on
+#   completion → two runs race. Both retag `:staging-<sha>` →
+#   `:latest`. crane tag is idempotent (re-tagging the same digest is a
+#   no-op), so the second run is harmless. concurrency group serializes
+#   them anyway.
 
 on:
   workflow_run:
-    workflows: ['E2E Staging SaaS (full lifecycle)']
+    workflows:
+      - 'E2E Staging SaaS (full lifecycle)'
+      - 'publish-workspace-server-image'
     types: [completed]
     branches: [main]
   workflow_dispatch:
@@ -39,15 +76,22 @@ permissions:
   contents: read
   packages: write
 
+concurrency:
+  # Serialize promotes per-SHA so the publish+E2E both-fired race lands
+  # cleanly. Different SHAs can promote in parallel.
+  group: auto-promote-latest-${{ github.event.workflow_run.head_sha || github.event.inputs.sha || github.sha }}
+  cancel-in-progress: false
+
 env:
   IMAGE_NAME: ghcr.io/molecule-ai/platform
   TENANT_IMAGE_NAME: ghcr.io/molecule-ai/platform-tenant
 
 jobs:
   promote:
-    # Skip if E2E failed — `:latest` stays on the prior known-good
-    # digest. Manual dispatch always proceeds (the operator already
-    # decided to promote).
+    # Proceed if upstream succeeded OR manual dispatch. Upstream-failure
+    # paths are filtered here; the E2E-was-red kill-switch lives in the
+    # gate-check step below (covers the case where upstream is publish
+    # success but E2E for the same SHA failed).
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
@@ -64,6 +108,70 @@ jobs:
           fi
           echo "short=${FULL:0:7}" >> "$GITHUB_OUTPUT"
           echo "full=${FULL}" >> "$GITHUB_OUTPUT"
+
+      - name: Gate — E2E Staging SaaS must not be red for this SHA
+        # When upstream IS E2E success, we already know it's green
+        # (filtered by the job-level `if` already). When upstream is
+        # publish, look up E2E state for the same SHA. Three outcomes:
+        #
+        #   - completed/success: E2E confirmed safe → proceed
+        #   - completed/failure|cancelled|timed_out: E2E found a
+        #     regression → ABORT, `:latest` stays put
+        #   - none|in_progress|skipped: proceed; either E2E was paths-
+        #     filtered out (no run) or it's racing with publish (in
+        #     which case staging gates already greenlit this SHA, so
+        #     the publish signal alone is acceptable)
+        #
+        # Manual dispatch skips this check — operator override.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ steps.sha.outputs.full }}
+          UPSTREAM_NAME: ${{ github.event.workflow_run.name }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "::notice::Manual dispatch — skipping E2E gate (operator override)"
+            exit 0
+          fi
+
+          if [ "$UPSTREAM_NAME" = "E2E Staging SaaS (full lifecycle)" ]; then
+            echo "::notice::Upstream is E2E itself (success per job-level if) — gate trivially satisfied"
+            exit 0
+          fi
+
+          # Upstream is publish-workspace-server-image. Check E2E state
+          # for the same SHA.
+          RESULT=$(gh run list \
+            --repo "$REPO" \
+            --workflow e2e-staging-saas.yml \
+            --branch main \
+            --commit "$SHA" \
+            --limit 1 \
+            --json status,conclusion \
+            --jq '.[0] | "\(.status)/\(.conclusion // "none")"' \
+            2>/dev/null || echo "none/none")
+
+          echo "E2E Staging SaaS for ${SHA:0:7}: $RESULT"
+
+          case "$RESULT" in
+            completed/failure|completed/cancelled|completed/timed_out)
+              {
+                echo "## ❌ Auto-promote aborted — E2E Staging SaaS failed"
+                echo
+                echo "E2E Staging SaaS run for \`${SHA:0:7}\` ended in: \`$RESULT\`"
+                echo "\`:latest\` stays on the prior known-good digest."
+                echo
+                echo "If the failure was a flake, manually dispatch this workflow with the same sha to override."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+            *)
+              echo "::notice::E2E state '$RESULT' — proceeding with promote"
+              ;;
+          esac
 
       - uses: imjasonh/setup-crane@31b88efe9de28ae0ffa220711af4b60be9435f6e # v0.4
 
@@ -82,7 +190,7 @@ jobs:
             tag="${img}:staging-${{ steps.sha.outputs.short }}"
             if ! crane manifest "$tag" >/dev/null 2>&1; then
               echo "::error::Missing tag: $tag"
-              echo "::error::publish-workspace-server-image must complete on this SHA before auto-promote-on-e2e can retag :latest."
+              echo "::error::publish-workspace-server-image must complete on this SHA before auto-promote can retag :latest."
               exit 1
             fi
             echo "  ok: $tag exists"
@@ -99,12 +207,12 @@ jobs:
       - name: Summary
         run: |
           {
-            echo "## E2E green → :latest promoted"
+            echo "## :latest promoted to ${{ steps.sha.outputs.short }}"
             echo
             if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
               echo "- Trigger: manual dispatch"
             else
-              echo "- Upstream E2E run: ${{ github.event.workflow_run.html_url }}"
+              echo "- Upstream: \`${{ github.event.workflow_run.name }}\` ([run](${{ github.event.workflow_run.html_url }}))"
             fi
             echo "- platform:staging-${{ steps.sha.outputs.short }} → :latest"
             echo "- platform-tenant:staging-${{ steps.sha.outputs.short }} → :latest"
