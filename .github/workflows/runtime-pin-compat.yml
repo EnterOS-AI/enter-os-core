@@ -10,21 +10,41 @@ name: Runtime Pin Compatibility
 #   4. Every tenant workspace crashed; the canary tenant caught it but
 #      only after 5 hours of degraded staging
 #
-# This workflow installs the runtime in a fresh Python venv from PyPI
-# and tries the same import the EC2 user-data does. If pip resolution
-# silently produces a broken combo, this gate fails before the tenant
-# image gets published.
+# Two jobs run independently:
+#
+#   - pypi-latest-install: installs the CURRENTLY PUBLISHED runtime from
+#     PyPI on top of workspace/requirements.txt. Catches upstream PyPI
+#     yanks, bad re-releases, and our own already-shipped wheel that
+#     stops importing because a transitive dep moved underneath. This is
+#     what the daily cron exercises.
+#
+#   - local-build-install: builds a wheel from THIS PR's workspace/
+#     directory using scripts/build_runtime_package.py (mirroring
+#     publish-runtime.yml exactly), installs that wheel, then imports.
+#     Closes the chicken-and-egg: a PR that adds a new import requiring
+#     a2a-sdk 1.5 would previously slip through (CI installs the OLD
+#     PyPI wheel that doesn't have the new import → smoke passes →
+#     merge → publish-runtime.yml ships the broken wheel → tenant
+#     images all crash on next boot). The local-build job tests the
+#     artifact that WOULD be published, not the artifact already on PyPI.
 
 on:
   push:
     branches: [main, staging]
     paths:
-      - 'workspace/requirements.txt'
+      # pypi-latest job is sensitive only to pin/workflow changes —
+      # the upstream artifact doesn't change with workspace/ edits.
+      # local-build job is sensitive to anything that changes the wheel.
+      # Listing the union here means both jobs evaluate; each job's
+      # internal logic decides whether to do real work.
+      - 'workspace/**'
+      - 'scripts/build_runtime_package.py'
       - '.github/workflows/runtime-pin-compat.yml'
   pull_request:
     branches: [main, staging]
     paths:
-      - 'workspace/requirements.txt'
+      - 'workspace/**'
+      - 'scripts/build_runtime_package.py'
       - '.github/workflows/runtime-pin-compat.yml'
   # Daily catch for upstream PyPI publishes that break the pin combo
   # without any change in our repo (e.g. someone re-yanks an a2a-sdk
@@ -42,8 +62,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  default-install:
-    name: Default install + import smoke
+  pypi-latest-install:
+    name: PyPI-latest install + import smoke
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -75,3 +95,50 @@ jobs:
           WORKSPACE_ID: 00000000-0000-0000-0000-000000000001
         run: |
           /tmp/venv/bin/python -c "from molecule_runtime.main import main_sync; print('runtime imports OK')"
+
+  local-build-install:
+    # Builds the wheel from THIS PR's workspace/ + scripts/ and tests
+    # IT — the artifact that WOULD be published if this PR merges. The
+    # PyPI-latest job above only catches problems with the
+    # already-published artifact; this job catches problems introduced
+    # by the PR itself.
+    #
+    # No cron schedule: the same pre-merge run already covered the
+    # commit, and re-running daily wouldn't surface anything new
+    # (workspace/ doesn't change between cron firings unless a PR
+    # already passed this gate).
+    name: PR-built wheel + import smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: workspace/requirements.txt
+      - name: Install build tooling
+        run: pip install build
+      - name: Build wheel from PR source (mirrors publish-runtime.yml)
+        # Use a fixed test version so the wheel filename is predictable.
+        # Doesn't reach PyPI — this build is local-only for the smoke.
+        # Keep the build invocation byte-identical with publish-runtime.yml's
+        # build step so we test the SAME artifact pipeline; if they drift,
+        # the gate stops catching what publish actually ships.
+        run: |
+          python scripts/build_runtime_package.py \
+            --version "0.0.0.dev0+pin-compat" \
+            --out /tmp/runtime-build
+          cd /tmp/runtime-build && python -m build
+      - name: Install built wheel + workspace requirements
+        run: |
+          python -m venv /tmp/venv-built
+          /tmp/venv-built/bin/pip install --upgrade pip
+          /tmp/venv-built/bin/pip install /tmp/runtime-build/dist/*.whl
+          /tmp/venv-built/bin/pip install -r workspace/requirements.txt
+          /tmp/venv-built/bin/pip show molecule-ai-workspace-runtime a2a-sdk \
+            | grep -E '^(Name|Version):'
+      - name: Smoke import the PR-built wheel
+        env:
+          WORKSPACE_ID: 00000000-0000-0000-0000-000000000001
+        run: |
+          /tmp/venv-built/bin/python -c "from molecule_runtime.main import main_sync; print('PR-built runtime imports OK')"
