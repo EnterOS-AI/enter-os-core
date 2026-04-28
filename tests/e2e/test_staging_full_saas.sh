@@ -86,24 +86,47 @@ cleanup_org() {
   fi
 
   log "🧹 Tearing down org $SLUG..."
-  curl "${CURL_COMMON[@]}" -X DELETE "$CP_URL/cp/admin/tenants/$SLUG" \
+
+  # The DELETE handler runs the GDPR Art. 17 cascade synchronously
+  # (Stripe + Redis + EC2 terminate + CF tunnel + DNS + DB rows). Real
+  # observed wall-time on prod-shaped infra is ~30–90s — EC2 termination
+  # alone takes 30–60s. The 5–15s estimate in `purge.go`'s comment is
+  # the API-call cost, NOT the AWS-side time-to-termination it waits on.
+  #
+  # Two-part patience to match reality:
+  #   1. 120s curl timeout on the DELETE itself (was 30s) so the
+  #      synchronous cascade has room to complete in-band.
+  #   2. Poll up to 60s after for organizations.status='purged' (or row
+  #      gone) instead of one rigid 10s sleep — covers the case where
+  #      DELETE returns 5xx mid-cascade and the cascade finishes anyway,
+  #      and the case where DELETE legitimately exceeds 120s and we want
+  #      eventual-consistency confirmation.
+  curl "${CURL_COMMON[@]}" --max-time 120 -X DELETE "$CP_URL/cp/admin/tenants/$SLUG" \
     -H "Authorization: Bearer $ADMIN_TOKEN" \
     -H "Content-Type: application/json" \
     -d "{\"confirm\":\"$SLUG\"}" >/dev/null 2>&1 \
     && ok "Teardown request accepted" \
     || log "Teardown returned non-2xx (may already be gone)"
 
-  sleep 10
-  local leak_count
-  leak_count=$(curl "${CURL_COMMON[@]}" "$CP_URL/cp/admin/orgs" \
-    -H "Authorization: Bearer $ADMIN_TOKEN" 2>/dev/null \
-    | python3 -c "import json,sys; d=json.load(sys.stdin); print(sum(1 for o in d.get('orgs', []) if o.get('slug')=='$SLUG' and o.get('status') != 'purged'))" \
-    2>/dev/null || echo 0)
+  local leak_count=1
+  local elapsed=0
+  while [ "$elapsed" -lt 60 ]; do
+    leak_count=$(curl "${CURL_COMMON[@]}" "$CP_URL/cp/admin/orgs" \
+      -H "Authorization: Bearer $ADMIN_TOKEN" 2>/dev/null \
+      | python3 -c "import json,sys; d=json.load(sys.stdin); print(sum(1 for o in d.get('orgs', []) if o.get('slug')=='$SLUG' and o.get('status') != 'purged'))" \
+      2>/dev/null || echo 1)
+    if [ "$leak_count" = "0" ]; then
+      break
+    fi
+    sleep 5
+    elapsed=$((elapsed + 5))
+  done
+
   if [ "$leak_count" != "0" ]; then
-    echo "⚠️  LEAK: org $SLUG still present post-teardown (count=$leak_count)" >&2
+    echo "⚠️  LEAK: org $SLUG still present post-teardown after ${elapsed}s (count=$leak_count)" >&2
     exit 4
   fi
-  ok "Teardown clean — no orphan resources for $SLUG"
+  ok "Teardown clean — no orphan resources for $SLUG (${elapsed}s)"
 
   # Normalize unexpected upstream exit codes to 1 (generic failure). The
   # script's documented contract (header "Exit codes" section) only emits
