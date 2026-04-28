@@ -78,7 +78,7 @@ jobs:
       MAX_DELETE_PCT: ${{ github.event.inputs.max_delete_pct || '50' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Verify required secrets present
         id: verify
