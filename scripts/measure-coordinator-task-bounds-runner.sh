@@ -64,9 +64,22 @@ if [ -z "$SECRET_VALUE" ]; then
 fi
 [ -n "$SECRET_VALUE" ] || { echo "ERROR: set \$$SECRET_NAME or \$SECRET_VALUE" >&2; exit 1; }
 
-# SaaS-mode preflight.
+# SaaS-mode preflight + format validation.
+# Validating ORG_ID + ORG_SLUG client-side gives an actionable error
+# before the request hits TenantGuard's intentionally-opaque 404
+# (which doesn't tell the operator whether the slug is wrong, the
+# UUID is wrong, or auth is wrong).
 if [ "$MODE" = "saas" ]; then
   [ -n "$ORG_ID" ] || { echo "ERROR: MODE=saas requires ORG_ID (the org UUID)" >&2; exit 1; }
+  case "$ORG_ID" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) echo "ERROR: ORG_ID must be a UUID (got '$ORG_ID')" >&2; exit 1;;
+  esac
+  if [ -n "$ORG_SLUG" ]; then
+    case "$ORG_SLUG" in
+      *[!a-z0-9-]* | -* | *-) echo "ERROR: ORG_SLUG must match ^[a-z0-9][a-z0-9-]*[a-z0-9]\$ (got '$ORG_SLUG')" >&2; exit 1;;
+    esac
+  fi
   if [ -z "$TENANT_ADMIN_TOKEN" ]; then
     [ -n "$ORG_SLUG" ]          || { echo "ERROR: MODE=saas needs TENANT_ADMIN_TOKEN or ORG_SLUG (to fetch it via CP)" >&2; exit 1; }
     [ -n "$CP_ADMIN_API_TOKEN" ] || { echo "ERROR: ORG_SLUG path needs CP_ADMIN_API_TOKEN to fetch tenant token from $CP_API_URL" >&2; exit 1; }
@@ -159,7 +172,9 @@ fi
 WAIT_ONLINE_SECS="${WAIT_ONLINE_SECS:-180}"
 wait_online() {
   local id="$1" label="$2"
-  local polls=$((WAIT_ONLINE_SECS / 3))
+  # Round up so a non-multiple-of-3 budget waits at least the requested
+  # seconds (200 → 67 polls × 3s = 201s, not 198s).
+  local polls=$(( (WAIT_ONLINE_SECS + 2) / 3 ))
   local last_status=""
   for i in $(seq 1 "$polls"); do
     s=$(api "$PLATFORM/workspaces/$id" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
@@ -197,9 +212,19 @@ ELAPSED_SECS=$(python3 -c "print(round(($END_NS - $START_NS) / 1e9, 2))")
 emit "a2a_response_observed" "{\"elapsed_secs\":$ELAPSED_SECS,\"response_chars\":${#RESP},\"response_head\":$(python3 -c "import json,sys; print(json.dumps(sys.argv[1][:200]))" "$RESP")}"
 
 # ---- Heartbeat trace ----
-emit "fetching_heartbeat_trace" null
-HB=$(api "$PLATFORM/workspaces/$PM_ID/heartbeat-history?since_secs=$A2A_TIMEOUT" 2>&1 || echo "<endpoint_unavailable>")
-emit "heartbeat_trace" "{\"raw\":$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$HB")}"
+# `/workspaces/:id/heartbeat-history` is a local-dev workspace-server
+# route — on tenant deployments the platform's :8080 fallback proxies
+# any unmatched path to the canvas Next.js, so this 404s with 28KB of
+# HTML rather than a clean error. Skip the fetch entirely in SaaS mode
+# and emit an explicit placeholder instead of polluting the event log
+# with HTML.
+emit "fetching_heartbeat_trace" "{\"mode\":\"$MODE\"}"
+if [ "$MODE" = "saas" ]; then
+  emit "heartbeat_trace" "{\"raw\":\"<skipped: heartbeat-history endpoint unavailable in SaaS — see scripts/README.md\>\"}"
+else
+  HB=$(api "$PLATFORM/workspaces/$PM_ID/heartbeat-history?since_secs=$A2A_TIMEOUT" 2>&1 || echo "<endpoint_unavailable>")
+  emit "heartbeat_trace" "{\"raw\":$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$HB")}"
+fi
 
 # ---- rfc2251_phase log lines from the workspace container ----
 # Local Docker provisioner: workspace container name is workspace-<id>.
