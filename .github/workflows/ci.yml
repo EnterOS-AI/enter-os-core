@@ -63,29 +63,42 @@ jobs:
           echo "python=$(echo "$DIFF" | grep -qE '^workspace/|^\.github/workflows/ci\.yml$' && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "scripts=$(echo "$DIFF" | grep -qE '^tests/e2e/|^scripts/|^infra/scripts/|^\.github/workflows/ci\.yml$' && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
+  # Platform (Go) is a required check on staging. Always-run + per-step
+  # gating (see Canvas (Next.js) for the rationale and the failure mode
+  # this avoids).
   platform-build:
     name: Platform (Go)
     needs: changes
-    if: needs.changes.outputs.platform == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: workspace-server
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      - if: needs.changes.outputs.platform != 'true'
+        working-directory: .
+        run: echo "No platform/** changes — skipping real build steps; this job always runs to satisfy the required-check name on branch protection."
+      - if: needs.changes.outputs.platform == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - if: needs.changes.outputs.platform == 'true'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: 'stable'
-      - run: go mod download
-      - run: go build ./cmd/server
+      - if: needs.changes.outputs.platform == 'true'
+        run: go mod download
+      - if: needs.changes.outputs.platform == 'true'
+        run: go build ./cmd/server
       # CLI (molecli) moved to standalone repo: github.com/Molecule-AI/molecule-cli
-      - run: go vet ./... || true
-      - name: Run golangci-lint
+      - if: needs.changes.outputs.platform == 'true'
+        run: go vet ./... || true
+      - if: needs.changes.outputs.platform == 'true'
+        name: Run golangci-lint
         run: golangci-lint run --timeout 3m ./... || true
-      - name: Run tests with race detection and coverage
+      - if: needs.changes.outputs.platform == 'true'
+        name: Run tests with race detection and coverage
         run: go test -race -coverprofile=coverage.out ./...
 
-      - name: Per-file coverage report
+      - if: needs.changes.outputs.platform == 'true'
+        name: Per-file coverage report
         # Advisory — lists every source file with its coverage so reviewers
         # can see at-a-glance where gaps are. Sorted ascending so the worst
         # offenders float to the top. Does NOT fail the build; the hard
@@ -98,7 +111,8 @@ jobs:
                    END {for (f in s) printf "%6.1f%%  %s\n", s[f]/c[f], f}' \
             | sort -n
 
-      - name: Check coverage thresholds
+      - if: needs.changes.outputs.platform == 'true'
+        name: Check coverage thresholds
         # Enforces two gates from #1823 Layer 1:
         #   1. Total floor (25% — ratchet plan in COVERAGE_FLOOR.md).
         #   2. Per-file floor — non-test .go files in security-critical
@@ -178,42 +192,38 @@ jobs:
             exit 1
           fi
 
-  # Path-filter no-op shadow for Canvas (Next.js).
+  # Canvas (Next.js) — required check, always runs. See platform-build
+  # comment above for the rationale.
   #
-  # Branch protection on staging requires a "Canvas (Next.js)" check.
-  # When a PR doesn't touch canvas/** paths, the real canvas-build job
-  # below is skipped via `if:`, and GitHub reports its conclusion as
-  # SKIPPED — which branch protection treats as not-passed → merge
-  # BLOCKED on every workspace-server-only or migration-only PR.
-  #
-  # Pattern (per durable feedback memory: branch_protection_check_name_parity):
-  # split into a real job + a no-op shadow that share the same `name:`.
-  # Exactly one runs per PR; both report the same check context, and at
-  # least one always reports SUCCESS, satisfying the required check.
-  canvas-build-noop:
-    name: Canvas (Next.js)
-    needs: changes
-    if: needs.changes.outputs.canvas != 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "No canvas/** changes in this PR — Canvas (Next.js) skip is intentional, satisfying required-check via this no-op."
-
+  # Supersedes the canvas-build-noop pattern attempted in PR #2321: two
+  # jobs sharing `name:` doesn't actually satisfy branch protection
+  # because the SKIPPED check run sibling is treated as not-passed
+  # regardless of how many SUCCESS siblings it has. Verified empirically
+  # on PR #2314 — mergeStateStatus stayed BLOCKED until I collapsed to
+  # a single-job-with-conditional-steps shape.
   canvas-build:
     name: Canvas (Next.js)
     needs: changes
-    if: needs.changes.outputs.canvas == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: canvas
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - if: needs.changes.outputs.canvas != 'true'
+        working-directory: .
+        run: echo "No canvas/** changes — skipping real build steps; this job always runs to satisfy the required-check name on branch protection."
+      - if: needs.changes.outputs.canvas == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - if: needs.changes.outputs.canvas == 'true'
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: '22'
-      - run: rm -f package-lock.json && npm install
-      - run: npm run build
-      - name: Run tests with coverage
+      - if: needs.changes.outputs.canvas == 'true'
+        run: rm -f package-lock.json && npm install
+      - if: needs.changes.outputs.canvas == 'true'
+        run: npm run build
+      - if: needs.changes.outputs.canvas == 'true'
+        name: Run tests with coverage
         # Coverage instrumentation is configured in canvas/vitest.config.ts
         # (provider: v8, reporters: text + html + json-summary). Step 2 of
         # #1815 — wires coverage into CI so we get a baseline visible on
@@ -224,7 +234,7 @@ jobs:
         # thresholds + a hard gate" — this PR ships the observability half.
         run: npx vitest run --coverage
       - name: Upload coverage summary as artifact
-        if: always()
+        if: needs.changes.outputs.canvas == 'true' && always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: canvas-coverage-${{ github.run_id }}
@@ -240,14 +250,19 @@ jobs:
   # It now has workflow-level concurrency (cancel-in-progress: false) so
   # new pushes queue the E2E run rather than cancelling it at the run level.
 
+  # Shellcheck (E2E scripts) — required check, always runs. See
+  # platform-build for the rationale.
   shellcheck:
     name: Shellcheck (E2E scripts)
     needs: changes
-    if: needs.changes.outputs.scripts == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Run shellcheck on tests/e2e/*.sh and infra/scripts/*.sh
+      - if: needs.changes.outputs.scripts != 'true'
+        run: echo "No tests/e2e/ or infra/scripts/ changes — skipping real shellcheck; this job always runs to satisfy the required-check name on branch protection."
+      - if: needs.changes.outputs.scripts == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - if: needs.changes.outputs.scripts == 'true'
+        name: Run shellcheck on tests/e2e/*.sh and infra/scripts/*.sh
         # shellcheck is pre-installed on ubuntu-latest runners (via apt).
         # infra/scripts/ is included because setup.sh + nuke.sh gate the
         # README quickstart — a shellcheck regression there silently breaks
@@ -301,10 +316,11 @@ jobs:
             "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" \
             --field "body=@/tmp/deploy-reminder.md"
 
+  # Python Lint & Test — required check, always runs. See platform-build
+  # for the rationale.
   python-lint:
     name: Python Lint & Test
     needs: changes
-    if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
     env:
       WORKSPACE_ID: test
@@ -312,16 +328,23 @@ jobs:
       run:
         working-directory: workspace
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - if: needs.changes.outputs.python != 'true'
+        working-directory: .
+        run: echo "No workspace/** changes — skipping real lint+test; this job always runs to satisfy the required-check name on branch protection."
+      - if: needs.changes.outputs.python == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - if: needs.changes.outputs.python == 'true'
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.11'
           cache: pip
           cache-dependency-path: workspace/requirements.txt
-      - run: pip install -r requirements.txt pytest pytest-asyncio pytest-cov
+      - if: needs.changes.outputs.python == 'true'
+        run: pip install -r requirements.txt pytest pytest-asyncio pytest-cov
       # Coverage flags + fail-under floor moved into workspace/pytest.ini
       # (issue #1817) so local `pytest` and CI use identical config.
-      - run: python -m pytest --tb=short
+      - if: needs.changes.outputs.python == 'true'
+        run: python -m pytest --tb=short
 
       # SDK + plugin validation moved to standalone repo:
       # github.com/Molecule-AI/molecule-sdk-python
