@@ -236,6 +236,135 @@ jobs:
             echo "  ok: $tag exists"
           done
 
+      - name: Ancestry check — refuse to promote :latest backwards
+        # #2244: workflow_run completions arrive in arbitrary order. If
+        # SHA-A and SHA-B both reach main within ~10 min and SHA-B's E2E
+        # completes before SHA-A's, this workflow can fire for SHA-A
+        # AFTER it already promoted SHA-B → :latest goes backwards. The
+        # orphan-reconciler "next run corrects it" doesn't apply: there's
+        # no auto-corrective re-promote, :latest stays wrong until the
+        # next main push lands.
+        #
+        # Detection: read current :latest's `org.opencontainers.image.revision`
+        # label (set by publish-workspace-server-image.yml at build time)
+        # and ask the GitHub compare API whether the candidate SHA is
+        # ahead-of / identical-to / behind / diverged-from current.
+        # Hard-fail on `behind` and `diverged` per the approved design —
+        # silent-bypass is the class we're moving away from. Workflow
+        # goes red, oncall sees it, operator decides how to recover
+        # (manual dispatch with the right SHA, force-promote, etc.).
+        #
+        # Manual dispatch skips this check — operator override semantics
+        # match the gate-check step above.
+        #
+        # Backward-compat: when current :latest carries no revision
+        # label (legacy image pre-publish-with-label), skip-with-warning.
+        # All :latest images on main are post-label as of 2026-04-29, so
+        # this branch will be dead within 90 days; remove then.
+        if: steps.gate.outputs.proceed == 'true' && github.event_name != 'workflow_dispatch'
+        id: ancestry
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ steps.sha.outputs.full }}
+        run: |
+          set -euo pipefail
+
+          # Read the current :latest config and pull the revision label.
+          # `crane config` returns the OCI image config blob (not the manifest);
+          # labels live under `.config.Labels`. `// empty` makes jq return ""
+          # rather than the literal "null" so the test below works.
+          CURRENT_REVISION=$(crane config "${IMAGE_NAME}:latest" 2>/dev/null \
+            | jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' \
+            || true)
+
+          if [ -z "$CURRENT_REVISION" ]; then
+            echo "decision=skip-no-label" >> "$GITHUB_OUTPUT"
+            {
+              echo "## ⚠ Ancestry check skipped — current :latest has no revision label"
+              echo
+              echo "Likely a legacy image built before \`org.opencontainers.image.revision\` was set."
+              echo "Falling through to retag. After all \`:latest\` images are post-label (TODO 90 days), this branch is dead and should be removed."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::Current :latest carries no revision label — skipping ancestry check (legacy image)"
+            exit 0
+          fi
+
+          if [ "$CURRENT_REVISION" = "$TARGET_SHA" ]; then
+            echo "decision=identical" >> "$GITHUB_OUTPUT"
+            echo "::notice:::latest already at ${TARGET_SHA:0:7} — retag will be a no-op"
+            exit 0
+          fi
+
+          # Ask GitHub which side of the merge graph TARGET_SHA sits on
+          # relative to CURRENT_REVISION. Returns one of: ahead | identical
+          # | behind | diverged. Network or auth errors collapse to "error"
+          # via the explicit fallback so the case below always matches.
+          STATUS=$(gh api \
+            "repos/${REPO}/compare/${CURRENT_REVISION}...${TARGET_SHA}" \
+            --jq '.status' 2>/dev/null || echo "error")
+
+          echo "ancestry compare ${CURRENT_REVISION:0:7} → ${TARGET_SHA:0:7}: $STATUS"
+
+          case "$STATUS" in
+            ahead)
+              echo "decision=ahead" >> "$GITHUB_OUTPUT"
+              echo "::notice::Target ${TARGET_SHA:0:7} is ahead of current :latest (${CURRENT_REVISION:0:7}) — proceeding with retag"
+              ;;
+            identical)
+              echo "decision=identical" >> "$GITHUB_OUTPUT"
+              echo "::notice::Target identical to :latest — retag will be a no-op"
+              ;;
+            behind)
+              echo "decision=behind" >> "$GITHUB_OUTPUT"
+              {
+                echo "## ❌ Auto-promote refused — target is BEHIND current :latest"
+                echo
+                echo "| Field | Value |"
+                echo "|---|---|"
+                echo "| Target SHA | \`$TARGET_SHA\` |"
+                echo "| Current :latest revision | \`$CURRENT_REVISION\` |"
+                echo "| GitHub compare status | \`behind\` |"
+                echo
+                echo "This guard catches the workflow_run-completion-order race (#2244):"
+                echo "two rapid main pushes whose E2Es complete out-of-order can otherwise"
+                echo "promote \`:latest\` backwards. \`:latest\` stays on \`${CURRENT_REVISION:0:7}\`."
+                echo
+                echo "**Recovery:** if this is a legitimate revert that should land on \`:latest\`,"
+                echo "manually dispatch this workflow with the target sha as input — the manual-dispatch"
+                echo "path skips the ancestry check (operator override)."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+            diverged)
+              echo "decision=diverged" >> "$GITHUB_OUTPUT"
+              {
+                echo "## ❓ Auto-promote refused — history diverged"
+                echo
+                echo "| Field | Value |"
+                echo "|---|---|"
+                echo "| Target SHA | \`$TARGET_SHA\` |"
+                echo "| Current :latest revision | \`$CURRENT_REVISION\` |"
+                echo "| GitHub compare status | \`diverged\` |"
+                echo
+                echo "Likely cause: force-push rewrote main's history, leaving the previous"
+                echo "\`:latest\` revision orphaned. Needs human review before \`:latest\` advances."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+            error|*)
+              echo "decision=error" >> "$GITHUB_OUTPUT"
+              {
+                echo "## ❌ Auto-promote aborted — ancestry-check API error"
+                echo
+                echo "\`gh api repos/${REPO}/compare/${CURRENT_REVISION}...${TARGET_SHA}\` returned unexpected status: \`$STATUS\`"
+                echo
+                echo "Manual dispatch with the target sha bypasses this check."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+          esac
+
       - name: Retag platform :staging-<sha> → :latest
         if: steps.gate.outputs.proceed == 'true'
         run: |
