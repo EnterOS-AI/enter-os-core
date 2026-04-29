@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -352,6 +353,27 @@ func coalesceRestart(workspaceID string, cycle func()) {
 	state.running = true
 	state.mu.Unlock()
 
+	// Always clear running on exit — including panic — so a panicking
+	// cycle (e.g. a future provisionWorkspace nil-deref) doesn't leave
+	// the workspace permanently locked out of restarts.
+	//
+	// recover()-and-DON'T-re-raise on purpose: this runs in a goroutine
+	// (callers are `go h.RestartByID(...)`); an unrecovered panic in a
+	// goroutine crashes the whole platform process, taking down every
+	// workspace served by this binary because of one bug in cycle for
+	// one workspace. Log the panic with stack trace for debuggability,
+	// then recover and let the goroutine exit cleanly. The next restart
+	// request for this workspace will see running=false and proceed.
+	defer func() {
+		state.mu.Lock()
+		state.running = false
+		state.mu.Unlock()
+		if r := recover(); r != nil {
+			log.Printf("Auto-restart: %s — cycle panicked, restart-state cleared: %v\n%s",
+				workspaceID, r, debug.Stack())
+		}
+	}()
+
 	// Drain pending requests. Each iteration re-loads workspace_secrets
 	// inside provisionWorkspace, so any writes that committed since the
 	// last cycle are picked up. Continues until no pending request was
@@ -359,9 +381,8 @@ func coalesceRestart(workspaceID string, cycle func()) {
 	for {
 		state.mu.Lock()
 		if !state.pending {
-			state.running = false
 			state.mu.Unlock()
-			return
+			return // defer clears running
 		}
 		state.pending = false
 		state.mu.Unlock()
