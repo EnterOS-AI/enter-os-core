@@ -37,7 +37,25 @@ on:
     - cron: '0 8 * * 0'
 
 concurrency:
-  group: e2e-staging-canvas
+  # Per-SHA grouping (changed 2026-04-28 from a single global group). The
+  # global group made auto-promote-staging brittle: when a staging push
+  # queued behind an in-flight run and a third entrant (a PR run, a
+  # follow-on push) entered the group, the staging push got cancelled —
+  # leaving auto-promote-staging looking at `completed/cancelled` for a
+  # required gate and refusing to advance main. Observed 2026-04-28
+  # 23:51-23:53 on staging tip 3f99fede.
+  #
+  # The original intent of the global group was to throttle parallel
+  # E2E provisions (each spins a fresh EC2). At our scale that throttle
+  # isn't worth the correctness cost — fresh-org-per-run isolates the
+  # state, and the cost of two parallel runs (~$0.001/min × 10min × 2)
+  # is rounding error vs. the cost of a stuck pipeline.
+  #
+  # Per-SHA still dedupes accidental double-triggers for the SAME SHA.
+  # It does NOT cancel obsolete-PR-version runs on force-push; that
+  # wasted CI is acceptable given the alternative is losing staging-tip
+  # data that auto-promote-staging needs.
+  group: e2e-staging-canvas-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: false
 
 jobs:

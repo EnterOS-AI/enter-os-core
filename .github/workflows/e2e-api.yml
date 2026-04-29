@@ -27,7 +27,17 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: e2e-api-${{ github.ref }}
+  # Per-SHA grouping (changed 2026-04-28 from per-ref). Per-ref had the
+  # same auto-promote-staging brittleness as e2e-staging-canvas — back-
+  # to-back staging pushes share refs/heads/staging, so the older push's
+  # queued run gets cancelled when a newer push lands. Auto-promote-
+  # staging then sees `completed/cancelled` for the older SHA and stays
+  # put; the newer SHA's gates may eventually save the day, but if the
+  # newer push gets cancelled too, we deadlock.
+  #
+  # See e2e-staging-canvas.yml's identical concurrency block for the full
+  # rationale and the 2026-04-28 incident reference.
+  group: e2e-api-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: false
 
 jobs:
