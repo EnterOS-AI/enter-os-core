@@ -178,6 +178,26 @@ jobs:
             exit 1
           fi
 
+  # Path-filter no-op shadow for Canvas (Next.js).
+  #
+  # Branch protection on staging requires a "Canvas (Next.js)" check.
+  # When a PR doesn't touch canvas/** paths, the real canvas-build job
+  # below is skipped via `if:`, and GitHub reports its conclusion as
+  # SKIPPED — which branch protection treats as not-passed → merge
+  # BLOCKED on every workspace-server-only or migration-only PR.
+  #
+  # Pattern (per durable feedback memory: branch_protection_check_name_parity):
+  # split into a real job + a no-op shadow that share the same `name:`.
+  # Exactly one runs per PR; both report the same check context, and at
+  # least one always reports SUCCESS, satisfying the required check.
+  canvas-build-noop:
+    name: Canvas (Next.js)
+    needs: changes
+    if: needs.changes.outputs.canvas != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "No canvas/** changes in this PR — Canvas (Next.js) skip is intentional, satisfying required-check via this no-op."
+
   canvas-build:
     name: Canvas (Next.js)
     needs: changes
