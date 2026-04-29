@@ -419,9 +419,32 @@ jobs:
           RUNTIME_VERSION: ${{ needs.publish.outputs.version }}
         run: |
           set +e   # don't abort on a single repo failure — collect them all
+          # Schedule-vs-dispatch behaviour split (hardened 2026-04-28
+          # after the sweep-cf-orphans soft-skip incident — same class
+          # of bug):
+          #
+          # The earlier "skipping cascade. templates will pick up the
+          # new version on their own next rebuild" message was wrong —
+          # templates only build on this dispatch trigger; without it
+          # they stay pinned to whatever runtime version they last saw.
+          # A silent skip here means "PyPI is current, templates are
+          # not" and the gap is invisible until someone notices a
+          # template still on the old version weeks later.
+          #
+          #   - push                → exit 1 (red CI surfaces the gap)
+          #   - workflow_dispatch   → exit 0 with a warning (operator
+          #                           ran this ad-hoc; let them rerun
+          #                           after fixing the secret)
           if [ -z "$DISPATCH_TOKEN" ]; then
-            echo "::warning::TEMPLATE_DISPATCH_TOKEN secret not set — skipping cascade. PyPI was published; templates will pick up the new version on their own next rebuild."
-            exit 0
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "::warning::TEMPLATE_DISPATCH_TOKEN secret not set — skipping cascade."
+              echo "::warning::set it at Settings → Secrets and Variables → Actions, then rerun. Templates will stay on the prior runtime version until either this token is set or each template is rebuilt manually."
+              exit 0
+            fi
+            echo "::error::TEMPLATE_DISPATCH_TOKEN secret missing — cascade cannot fan out."
+            echo "::error::PyPI was published, but the 8 template repos will NOT pick up the new version until this token is restored and a republish dispatches the cascade."
+            echo "::error::set it at Settings → Secrets and Variables → Actions; then re-trigger publish-runtime via workflow_dispatch."
+            exit 1
           fi
           VERSION="$RUNTIME_VERSION"
           if [ -z "$VERSION" ]; then
