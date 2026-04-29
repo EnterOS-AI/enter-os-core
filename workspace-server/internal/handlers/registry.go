@@ -341,6 +341,27 @@ func (h *RegistryHandler) Register(c *gin.Context) {
 		log.Printf("Registry: token existence check failed for %s: %v", payload.ID, hasLiveErr)
 	}
 
+	// RFC #2312 PR-F: return the workspace's platform_inbound_secret so SaaS
+	// workspaces (which have no persistent /configs volume across container
+	// restarts) can re-populate /configs/.platform_inbound_secret on every
+	// register call. Docker-mode workspaces also receive it — the workspace-
+	// side write is idempotent (same value every call until a future
+	// rotation flow lands), so the duplication is harmless.
+	//
+	// NOT gated by hasLive: the inbound secret is minted at workspace
+	// creation in workspace_provision.go (PR-A), independent of the
+	// outbound auth_token's "issue once" lifecycle. Returning it here is
+	// the only delivery path for SaaS, where the platform's CP provisioner
+	// has no volume to write into.
+	if secret, secretErr := wsauth.ReadPlatformInboundSecret(ctx, db.DB, payload.ID); secretErr == nil {
+		response["platform_inbound_secret"] = secret
+	} else if !errors.Is(secretErr, wsauth.ErrNoInboundSecret) {
+		// ErrNoInboundSecret is the expected case for legacy workspaces
+		// that predate migration 044 — quiet. Other errors (DB hiccup, etc.)
+		// log loud so ops notices.
+		log.Printf("Registry: read platform_inbound_secret for %s failed: %v", payload.ID, secretErr)
+	}
+
 	c.JSON(http.StatusOK, response)
 }
 

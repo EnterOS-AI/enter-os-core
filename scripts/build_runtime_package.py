@@ -66,6 +66,7 @@ TOP_LEVEL_MODULES = {
     "heartbeat",
     "initial_prompt",
     "internal_chat_uploads",
+    "internal_file_read",
     "main",
     "molecule_ai_status",
     "platform_auth",

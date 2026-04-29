@@ -889,6 +889,129 @@ func TestRegister_C18_BootstrapAllowedNoTokens(t *testing.T) {
 	}
 }
 
+// TestRegister_ReturnsPlatformInboundSecret_RFC2312_PRF verifies that
+// /registry/register includes the workspace's platform_inbound_secret
+// in the response body when one is on file. This is the SaaS delivery
+// path: SaaS workspaces have no persistent /configs volume, so they
+// re-fetch the secret on every register call (idempotent in Docker mode
+// where the provisioner already wrote the same value to the volume at
+// workspace creation).
+func TestRegister_ReturnsPlatformInboundSecret_RFC2312_PRF(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewRegistryHandler(broadcaster)
+
+	const wsID = "00000000-0000-0000-0000-000000002312"
+	const inboundSecret = "the-platform-inbound-secret-value"
+
+	// requireWorkspaceToken — bootstrap allowed (no live tokens).
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM workspace_auth_tokens").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	// Workspace upsert.
+	mock.ExpectExec("INSERT INTO workspaces").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT url FROM workspaces WHERE id").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"url"}).AddRow("http://localhost:9100"))
+	mock.ExpectExec("INSERT INTO structure_events").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// Phase 30.1 token issuance — first-register path.
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM workspace_auth_tokens").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec("INSERT INTO workspace_auth_tokens").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	// RFC #2312 PR-F: ReadPlatformInboundSecret query — returns the value
+	// the provisioner stored at workspace creation. The handler MUST
+	// include this in the response body so the workspace can persist it
+	// to /configs/.platform_inbound_secret.
+	mock.ExpectQuery(`SELECT platform_inbound_secret FROM workspaces WHERE id = \$1`).
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"platform_inbound_secret"}).AddRow(inboundSecret))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/registry/register",
+		bytes.NewBufferString(`{"id":"`+wsID+`","url":"http://localhost:9100","agent_card":{"name":"x"}}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.Register(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	got, ok := resp["platform_inbound_secret"].(string)
+	if !ok {
+		t.Fatalf("expected platform_inbound_secret in response, got: %v", resp)
+	}
+	if got != inboundSecret {
+		t.Errorf("secret mismatch: got %q, want %q", got, inboundSecret)
+	}
+	// auth_token should also be present (first-register path).
+	if resp["auth_token"] == nil {
+		t.Error("expected auth_token in response (first-register path)")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestRegister_NoInboundSecret_OmitsField verifies that legacy workspaces
+// that predate migration 044 (NULL platform_inbound_secret column) still
+// get a successful registration — the field is just omitted from the
+// response. The Register handler logs the absence quietly.
+func TestRegister_NoInboundSecret_OmitsField(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewRegistryHandler(broadcaster)
+
+	const wsID = "00000000-0000-0000-0000-000000002312"
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM workspace_auth_tokens").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec("INSERT INTO workspaces").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT url FROM workspaces WHERE id").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"url"}).AddRow("http://localhost:9100"))
+	mock.ExpectExec("INSERT INTO structure_events").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM workspace_auth_tokens").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec("INSERT INTO workspace_auth_tokens").WillReturnResult(sqlmock.NewResult(1, 1))
+	// NULL secret — legacy workspace.
+	mock.ExpectQuery(`SELECT platform_inbound_secret FROM workspaces WHERE id = \$1`).
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"platform_inbound_secret"}).AddRow(nil))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/registry/register",
+		bytes.NewBufferString(`{"id":"`+wsID+`","url":"http://localhost:9100","agent_card":{"name":"x"}}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.Register(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 even without inbound secret, got %d", w.Code)
+	}
+	var resp map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if _, present := resp["platform_inbound_secret"]; present {
+		t.Errorf("expected platform_inbound_secret to be ABSENT for legacy workspace, got: %v", resp["platform_inbound_secret"])
+	}
+}
+
 // TestRegister_C18_HijackBlockedNoBearer verifies the C18 attack is blocked:
 // when a workspace already has a live token, /register without a bearer → 401.
 func TestRegister_C18_HijackBlockedNoBearer(t *testing.T) {

@@ -118,3 +118,57 @@ def test_end_to_end_file_to_authorized(configs_dir: Path):
     secret = get_inbound_secret()
     assert inbound_authorized(secret, "Bearer e2e-secret") is True
     assert inbound_authorized(secret, "Bearer not-this") is False
+
+
+# ───────────── save_inbound_secret (RFC #2312 PR-F) ─────────────
+
+from platform_inbound_auth import save_inbound_secret
+
+
+def test_save_inbound_secret_writes_file(configs_dir: Path):
+    save_inbound_secret("fresh-secret-from-register")
+    assert (configs_dir / ".platform_inbound_secret").read_text() == "fresh-secret-from-register"
+
+
+def test_save_inbound_secret_writes_0600_mode(configs_dir: Path):
+    """File mode MUST be 0600. Anything else lets co-resident processes
+    read the bearer the platform uses to call /internal/* endpoints."""
+    save_inbound_secret("mode-test")
+    mode = (configs_dir / ".platform_inbound_secret").stat().st_mode & 0o777
+    assert mode == 0o600, f"expected 0600, got {oct(mode)}"
+
+
+def test_save_inbound_secret_overwrites_existing(configs_dir: Path):
+    """Idempotent — saving over an existing file replaces the content
+    cleanly (atomic via tmp + rename)."""
+    (configs_dir / ".platform_inbound_secret").write_text("old-value")
+    save_inbound_secret("new-value")
+    assert (configs_dir / ".platform_inbound_secret").read_text() == "new-value"
+
+
+def test_save_inbound_secret_invalidates_cache(configs_dir: Path):
+    """After saving, the next get_inbound_secret() must return the NEW
+    value, not the cached old one. Otherwise rotation would be silently
+    broken once we ever rotate."""
+    (configs_dir / ".platform_inbound_secret").write_text("v1")
+    assert get_inbound_secret() == "v1"  # primes cache
+    save_inbound_secret("v2")
+    assert get_inbound_secret() == "v2"  # cache invalidated, re-reads
+
+
+def test_save_inbound_secret_empty_is_noop(configs_dir: Path):
+    """An empty secret string is treated as 'platform didn't return one'
+    and ignored — the existing file (if any) stays untouched."""
+    (configs_dir / ".platform_inbound_secret").write_text("existing")
+    save_inbound_secret("")
+    assert (configs_dir / ".platform_inbound_secret").read_text() == "existing"
+
+
+def test_save_inbound_secret_creates_parent_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """If CONFIGS_DIR doesn't exist yet (very first boot), save_inbound_secret
+    creates it rather than KeyError-ing."""
+    nonexistent = tmp_path / "fresh" / "configs"
+    monkeypatch.setenv("CONFIGS_DIR", str(nonexistent))
+    platform_inbound_auth.reset_cache()
+    save_inbound_secret("bootstrap-value")
+    assert (nonexistent / ".platform_inbound_secret").read_text() == "bootstrap-value"

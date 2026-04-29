@@ -72,6 +72,47 @@ def reset_cache() -> None:
     _cached_secret = None
 
 
+def save_inbound_secret(secret: str) -> None:
+    """Persist a freshly-received platform_inbound_secret to disk.
+
+    Called from the /registry/register response handler when the platform
+    returns a `platform_inbound_secret` field. Mirrors platform_auth.save_token's
+    pattern: 0600 file in CONFIGS_DIR, atomic write via tmp + rename so a
+    concurrent reader never sees a partial file.
+
+    Idempotent: writing the same value over an existing file is a no-op
+    from the workspace's perspective. Resets the in-process cache so the
+    next get_inbound_secret() returns the freshly-written value (matters
+    when a future rotation flow lands and the platform sends a different
+    secret on a subsequent register call).
+    """
+    global _cached_secret
+    if not secret:
+        return
+    path = _secret_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        # Open with 0600 from the start so a concurrent reader can never
+        # see a 0644-default fd before the chmod. mode= is honored by
+        # os.open underneath; pathlib.write_text does not expose it.
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(secret)
+        os.replace(str(tmp), str(path))
+        # Race-safe in-process cache update: clear first, then let next
+        # caller re-read disk. Avoids the "stored new, cache still has
+        # old" window if get_inbound_secret races with this write.
+        _cached_secret = None
+    except OSError as exc:
+        logger.warning("platform_inbound_auth: save %s failed: %s", path, exc)
+        # Best-effort cleanup of the tmp file.
+        try:
+            os.unlink(str(tmp))
+        except OSError as cleanup_exc:
+            logger.debug("platform_inbound_auth: unlink tmp %s failed: %s", tmp, cleanup_exc)
+
+
 def inbound_authorized(expected_secret: str | None, auth_header: str) -> bool:
     """Return True iff a /internal/* request should be served.
 

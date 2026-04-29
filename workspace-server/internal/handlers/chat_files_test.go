@@ -343,22 +343,123 @@ func TestContentDispositionAttachment_Escapes(t *testing.T) {
 	}
 }
 
-func TestChatDownload_DockerUnavailable(t *testing.T) {
-	setupTestDB(t)
-	setupTestRedis(t)
-
-	tmplh := NewTemplatesHandler(t.TempDir(), nil) // docker=nil
-	h := NewChatFilesHandler(tmplh)
-
+// makeDownloadRequest builds a gin context for GET /workspaces/:id/chat/download
+// with the given path query param.
+func makeDownloadRequest(t *testing.T, workspaceID, path string) (*gin.Context, *httptest.ResponseRecorder) {
+	t.Helper()
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Params = gin.Params{{Key: "id", Value: "00000000-0000-0000-0000-000000000001"}}
-	req := httptest.NewRequest("GET", "/workspaces/xxx/chat/download?path=/workspace/report.pdf", nil)
-	c.Request = req
+	c.Params = gin.Params{{Key: "id", Value: workspaceID}}
+	c.Request = httptest.NewRequest("GET", "/workspaces/"+workspaceID+"/chat/download?path="+path, nil)
+	return c, w
+}
 
+func TestChatDownload_WorkspaceNotInDB(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	wsID := "00000000-0000-0000-0000-000000000099"
+	mock.ExpectQuery(`SELECT COALESCE\(url, ''\) FROM workspaces WHERE id = \$1`).
+		WithArgs(wsID).
+		WillReturnError(sql.ErrNoRows)
+
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	c, w := makeDownloadRequest(t, wsID, "/workspace/foo.txt")
+	h.Download(c)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 when workspace row missing, got %d", w.Code)
+	}
+}
+
+func TestChatDownload_NoInboundSecret(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	wsID := "00000000-0000-0000-0000-000000000051"
+	expectURL(mock, wsID, "http://127.0.0.1:1")
+	expectInboundSecret(mock, wsID, nil)
+
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	c, w := makeDownloadRequest(t, wsID, "/workspace/foo.txt")
 	h.Download(c)
 
 	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("expected 503 when docker is nil, got %d: %s", w.Code, w.Body.String())
+		t.Errorf("expected 503 when platform_inbound_secret missing, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "RFC #2312") {
+		t.Errorf("expected detail to reference RFC #2312, got: %s", w.Body.String())
+	}
+}
+
+func TestChatDownload_ForwardsToWorkspace_HappyPath(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	body := []byte("file-contents-here\nmultiline\n")
+	cap := &captured{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cap.authorization = r.Header.Get("Authorization")
+		cap.method = r.Method
+		cap.path = r.URL.Path
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Disposition", `attachment; filename="report.txt"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+
+	wsID := "00000000-0000-0000-0000-000000000052"
+	expectURL(mock, wsID, srv.URL)
+	expectInboundSecret(mock, wsID, "the-secret")
+
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	c, w := makeDownloadRequest(t, wsID, "/workspace/report.txt")
+	h.Download(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if cap.authorization != "Bearer the-secret" {
+		t.Errorf("expected secret in Authorization header, got %q", cap.authorization)
+	}
+	if cap.method != "GET" {
+		t.Errorf("expected GET, got %s", cap.method)
+	}
+	if cap.path != "/internal/file/read" {
+		t.Errorf("expected /internal/file/read, got %s", cap.path)
+	}
+	if got := w.Header().Get("Content-Type"); got != "text/plain" {
+		t.Errorf("Content-Type not forwarded: %q", got)
+	}
+	if got := w.Header().Get("Content-Disposition"); got != `attachment; filename="report.txt"` {
+		t.Errorf("Content-Disposition not forwarded: %q", got)
+	}
+	if got := w.Body.Bytes(); !bytes.Equal(got, body) {
+		t.Errorf("body mismatch: got %q, want %q", got, body)
+	}
+}
+
+func TestChatDownload_404FromWorkspacePropagated(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"file not found"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	wsID := "00000000-0000-0000-0000-000000000053"
+	expectURL(mock, wsID, srv.URL)
+	expectInboundSecret(mock, wsID, "tok")
+
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	c, w := makeDownloadRequest(t, wsID, "/workspace/missing.txt")
+	h.Download(c)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 propagated, got %d", w.Code)
 	}
 }
