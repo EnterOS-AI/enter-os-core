@@ -153,18 +153,31 @@ PM_ID=""
 CHILD_ID=""
 
 cleanup() {
-  local exit_code=$?
+  # `trap` ignores function return values, so don't capture/return $?
+  # — that would only mislead a future reader. Disable -e inside cleanup
+  # so a single curl failure doesn't abort the loop and leave the other
+  # workspace orphaned.
   set +e
   if [ "$KEEP_WORKSPACES" = "1" ]; then
     emit "cleanup_skipped" "{\"reason\":\"KEEP_WORKSPACES=1\",\"pm_id\":\"$PM_ID\",\"child_id\":\"$CHILD_ID\"}"
-    return $exit_code
+    return
   fi
   for id in "$CHILD_ID" "$PM_ID"; do
     [ -z "$id" ] && continue
-    api -X DELETE "$PLATFORM/workspaces/$id" >/dev/null 2>&1
-    emit "cleanup_deleted" "{\"workspace_id\":\"$id\"}"
+    # Capture HTTP status separately from response body so a 401/403/5xx
+    # surfaces as a `cleanup_failed` event instead of a silent leak. The
+    # operator can then re-run cleanup-rogue-workspaces.sh with fresh
+    # credentials. ADMIN_TOKEN expiry mid-run is the realistic failure
+    # mode here; without this we'd swallow it under `>/dev/null 2>&1`.
+    code=$(api -o /dev/null -w '%{http_code}' -X DELETE "$PLATFORM/workspaces/$id" 2>/dev/null || echo "curl_err")
+    if [ "$code" = "200" ] || [ "$code" = "204" ] || [ "$code" = "404" ]; then
+      # 404 = already gone (race with a concurrent operator). Treat as
+      # success since the post-condition (workspace absent) holds.
+      emit "cleanup_deleted" "{\"workspace_id\":\"$id\",\"http_code\":\"$code\"}"
+    else
+      emit "cleanup_failed" "{\"workspace_id\":\"$id\",\"http_code\":\"$code\",\"hint\":\"workspace may be leaked — re-run cleanup-rogue-workspaces.sh\"}"
+    fi
   done
-  return $exit_code
 }
 trap cleanup EXIT INT TERM
 
