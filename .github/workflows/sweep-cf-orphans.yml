@@ -82,11 +82,26 @@ jobs:
 
       - name: Verify required secrets present
         id: verify
-        # Soft skip when secrets aren't configured. The 6 secrets have
-        # to be set on the repo manually before this workflow can do
-        # real work; until they are, the schedule is a no-op rather
-        # than a recurring red CI run. workflow_dispatch surfaces a
-        # warning so an operator running it ad-hoc sees the gap.
+        # Schedule-vs-dispatch behaviour split (hardened 2026-04-28
+        # after the silent-no-op incident below):
+        #
+        # The earlier soft-skip-on-schedule policy hid a real leak. All
+        # six secrets were unset on this repo for an unknown duration;
+        # every hourly run printed a yellow ::warning:: and exited 0,
+        # so the workflow registered as "passing" while doing nothing.
+        # CF orphans accumulated to 152/200 (~76% of the zone quota
+        # gone) before a manual `dig`-driven audit caught it. Anything
+        # that runs as a janitor and reports green while idle is
+        # indistinguishable from "the janitor is healthy" — so we now
+        # treat schedule (and any future workflow_run/push triggers)
+        # as a hard-fail when secrets are missing.
+        #
+        #   - schedule / workflow_run / push → exit 1 (red CI run
+        #     surfaces the misconfiguration the next tick)
+        #   - workflow_dispatch              → exit 0 with a warning
+        #     (an operator ran this ad-hoc; they already accepted the
+        #     state of the repo and want the workflow to short-circuit
+        #     so they can rerun after fixing the secret)
         run: |
           missing=()
           for var in CF_API_TOKEN CF_ZONE_ID CP_PROD_ADMIN_TOKEN CP_STAGING_ADMIN_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
@@ -95,9 +110,16 @@ jobs:
             fi
           done
           if [ ${#missing[@]} -gt 0 ]; then
-            echo "::warning::skipping sweep — secrets not yet configured: ${missing[*]}"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "::warning::skipping sweep — secrets not configured: ${missing[*]}"
+              echo "::warning::set them at Settings → Secrets and Variables → Actions, then rerun."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::sweep cannot run — required secrets missing: ${missing[*]}"
+            echo "::error::set them at Settings → Secrets and Variables → Actions, or disable this workflow."
+            echo "::error::a silent skip masked an active CF DNS leak (152/200 zone records) caught only by a manual audit on 2026-04-28; this gate exists to make the gap visible."
+            exit 1
           fi
           echo "All required secrets present ✓"
           echo "skip=false" >> "$GITHUB_OUTPUT"
