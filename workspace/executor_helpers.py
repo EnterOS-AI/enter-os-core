@@ -26,6 +26,7 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
 import subprocess
 import uuid as _uuid
 from pathlib import Path
@@ -513,9 +514,16 @@ def sanitize_agent_error(
 # Auto-push hook — push unpushed commits and open PR after task completion
 # ========================================================================
 
-# Git/gh wrappers at /usr/local/bin have GH_TOKEN baked in.
-_GIT = "/usr/local/bin/git"
-_GH = "/usr/local/bin/gh"
+# Resolve git/gh from PATH so the runtime works regardless of which
+# image the workspace is on. Some templates ship a /usr/local/bin/{git,gh}
+# wrapper with GH_TOKEN baked in (preferred — picks up auth automatically);
+# other templates have plain /usr/bin/git installed by apt. Hardcoding
+# /usr/local/bin/git crashed every auto-push attempt on the latter image
+# class with `FileNotFoundError: '/usr/local/bin/git'` (issue #2289).
+# `shutil.which` finds the wrapper first if it's earlier in PATH, so the
+# GH_TOKEN injection still wins where it exists.
+_GIT = shutil.which("git") or "/usr/bin/git"
+_GH = shutil.which("gh") or "/usr/bin/gh"
 _PROTECTED_BRANCHES = frozenset({"staging", "main", "master"})
 
 
