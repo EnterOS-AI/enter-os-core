@@ -64,9 +64,14 @@ jobs:
             echo "canvas=${{ steps.filter.outputs.canvas }}" >> "$GITHUB_OUTPUT"
           fi
 
+  # Same `name:` as the playwright job below so the check-run is
+  # indistinguishable from the real one for branch protection. Mirrors
+  # the e2e-api.yml fix in the same PR — see that file for the
+  # 2026-04-28 incident reference.
   no-op:
     needs: detect-changes
     if: needs.detect-changes.outputs.canvas != 'true'
+    name: Canvas tabs E2E
     runs-on: ubuntu-latest
     steps:
       - run: |
