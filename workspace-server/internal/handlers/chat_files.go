@@ -13,7 +13,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -25,7 +24,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 	"github.com/docker/docker/api/types/container"
 	"github.com/gin-gonic/gin"
 )
@@ -179,28 +177,6 @@ func (h *ChatFilesHandler) Upload(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-
-	// External workspaces have no container — the container-find-then-tar-exec
-	// flow below doesn't apply. Surface a clear 4xx instead of the misleading
-	// "container not running" 503 (#2308). File ingest for external workspaces
-	// is on the v0.2 roadmap (likely via the artifacts table or the channel-
-	// plugin's inbox/ pattern); flagging unsupported is the v0.1 contract.
-	var wsRuntime string
-	if err := db.DB.QueryRowContext(ctx,
-		`SELECT COALESCE(runtime, '') FROM workspaces WHERE id = $1`, workspaceID,
-	).Scan(&wsRuntime); err != nil && err != sql.ErrNoRows {
-		log.Printf("chat_files Upload: runtime lookup failed for %s: %v", workspaceID, err)
-	}
-	if wsRuntime == "external" {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": "file upload not supported for external workspaces",
-			"detail": "External workspaces have no container to receive uploads. " +
-				"Use POST /admin/secrets to share data, or attach via your external agent's own input channel. " +
-				"Native external-workspace upload tracked at https://github.com/Molecule-AI/molecule-core/issues/2308.",
-			"runtime": "external",
-		})
-		return
-	}
 
 	containerName := h.templates.findContainer(ctx, workspaceID)
 	if containerName == "" {
