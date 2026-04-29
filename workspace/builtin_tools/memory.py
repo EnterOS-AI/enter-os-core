@@ -8,7 +8,7 @@ Hierarchical Memory Architecture:
 RBAC enforcement
 ----------------
 ``commit_memory`` requires the ``"memory.write"`` action.
-``search_memory`` requires the ``"memory.read"`` action.
+``recall_memory`` requires the ``"memory.read"`` action.
 Roles are read from ``config.yaml`` under ``rbac.roles`` (default: operator).
 
 Audit trail
@@ -188,7 +188,7 @@ async def commit_memory(content: str, scope: str = "LOCAL") -> dict:
 
 
 @tool
-async def search_memory(query: str = "", scope: str = "") -> dict:
+async def recall_memory(query: str = "", scope: str = "") -> dict:
     """Search stored memories.
 
     Args:

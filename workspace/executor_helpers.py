@@ -273,29 +273,19 @@ def get_system_prompt(config_path: str, fallback: str | None = None) -> str | No
     return fallback
 
 
-_A2A_INSTRUCTIONS_MCP = """## Inter-Agent Communication
-You have MCP tools for communicating with other workspaces:
-- list_peers: discover available peer workspaces (name, ID, status, role)
-- delegate_task: send a task and WAIT for the response (for quick tasks)
-- delegate_task_async: send a task and return immediately with a task_id (for long tasks)
-- check_task_status: poll an async task's status and get results when done
-- get_workspace_info: get your own workspace info
+# Tool-usage instructions for system-prompt injection. Generated from
+# the platform_tools registry — every tool name, description, and usage
+# guidance comes from the canonical ToolSpec. Adding/renaming a tool in
+# registry.py automatically flows through here.
 
-For quick questions, use delegate_task (synchronous).
-For long-running work (building pages, running audits), use delegate_task_async + check_task_status.
-Always use list_peers first to discover available workspace IDs.
-Access control is enforced — you can only reach siblings and parent/children.
-
-PROACTIVE MESSAGING: Use send_message_to_user to push messages to the user's chat at ANY time:
-- Acknowledge tasks immediately: "Got it, delegating to the team now..."
-- Send progress updates during long work: "Research Lead finished, waiting on Dev Lead..."
-- Deliver follow-up results: "All teams reported back. Here's the synthesis: ..."
-This lets you respond quickly ("I'll work on this") and come back later with results.
-
-If delegate_task returns a DELEGATION FAILED message, do NOT forward the raw error to the user.
-Instead: (1) try delegating to a different peer, (2) handle the task yourself, or
-(3) tell the user which peer is unavailable and provide your own best answer."""
-
+_A2A_FOOTER = (
+    "Always use list_peers first to discover available workspace IDs. "
+    "Access control is enforced — you can only reach siblings and parent/children. "
+    "If a delegation returns a DELEGATION FAILED message, do NOT forward "
+    "the raw error to the user. Instead: (1) try a different peer, "
+    "(2) handle the task yourself, or (3) tell the user which peer is "
+    "unavailable and provide your own best answer."
+)
 
 _A2A_INSTRUCTIONS_CLI = """## Inter-Agent Communication
 You can delegate tasks to other workspaces using the a2a command:
@@ -308,40 +298,111 @@ You can delegate tasks to other workspaces using the a2a command:
 For quick questions, use sync delegate. For long tasks, use --async + status.
 Only delegate to peers listed by the peers command (access control enforced)."""
 
+# Maps every a2a-section registry tool to the substring that MUST appear
+# in `_A2A_INSTRUCTIONS_CLI` for CLI-runtime agents to discover it. The
+# CLI subprocess interface uses different command-shape names than the
+# MCP tool names (e.g. `peers` vs `list_peers`), so this is NOT a
+# generated mapping — it's a hand-maintained alignment table.
+#
+# `None` declares "this MCP tool is intentionally NOT exposed via the
+# CLI subprocess interface" — make the decision explicit so adding a
+# new registry tool fails the alignment test until the mapping is
+# updated. test_platform_tools.py asserts both directions:
+#
+#   1. every a2a tool in the registry is keyed here (no silent omission)
+#   2. every non-None substring actually appears in `_A2A_INSTRUCTIONS_CLI`
+#
+# Why hand-maintained: the registry is the source of truth for
+# MCP-capable runtimes, but the CLI subprocess interface in
+# `molecule_runtime.a2a_cli` is a separate surface with its own command
+# vocabulary. Auto-generating CLI command lines from JSON-schema specs
+# would lose the human-readable invocation syntax (`delegate <ws> <task>`
+# vs. `--workspace_id=... --task=...`). The mapping + test gives us
+# alignment without forcing a uniform shape.
+_CLI_A2A_COMMAND_KEYWORDS: dict[str, str | None] = {
+    "list_peers": "peers",
+    "delegate_task": "delegate ",          # trailing space disambiguates from "--async" line
+    "delegate_task_async": "delegate --async",
+    "check_task_status": "status",
+    "get_workspace_info": "info",
+    # `send_message_to_user` is not exposed via the CLI subprocess
+    # interface today — it requires a structured `attachments` field
+    # that wouldn't survive a positional-arg shell invocation cleanly.
+    # CLI-runtime agents fall back to printing results to stdout (which
+    # the runtime forwards to the user) instead. If the a2a_cli ever
+    # grows a `say` or `message` subcommand, change `None` to that
+    # keyword and the alignment test will start passing.
+    "send_message_to_user": None,
+}
+
+
+def _validate_cli_a2a_command_keywords() -> None:
+    """Keep CLI instruction text aligned with command keyword mapping."""
+    missing = [
+        (tool_name, keyword)
+        for tool_name, keyword in _CLI_A2A_COMMAND_KEYWORDS.items()
+        if keyword is not None and keyword not in _A2A_INSTRUCTIONS_CLI
+    ]
+    if missing:
+        details = ", ".join(f"{tool_name}={keyword!r}" for tool_name, keyword in missing)
+        raise ValueError(
+            "CLI A2A command mapping is out of sync with _A2A_INSTRUCTIONS_CLI: "
+            f"{details}"
+        )
+
+
+_validate_cli_a2a_command_keywords()
+
+
+def _render_section(heading: str, specs, footer: str = "") -> str:
+    """Render a section: heading, per-tool bullet, per-tool when_to_use, footer."""
+    parts = [heading, ""]
+    for spec in specs:
+        parts.append(f"- **{spec.name}**: {spec.short}")
+    parts.append("")
+    for spec in specs:
+        parts.append(f"### {spec.name}")
+        parts.append(spec.when_to_use)
+        parts.append("")
+    if footer:
+        parts.append(footer)
+    return "\n".join(parts).rstrip() + "\n"
+
 
 def get_a2a_instructions(mcp: bool = True) -> str:
     """Return inter-agent communication instructions for system-prompt injection.
 
-    Pass `mcp=True` (default) for MCP-capable runtimes (Claude Code via SDK,
-    Codex). Pass `mcp=False` for CLI-only runtimes (Ollama, custom) that have
-    to call a2a_cli.py as a subprocess.
+    Generated from the platform_tools registry. Pass `mcp=True` (default)
+    for MCP-capable runtimes (claude-code, hermes, langchain, crewai).
+    Pass `mcp=False` for CLI-only runtimes (ollama, custom subprocess
+    runtimes that don't speak MCP) — those get a static block describing
+    the molecule_runtime.a2a_cli subprocess interface instead.
     """
-    return _A2A_INSTRUCTIONS_MCP if mcp else _A2A_INSTRUCTIONS_CLI
-
-
-_HMA_INSTRUCTIONS = """## Hierarchical Memory (HMA)
-You have persistent memory tools that survive across sessions and restarts:
-
-- **commit_memory(content, scope)**: Save important information.
-  - LOCAL: private to you only (default)
-  - TEAM: shared with your parent workspace and siblings (same team)
-  - GLOBAL: shared with the entire org (only root workspaces can write)
-
-- **recall_memory(query)**: Search your accessible memories. Returns LOCAL + TEAM + GLOBAL matches.
-
-**When to use memory:**
-- After making a decision or learning something non-obvious → commit_memory("decision X because Y", scope="TEAM")
-- Before starting work → recall_memory("what did the team decide about X")
-- When you discover org-wide knowledge (repo locations, API patterns, conventions) → commit_memory(fact, scope="GLOBAL") if you are a root workspace, or scope="TEAM" to share with your team
-- After completing a task → commit_memory("completed task X, PR #N opened", scope="TEAM") so your lead and teammates know
-
-**Memory is automatically recalled** at the start of each new session. Use it proactively during work to share context.
-"""
+    if not mcp:
+        return _A2A_INSTRUCTIONS_CLI
+    from platform_tools.registry import a2a_tools
+    return _render_section(
+        "## Inter-Agent Communication",
+        a2a_tools(),
+        footer=_A2A_FOOTER,
+    )
 
 
 def get_hma_instructions() -> str:
-    """Return HMA memory instructions for system-prompt injection."""
-    return _HMA_INSTRUCTIONS
+    """Return HMA persistent-memory instructions for system-prompt injection.
+
+    Generated from the platform_tools registry.
+    """
+    from platform_tools.registry import memory_tools
+    return _render_section(
+        "## Hierarchical Memory (HMA)",
+        memory_tools(),
+        footer=(
+            "Memory is automatically recalled at the start of each new "
+            "session. Use commit_memory proactively during work so future "
+            "sessions and teammates can recall what you learned."
+        ),
+    )
 
 
 # ========================================================================

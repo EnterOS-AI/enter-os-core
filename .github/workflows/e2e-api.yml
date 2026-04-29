@@ -27,7 +27,17 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: e2e-api-${{ github.ref }}
+  # Per-SHA grouping (changed 2026-04-28 from per-ref). Per-ref had the
+  # same auto-promote-staging brittleness as e2e-staging-canvas — back-
+  # to-back staging pushes share refs/heads/staging, so the older push's
+  # queued run gets cancelled when a newer push lands. Auto-promote-
+  # staging then sees `completed/cancelled` for the older SHA and stays
+  # put; the newer SHA's gates may eventually save the day, but if the
+  # newer push gets cancelled too, we deadlock.
+  #
+  # See e2e-staging-canvas.yml's identical concurrency block for the full
+  # rationale and the 2026-04-28 incident reference.
+  group: e2e-api-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -36,8 +46,8 @@ jobs:
     outputs:
       api: ${{ steps.decide.outputs.api }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         id: filter
         with:
           filters: |
@@ -56,9 +66,18 @@ jobs:
             echo "api=${{ steps.filter.outputs.api }}" >> "$GITHUB_OUTPUT"
           fi
 
+  # Same `name:` as the real job below so the check-run produced by the
+  # no-op path is indistinguishable from the real one for branch
+  # protection purposes. Without this, the real job was always skipped on
+  # paths-filtered commits → branch protection on `main` saw "E2E API
+  # Smoke Test" as a missing required check → auto-promote-staging's
+  # `git push origin main` got rejected with GH006. Observed 2026-04-28
+  # 00:22 UTC blocking the staging→main promote despite all gates
+  # actually passing at the workflow level.
   no-op:
     needs: detect-changes
     if: needs.detect-changes.outputs.api != 'true'
+    name: E2E API Smoke Test
     runs-on: ubuntu-latest
     steps:
       - run: |
@@ -78,8 +97,8 @@ jobs:
       PG_CONTAINER: molecule-ci-postgres
       REDIS_CONTAINER: molecule-ci-redis
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: 'stable'
           cache: true

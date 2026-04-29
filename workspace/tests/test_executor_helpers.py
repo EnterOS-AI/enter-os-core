@@ -438,9 +438,12 @@ def test_get_system_prompt_handles_non_utf8(tmp_path):
 
 def test_get_a2a_instructions_mcp_default():
     out = get_a2a_instructions()
-    assert "MCP tools" in out
+    # Section heading is the canonical agent-facing label.
+    assert "## Inter-Agent Communication" in out
+    # Every A2A tool from the registry must appear by name.
     assert "list_peers" in out
     assert "send_message_to_user" in out
+    assert "delegate_task" in out
 
 
 def test_get_a2a_instructions_cli_variant():
@@ -468,32 +471,27 @@ def test_a2a_cli_instructions_use_module_invocation_not_legacy_app_path():
 
 
 def test_a2a_mcp_instructions_reference_existing_tools():
-    """The MCP instructions text must only reference tools that are actually
-    registered in a2a_mcp_server.py. If someone renames a server tool, the
-    prompt text must be updated in lockstep — this test catches the drift.
+    """Pin the registry-driven alignment: every tool name appearing in the
+    agent-facing A2A instructions must be a tool the MCP server actually
+    registers. Both sides now derive from platform_tools.registry, so the
+    real test is that the registry's a2a_tools() set drives both surfaces
+    consistently.
     """
-    import re
-    import pathlib
-    mcp_server = pathlib.Path(__file__).parent.parent / "a2a_mcp_server.py"
-    registered = set(re.findall(r'"name":\s*"([a-z_]+)"', mcp_server.read_text()))
-    # The server advertises itself by name; strip that false positive.
-    registered.discard("a2a-delegation")
+    from a2a_mcp_server import TOOLS as MCP_TOOLS
+    from platform_tools.registry import a2a_tools
 
+    registered = {t["name"] for t in MCP_TOOLS}
     instructions = get_a2a_instructions(mcp=True)
 
-    # Every tool called out by name in the instructions must exist on the
-    # server. (We allow the server to have extras the prompt doesn't mention.)
-    referenced = {
-        "list_peers",
-        "delegate_task",
-        "delegate_task_async",
-        "check_task_status",
-        "get_workspace_info",
-        "send_message_to_user",
-    }
-    for name in referenced:
-        assert name in instructions, f"prompt missing {name}"
-        assert name in registered, f"MCP server no longer registers {name}"
+    for spec in a2a_tools():
+        assert spec.name in instructions, (
+            f"A2A instructions are missing the tool {spec.name!r} that "
+            f"the registry declares — the doc generator drifted."
+        )
+        assert spec.name in registered, (
+            f"MCP server no longer registers {spec.name!r} that the registry "
+            f"declares — the MCP TOOLS list drifted from the registry."
+        )
 
 
 # ======================================================================

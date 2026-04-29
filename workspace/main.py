@@ -337,11 +337,16 @@ async def main():  # pragma: no cover
                 # Rebuild the agent's tool list from updated skills
                 if hasattr(adapter, "all_tools") and hasattr(adapter, "system_prompt"):
                     from builtin_tools.approval import request_approval
-                    from builtin_tools.delegation import delegate_to_workspace
-                    from builtin_tools.memory import commit_memory, search_memory
+                    from builtin_tools.delegation import delegate_task, delegate_task_async, check_task_status
+                    from builtin_tools.memory import commit_memory, recall_memory
                     from builtin_tools.sandbox import run_code
-                    base_tools = [delegate_to_workspace, request_approval,
-                                  commit_memory, search_memory, run_code]
+                    # Core platform tools mirror adapter_base.all_tools — must
+                    # match the platform_tools registry names so docs and tools
+                    # never drift.
+                    base_tools = [
+                        delegate_task, delegate_task_async, check_task_status,
+                        request_approval, commit_memory, recall_memory, run_code,
+                    ]
                     skill_tools = []
                     for sk in adapter.loaded_skills:
                         skill_tools.extend(sk.tools)

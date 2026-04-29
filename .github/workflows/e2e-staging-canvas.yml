@@ -37,7 +37,25 @@ on:
     - cron: '0 8 * * 0'
 
 concurrency:
-  group: e2e-staging-canvas
+  # Per-SHA grouping (changed 2026-04-28 from a single global group). The
+  # global group made auto-promote-staging brittle: when a staging push
+  # queued behind an in-flight run and a third entrant (a PR run, a
+  # follow-on push) entered the group, the staging push got cancelled —
+  # leaving auto-promote-staging looking at `completed/cancelled` for a
+  # required gate and refusing to advance main. Observed 2026-04-28
+  # 23:51-23:53 on staging tip 3f99fede.
+  #
+  # The original intent of the global group was to throttle parallel
+  # E2E provisions (each spins a fresh EC2). At our scale that throttle
+  # isn't worth the correctness cost — fresh-org-per-run isolates the
+  # state, and the cost of two parallel runs (~$0.001/min × 10min × 2)
+  # is rounding error vs. the cost of a stuck pipeline.
+  #
+  # Per-SHA still dedupes accidental double-triggers for the SAME SHA.
+  # It does NOT cancel obsolete-PR-version runs on force-push; that
+  # wasted CI is acceptable given the alternative is losing staging-tip
+  # data that auto-promote-staging needs.
+  group: e2e-staging-canvas-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -46,8 +64,8 @@ jobs:
     outputs:
       canvas: ${{ steps.decide.outputs.canvas }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         id: filter
         with:
           filters: |
@@ -64,9 +82,14 @@ jobs:
             echo "canvas=${{ steps.filter.outputs.canvas }}" >> "$GITHUB_OUTPUT"
           fi
 
+  # Same `name:` as the playwright job below so the check-run is
+  # indistinguishable from the real one for branch protection. Mirrors
+  # the e2e-api.yml fix in the same PR — see that file for the
+  # 2026-04-28 incident reference.
   no-op:
     needs: detect-changes
     if: needs.detect-changes.outputs.canvas != 'true'
+    name: Canvas tabs E2E
     runs-on: ubuntu-latest
     steps:
       - run: |
@@ -90,7 +113,7 @@ jobs:
         working-directory: canvas
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Verify admin token present
         run: |
@@ -100,7 +123,7 @@ jobs:
           fi
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: '20'
           cache: 'npm'
@@ -117,7 +140,7 @@ jobs:
 
       - name: Upload Playwright report on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: playwright-report-staging
           path: canvas/playwright-report-staging/
@@ -125,7 +148,7 @@ jobs:
 
       - name: Upload screenshots on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: playwright-screenshots
           path: canvas/test-results/

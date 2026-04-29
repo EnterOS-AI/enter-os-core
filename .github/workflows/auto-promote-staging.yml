@@ -1,25 +1,62 @@
 name: Auto-promote staging → main
 
 # Fires after any of the staging-branch quality gates complete. When ALL
-# required gates are green on the same staging SHA, fast-forwards `main`
-# to that SHA automatically — closing the gap that historically let
-# features sit on staging for weeks waiting for a bulk promotion PR
-# (see molecule-core#1496 for the 1172-commit example).
+# required gates are green on the same staging SHA, opens (or re-uses)
+# a PR `staging → main` and enables auto-merge so the merge queue lands
+# it. Closes the gap that historically let features sit on staging for
+# weeks waiting for a bulk promotion PR (see molecule-core#1496 for the
+# 1172-commit example).
+#
+# 2026-04-28 rewrite (PR #142): the previous version did a direct
+# `git merge --ff-only origin staging && git push origin main`. That
+# breaks against main's branch-protection ruleset, which requires
+# status checks "set by the expected GitHub apps" — direct pushes
+# can't satisfy that condition (only PR merges through the queue can).
+# The workflow was failing every tick with:
+#   remote: error: GH006: Protected branch update failed for refs/heads/main.
+#   remote: - Required status checks ... were not set by the expected GitHub apps.
+# Fix: mirror the PR-based pattern from auto-sync-main-to-staging.yml
+# (the reverse-direction sync, fixed in #2234 for the same reason).
+# Both directions now use the same merge-queue path that humans use,
+# no special-case bypass.
 #
 # Safety model:
 # - Runs ONLY on workflow_run events for the staging branch.
 # - Requires EVERY named gate workflow to have the same head_sha and
 #   all be `conclusion == success`. If any of them is red, skipped,
 #   cancelled, or pending, we abort (stay on the current main).
-# - Uses --ff-only: refuses to advance main if main has diverged from
-#   the staging history (e.g. a hotfix landed directly on main). In
-#   that case a human resolves the fork.
-# - Writes a commit summary so the promote shows up in git log as a
-#   deliberate act, not a stealth move.
+# - The PR base=main head=staging path lets GitHub itself enforce
+#   branch protection. If main has diverged from staging or required
+#   checks aren't satisfied, the merge queue declines the PR — no
+#   need for a manual ff-only ancestry check here.
+# - Loop safety: the auto-sync-main-to-staging workflow fires when
+#   main lands the auto-promote PR, but its merge into staging is by
+#   GITHUB_TOKEN which doesn't trigger downstream workflow_run events
+#   (GitHub Actions safety). So this workflow doesn't re-fire from
+#   its own promote landing.
 #
-# **Initial rollout:** ship this file but leave the `enabled` input set
-# such that nothing auto-promotes until staging CI has been reliably
-# green for a few days. Toggle via repo variable `AUTO_PROMOTE_ENABLED`.
+# Toggle via repo variable AUTO_PROMOTE_ENABLED (true/unset). When
+# unset, the workflow logs what it would have done but doesn't open
+# the PR — useful for dry-running the gate logic without surfacing
+# a noisy PR while staging CI is still flaky.
+#
+# **One-time repo setting (load-bearing):** this workflow opens the
+# staging→main PR via `gh pr create` using the default GITHUB_TOKEN.
+# Since GitHub's 2022 default change, that token cannot create or
+# approve PRs unless the repo opts in. The toggle is at:
+#
+#   Settings → Actions → General → Workflow permissions
+#   → ✅ Allow GitHub Actions to create and approve pull requests
+#
+# Without it, every workflow_run fails with:
+#
+#   pull request create failed: GraphQL: GitHub Actions is not
+#   permitted to create or approve pull requests (createPullRequest)
+#
+# Observed 2026-04-29 01:43 UTC blocking promotion of fcd87b9 (PRs
+# #2248 + #2249); manually bridged via PR #2252. Re-check this
+# setting if auto-promote starts failing with createPullRequest
+# errors after a repo or org admin change.
 
 on:
   workflow_run:
@@ -38,6 +75,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   check-all-gates-green:
@@ -134,14 +172,14 @@ jobs:
           set -eu
           # Repo variable AUTO_PROMOTE_ENABLED=true flips this on. While
           # it's unset, the workflow dry-runs (logs what it would have
-          # done) but doesn't actually push to main. Set the variable in
+          # done) but doesn't open the promote PR. Set the variable in
           # Settings → Secrets and variables → Actions → Variables.
           if [ "${AUTO_PROMOTE_ENABLED:-}" != "true" ] && [ "${FORCE_INPUT:-false}" != "true" ]; then
             {
               echo "## ⏸ Auto-promote disabled"
               echo
               echo "Repo variable \`AUTO_PROMOTE_ENABLED\` is not set to \`true\`."
-              echo "All gates are green on staging; would have promoted to \`main\`."
+              echo "All gates are green on staging; would have opened a promote PR to \`main\`."
               echo
               echo "To enable: Settings → Secrets and variables → Actions → Variables → \`AUTO_PROMOTE_ENABLED=true\`."
               echo "To test once manually: workflow_dispatch with \`force=true\`."
@@ -150,50 +188,55 @@ jobs:
             exit 0
           fi
 
-      - name: Checkout main
-        if: ${{ vars.AUTO_PROMOTE_ENABLED == 'true' || github.event.inputs.force == 'true' }}
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Fast-forward main → staging HEAD
+      - name: Open (or reuse) staging → main promote PR + enable auto-merge
         if: ${{ vars.AUTO_PROMOTE_ENABLED == 'true' || github.event.inputs.force == 'true' }}
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
           TARGET_SHA: ${{ needs.check-all-gates-green.outputs.head_sha }}
         run: |
-          set -eu
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          set -euo pipefail
 
-          git fetch origin staging
-          git fetch origin main
+          # Look for an existing open promote PR (idempotent on re-run
+          # of the workflow). The PR's head IS the staging branch — the
+          # whole point is "advance main to staging's tip", so we don't
+          # need a per-SHA branch like auto-sync-main-to-staging uses.
+          PR_NUM=$(gh pr list --repo "$REPO" \
+            --base main --head staging --state open \
+            --json number --jq '.[0].number // ""')
 
-          # Refuse to advance main if it's diverged from staging history.
-          # Someone landed a commit directly on main that's not on
-          # staging → human needs to decide how to reconcile.
-          if ! git merge-base --is-ancestor "$(git rev-parse origin/main)" "$TARGET_SHA"; then
-            {
-              echo "## ❌ Auto-promote refused — main has diverged"
-              echo
-              echo "\`main\` (\`$(git rev-parse --short origin/main)\`) is not an ancestor of staging (\`${TARGET_SHA:0:7}\`)."
-              echo "Someone committed directly to main or the histories forked."
-              echo
-              echo "Resolve manually: merge main into staging, get CI green on the merged commit,"
-              echo "then the auto-promote will succeed on the next run."
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
+          if [ -z "$PR_NUM" ]; then
+            TITLE="staging → main: auto-promote ${TARGET_SHA:0:7}"
+            BODY_FILE=$(mktemp)
+            cat > "$BODY_FILE" <<EOFBODY
+          Automated promotion of \`staging\` (\`${TARGET_SHA:0:8}\`) to \`main\`. All required staging gates green at this SHA: CI, E2E Staging Canvas, E2E API Smoke, CodeQL.
+
+          This PR is auto-generated by \`.github/workflows/auto-promote-staging.yml\` whenever every required gate completes green on the same staging SHA. It exists because main's branch protection requires status checks "set by the expected GitHub apps" — direct \`git push\` from a workflow can't satisfy that, only PR merges through the queue can.
+
+          Merge queue lands this; no human action needed unless gates fail. Reverse-direction sync (the merge commit on main → staging) is handled by \`auto-sync-main-to-staging.yml\`.
+          EOFBODY
+            PR_URL=$(gh pr create --repo "$REPO" \
+              --base main --head staging \
+              --title "$TITLE" \
+              --body-file "$BODY_FILE")
+            PR_NUM=$(echo "$PR_URL" | grep -oE '[0-9]+$' | tail -1)
+            rm -f "$BODY_FILE"
+            echo "::notice::Opened PR #${PR_NUM}"
+          else
+            echo "::notice::Re-using existing promote PR #${PR_NUM}"
           fi
 
-          # Fast-forward main to the target SHA.
-          git checkout main
-          git merge --ff-only "$TARGET_SHA"
-          git push origin main
+          # Enable auto-merge — the merge queue picks it up once
+          # required gates are green on the merge_group ref.
+          if ! gh pr merge "$PR_NUM" --repo "$REPO" --auto --merge 2>&1; then
+            echo "::warning::Failed to enable auto-merge on PR #${PR_NUM} — operator may need to merge manually."
+          fi
 
           {
-            echo "## ✅ Auto-promoted main → ${TARGET_SHA:0:7}"
+            echo "## ✅ Auto-promote PR opened"
             echo
-            echo "All gate workflows green on staging at this SHA."
-            echo "\`main\` fast-forwarded to match."
+            echo "- Source: staging at \`${TARGET_SHA:0:8}\`"
+            echo "- PR: #${PR_NUM}"
+            echo
+            echo "Merge queue lands the PR once required gates are green; no human action needed unless gates fail."
           } >> "$GITHUB_STEP_SUMMARY"

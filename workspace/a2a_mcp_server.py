@@ -27,6 +27,7 @@ from a2a_tools import (
     tool_recall_memory,
     tool_send_message_to_user,
 )
+from platform_tools.registry import TOOLS as _PLATFORM_TOOL_SPECS
 
 logger = logging.getLogger(__name__)
 
@@ -45,156 +46,25 @@ from a2a_client import (  # noqa: F401, E402
 from a2a_tools import report_activity  # noqa: F401, E402
 
 # --- Tool definitions (schemas) ---
+#
+# Built once at import time from the platform_tools registry. The MCP
+# `description` field is the spec's `short` line — that's the unified
+# tool description used by both the MCP tool listing AND the bullet
+# rendering in the agent-facing system-prompt section. The deeper
+# `when_to_use` guidance is appended to the system prompt only (it's
+# too long to live in MCP `description` without bloating every
+# tool-list response the model sees).
 
 TOOLS = [
     {
-        "name": "delegate_task",
-        "description": "Delegate a task to another workspace via A2A protocol and WAIT for the response. Use for quick tasks. The target must be a peer (sibling or parent/child). Use list_peers to find available targets.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "workspace_id": {
-                    "type": "string",
-                    "description": "Target workspace ID (from list_peers)",
-                },
-                "task": {
-                    "type": "string",
-                    "description": "The task description to send to the target workspace",
-                },
-            },
-            "required": ["workspace_id", "task"],
-        },
-    },
-    {
-        "name": "delegate_task_async",
-        "description": "Send a task to another workspace with a short timeout (fire-and-forget). Returns immediately — the target continues processing. Best when you don't need the result right away. Note: check_task_status may not work with all workspace implementations.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "workspace_id": {
-                    "type": "string",
-                    "description": "Target workspace ID (from list_peers)",
-                },
-                "task": {
-                    "type": "string",
-                    "description": "The task description to send to the target workspace",
-                },
-            },
-            "required": ["workspace_id", "task"],
-        },
-    },
-    {
-        "name": "check_task_status",
-        "description": "Check the status of a previously submitted async task via tasks/get. Note: only works if the target workspace's A2A implementation supports task persistence. May return 'not found' for completed tasks.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "workspace_id": {
-                    "type": "string",
-                    "description": "The workspace ID the task was sent to",
-                },
-                "task_id": {
-                    "type": "string",
-                    "description": "The task_id returned by delegate_task_async",
-                },
-            },
-            "required": ["workspace_id", "task_id"],
-        },
-    },
-    {
-        "name": "list_peers",
-        "description": "List all workspaces this agent can communicate with (siblings and parent/children). Returns name, ID, status, and role for each peer.",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "get_workspace_info",
-        "description": "Get this workspace's own info — ID, name, role, tier, parent, status.",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "send_message_to_user",
-        "description": "Send a message directly to the user's canvas chat — pushed instantly via WebSocket. Use this to: (1) acknowledge a task immediately ('Got it, I'll start working on this'), (2) send interim progress updates while doing long work, (3) deliver follow-up results after delegation completes, (4) attach files (zip, pdf, csv, image) for the user to download via the `attachments` field (NEVER paste file URLs in `message`). The message appears in the user's chat as if you're proactively reaching out.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "message": {
-                    "type": "string",
-                    # The "no URLs in message text" rule is the single biggest
-                    # cause of bad chat UX: agents drop catbox.moe / file://
-                    # / temporary upload-host links into the prose, the
-                    # canvas renders them as plain markdown links the user
-                    # can't preview, and SaaS deployments often can't even
-                    # reach those external hosts. Every download MUST go
-                    # through the structured `attachments` field below.
-                    "description": (
-                        "Caption text for the chat bubble. Required even when sending "
-                        "attachments — set to a short label like 'Here's the build:' "
-                        "or 'Done — see attached.'\n\n"
-                        "DO NOT paste file URLs, download links, or container paths in "
-                        "this string. Files MUST go through the `attachments` field, "
-                        "which renders as a clickable download chip and works on SaaS "
-                        "deployments where external file-host URLs (catbox.moe, file://, "
-                        "etc.) are unreachable from the user's browser."
-                    ),
-                },
-                "attachments": {
-                    "type": "array",
-                    "description": (
-                        "REQUIRED for any file delivery. Pass absolute file paths inside "
-                        "THIS container (e.g. ['/tmp/build.zip', '/workspace/report.pdf']) "
-                        "— the platform uploads each file and returns a download chip "
-                        "with the file's icon + name + size in the user's chat. The chip "
-                        "works in SaaS deployments because the URL is platform-served, "
-                        "not an external host.\n\n"
-                        "USE THIS instead of: pasting URLs in `message`, base64-encoding "
-                        "in the body, or telling the user to look at a path on disk. "
-                        "If the file isn't already on disk, write it first (Bash, Write "
-                        "tool, etc.) then pass its path here. 25 MB per file cap."
-                    ),
-                    "items": {"type": "string"},
-                },
-            },
-            "required": ["message"],
-        },
-    },
-    {
-        "name": "commit_memory",
-        "description": "Append a new memory row to persistent storage. Each call CREATES a row — does not overwrite existing memories with the same content. Use to remember decisions, task results, and context that should survive a restart. Scope: LOCAL (this workspace only), TEAM (parent + siblings), GLOBAL (entire org). GLOBAL writes require tier-0 (root) workspace; lower-tier callers get an RBAC error.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "content": {
-                    "type": "string",
-                    "description": "The information to remember — be detailed and specific",
-                },
-                "scope": {
-                    "type": "string",
-                    "enum": ["LOCAL", "TEAM", "GLOBAL"],
-                    "description": "Memory scope (default: LOCAL)",
-                },
-            },
-            "required": ["content"],
-        },
-    },
-    {
-        "name": "recall_memory",
-        "description": "Substring-search persistent memory and return ALL matching rows (no pagination). Empty query returns every memory accessible at the given scope. Server-side filter is case-insensitive substring match on `content`. Use at the start of conversations to recall prior context — calling once with empty query is cheap and avoids missing relevant memories that don't match a narrow keyword.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Search query (empty returns all memories)",
-                },
-                "scope": {
-                    "type": "string",
-                    "enum": ["LOCAL", "TEAM", "GLOBAL", ""],
-                    "description": "Filter by scope (empty returns all accessible)",
-                },
-            },
-        },
-    },
+        "name": _spec.name,
+        "description": _spec.short,
+        "inputSchema": _spec.input_schema,
+    }
+    for _spec in _PLATFORM_TOOL_SPECS
 ]
+
+
 
 
 # --- Tool dispatch ---

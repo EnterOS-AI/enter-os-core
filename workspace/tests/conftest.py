@@ -113,10 +113,12 @@ def _make_tools_mocks():
     tools_mod.__path__ = []  # Make it a proper package
 
     tools_delegation_mod = ModuleType("builtin_tools.delegation")
-    tools_delegation_mod.delegate_to_workspace = MagicMock()
-    tools_delegation_mod.delegate_to_workspace.name = "delegate_to_workspace"
-    tools_delegation_mod.check_delegation_status = MagicMock()
-    tools_delegation_mod.check_delegation_status.name = "check_delegation_status"
+    tools_delegation_mod.delegate_task = MagicMock()
+    tools_delegation_mod.delegate_task.name = "delegate_task"
+    tools_delegation_mod.delegate_task_async = MagicMock()
+    tools_delegation_mod.delegate_task_async.name = "delegate_task_async"
+    tools_delegation_mod.check_task_status = MagicMock()
+    tools_delegation_mod.check_task_status.name = "check_task_status"
 
     tools_approval_mod = ModuleType("builtin_tools.approval")
     tools_approval_mod.request_approval = MagicMock()
@@ -125,8 +127,8 @@ def _make_tools_mocks():
     tools_memory_mod = ModuleType("builtin_tools.memory")
     tools_memory_mod.commit_memory = MagicMock()
     tools_memory_mod.commit_memory.name = "commit_memory"
-    tools_memory_mod.search_memory = MagicMock()
-    tools_memory_mod.search_memory.name = "search_memory"
+    tools_memory_mod.recall_memory = MagicMock()
+    tools_memory_mod.recall_memory.name = "recall_memory"
 
     tools_sandbox_mod = ModuleType("builtin_tools.sandbox")
     tools_sandbox_mod.run_code = MagicMock()

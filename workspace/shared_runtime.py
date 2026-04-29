@@ -140,7 +140,7 @@ def build_peer_section(
     *,
     heading: str = "## Your Peers (workspaces you can delegate to)",
     instruction: str = (
-        "Use the `delegate_to_workspace` tool to send tasks to peers. "
+        "Use the `delegate_task_async` tool to send tasks to peers. "
         "Only delegate to peers listed above."
     ),
 ) -> str:
