@@ -21,13 +21,12 @@ package handlers
 // conversation payloads.
 
 import (
-	"archive/tar"
 	"errors"
 	"fmt"
 	"io"
 	"log"
-	"mime"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -245,16 +244,20 @@ func (h *ChatFilesHandler) Upload(c *gin.Context) {
 }
 
 // Download handles GET /workspaces/:id/chat/download?path=<abs path>.
-// Streams the file bytes from the container with a correct
-// Content-Type and attachment Content-Disposition. Binary-safe —
-// unlike the existing JSON ReadFile endpoint which carries content
-// as a string (lossy for non-UTF-8 bytes).
+// Forwards over HTTP to the workspace's own /internal/file/read endpoint
+// (RFC #2312 PR-D), replacing the docker-cp tar-stream extraction that
+// only worked when the platform binary had local Docker socket access.
 //
-// TODO(#2312, follow-up PR): migrate Download to the same HTTP-forward
-// pattern as Upload. For now keeping the docker-cp path so this PR is
-// reviewable as a single-surface change. SaaS download is broken
-// today the same way SaaS upload was broken before this PR — the next
-// PR closes that gap.
+// Same path-safety contract as the legacy version: caller-side validation
+// is duplicated on the workspace side (internal_file_read.py) so a
+// platform bug or malicious caller bypassing one layer still hits the
+// other. This is "defence in depth via two parallel checks," not "trust
+// the workspace to validate" — the workspace doesn't trust the platform
+// either.
+//
+// Body is streamed end-to-end (no buffering on the platform), preserving
+// binary safety and arbitrary file size (the 50 MB cap on Upload doesn't
+// apply to artefacts the agent produced).
 func (h *ChatFilesHandler) Download(c *gin.Context) {
 	workspaceID := c.Param("id")
 	if err := validateWorkspaceID(workspaceID); err != nil {
@@ -293,54 +296,72 @@ func (h *ChatFilesHandler) Download(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	if h.templates.docker == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "docker unavailable"})
+
+	// Resolve workspace URL + inbound secret. Same shape as Upload —
+	// see chat_files.go::Upload for the rationale on why each missing-
+	// piece path surfaces as 404 / 503.
+	var wsURL string
+	if err := db.DB.QueryRowContext(ctx,
+		`SELECT COALESCE(url, '') FROM workspaces WHERE id = $1`, workspaceID,
+	).Scan(&wsURL); err != nil {
+		log.Printf("chat_files Download: workspace lookup failed for %s: %v", workspaceID, err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
 		return
 	}
-	containerName := h.templates.findContainer(ctx, workspaceID)
-	if containerName == "" {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "workspace container not running"})
+	if wsURL == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "workspace url not registered yet"})
 		return
 	}
 
-	// docker cp returns a tar stream containing the requested path.
-	// For a regular file that's a single tar entry; we extract and
-	// stream the body through.
-	reader, _, err := h.templates.docker.CopyFromContainer(ctx, containerName, path)
+	secret, err := wsauth.ReadPlatformInboundSecret(ctx, db.DB, workspaceID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
+		if errors.Is(err, wsauth.ErrNoInboundSecret) {
+			log.Printf("chat_files Download: no platform_inbound_secret for %s — workspace needs reprovision (#2312)", workspaceID)
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error":  "workspace not yet enrolled in v2 download (RFC #2312)",
+				"detail": "Reprovisioning the workspace will mint the platform_inbound_secret it's missing.",
+			})
+			return
+		}
+		log.Printf("chat_files Download: read platform_inbound_secret failed for %s: %v", workspaceID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read workspace secret"})
 		return
 	}
-	defer reader.Close()
 
-	tr := tar.NewReader(reader)
-	hdr, err := tr.Next()
+	// Build forward URL with the validated path encoded as a query param.
+	// url.Values handles all the percent-encoding correctly — a path with
+	// special chars (spaces, &, +) round-trips through both the platform's
+	// validator and the workspace-side validator.
+	forwardURL := strings.TrimRight(wsURL, "/") + "/internal/file/read?path=" + url.QueryEscape(path)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, forwardURL, nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read archive"})
+		log.Printf("chat_files Download: build request failed for %s: %v", workspaceID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to construct forward request"})
 		return
 	}
-	if hdr.Typeflag != tar.TypeReg {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "path is not a regular file"})
+	req.Header.Set("Authorization", "Bearer "+secret)
+
+	resp, err := h.httpClient.Do(req)
+	if err != nil {
+		log.Printf("chat_files Download: forward to %s failed: %v", forwardURL, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "workspace unreachable"})
 		return
 	}
+	defer resp.Body.Close()
 
-	name := filepath.Base(path)
-	mt := mime.TypeByExtension(filepath.Ext(name))
-	if mt == "" {
-		mt = "application/octet-stream"
+	// Stream response back, including the workspace's headers so the
+	// client gets the correct Content-Type + Content-Disposition (the
+	// workspace constructs them from the actual file's extension +
+	// basename — keeping that logic on the workspace side avoids a
+	// double-source-of-truth on filename encoding rules).
+	for _, hdr := range []string{"Content-Type", "Content-Length", "Content-Disposition"} {
+		if v := resp.Header.Get(hdr); v != "" {
+			c.Header(hdr, v)
+		}
 	}
-	c.Header("Content-Type", mt)
-	c.Header("Content-Length", fmt.Sprintf("%d", hdr.Size))
-	c.Header("Content-Disposition", contentDispositionAttachment(name))
-	c.Status(http.StatusOK)
-
-	// Stream exactly hdr.Size bytes. CopyN was chosen over LimitReader
-	// because it returns an error when the source is short — that
-	// surfaces a bug in the tar extraction path immediately instead
-	// of silently truncating. Agents can legitimately produce files
-	// larger than the 50 MB upload cap (that's a per-request inbound
-	// cap, not a per-artifact one), so we cannot clamp here.
-	if _, err := io.CopyN(c.Writer, tr, hdr.Size); err != nil {
-		log.Printf("Chat download stream error for %s (%s): %v", workspaceID, path, err)
+	c.Status(resp.StatusCode)
+	if _, err := io.Copy(c.Writer, resp.Body); err != nil {
+		log.Printf("chat_files Download: stream response back failed for %s: %v", workspaceID, err)
 	}
 }
+

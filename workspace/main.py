@@ -435,6 +435,12 @@ async def main():  # pragma: no cover
         _internal_chat_uploads_ingest,
         methods=["POST"],
     )
+    from internal_file_read import file_read_handler as _internal_file_read
+    starlette_app.add_route(
+        "/internal/file/read",
+        _internal_file_read,
+        methods=["GET"],
+    )
 
     built_app = make_trace_middleware(starlette_app)
 
