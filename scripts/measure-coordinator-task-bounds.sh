@@ -75,33 +75,16 @@
 set -euo pipefail
 
 PLATFORM="${PLATFORM:-http://localhost:8080}"
-
-# Templates, model, and the workspace-secret name are configurable so
-# the harness covers any provider combo without code edits. Default
-# values reproduce the original local-dev shape (claude-code coordinator
-# + langgraph child + OpenRouter secret). MiniMax via Hermes Token Plan
-# example: PM_TEMPLATE=hermes CHILD_TEMPLATE=hermes
-# MODEL=minimax/MiniMax-M2.7-highspeed SECRET_NAME=MINIMAX_API_KEY
-# MINIMAX_API_KEY=sk-cp-...
-PM_TEMPLATE="${PM_TEMPLATE:-claude-code-default}"
-CHILD_TEMPLATE="${CHILD_TEMPLATE:-langgraph}"
-MODEL="${MODEL:-}"  # empty = template default; non-empty = PUT /workspaces/:id/model
-SECRET_NAME="${SECRET_NAME:-OPENROUTER_API_KEY}"
-
-# Resolve the secret value: prefer $SECRET_NAME (so MINIMAX_API_KEY=...
-# works when SECRET_NAME=MINIMAX_API_KEY), then SECRET_VALUE override,
-# then legacy OPENROUTER_API_KEY/OPENAI_API_KEY for v1 one-liner compat.
-SECRET_VALUE="${SECRET_VALUE:-}"
-if [ -z "$SECRET_VALUE" ]; then
-  SECRET_VALUE="$(printenv "$SECRET_NAME" 2>/dev/null || true)"
-fi
-if [ -z "$SECRET_VALUE" ]; then
-  SECRET_VALUE="${OPENROUTER_API_KEY:-${OPENAI_API_KEY:-}}"
-fi
-if [ -z "$SECRET_VALUE" ]; then
-  echo "ERROR: no value found for secret \$$SECRET_NAME — set it (or SECRET_VALUE / OPENROUTER_API_KEY / OPENAI_API_KEY)" >&2
+# Require an explicitly-set non-empty key. The previous chained
+# default (`${OPENROUTER_API_KEY:-${OPENAI_API_KEY:?...}}`) silently
+# accepted `OPENROUTER_API_KEY=""` and only failed when OPENAI_API_KEY
+# was also unset — defeating the guard against running with no LLM
+# credentials.
+if [ -z "${OPENROUTER_API_KEY:-}" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+  echo "ERROR: set OPENROUTER_API_KEY (or OPENAI_API_KEY) to a non-empty value" >&2
   exit 1
 fi
+OR_KEY="${OPENROUTER_API_KEY:-${OPENAI_API_KEY}}"
 
 # Required for non-localhost platforms — staging-api etc. enforce
 # tenant-admin auth on /workspaces. Without it the harness would either
