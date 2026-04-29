@@ -95,7 +95,39 @@ if [ -n "$STAGED_GO" ]; then
 fi
 
 # ──────────────────────────────────────────────────────────
-# 5. Secrets: No tokens/keys in staged files
+# 5. Go: build check — catches bot-generated structurally-invalid Go (#1770)
+# ──────────────────────────────────────────────────────────
+#
+# Background: bot agents have produced syntactically-broken Go that the
+# patch tool happily applied (e.g. PR #1769 commit 66ea0b64 — function
+# declaration nested inside another function's body). Compilation failed,
+# staging Platform(Go) was red for hours. CI catches this AT PR-time but
+# by then the malformed commit is already shared.
+#
+# Pre-commit guard: when ANY .go file in workspace-server/ is staged, run
+# `go build ./...` from workspace-server. If it fails, reject the commit.
+# Cost: ~5-10s on a warm cache; acceptable for the class of bug it
+# catches. Skip when go isn't available (CI runners that need to bypass).
+
+if [ -n "$STAGED_GO" ]; then
+  if command -v go >/dev/null 2>&1; then
+    if ! (cd workspace-server && go build ./... >/tmp/precommit-go-build.log 2>&1); then
+      echo "❌ GO BUILD FAILED — staged Go changes don't compile (workspace-server/)."
+      echo "   Output:"
+      sed 's/^/     /' /tmp/precommit-go-build.log | head -20
+      echo "   Fix the build error before committing. See #1770 for context."
+      ERRORS=$((ERRORS + 1))
+    fi
+  else
+    # Bots and CI runners may bypass when go isn't installed — surface a
+    # warning so the absence is visible, but don't block. Humans hit this
+    # only if they didn't run setup.sh.
+    echo "⚠️  go not installed — skipping go-build pre-commit check (#1770)"
+  fi
+fi
+
+# ──────────────────────────────────────────────────────────
+# 6. Secrets: No tokens/keys in staged files
 # ──────────────────────────────────────────────────────────
 
 ALL_STAGED=$(git diff --cached --name-only --diff-filter=ACM || true)
