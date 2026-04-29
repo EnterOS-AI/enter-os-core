@@ -23,12 +23,22 @@ func NewActivityHandler(b *events.Broadcaster) *ActivityHandler {
 	return &ActivityHandler{broadcaster: b}
 }
 
-// List handles GET /workspaces/:id/activity?type=&limit=
+// List handles GET /workspaces/:id/activity?type=&source=&limit=&since_secs=
+//
+// since_secs filters to activity_logs.created_at >= NOW() - INTERVAL '$N seconds'.
+// Optional, additive — callers that don't pass it get today's behavior (the
+// most-recent N events regardless of time). The harness runner
+// (scripts/measure-coordinator-task-bounds-runner.sh) uses this to scope a
+// trace to a specific test window; RFC #2251 §V1.0 step 6 also depends on it.
+// Capped at 30 days (2_592_000s) — anything older has typically been paged
+// out anyway, and a defensive ceiling keeps a paranoid client from triggering
+// a full-table scan via since_secs=99999999999. Closes #2268.
 func (h *ActivityHandler) List(c *gin.Context) {
 	workspaceID := c.Param("id")
 	activityType := c.Query("type")
 	source := c.Query("source") // "canvas" = source_id IS NULL, "agent" = source_id IS NOT NULL
 	limitStr := c.DefaultQuery("limit", "100")
+	sinceSecsStr := c.Query("since_secs")
 
 	limit := 100
 	if n, err := strconv.Atoi(limitStr); err == nil && n > 0 {
@@ -36,6 +46,23 @@ func (h *ActivityHandler) List(c *gin.Context) {
 		if limit > 500 {
 			limit = 500
 		}
+	}
+
+	// Parse since_secs. Reject negative or non-integer values rather than
+	// silently ignoring them — a typoed param shouldn't be lost as
+	// most-recent-100, that's exactly the bug this fixes.
+	var sinceSecs int
+	if sinceSecsStr != "" {
+		n, err := strconv.Atoi(sinceSecsStr)
+		if err != nil || n <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "since_secs must be a positive integer"})
+			return
+		}
+		const maxSinceSecs = 30 * 24 * 60 * 60 // 30 days
+		if n > maxSinceSecs {
+			n = maxSinceSecs
+		}
+		sinceSecs = n
 	}
 
 	// Build query with optional filters
@@ -57,6 +84,15 @@ func (h *ActivityHandler) List(c *gin.Context) {
 	} else if source != "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "source must be 'canvas' or 'agent'"})
 		return
+	}
+	if sinceSecs > 0 {
+		// Use a parameterized interval so the value is bound, not
+		// interpolated into the SQL string. `make_interval(secs => $N)`
+		// avoids the lib/pq quirk where INTERVAL '$N seconds' won't
+		// substitute a placeholder inside the literal.
+		query += fmt.Sprintf(" AND created_at >= NOW() - make_interval(secs => $%d)", argIdx)
+		args = append(args, sinceSecs)
+		argIdx++
 	}
 
 	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", argIdx)

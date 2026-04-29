@@ -441,6 +441,12 @@ func (h *WorkspaceHandler) Delete(c *gin.Context) {
 	for _, descID := range descendantIDs {
 		stopAndRemove(descID)
 		db.ClearWorkspaceKeys(cleanupCtx, descID)
+		// #2269: drop the per-workspace restartState entry so it
+		// doesn't accumulate across the platform's lifetime. The
+		// LoadOrStore that creates the entry (workspace_restart.go)
+		// has no companion remove path; without this Delete, every
+		// short-lived workspace leaks ~16 bytes forever.
+		restartStates.Delete(descID)
 		// Detach broadcaster ctx for the same reason as the cleanup
 		// above — RecordAndBroadcast does an INSERT INTO
 		// structure_events + Redis Publish. If the canvas hangs up,
@@ -453,6 +459,7 @@ func (h *WorkspaceHandler) Delete(c *gin.Context) {
 
 	stopAndRemove(id)
 	db.ClearWorkspaceKeys(cleanupCtx, id)
+	restartStates.Delete(id) // #2269: same as descendants above
 
 	h.broadcaster.RecordAndBroadcast(cleanupCtx, "WORKSPACE_REMOVED", id, map[string]interface{}{
 		"cascade_deleted": len(descendantIDs),
