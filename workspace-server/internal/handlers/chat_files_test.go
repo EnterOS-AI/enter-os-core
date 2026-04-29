@@ -1,67 +1,91 @@
 package handlers
 
-// Unit tests for chat_files.go. The Docker-touching paths (Upload
-// actually copying into a container, Download actually streaming tar)
-// are exercised via integration tests — docker-in-docker is out of
-// scope for the unit suite. These tests cover the validation + error
-// surfaces that a caller can reach without a running container.
+// Unit tests for chat_files.go.
+//
+// Upload (HTTP-forward, RFC #2312 PR-C): exercised against an httptest
+// mock workspace + sqlmock-backed db.DB. The platform-side handler is
+// now a streaming proxy; assertions focus on:
+//   * input validation (400 on bad workspace id)
+//   * resolution failures (404 missing row, 503 missing secret/url)
+//   * forward shape (Authorization, Content-Type, body)
+//   * pass-through of the workspace's status + body
+//
+// Path-safety + sanitization that lived on the platform pre-#2312 is
+// now the workspace-side handler's concern; covered in the Python
+// suite (workspace/tests/test_internal_chat_uploads.py).
 
 import (
 	"bytes"
+	"database/sql"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 )
 
-func TestSanitizeFilename(t *testing.T) {
-	cases := []struct {
-		in, want string
-	}{
-		{"report.pdf", "report.pdf"},
-		{"my file.pdf", "my_file.pdf"},
-		{"../../etc/passwd", "passwd"},
-		{"weird;$name`.txt", "weird__name_.txt"},
-		{"", "file"},
-		{".", "file"},
-		{"..", "file"},
-	}
-	for _, tc := range cases {
-		got := sanitizeFilename(tc.in)
-		if got != tc.want {
-			t.Errorf("sanitizeFilename(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
+// makeUploadRequest builds a gin context for POST /workspaces/:id/chat/uploads
+// with the given multipart body. The recorder is returned so callers can
+// assert status + body after invoking h.Upload(c).
+func makeUploadRequest(t *testing.T, workspaceID string, body *bytes.Buffer, contentType string) (*gin.Context, *httptest.ResponseRecorder) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: workspaceID}}
+	req := httptest.NewRequest("POST", "/workspaces/"+workspaceID+"/chat/uploads", body)
+	req.Header.Set("Content-Type", contentType)
+	c.Request = req
+	return c, w
 }
 
-func TestSanitizeFilename_LongNamePreservesExtension(t *testing.T) {
-	// 120-char base + .pdf — the helper should truncate the base but
-	// keep the extension intact so content-type inference still works.
-	longBase := strings.Repeat("a", 120)
-	got := sanitizeFilename(longBase + ".pdf")
-	if len(got) > 100 {
-		t.Errorf("filename not truncated: len=%d", len(got))
+// uploadFixture builds a minimal multipart/form-data body with a single
+// `files` part. The exact bytes don't matter for proxy tests — only that
+// the workspace receives the same boundary + headers we sent.
+func uploadFixture(t *testing.T) (*bytes.Buffer, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile("files", "fixture.txt")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
 	}
-	if !strings.HasSuffix(got, ".pdf") {
-		t.Errorf("extension stripped: %q", got)
-	}
+	_, _ = fw.Write([]byte("fixture-payload"))
+	mw.Close()
+	return &buf, mw.FormDataContentType()
+}
+
+// expectURL stubs the SELECT that resolves the workspace's url.
+func expectURL(mock sqlmock.Sqlmock, workspaceID, url string) {
+	mock.ExpectQuery(`SELECT COALESCE\(url, ''\) FROM workspaces WHERE id = \$1`).
+		WithArgs(workspaceID).
+		WillReturnRows(sqlmock.NewRows([]string{"url"}).AddRow(url))
+}
+
+// expectURLMissing stubs the SELECT to return sql.ErrNoRows.
+func expectURLMissing(mock sqlmock.Sqlmock, workspaceID string) {
+	mock.ExpectQuery(`SELECT COALESCE\(url, ''\) FROM workspaces WHERE id = \$1`).
+		WithArgs(workspaceID).
+		WillReturnError(sql.ErrNoRows)
+}
+
+// expectInboundSecret stubs the SELECT performed by ReadPlatformInboundSecret.
+func expectInboundSecret(mock sqlmock.Sqlmock, workspaceID string, secret interface{}) {
+	mock.ExpectQuery(`SELECT platform_inbound_secret FROM workspaces WHERE id = \$1`).
+		WithArgs(workspaceID).
+		WillReturnRows(sqlmock.NewRows([]string{"platform_inbound_secret"}).AddRow(secret))
 }
 
 func TestChatUpload_InvalidWorkspaceID(t *testing.T) {
 	setupTestDB(t)
 	setupTestRedis(t)
 
-	tmplh := NewTemplatesHandler(t.TempDir(), nil)
-	h := NewChatFilesHandler(tmplh)
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
 
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Params = gin.Params{{Key: "id", Value: "not-a-uuid"}}
-	c.Request = httptest.NewRequest("POST", "/workspaces/not-a-uuid/chat/uploads", nil)
-
+	c, w := makeUploadRequest(t, "not-a-uuid", &bytes.Buffer{}, "")
 	h.Upload(c)
 
 	if w.Code != http.StatusBadRequest {
@@ -69,33 +93,180 @@ func TestChatUpload_InvalidWorkspaceID(t *testing.T) {
 	}
 }
 
-func TestChatUpload_MissingFiles(t *testing.T) {
-	setupTestDB(t)
+func TestChatUpload_WorkspaceNotInDB(t *testing.T) {
+	mock := setupTestDB(t)
 	setupTestRedis(t)
 
-	tmplh := NewTemplatesHandler(t.TempDir(), nil)
-	h := NewChatFilesHandler(tmplh)
+	wsID := "00000000-0000-0000-0000-000000000099"
+	expectURLMissing(mock, wsID)
 
-	// Multipart body with no `files` field — only a text field.
-	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-	_ = mw.WriteField("other", "value")
-	mw.Close()
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Params = gin.Params{{Key: "id", Value: "00000000-0000-0000-0000-000000000001"}}
-	req := httptest.NewRequest("POST", "/workspaces/00000000-0000-0000-0000-000000000001/chat/uploads", &buf)
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	c.Request = req
-
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	body, ct := uploadFixture(t)
+	c, w := makeUploadRequest(t, wsID, body, ct)
 	h.Upload(c)
 
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 when files field missing, got %d: %s", w.Code, w.Body.String())
+	// QueryRow returning sql.ErrNoRows surfaces as 404. The validate-id
+	// step already passed; this is the next layer.
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 when workspace row missing, got %d: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "files") {
-		t.Errorf("expected error to mention files field: %s", w.Body.String())
+}
+
+func TestChatUpload_NoInboundSecret(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	// Legacy row: URL set but platform_inbound_secret is NULL.
+	wsID := "00000000-0000-0000-0000-000000000041"
+	expectURL(mock, wsID, "http://127.0.0.1:1")
+	expectInboundSecret(mock, wsID, nil) // NULL
+
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	body, ct := uploadFixture(t)
+	c, w := makeUploadRequest(t, wsID, body, ct)
+	h.Upload(c)
+
+	// 503 with detail steering ops to reprovision. NOT 200, NOT a
+	// silent no-bearer forward (which would land as a 401 that the
+	// user can't action).
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when platform_inbound_secret missing, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "RFC #2312") {
+		t.Errorf("expected detail to reference RFC #2312, got: %s", w.Body.String())
+	}
+}
+
+func TestChatUpload_NoURL(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	// Workspace registered but URL hasn't been reported yet (mid-boot).
+	wsID := "00000000-0000-0000-0000-000000000042"
+	expectURL(mock, wsID, "")
+
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	body, ct := uploadFixture(t)
+	c, w := makeUploadRequest(t, wsID, body, ct)
+	h.Upload(c)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when workspace url empty, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// captured snapshots everything the forwarder sent to the workspace so
+// we can assert auth + body + content-type forwarded correctly.
+type captured struct {
+	authorization string
+	contentType   string
+	method        string
+	path          string
+	body          []byte
+}
+
+func newCapturingWorkspace(t *testing.T, status int, response string) (*httptest.Server, *captured) {
+	t.Helper()
+	cap := &captured{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cap.authorization = r.Header.Get("Authorization")
+		cap.contentType = r.Header.Get("Content-Type")
+		cap.method = r.Method
+		cap.path = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		cap.body = body
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(response))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, cap
+}
+
+func TestChatUpload_ForwardsToWorkspace_HappyPath(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	srv, captured := newCapturingWorkspace(t, http.StatusOK, `{"files":[{"uri":"workspace:/workspace/.molecule/chat-uploads/abc-fixture.txt","name":"fixture.txt","size":15}]}`)
+
+	wsID := "00000000-0000-0000-0000-000000000043"
+	expectURL(mock, wsID, srv.URL)
+	expectInboundSecret(mock, wsID, "super-secret-123")
+
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	body, ct := uploadFixture(t)
+	c, w := makeUploadRequest(t, wsID, body, ct)
+	h.Upload(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from happy forward, got %d: %s", w.Code, w.Body.String())
+	}
+	if captured.method != "POST" {
+		t.Errorf("expected POST, got %s", captured.method)
+	}
+	if captured.path != "/internal/chat/uploads/ingest" {
+		t.Errorf("expected /internal/chat/uploads/ingest, got %s", captured.path)
+	}
+	if captured.authorization != "Bearer super-secret-123" {
+		t.Errorf("expected secret in Authorization header, got %q", captured.authorization)
+	}
+	if !strings.HasPrefix(captured.contentType, "multipart/form-data") {
+		t.Errorf("expected multipart Content-Type forwarded, got %q", captured.contentType)
+	}
+	// Body shape: must contain the multipart-encoded fixture content.
+	if !bytes.Contains(captured.body, []byte("fixture-payload")) {
+		t.Errorf("expected body to contain fixture payload, got %d bytes", len(captured.body))
+	}
+	// Response body streamed back unchanged.
+	if !strings.Contains(w.Body.String(), "fixture.txt") {
+		t.Errorf("expected workspace response forwarded back, got: %s", w.Body.String())
+	}
+}
+
+func TestChatUpload_ForwardsErrorStatusUnchanged(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	// Workspace returns 413 with its standard "exceeds per-file limit"
+	// shape. Platform must propagate, NOT remap to 500.
+	srv, _ := newCapturingWorkspace(t, http.StatusRequestEntityTooLarge, `{"error":"big.bin exceeds per-file limit (25 MB)"}`)
+
+	wsID := "00000000-0000-0000-0000-000000000044"
+	expectURL(mock, wsID, srv.URL)
+	expectInboundSecret(mock, wsID, "tok")
+
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	body, ct := uploadFixture(t)
+	c, w := makeUploadRequest(t, wsID, body, ct)
+	h.Upload(c)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("expected 413 propagated unchanged, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "exceeds per-file limit") {
+		t.Errorf("expected workspace's 413 body verbatim, got: %s", w.Body.String())
+	}
+}
+
+func TestChatUpload_WorkspaceUnreachable(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	wsID := "00000000-0000-0000-0000-000000000045"
+	// 127.0.0.1:1 — port 1 has no listener → connect refused.
+	expectURL(mock, wsID, "http://127.0.0.1:1")
+	expectInboundSecret(mock, wsID, "tok")
+
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	body, ct := uploadFixture(t)
+	c, w := makeUploadRequest(t, wsID, body, ct)
+	h.Upload(c)
+
+	// Connect-refused → BadGateway. NOT 500 — the platform itself is
+	// fine; the upstream is broken.
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("expected 502 on workspace unreachable, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -103,8 +274,7 @@ func TestChatDownload_InvalidPath(t *testing.T) {
 	setupTestDB(t)
 	setupTestRedis(t)
 
-	tmplh := NewTemplatesHandler(t.TempDir(), nil)
-	h := NewChatFilesHandler(tmplh)
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
 
 	cases := []struct {
 		name, path, wantSubstr string

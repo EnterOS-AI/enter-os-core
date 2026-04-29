@@ -414,6 +414,17 @@ async def main():  # pragma: no cover
 
     starlette_app.add_route("/transcript", _transcript_handler, methods=["GET"])
 
+    # /internal/* — platform→workspace forward calls (RFC #2312). Auth
+    # is the per-workspace platform_inbound_secret in
+    # /configs/.platform_inbound_secret, distinct from the outbound
+    # workspace_auth_token used by /transcript above.
+    from internal_chat_uploads import ingest_handler as _internal_chat_uploads_ingest
+    starlette_app.add_route(
+        "/internal/chat/uploads/ingest",
+        _internal_chat_uploads_ingest,
+        methods=["POST"],
+    )
+
     built_app = make_trace_middleware(starlette_app)
 
     server_config = uvicorn.Config(
