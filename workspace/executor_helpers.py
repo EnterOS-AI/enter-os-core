@@ -273,29 +273,19 @@ def get_system_prompt(config_path: str, fallback: str | None = None) -> str | No
     return fallback
 
 
-_A2A_INSTRUCTIONS_MCP = """## Inter-Agent Communication
-You have MCP tools for communicating with other workspaces:
-- list_peers: discover available peer workspaces (name, ID, status, role)
-- delegate_task: send a task and WAIT for the response (for quick tasks)
-- delegate_task_async: send a task and return immediately with a task_id (for long tasks)
-- check_task_status: poll an async task's status and get results when done
-- get_workspace_info: get your own workspace info
+# Tool-usage instructions for system-prompt injection. Generated from
+# the platform_tools registry — every tool name, description, and usage
+# guidance comes from the canonical ToolSpec. Adding/renaming a tool in
+# registry.py automatically flows through here.
 
-For quick questions, use delegate_task (synchronous).
-For long-running work (building pages, running audits), use delegate_task_async + check_task_status.
-Always use list_peers first to discover available workspace IDs.
-Access control is enforced — you can only reach siblings and parent/children.
-
-PROACTIVE MESSAGING: Use send_message_to_user to push messages to the user's chat at ANY time:
-- Acknowledge tasks immediately: "Got it, delegating to the team now..."
-- Send progress updates during long work: "Research Lead finished, waiting on Dev Lead..."
-- Deliver follow-up results: "All teams reported back. Here's the synthesis: ..."
-This lets you respond quickly ("I'll work on this") and come back later with results.
-
-If delegate_task returns a DELEGATION FAILED message, do NOT forward the raw error to the user.
-Instead: (1) try delegating to a different peer, (2) handle the task yourself, or
-(3) tell the user which peer is unavailable and provide your own best answer."""
-
+_A2A_FOOTER = (
+    "Always use list_peers first to discover available workspace IDs. "
+    "Access control is enforced — you can only reach siblings and parent/children. "
+    "If a delegation returns a DELEGATION FAILED message, do NOT forward "
+    "the raw error to the user. Instead: (1) try a different peer, "
+    "(2) handle the task yourself, or (3) tell the user which peer is "
+    "unavailable and provide your own best answer."
+)
 
 _A2A_INSTRUCTIONS_CLI = """## Inter-Agent Communication
 You can delegate tasks to other workspaces using the a2a command:
@@ -309,39 +299,55 @@ For quick questions, use sync delegate. For long tasks, use --async + status.
 Only delegate to peers listed by the peers command (access control enforced)."""
 
 
+def _render_section(heading: str, specs, footer: str = "") -> str:
+    """Render a section: heading, per-tool bullet, per-tool when_to_use, footer."""
+    parts = [heading, ""]
+    for spec in specs:
+        parts.append(f"- **{spec.name}**: {spec.short}")
+    parts.append("")
+    for spec in specs:
+        parts.append(f"### {spec.name}")
+        parts.append(spec.when_to_use)
+        parts.append("")
+    if footer:
+        parts.append(footer)
+    return "\n".join(parts).rstrip() + "\n"
+
+
 def get_a2a_instructions(mcp: bool = True) -> str:
     """Return inter-agent communication instructions for system-prompt injection.
 
-    Pass `mcp=True` (default) for MCP-capable runtimes (Claude Code via SDK,
-    Codex). Pass `mcp=False` for CLI-only runtimes (Ollama, custom) that have
-    to call a2a_cli.py as a subprocess.
+    Generated from the platform_tools registry. Pass `mcp=True` (default)
+    for MCP-capable runtimes (claude-code, hermes, langchain, crewai).
+    Pass `mcp=False` for CLI-only runtimes (ollama, custom subprocess
+    runtimes that don't speak MCP) — those get a static block describing
+    the molecule_runtime.a2a_cli subprocess interface instead.
     """
-    return _A2A_INSTRUCTIONS_MCP if mcp else _A2A_INSTRUCTIONS_CLI
-
-
-_HMA_INSTRUCTIONS = """## Hierarchical Memory (HMA)
-You have persistent memory tools that survive across sessions and restarts:
-
-- **commit_memory(content, scope)**: Save important information.
-  - LOCAL: private to you only (default)
-  - TEAM: shared with your parent workspace and siblings (same team)
-  - GLOBAL: shared with the entire org (only root workspaces can write)
-
-- **recall_memory(query)**: Search your accessible memories. Returns LOCAL + TEAM + GLOBAL matches.
-
-**When to use memory:**
-- After making a decision or learning something non-obvious → commit_memory("decision X because Y", scope="TEAM")
-- Before starting work → recall_memory("what did the team decide about X")
-- When you discover org-wide knowledge (repo locations, API patterns, conventions) → commit_memory(fact, scope="GLOBAL") if you are a root workspace, or scope="TEAM" to share with your team
-- After completing a task → commit_memory("completed task X, PR #N opened", scope="TEAM") so your lead and teammates know
-
-**Memory is automatically recalled** at the start of each new session. Use it proactively during work to share context.
-"""
+    if not mcp:
+        return _A2A_INSTRUCTIONS_CLI
+    from platform_tools.registry import a2a_tools
+    return _render_section(
+        "## Inter-Agent Communication",
+        a2a_tools(),
+        footer=_A2A_FOOTER,
+    )
 
 
 def get_hma_instructions() -> str:
-    """Return HMA memory instructions for system-prompt injection."""
-    return _HMA_INSTRUCTIONS
+    """Return HMA persistent-memory instructions for system-prompt injection.
+
+    Generated from the platform_tools registry.
+    """
+    from platform_tools.registry import memory_tools
+    return _render_section(
+        "## Hierarchical Memory (HMA)",
+        memory_tools(),
+        footer=(
+            "Memory is automatically recalled at the start of each new "
+            "session. Use commit_memory proactively during work so future "
+            "sessions and teammates can recall what you learned."
+        ),
+    )
 
 
 # ========================================================================

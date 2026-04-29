@@ -9,10 +9,10 @@
 a2a-sdk[http-server]>=1.0.0,<2.0
 
 # HTTP / server
-httpx>=0.27.0
-uvicorn>=0.30.0
+httpx>=0.28.1
+uvicorn>=0.46.0
 starlette>=0.38.0
-websockets>=12.0
+websockets>=16.0
 
 # Config parsing
 pyyaml>=6.0
@@ -24,7 +24,7 @@ langchain-core>=0.3.0
 # tools/telemetry.py gracefully degrades (noop) when these are absent,
 # but they are required for actual trace export.
 opentelemetry-api>=1.24.0
-opentelemetry-sdk>=1.24.0
+opentelemetry-sdk>=1.41.1
 # OTLP/HTTP exporter: sends spans to any OTEL collector and to Langfuse ≥4
 opentelemetry-exporter-otlp-proto-http>=1.24.0
 
@@ -36,4 +36,4 @@ sqlalchemy>=2.0.0
 # tasks survive crashes and can resume.  The module and TemporalWorkflowWrapper
 # load cleanly without this package — all paths fall back to direct execution.
 # Requires a running Temporal server; set TEMPORAL_HOST=<host>:7233 to enable.
-temporalio>=1.7.0
+temporalio>=1.26.0

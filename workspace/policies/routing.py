@@ -64,7 +64,7 @@ def build_team_routing_payload(
         "action": "choose_member",
         "message": (
             f"You have {len(members)} team members. "
-            "Choose the best one for this task and call delegate_to_workspace with their ID."
+            "Choose the best one for this task and call delegate_task_async with their ID."
         ),
         "task": task,
         "members": members,

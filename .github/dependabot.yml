@@ -1,0 +1,80 @@
+# Dependabot — auto-bump pinned dependencies.
+#
+# Why this exists:
+#
+# All `uses:` references in .github/workflows/*.yml are pinned to commit
+# SHAs (with `# v<N>` comments for human readability) instead of mutable
+# tags like `@v4`. Tag pinning is a known supply-chain risk: a maintainer
+# (or compromised maintainer account) can repoint `@v4` to malicious code
+# and our pipelines silently pull it. SHA pinning closes that risk.
+#
+# But SHA pinning has a maintenance cost: each upstream legitimate fix
+# requires manually finding + bumping the SHA. Dependabot for Actions
+# closes that gap by opening PRs to bump pinned SHAs whenever upstream
+# tags a new version. Reviewer evaluates the bump like any other
+# dependency PR.
+#
+# Combined: SHA pinning gives us security, Dependabot keeps us current.
+
+version: 2
+updates:
+  # GitHub Actions — every workflow file under .github/workflows/.
+  # Weekly cadence is enough for a CI surface this size; the supply-
+  # chain attack window is "minutes between repoint and pull," and
+  # weekly auto-bumps don't help with zero-days regardless. The point
+  # is to pull in non-zero-day fixes without operator effort, not to
+  # be real-time.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: chore(deps)
+      include: scope
+
+  # Go module — workspace-server. Bumps go.mod deps via PR weekly.
+  - package-ecosystem: gomod
+    directory: "/workspace-server"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - go
+    commit-message:
+      prefix: chore(deps)
+      include: scope
+
+  # npm — canvas (Next.js bundle). Largest dep tree in this repo;
+  # weekly cadence keeps the security surface fresh without flooding
+  # the queue. open-pull-requests-limit: 10 because npm churns more
+  # than the others.
+  - package-ecosystem: npm
+    directory: "/canvas"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - npm
+    commit-message:
+      prefix: chore(deps)
+      include: scope
+
+  # Python — workspace runtime requirements. Pip/requirements.txt-
+  # backed rather than pyproject.toml; Dependabot supports both.
+  - package-ecosystem: pip
+    directory: "/workspace"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      prefix: chore(deps)
+      include: scope

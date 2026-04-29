@@ -32,7 +32,7 @@ jobs:
       python: ${{ steps.check.outputs.python }}
       scripts: ${{ steps.check.outputs.scripts }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
       - id: check
@@ -72,8 +72,8 @@ jobs:
       run:
         working-directory: workspace-server
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: 'stable'
       - run: go mod download
@@ -187,8 +187,8 @@ jobs:
       run:
         working-directory: canvas
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: '22'
       - run: rm -f package-lock.json && npm install
@@ -210,7 +210,7 @@ jobs:
     if: needs.changes.outputs.scripts == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Run shellcheck on tests/e2e/*.sh and infra/scripts/*.sh
         # shellcheck is pre-installed on ubuntu-latest runners (via apt).
         # infra/scripts/ is included because setup.sh + nuke.sh gate the
@@ -276,8 +276,8 @@ jobs:
       run:
         working-directory: workspace
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.11'
           cache: pip

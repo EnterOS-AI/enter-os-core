@@ -83,6 +83,7 @@ SUBPACKAGES = {
     "adapters",
     "builtin_tools",
     "lib",
+    "platform_tools",
     "plugins_registry",
     "policies",
     "skill_loader",
