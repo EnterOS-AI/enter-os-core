@@ -504,13 +504,6 @@ func (h *OrgHandler) Import(c *gin.Context) {
 	var body struct {
 		Dir      string      `json:"dir"`      // org template directory name
 		Template OrgTemplate `json:"template"` // or inline template
-		// Force skips the required-env preflight. Used by tooling
-		// that already computed the preflight client-side and wants
-		// to proceed despite missing creds (usually because the
-		// user explicitly acknowledged the tradeoff). Default behavior
-		// refuses the import with a 412 and the missing-key list so
-		// the canvas can surface them in its preflight modal.
-		Force bool `json:"force"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -557,22 +550,17 @@ func (h *OrgHandler) Import(c *gin.Context) {
 	}
 
 	// Required-env preflight — refuses import when any required_env is
-	// missing from global_secrets (unless `force: true` overrides). The
-	// canvas runs the same check client-side against GET /org/templates
-	// output and shows a modal so users set keys before clicking Import;
-	// this server-side check is the authoritative guard in case a caller
-	// bypasses the UI (CLI, API clients, etc.). 412 Precondition Failed
-	// carries the missing-key list so tooling can render the same
-	// add-key flow.
+	// missing from global_secrets. No bypass: the prior `force: true`
+	// escape hatch was removed (issue #2290) because it was the silent
+	// failure mode that let an org import without ANTHROPIC_API_KEY and
+	// ship workspaces that 401'd on every LLM call. The canvas runs the
+	// same check client-side against GET /org/templates output and shows
+	// a modal so users set keys before clicking Import; this server-side
+	// check is the authoritative guard in case a caller bypasses the UI
+	// (CLI, API clients, etc.). 412 Precondition Failed carries the
+	// missing-key list so tooling can render the same add-key flow.
 	required, _ := collectOrgEnv(&tmpl)
-	if body.Force {
-		// Log the bypass so a post-incident search can find who
-		// imported an org with missing creds. The common audit flow
-		// treats log.Printf at INFO as the low-cost trail for
-		// explicit-override actions — keeps force as a supported
-		// knob but makes it investigable.
-		log.Printf("Org import: force=true bypass — template=%q, required_env=%v", tmpl.Name, required)
-	} else if len(required) > 0 {
+	if len(required) > 0 {
 		ctx := c.Request.Context()
 		configured, err := loadConfiguredGlobalSecretKeys(ctx)
 		if err != nil {
@@ -583,7 +571,7 @@ func (h *OrgHandler) Import(c *gin.Context) {
 			// that will fail at container-start time on every node.
 			log.Printf("Org import preflight: global secrets lookup failed: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "could not verify required environment variables; try again or pass force=true to override",
+				"error": "could not verify required environment variables; try again",
 			})
 			return
 		}
@@ -603,7 +591,7 @@ func (h *OrgHandler) Import(c *gin.Context) {
 				"missing_env":  missing,
 				"required_env": required,
 				"template":     tmpl.Name,
-				"suggestion":   "set these as global secrets (POST /settings/secrets) or pass force=true to override",
+				"suggestion":   "set these as global secrets (POST /settings/secrets) before importing",
 			})
 			return
 		}
