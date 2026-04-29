@@ -121,3 +121,122 @@ def test_old_pre_rename_names_not_present_in_docs():
             f"pre-rename name {stale!r} leaked into docs — registry "
             f"is the source of truth, not the doc generator."
         )
+
+
+# ---------------------------------------------------------------------------
+# Snapshot / golden-file tests
+#
+# `_render_section` produces the LLM-visible system-prompt block. The
+# structural tests above guarantee tool NAMES are present; these tests
+# pin the SHAPE — bullet ordering, heading style, footer placement —
+# so a future contributor who reorders fields in `_render_section` or
+# rewrites a `when_to_use` paragraph sees the diff in CI.
+#
+# To regenerate after an intentional registry edit:
+#   cd workspace && WORKSPACE_ID=test-snapshot PLATFORM_URL=http://localhost \
+#     python3 -c "from executor_helpers import get_a2a_instructions, get_hma_instructions; \
+#                 open('tests/snapshots/a2a_instructions_mcp.txt','w').write(get_a2a_instructions(mcp=True)); \
+#                 open('tests/snapshots/a2a_instructions_cli.txt','w').write(get_a2a_instructions(mcp=False)); \
+#                 open('tests/snapshots/hma_instructions.txt','w').write(get_hma_instructions())"
+# ---------------------------------------------------------------------------
+
+from pathlib import Path
+
+_SNAPSHOTS = Path(__file__).parent / "snapshots"
+
+
+def _read_snapshot(name: str) -> str:
+    return (_SNAPSHOTS / name).read_text(encoding="utf-8")
+
+
+def test_a2a_mcp_instructions_match_snapshot():
+    """Pin the rendered MCP-variant A2A doc string against the golden file."""
+    from executor_helpers import get_a2a_instructions
+
+    actual = get_a2a_instructions(mcp=True)
+    expected = _read_snapshot("a2a_instructions_mcp.txt")
+    assert actual == expected, (
+        "get_a2a_instructions(mcp=True) drifted from snapshot. If the change "
+        "is intentional, regenerate with the command in the test-file header."
+    )
+
+
+def test_a2a_cli_instructions_match_snapshot():
+    """Pin the rendered CLI-variant A2A doc string against the golden file."""
+    from executor_helpers import get_a2a_instructions
+
+    actual = get_a2a_instructions(mcp=False)
+    expected = _read_snapshot("a2a_instructions_cli.txt")
+    assert actual == expected, (
+        "get_a2a_instructions(mcp=False) drifted from snapshot. If the change "
+        "is intentional, regenerate with the command in the test-file header."
+    )
+
+
+def test_hma_instructions_match_snapshot():
+    """Pin the rendered HMA persistent-memory doc string against the golden file."""
+    from executor_helpers import get_hma_instructions
+
+    actual = get_hma_instructions()
+    expected = _read_snapshot("hma_instructions.txt")
+    assert actual == expected, (
+        "get_hma_instructions() drifted from snapshot. If the change is "
+        "intentional, regenerate with the command in the test-file header."
+    )
+
+
+# ---------------------------------------------------------------------------
+# CLI-block alignment tests
+#
+# Registry is the source of truth for MCP-capable runtimes; the CLI
+# subprocess block (`_A2A_INSTRUCTIONS_CLI`) is a SEPARATE hand-maintained
+# surface for ollama and other non-MCP adapters. The two diverged
+# silently in the past — `send_message_to_user` was added to the
+# registry but the CLI block was never updated. These tests close that
+# gap by requiring a deliberate decision (subcommand keyword OR
+# explicit `None`) for every a2a tool.
+# ---------------------------------------------------------------------------
+
+
+def test_cli_keyword_mapping_covers_every_a2a_tool():
+    """Every a2a-section registry tool must have an entry in
+    `_CLI_A2A_COMMAND_KEYWORDS` — either a subcommand keyword or an
+    explicit `None`. Adding a new a2a tool without updating the
+    mapping fails this test, forcing the contributor to decide
+    whether the CLI subprocess interface should expose it.
+    """
+    from executor_helpers import _CLI_A2A_COMMAND_KEYWORDS
+
+    a2a_names = {t.name for t in a2a_tools()}
+    keyed_names = set(_CLI_A2A_COMMAND_KEYWORDS.keys())
+
+    missing = a2a_names - keyed_names
+    extra = keyed_names - a2a_names
+    assert not missing, (
+        f"a2a tools missing from _CLI_A2A_COMMAND_KEYWORDS: {missing}. "
+        f"Add a key for each — set value to the CLI subcommand keyword "
+        f"or None if the tool isn't exposed via the subprocess interface."
+    )
+    assert not extra, (
+        f"_CLI_A2A_COMMAND_KEYWORDS has keys for tools no longer in the "
+        f"registry: {extra}. Remove them."
+    )
+
+
+def test_cli_keyword_substrings_appear_in_cli_block():
+    """Every non-None subcommand keyword in `_CLI_A2A_COMMAND_KEYWORDS`
+    must literally appear in `_A2A_INSTRUCTIONS_CLI`. If a CLI
+    subcommand is mapped here but missing from the doc block, agents
+    on CLI-only runtimes don't see the invocation syntax.
+    """
+    from executor_helpers import _A2A_INSTRUCTIONS_CLI, _CLI_A2A_COMMAND_KEYWORDS
+
+    for tool_name, keyword in _CLI_A2A_COMMAND_KEYWORDS.items():
+        if keyword is None:
+            continue
+        assert keyword in _A2A_INSTRUCTIONS_CLI, (
+            f"_CLI_A2A_COMMAND_KEYWORDS[{tool_name!r}] = {keyword!r} but "
+            f"that substring is missing from _A2A_INSTRUCTIONS_CLI. Either "
+            f"add the subcommand to the CLI doc block or change the "
+            f"mapping value to None."
+        )

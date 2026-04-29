@@ -1,0 +1,28 @@
+## Inter-Agent Communication
+
+- **delegate_task**: Delegate a task to a peer workspace via A2A and WAIT for the response (synchronous).
+- **delegate_task_async**: Send a task to a peer and return immediately with a task_id (non-blocking).
+- **check_task_status**: Poll the status of a task started with delegate_task_async; returns result when done.
+- **list_peers**: List the workspaces this agent can communicate with — name, ID, status, role for each.
+- **get_workspace_info**: Get this workspace's own info — ID, name, role, tier, parent, status.
+- **send_message_to_user**: Send a message directly to the user's canvas chat — pushed instantly via WebSocket. Use this to: (1) acknowledge a task immediately ('Got it, I'll start working on this'), (2) send interim progress updates while doing long work, (3) deliver follow-up results after delegation completes, (4) attach files (zip, pdf, csv, image) for the user to download via the `attachments` field (NEVER paste file URLs in `message`). The message appears in the user's chat as if you're proactively reaching out.
+
+### delegate_task
+Use for QUICK questions and small sub-tasks where you can afford to wait inline. Returns the peer's response text directly. For longer-running work (research, multi-minute jobs) use delegate_task_async + check_task_status instead so you don't hold this workspace busy waiting.
+
+### delegate_task_async
+Use for long-running work where you want to keep doing other things while the peer processes. Poll with check_task_status to retrieve the result. The platform's A2A queue handles delivery + retries; the peer works independently.
+
+### check_task_status
+Statuses: pending/in_progress (peer still working — wait), queued (peer is busy with a prior task — DO NOT retry, the platform stitches the response when it finishes), completed (result available), failed (real error — fall back to a different peer or handle it yourself).
+
+### list_peers
+Call this first when you need to delegate but don't know the target's ID. Access control is enforced — you only see siblings, parent, and direct children.
+
+### get_workspace_info
+Use to introspect your own identity (e.g. before reporting back to the user, or to determine whether you're a tier-0 root that can write GLOBAL memory).
+
+### send_message_to_user
+Use proactively across the lifecycle of a task — early to acknowledge, mid-flight to update, late to deliver. Never paste file URLs in the message body — always pass absolute paths in `attachments` so the platform serves them as download chips (works on SaaS where external file hosts are unreachable).
+
+Always use list_peers first to discover available workspace IDs. Access control is enforced — you can only reach siblings and parent/children. If a delegation returns a DELEGATION FAILED message, do NOT forward the raw error to the user. Instead: (1) try a different peer, (2) handle the task yourself, or (3) tell the user which peer is unavailable and provide your own best answer.

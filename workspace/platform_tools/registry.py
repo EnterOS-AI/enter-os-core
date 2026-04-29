@@ -13,20 +13,35 @@ runtime format:
     wrappers using `name=` from the spec; the wrapper body just
     calls spec.impl.
 
-  - executor_helpers.get_a2a_instructions() / get_hma_instructions()
-    GENERATE the system-prompt doc string from `TOOLS` — no
-    hand-maintained instruction text.
+  - executor_helpers.get_a2a_instructions(mcp=True) /
+    get_hma_instructions() GENERATE the system-prompt doc string from
+    `TOOLS` — no hand-maintained instruction text for MCP-capable
+    runtimes.
 
-Adding a new tool: append a ToolSpec to `TOOLS` below. Every adapter
-picks it up. Structural alignment tests (workspace/tests/test_platform_tools.py)
-fail if any side drifts from the registry.
+  - executor_helpers._A2A_INSTRUCTIONS_CLI is a SEPARATE hand-maintained
+    block for CLI subprocess runtimes (ollama and any other adapter
+    that drives a2a via `python3 -m molecule_runtime.a2a_cli ...`). It
+    uses different command-shape names than the registry tool names
+    (e.g. `peers` vs `list_peers`), so it cannot be auto-generated
+    from JSON-schema specs without losing the readable invocation
+    syntax. Its tool-coverage alignment with the registry is enforced
+    by the `_CLI_A2A_COMMAND_KEYWORDS` mapping in executor_helpers.py
+    and the alignment tests in test_platform_tools.py — adding a new
+    a2a tool here will fail those tests until the mapping is updated.
+
+Adding a new tool: append a ToolSpec to `TOOLS` below, then update
+`_CLI_A2A_COMMAND_KEYWORDS` in executor_helpers.py (set the value to
+the CLI subcommand keyword, or to `None` if the tool isn't exposed via
+the CLI subprocess interface). The structural alignment tests in
+workspace/tests/test_platform_tools.py fail otherwise.
 
 Renaming a tool: change `name` here. Search workspace/ for the old
 literal in case any non-adapter consumer (tests, plugin code) hard-coded
 it; update those manually. The grep is the audit, the test is the gate.
 
-Removing a tool: delete the entry. Adapters stop registering it
-automatically; doc generators stop mentioning it.
+Removing a tool: delete the entry AND its `_CLI_A2A_COMMAND_KEYWORDS`
+key. Adapters stop registering it automatically; doc generators stop
+mentioning it.
 """
 
 from __future__ import annotations

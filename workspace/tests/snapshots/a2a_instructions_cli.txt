@@ -1,0 +1,10 @@
+## Inter-Agent Communication
+You can delegate tasks to other workspaces using the a2a command:
+  python3 -m molecule_runtime.a2a_cli peers                                  # List available peers
+  python3 -m molecule_runtime.a2a_cli delegate <workspace_id> <task>          # Sync: wait for response
+  python3 -m molecule_runtime.a2a_cli delegate --async <workspace_id> <task>  # Async: return task_id
+  python3 -m molecule_runtime.a2a_cli status <workspace_id> <task_id>         # Check async task
+  python3 -m molecule_runtime.a2a_cli info                                    # Your workspace info
+
+For quick questions, use sync delegate. For long tasks, use --async + status.
+Only delegate to peers listed by the peers command (access control enforced).

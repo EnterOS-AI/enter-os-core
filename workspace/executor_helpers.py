@@ -298,6 +298,61 @@ You can delegate tasks to other workspaces using the a2a command:
 For quick questions, use sync delegate. For long tasks, use --async + status.
 Only delegate to peers listed by the peers command (access control enforced)."""
 
+# Maps every a2a-section registry tool to the substring that MUST appear
+# in `_A2A_INSTRUCTIONS_CLI` for CLI-runtime agents to discover it. The
+# CLI subprocess interface uses different command-shape names than the
+# MCP tool names (e.g. `peers` vs `list_peers`), so this is NOT a
+# generated mapping — it's a hand-maintained alignment table.
+#
+# `None` declares "this MCP tool is intentionally NOT exposed via the
+# CLI subprocess interface" — make the decision explicit so adding a
+# new registry tool fails the alignment test until the mapping is
+# updated. test_platform_tools.py asserts both directions:
+#
+#   1. every a2a tool in the registry is keyed here (no silent omission)
+#   2. every non-None substring actually appears in `_A2A_INSTRUCTIONS_CLI`
+#
+# Why hand-maintained: the registry is the source of truth for
+# MCP-capable runtimes, but the CLI subprocess interface in
+# `molecule_runtime.a2a_cli` is a separate surface with its own command
+# vocabulary. Auto-generating CLI command lines from JSON-schema specs
+# would lose the human-readable invocation syntax (`delegate <ws> <task>`
+# vs. `--workspace_id=... --task=...`). The mapping + test gives us
+# alignment without forcing a uniform shape.
+_CLI_A2A_COMMAND_KEYWORDS: dict[str, str | None] = {
+    "list_peers": "peers",
+    "delegate_task": "delegate ",          # trailing space disambiguates from "--async" line
+    "delegate_task_async": "delegate --async",
+    "check_task_status": "status",
+    "get_workspace_info": "info",
+    # `send_message_to_user` is not exposed via the CLI subprocess
+    # interface today — it requires a structured `attachments` field
+    # that wouldn't survive a positional-arg shell invocation cleanly.
+    # CLI-runtime agents fall back to printing results to stdout (which
+    # the runtime forwards to the user) instead. If the a2a_cli ever
+    # grows a `say` or `message` subcommand, change `None` to that
+    # keyword and the alignment test will start passing.
+    "send_message_to_user": None,
+}
+
+
+def _validate_cli_a2a_command_keywords() -> None:
+    """Keep CLI instruction text aligned with command keyword mapping."""
+    missing = [
+        (tool_name, keyword)
+        for tool_name, keyword in _CLI_A2A_COMMAND_KEYWORDS.items()
+        if keyword is not None and keyword not in _A2A_INSTRUCTIONS_CLI
+    ]
+    if missing:
+        details = ", ".join(f"{tool_name}={keyword!r}" for tool_name, keyword in missing)
+        raise ValueError(
+            "CLI A2A command mapping is out of sync with _A2A_INSTRUCTIONS_CLI: "
+            f"{details}"
+        )
+
+
+_validate_cli_a2a_command_keywords()
+
 
 def _render_section(heading: str, specs, footer: str = "") -> str:
     """Render a section: heading, per-tool bullet, per-tool when_to_use, footer."""
