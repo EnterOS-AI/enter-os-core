@@ -515,4 +515,14 @@ async def check_task_status(
     elif delegation.status == DelegationStatus.FAILED:
         result["error"] = delegation.error
 
+    # RFC #2251 V1.0 reproduction-harness instrumentation. Every poll of
+    # check_task_status emits a phase=check_status line so the harness
+    # operator can tell whether a coordinator stuck for 8 minutes was
+    # polling-children-the-whole-time vs synthesizing-after-children-done.
+    # `grep rfc2251_phase=check_status` in the workspace's container log
+    # gives the polling pattern. Strip when V1.0 ships.
+    logger.info(
+        "rfc2251_phase=check_status task_id=%s peer=%s status=%s",
+        task_id, delegation.workspace_id, delegation.status.value,
+    )
     return result
