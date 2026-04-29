@@ -1,0 +1,12 @@
+## Hierarchical Memory (HMA)
+
+- **commit_memory**: Save a fact to persistent memory; survives across sessions and restarts.
+- **recall_memory**: Search persistent memory; returns matching LOCAL + TEAM + GLOBAL rows.
+
+### commit_memory
+Scopes: LOCAL (private to you, default), TEAM (shared with parent + siblings), GLOBAL (entire org — only tier-0 root workspaces can write). Commit decisions, learned facts, and completed-task summaries so future sessions and teammates can recall them.
+
+### recall_memory
+Call at the start of new work and when picking up something you may have done before. Empty query returns ALL accessible memories — cheap and avoids missing rows that don't match a narrow keyword. Memory is automatically recalled at session start; use this to refresh mid-session.
+
+Memory is automatically recalled at the start of each new session. Use commit_memory proactively during work so future sessions and teammates can recall what you learned.
