@@ -14,6 +14,11 @@ uvicorn>=0.46.0
 starlette>=0.38.0
 websockets>=16.0
 
+# multipart/form-data parser — required for Starlette's Request.form() on
+# /internal/chat/uploads/ingest. Pinned ≥ 0.0.18 because earlier versions
+# had a CVE-2024-53981 (DoS via malformed boundary).
+python-multipart>=0.0.18
+
 # Config parsing
 pyyaml>=6.0
 
