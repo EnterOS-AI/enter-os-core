@@ -202,7 +202,7 @@ def test_peer_capabilities_format(tmp_path):
     assert "## Your Peers" in result
     assert "**Echo Agent** (id: `peer-1`, status: online)" in result
     assert "Skills: echo, repeat" in result
-    assert "delegate_to_workspace" in result
+    assert "delegate_task_async" in result
     # peer-2 has no agent_card but DOES have a DB name + status — must
     # still render so coordinators can delegate to freshly-created peers
     # whose A2A discovery hasn't populated a card yet (regression of the
