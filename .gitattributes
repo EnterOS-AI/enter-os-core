@@ -13,3 +13,11 @@ workspace/entrypoint.sh text eol=lf
 # but keep LF for consistency across platforms.
 Dockerfile text eol=lf
 *.dockerfile text eol=lf
+
+# Snapshot golden files — workspace/tests/snapshots/*.txt is consumed by
+# byte-exact comparisons in test_platform_tools.py. A Windows contributor
+# with auto-CRLF=true would otherwise convert \n → \r\n on checkout, the
+# snapshot tests would fail mysteriously locally / pass in CI (or vice
+# versa), and the regen instructions in the test-file header would
+# produce LF files that disagree with the working-copy CRLF versions.
+workspace/tests/snapshots/*.txt text eol=lf
