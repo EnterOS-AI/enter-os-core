@@ -183,6 +183,43 @@ func TestCoalesceRestart_StateClearedAfterDrain(t *testing.T) {
 	}
 }
 
+// TestCoalesceRestart_PanicInCycleClearsState defends against a
+// regression of the sticky-running deadlock: if cycle() panics, the
+// running flag MUST be cleared so a follow-up RestartByID for the
+// same workspace can still acquire the gate. Without the deferred
+// state-clear + recover, a single panic would permanently lock a
+// workspace out of all future restarts until process restart.
+//
+// Also asserts the panic is RECOVERED (not re-raised): callers are
+// `go h.RestartByID(...)` from HTTP handlers, and an unrecovered
+// goroutine panic in Go takes down the whole process. Crashing the
+// platform for every tenant because one workspace's cycle panicked
+// is the wrong availability tradeoff. The panic message + stack
+// trace are still logged for debuggability.
+func TestCoalesceRestart_PanicInCycleClearsState(t *testing.T) {
+	const wsID = "test-coalesce-panic-recovery"
+	resetRestartStatesFor(wsID)
+
+	// First call's cycle panics. coalesceRestart's defer must swallow
+	// the panic so this test caller doesn't see it propagate up — that
+	// matches what the real production caller (`go h.RestartByID(...)`)
+	// gets: the goroutine survives, no process crash.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("panic should NOT propagate out of coalesceRestart (would crash the platform process from a goroutine), got: %v", r)
+		}
+	}()
+	coalesceRestart(wsID, func() { panic("simulated cycle failure") })
+
+	// Second call must run a fresh cycle. If running stayed true after
+	// the panic, this call would early-return without invoking cycle.
+	var ran atomic.Bool
+	coalesceRestart(wsID, func() { ran.Store(true) })
+	if !ran.Load() {
+		t.Error("post-panic restart was blocked — running flag leaked, workspace permanently locked out")
+	}
+}
+
 // TestCoalesceRestart_DifferentWorkspacesDoNotSerialize verifies the
 // per-workspace state map: an in-flight restart for ws A must not
 // block restarts for ws B. Important for performance — without this,
