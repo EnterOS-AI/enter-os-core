@@ -30,7 +30,9 @@ const validateTokenSelectQuery = "SELECT t\\.id, t\\.workspace_id.*FROM workspac
 
 // validateAnyTokenQuery is matched for ValidateAnyToken (SELECT).
 // The JOIN on workspaces filters removed-workspace tokens (#682 defense-in-depth).
-const validateAnyTokenSelectQuery = "SELECT t\\.id.*FROM workspace_auth_tokens t.*JOIN workspaces"
+// Identical to validateTokenSelectQuery because both go through the
+// shared lookupTokenByHash helper (projects (id, workspace_id)).
+const validateAnyTokenSelectQuery = "SELECT t\\.id, t\\.workspace_id.*FROM workspace_auth_tokens t.*JOIN workspaces"
 
 // validateTokenUpdateQuery is matched for the best-effort last_used_at UPDATE.
 const validateTokenUpdateQuery = "UPDATE workspace_auth_tokens SET last_used_at"
@@ -399,7 +401,7 @@ func TestAdminAuth_ValidBearer_Passes(t *testing.T) {
 	// ValidateAnyToken SELECT — token matches a live row.
 	mock.ExpectQuery(validateAnyTokenSelectQuery).
 		WithArgs(tokenHash[:]).
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("tok-admin-1"))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "workspace_id"}).AddRow("tok-admin-1", "ws-admin"))
 
 	// Best-effort last_used_at UPDATE.
 	mock.ExpectExec(validateTokenUpdateQuery).
@@ -1276,7 +1278,7 @@ func TestAdminAuth_623_ValidBearer_WithOrigin_Passes(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery(validateAnyTokenSelectQuery).
 		WithArgs(tokenHash[:]).
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("tok-1"))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "workspace_id"}).AddRow("tok-1", "ws-x"))
 	mock.ExpectExec(validateTokenUpdateQuery).
 		WithArgs("tok-1").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -1472,7 +1474,7 @@ func TestAdminAuth_684_AdminTokenNotSet_FallsBackToWorkspaceToken(t *testing.T) 
 
 	mock.ExpectQuery(validateAnyTokenSelectQuery).
 		WithArgs(tokenHash[:]).
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("tok-ws-1"))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "workspace_id"}).AddRow("tok-ws-1", "ws-x"))
 
 	mock.ExpectExec(validateTokenUpdateQuery).
 		WithArgs("tok-ws-1").

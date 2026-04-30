@@ -639,8 +639,8 @@ func TestProxyA2A_CallerIDDerivedFromBearer(t *testing.T) {
 	mr.Set(fmt.Sprintf("ws:%s:url", "ws-target"), agentServer.URL)
 
 	// 1. Bearer-derive lookup → returns ws-caller
-	mock.ExpectQuery(`SELECT t\.workspace_id\s+FROM workspace_auth_tokens t.*JOIN workspaces`).
-		WillReturnRows(sqlmock.NewRows([]string{"workspace_id"}).AddRow("ws-caller"))
+	mock.ExpectQuery(`SELECT t\.id, t\.workspace_id.*FROM workspace_auth_tokens t.*JOIN workspaces`).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "workspace_id"}).AddRow("tok-1", "ws-caller"))
 
 	// 2. validateCallerToken's HasAnyLiveToken / ValidateToken queries fall
 	//    through to fail-open (no expectations set) — same pattern as
@@ -766,7 +766,7 @@ func TestProxyA2A_BearerDeriveFailureFallsThrough(t *testing.T) {
 	// Bearer-derive lookup fails (no live row) — collapses to ErrInvalidToken
 	// inside WorkspaceFromToken; ProxyA2A swallows the error and proceeds with
 	// callerID="".
-	mock.ExpectQuery(`SELECT t\.workspace_id\s+FROM workspace_auth_tokens t.*JOIN workspaces`).
+	mock.ExpectQuery(`SELECT t\.id, t\.workspace_id.*FROM workspace_auth_tokens t.*JOIN workspaces`).
 		WillReturnError(sql.ErrNoRows)
 
 	expectBudgetCheck(mock, "ws-target")

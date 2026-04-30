@@ -155,9 +155,12 @@ func TestWorkspaceFromToken_HappyPath(t *testing.T) {
 		t.Fatalf("IssueToken: %v", err)
 	}
 
-	mock.ExpectQuery(`SELECT t\.workspace_id\s+FROM workspace_auth_tokens t.*JOIN workspaces`).
+	// Shared lookupTokenByHash projects (id, workspace_id) — caller picks
+	// which fields to use. WorkspaceFromToken needs only workspace_id but
+	// the mock matches the unified SELECT that lookupTokenByHash issues.
+	mock.ExpectQuery(`SELECT t\.id, t\.workspace_id.*FROM workspace_auth_tokens t.*JOIN workspaces`).
 		WithArgs(sqlmock.AnyArg()).
-		WillReturnRows(sqlmock.NewRows([]string{"workspace_id"}).AddRow("ws-source"))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "workspace_id"}).AddRow("tok-id-1", "ws-source"))
 
 	wsID, err := WorkspaceFromToken(context.Background(), db, tok)
 	if err != nil {
@@ -180,7 +183,7 @@ func TestWorkspaceFromToken_EmptyTokenRejected(t *testing.T) {
 
 func TestWorkspaceFromToken_UnknownTokenRejected(t *testing.T) {
 	db, mock := setupMock(t)
-	mock.ExpectQuery(`SELECT t\.workspace_id\s+FROM workspace_auth_tokens t.*JOIN workspaces`).
+	mock.ExpectQuery(`SELECT t\.id, t\.workspace_id.*FROM workspace_auth_tokens t.*JOIN workspaces`).
 		WillReturnError(sql.ErrNoRows)
 
 	if _, err := WorkspaceFromToken(context.Background(), db, "not-a-real-token"); err != ErrInvalidToken {
@@ -192,9 +195,9 @@ func TestWorkspaceFromToken_UnknownTokenRejected(t *testing.T) {
 // must NOT yield a workspace_id usable for callerID derivation.
 func TestWorkspaceFromToken_RemovedWorkspaceRejected(t *testing.T) {
 	db, mock := setupMock(t)
-	mock.ExpectQuery(`SELECT t\.workspace_id\s+FROM workspace_auth_tokens t.*JOIN workspaces`).
+	mock.ExpectQuery(`SELECT t\.id, t\.workspace_id.*FROM workspace_auth_tokens t.*JOIN workspaces`).
 		WithArgs(sqlmock.AnyArg()).
-		WillReturnRows(sqlmock.NewRows([]string{"workspace_id"})) // empty rows
+		WillReturnRows(sqlmock.NewRows([]string{"id", "workspace_id"})) // empty rows
 
 	if _, err := WorkspaceFromToken(context.Background(), db, "token-for-removed-workspace"); err != ErrInvalidToken {
 		t.Errorf("removed workspace token: expected ErrInvalidToken, got %v", err)
@@ -345,9 +348,12 @@ func TestValidateAnyToken_HappyPath(t *testing.T) {
 	}
 
 	// ValidateAnyToken: lookup by hash with removed-workspace JOIN.
-	mock.ExpectQuery(`SELECT t\.id.*FROM workspace_auth_tokens t.*JOIN workspaces`).
+	// Shared lookupTokenByHash projects (id, workspace_id) — caller picks
+	// which fields to use. ValidateAnyToken needs only id but the mock
+	// matches the unified SELECT that lookupTokenByHash issues.
+	mock.ExpectQuery(`SELECT t\.id, t\.workspace_id.*FROM workspace_auth_tokens t.*JOIN workspaces`).
 		WithArgs(sqlmock.AnyArg()).
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("tok-id-global"))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "workspace_id"}).AddRow("tok-id-global", "ws-admin"))
 	// Best-effort last_used_at update.
 	mock.ExpectExec(`UPDATE workspace_auth_tokens SET last_used_at`).
 		WithArgs("tok-id-global").
@@ -363,7 +369,7 @@ func TestValidateAnyToken_HappyPath(t *testing.T) {
 
 func TestValidateAnyToken_UnknownTokenRejected(t *testing.T) {
 	db, mock := setupMock(t)
-	mock.ExpectQuery(`SELECT t\.id.*FROM workspace_auth_tokens t.*JOIN workspaces`).
+	mock.ExpectQuery(`SELECT t\.id, t\.workspace_id.*FROM workspace_auth_tokens t.*JOIN workspaces`).
 		WillReturnError(sql.ErrNoRows)
 
 	if err := ValidateAnyToken(context.Background(), db, "not-a-real-token"); err != ErrInvalidToken {
@@ -378,9 +384,9 @@ func TestValidateAnyToken_UnknownTokenRejected(t *testing.T) {
 func TestValidateAnyToken_RemovedWorkspaceRejected(t *testing.T) {
 	db, mock := setupMock(t)
 	// JOIN with w.status != 'removed' causes no rows — same as ErrNoRows.
-	mock.ExpectQuery(`SELECT t\.id.*FROM workspace_auth_tokens t.*JOIN workspaces`).
+	mock.ExpectQuery(`SELECT t\.id, t\.workspace_id.*FROM workspace_auth_tokens t.*JOIN workspaces`).
 		WithArgs(sqlmock.AnyArg()).
-		WillReturnRows(sqlmock.NewRows([]string{"id"})) // empty: workspace is removed
+		WillReturnRows(sqlmock.NewRows([]string{"id", "workspace_id"})) // empty: workspace is removed
 
 	err := ValidateAnyToken(context.Background(), db, "token-for-removed-workspace")
 	if err != ErrInvalidToken {
