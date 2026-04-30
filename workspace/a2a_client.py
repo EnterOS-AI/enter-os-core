@@ -229,19 +229,61 @@ async def send_a2a_message(target_url: str, message: str) -> str:
     return _format_a2a_error(last_exc, target_url)
 
 
-async def get_peers() -> list[dict]:
-    """Get this workspace's peers from the platform registry."""
+async def get_peers_with_diagnostic() -> tuple[list[dict], str | None]:
+    """Get this workspace's peers, returning (peers, diagnostic).
+
+    diagnostic is None when the call succeeded (status 200, even if the list
+    is empty). When peers is [] for a non-trivial reason (auth failure,
+    workspace-id missing from registry, platform error, network error),
+    diagnostic is a short human-readable string explaining what went wrong
+    so callers can surface it instead of "may be isolated" — see #2397.
+
+    The legacy get_peers() shim below preserves the bare-list contract for
+    non-tool callers.
+    """
+    url = f"{PLATFORM_URL}/registry/{WORKSPACE_ID}/peers"
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             resp = await client.get(
-                f"{PLATFORM_URL}/registry/{WORKSPACE_ID}/peers",
+                url,
                 headers={"X-Workspace-ID": WORKSPACE_ID, **auth_headers()},
             )
-            if resp.status_code == 200:
-                return resp.json()
-            return []
-        except Exception:
-            return []
+        except Exception as e:
+            return [], f"Cannot reach platform at {PLATFORM_URL}: {e}"
+
+        if resp.status_code == 200:
+            try:
+                data = resp.json()
+            except Exception as e:
+                return [], f"Platform returned 200 but body was not JSON: {e}"
+            if not isinstance(data, list):
+                return [], f"Platform returned 200 but body was not a list: {type(data).__name__}"
+            return data, None
+
+        if resp.status_code in (401, 403):
+            return [], (
+                f"Authentication to platform failed (HTTP {resp.status_code}). "
+                "The workspace bearer token may be invalid — restarting the workspace usually re-mints it."
+            )
+        if resp.status_code == 404:
+            return [], (
+                f"Workspace ID {WORKSPACE_ID} is not registered with the platform (HTTP 404). "
+                "Re-registration via the platform's /registry/register endpoint is needed."
+            )
+        if 500 <= resp.status_code < 600:
+            return [], f"Platform error: HTTP {resp.status_code}."
+        return [], f"Unexpected platform response: HTTP {resp.status_code}."
+
+
+async def get_peers() -> list[dict]:
+    """Get this workspace's peers from the platform registry.
+
+    Bare-list shim over get_peers_with_diagnostic() — discards the diagnostic
+    so callers that don't care about the failure reason (e.g. system-prompt
+    bootstrap formatters) get the same shape they always had.
+    """
+    peers, _ = await get_peers_with_diagnostic()
+    return peers
 
 
 async def get_workspace_info() -> dict:

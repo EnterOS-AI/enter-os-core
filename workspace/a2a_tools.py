@@ -18,6 +18,7 @@ from a2a_client import (
     _peer_names,
     discover_peer,
     get_peers,
+    get_peers_with_diagnostic,
     get_workspace_info,
     send_a2a_message,
 )
@@ -410,9 +411,16 @@ async def tool_send_message_to_user(message: str, attachments: list[str] | None 
 
 async def tool_list_peers() -> str:
     """List all workspaces this agent can communicate with."""
-    peers = await get_peers()
+    peers, diagnostic = await get_peers_with_diagnostic()
     if not peers:
-        return "No peers available (this workspace may be isolated)"
+        if diagnostic is not None:
+            # Non-trivial empty: auth failure / 404 / 5xx / network — surface
+            # the actual reason so the user/agent doesn't have to guess. #2397.
+            return f"No peers found. {diagnostic}"
+        return (
+            "You have no peers in the platform registry. "
+            "(No parent, no children, no siblings registered.)"
+        )
     lines = []
     for p in peers:
         status = p.get("status", "unknown")
