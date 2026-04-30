@@ -65,6 +65,41 @@ func IssueToken(ctx context.Context, db *sql.DB, workspaceID string) (string, er
 	return plaintext, nil
 }
 
+// lookupTokenByHash is the single source of truth for "find a live
+// workspace token by its sha256 hash, scoped to a non-removed workspace"
+// — the auth predicate every public token-validating function needs.
+//
+// Returns ErrInvalidToken on any miss (no row, removed workspace, DB
+// error). All three failure modes collapse to the same public error so
+// callers can't accidentally distinguish "bad token" vs. "wrong
+// workspace" vs. "DB hiccup" — that distinction is a side-channel
+// callers must not expose.
+//
+// Defense-in-depth (#682, #696, #697): the JOIN on workspaces filters
+// tokens belonging to removed workspaces. Future safety changes (e.g.
+// "also exclude paused workspaces from auth") go in ONE place; without
+// this helper, the same WHERE/JOIN was duplicated across ValidateToken,
+// WorkspaceFromToken, and ValidateAnyToken — same drift class as the
+// 2026-04-30 SaaS provision-mint bug fixed in #2366.
+//
+// SELECT projects both columns even when only one is needed by the
+// caller. The trivial perf cost is worth the single-source-of-truth
+// guarantee for the auth predicate.
+func lookupTokenByHash(ctx context.Context, db *sql.DB, hash []byte) (tokenID, workspaceID string, err error) {
+	err = db.QueryRowContext(ctx, `
+		SELECT t.id, t.workspace_id
+		FROM workspace_auth_tokens t
+		JOIN workspaces w ON w.id = t.workspace_id
+		WHERE t.token_hash = $1
+		  AND t.revoked_at IS NULL
+		  AND w.status != 'removed'
+	`, hash).Scan(&tokenID, &workspaceID)
+	if err != nil {
+		return "", "", ErrInvalidToken
+	}
+	return tokenID, workspaceID, nil
+}
+
 // ValidateToken confirms the presented plaintext matches a live row whose
 // workspace_id equals expectedWorkspaceID. On success it refreshes
 // last_used_at (best-effort — failure to update is logged by the caller,
@@ -73,31 +108,15 @@ func IssueToken(ctx context.Context, db *sql.DB, workspaceID string) (string, er
 // The expectedWorkspaceID binding is required because a token is only
 // valid for the workspace it was issued to. A compromised token from
 // workspace A must never authenticate workspace B.
-//
-// Defense-in-depth (#697): the JOIN on workspaces filters out tokens that
-// belong to removed workspaces so that a deleted workspace's tokens cannot
-// be replayed against its former sub-routes even before the token row is
-// explicitly revoked. Mirrors the same guard added to ValidateAnyToken (#696).
 func ValidateToken(ctx context.Context, db *sql.DB, expectedWorkspaceID, plaintext string) error {
 	if plaintext == "" || expectedWorkspaceID == "" {
 		return ErrInvalidToken
 	}
 	hash := sha256.Sum256([]byte(plaintext))
 
-	var tokenID, workspaceID string
-	err := db.QueryRowContext(ctx, `
-		SELECT t.id, t.workspace_id
-		FROM workspace_auth_tokens t
-		JOIN workspaces w ON w.id = t.workspace_id
-		WHERE t.token_hash = $1
-		  AND t.revoked_at IS NULL
-		  AND w.status != 'removed'
-	`, hash[:]).Scan(&tokenID, &workspaceID)
+	tokenID, workspaceID, err := lookupTokenByHash(ctx, db, hash[:])
 	if err != nil {
-		// Includes sql.ErrNoRows — collapse to a single public-facing error
-		// so the handler can't accidentally leak which half of the check
-		// failed (bad token vs. wrong workspace).
-		return ErrInvalidToken
+		return err
 	}
 	if workspaceID != expectedWorkspaceID {
 		return ErrInvalidToken
@@ -121,10 +140,6 @@ func ValidateToken(ctx context.Context, db *sql.DB, expectedWorkspaceID, plainte
 // error so handlers can't accidentally distinguish "no token" vs "wrong
 // workspace" — both should result in the same caller-facing response.
 //
-// Defense-in-depth (mirrors ValidateToken / ValidateAnyToken): the JOIN on
-// workspaces filters out tokens that belong to removed workspaces so a
-// deleted workspace's tokens cannot derive a callerID for activity logging.
-//
 // Does NOT update last_used_at — the calling handler chain typically also
 // runs the bearer through ValidateToken or ValidateAnyToken, which already
 // performs that update.
@@ -134,17 +149,9 @@ func WorkspaceFromToken(ctx context.Context, db *sql.DB, plaintext string) (stri
 	}
 	hash := sha256.Sum256([]byte(plaintext))
 
-	var workspaceID string
-	err := db.QueryRowContext(ctx, `
-		SELECT t.workspace_id
-		FROM workspace_auth_tokens t
-		JOIN workspaces w ON w.id = t.workspace_id
-		WHERE t.token_hash = $1
-		  AND t.revoked_at IS NULL
-		  AND w.status != 'removed'
-	`, hash[:]).Scan(&workspaceID)
+	_, workspaceID, err := lookupTokenByHash(ctx, db, hash[:])
 	if err != nil {
-		return "", ErrInvalidToken
+		return "", err
 	}
 	return workspaceID, nil
 }
@@ -231,27 +238,15 @@ func HasAnyLiveTokenGlobal(ctx context.Context, db *sql.DB) (bool, error) {
 // token (not scoped to a specific workspace). Used for admin/global routes
 // where workspace-scoped auth is not applicable — any authenticated agent may
 // access platform-wide settings.
-//
-// Defense-in-depth (#682): the JOIN on workspaces filters out tokens that
-// belong to removed workspaces so that a deleted workspace's tokens cannot
-// be replayed against admin endpoints.
 func ValidateAnyToken(ctx context.Context, db *sql.DB, plaintext string) error {
 	if plaintext == "" {
 		return ErrInvalidToken
 	}
 	hash := sha256.Sum256([]byte(plaintext))
 
-	var tokenID string
-	err := db.QueryRowContext(ctx, `
-		SELECT t.id
-		FROM workspace_auth_tokens t
-		JOIN workspaces w ON w.id = t.workspace_id
-		WHERE t.token_hash = $1
-		  AND t.revoked_at IS NULL
-		  AND w.status != 'removed'
-	`, hash[:]).Scan(&tokenID)
+	tokenID, _, err := lookupTokenByHash(ctx, db, hash[:])
 	if err != nil {
-		return ErrInvalidToken
+		return err
 	}
 
 	// Best-effort last_used_at update.

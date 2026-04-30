@@ -39,7 +39,7 @@ func TestCanvasOrBearer_ValidBearer_Passes(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery(validateAnyTokenSelectQuery).
 		WithArgs(hash[:]).
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("tok-1"))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "workspace_id"}).AddRow("tok-1", "ws-x"))
 	mock.ExpectExec(validateTokenUpdateQuery).
 		WithArgs("tok-1").
 		WillReturnResult(sqlmock.NewResult(0, 1))
