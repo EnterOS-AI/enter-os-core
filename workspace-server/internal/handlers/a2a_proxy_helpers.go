@@ -97,8 +97,16 @@ func (h *WorkspaceHandler) handleA2ADispatchError(ctx context.Context, workspace
 		}
 
 		idempotencyKey := extractIdempotencyKey(body)
+		// Honor params.expires_in_seconds when the caller specifies one. Zero
+		// (the unset default) → expiresAt = nil → infinite TTL preserved by
+		// DequeueNext. RFC #2331 Tier 1.
+		var expiresAt *time.Time
+		if secs := extractExpiresInSeconds(body); secs > 0 {
+			t := time.Now().Add(time.Duration(secs) * time.Second)
+			expiresAt = &t
+		}
 		if qid, depth, qerr := EnqueueA2A(
-			ctx, workspaceID, callerID, PriorityTask, body, a2aMethod, idempotencyKey,
+			ctx, workspaceID, callerID, PriorityTask, body, a2aMethod, idempotencyKey, expiresAt,
 		); qerr == nil {
 			log.Printf("ProxyA2A: target %s busy — enqueued as %s (depth=%d)", workspaceID, qid, depth)
 			respBody, _ := json.Marshal(gin.H{

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 )
@@ -37,6 +38,33 @@ func extractIdempotencyKey(body []byte) string {
 		return ""
 	}
 	return envelope.Params.Message.MessageID
+}
+
+// extractExpiresInSeconds pulls params.expires_in_seconds out of an A2A
+// JSON-RPC body and returns it as a positive integer. A zero return means
+// "no caller-specified TTL" — caller should leave expires_at NULL on the
+// queue row, preserving today's infinite-TTL behaviour (the
+// DropStaleQueueItems admin sweeper still drops entries past the
+// platform-default age). Negative values and parse errors collapse to 0.
+//
+// Why params-level (not metadata): expires_in_seconds is a delivery
+// directive, not a peer-to-peer message attribute. Putting it under
+// `params` keeps it adjacent to other delivery hints (priority,
+// idempotency) and out of `params.message.metadata` which the receiving
+// agent can read.
+func extractExpiresInSeconds(body []byte) int {
+	var envelope struct {
+		Params struct {
+			ExpiresInSeconds int `json:"expires_in_seconds"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return 0
+	}
+	if envelope.Params.ExpiresInSeconds < 0 {
+		return 0
+	}
+	return envelope.Params.ExpiresInSeconds
 }
 
 const (
@@ -70,6 +98,7 @@ func EnqueueA2A(
 	priority int,
 	body []byte,
 	method, idempotencyKey string,
+	expiresAt *time.Time,
 ) (id string, depth int, err error) {
 	var keyArg interface{}
 	if idempotencyKey != "" {
@@ -83,6 +112,13 @@ func EnqueueA2A(
 	if method != "" {
 		methodArg = method
 	}
+	// expiresAtArg stays NULL when caller didn't specify a TTL. DequeueNext's
+	// `expires_at IS NULL OR expires_at > now()` filter then preserves today's
+	// infinite-TTL semantics for un-flagged messages.
+	var expiresAtArg interface{}
+	if expiresAt != nil {
+		expiresAtArg = *expiresAt
+	}
 
 	// INSERT ... ON CONFLICT DO NOTHING RETURNING id. The conflict target
 	// must reference the partial unique INDEX columns + WHERE clause directly
@@ -91,13 +127,13 @@ func EnqueueA2A(
 	// then look up the existing row's id so the caller always receives a
 	// valid queue entry reference.
 	err = db.DB.QueryRowContext(ctx, `
-		INSERT INTO a2a_queue (workspace_id, caller_id, priority, body, method, idempotency_key)
-		VALUES ($1, $2, $3, $4::jsonb, $5, $6)
+		INSERT INTO a2a_queue (workspace_id, caller_id, priority, body, method, idempotency_key, expires_at)
+		VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
 		ON CONFLICT (workspace_id, idempotency_key)
 			WHERE idempotency_key IS NOT NULL AND status IN ('queued','dispatched')
 			DO NOTHING
 		RETURNING id
-	`, workspaceID, callerArg, priority, string(body), methodArg, keyArg).Scan(&id)
+	`, workspaceID, callerArg, priority, string(body), methodArg, keyArg, expiresAtArg).Scan(&id)
 
 	if errors.Is(err, sql.ErrNoRows) && idempotencyKey != "" {
 		// Conflict — look up the existing active row and use its id.

@@ -144,6 +144,13 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 	// A2A proxy — registered outside the auth group; already enforces CanCommunicate access control.
 	r.POST("/workspaces/:id/a2a", wh.ProxyA2A)
 
+	// A2A queue status lookup (RFC #2331 Tier 1) — registered outside the
+	// workspace auth group because the row's caller_id may be a DIFFERENT
+	// workspace than :id. The handler runs its own access check (caller
+	// must match queue.caller_id OR queue.workspace_id, OR hold an
+	// org-level token). Existence-non-inferring 404 on auth failure.
+	r.GET("/workspaces/:id/a2a/queue/:queue_id", wh.GetA2AQueueStatus)
+
 	// Auth-gated workspace sub-routes — ALL /workspaces/:id/* paths except /a2a.
 	// Fix A (Cycle 5): single WorkspaceAuth middleware blocks C2-C5, C7-C9, C12, C13
 	// by requiring a valid bearer token for any workspace that has one on file.
