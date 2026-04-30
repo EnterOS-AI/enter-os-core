@@ -61,9 +61,17 @@ func TestRegister_DBError(t *testing.T) {
 	broadcaster := newTestBroadcaster()
 	handler := NewRegistryHandler(broadcaster)
 
+	// resolveDeliveryMode SELECT — no row yet, so default "push".
+	// (#2339) New preflight after C18 token check; HasAnyLiveToken's COUNT
+	// query has no mock here and fails-open per requireWorkspaceToken's
+	// DB-error handling, so the next DB hit is this delivery_mode lookup.
+	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+		WithArgs("ws-fail").
+		WillReturnError(sql.ErrNoRows)
+
 	// DB insert fails
 	mock.ExpectExec("INSERT INTO workspaces").
-		WithArgs("ws-fail", "ws-fail", "http://localhost:8000", `{"name":"test"}`).
+		WithArgs("ws-fail", "ws-fail", "http://localhost:8000", `{"name":"test"}`, "push").
 		WillReturnError(sql.ErrConnDone)
 
 	w := httptest.NewRecorder()
@@ -579,10 +587,14 @@ func TestRegister_GuardAgainstResurrectingRemovedRow(t *testing.T) {
 	broadcaster := newTestBroadcaster()
 	handler := NewRegistryHandler(broadcaster)
 
+	// resolveDeliveryMode preflight — no row yet, default push (#2339).
+	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+		WithArgs("ws-resurrect").
+		WillReturnError(sql.ErrNoRows)
 	// This regex-ish match requires the guard. If the handler ever drops
 	// the clause the test fails because the emitted SQL won't match.
 	mock.ExpectExec("ON CONFLICT.*WHERE workspaces.status IS DISTINCT FROM 'removed'").
-		WithArgs("ws-resurrect", "ws-resurrect", "http://localhost:8000", `{"name":"x"}`).
+		WithArgs("ws-resurrect", "ws-resurrect", "http://localhost:8000", `{"name":"x"}`, "push").
 		WillReturnResult(sqlmock.NewResult(0, 0)) // 0 rows affected = correctly guarded
 	mock.ExpectQuery("SELECT url FROM workspaces WHERE id").
 		WithArgs("ws-resurrect").
@@ -843,9 +855,14 @@ func TestRegister_C18_BootstrapAllowedNoTokens(t *testing.T) {
 		WithArgs("ws-new").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
+	// resolveDeliveryMode — no row yet, default push (#2339).
+	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+		WithArgs("ws-new").
+		WillReturnError(sql.ErrNoRows)
+
 	// Workspace upsert proceeds normally.
 	mock.ExpectExec("INSERT INTO workspaces").
-		WithArgs("ws-new", "ws-new", "http://localhost:9100", `{"name":"new-agent"}`).
+		WithArgs("ws-new", "ws-new", "http://localhost:9100", `{"name":"new-agent"}`, "push").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	mock.ExpectQuery("SELECT url FROM workspaces WHERE id").
@@ -909,6 +926,11 @@ func TestRegister_ReturnsPlatformInboundSecret_RFC2312_PRF(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM workspace_auth_tokens").
 		WithArgs(wsID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	// resolveDeliveryMode — no row yet, default push (#2339).
+	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+		WithArgs(wsID).
+		WillReturnError(sql.ErrNoRows)
 
 	// Workspace upsert.
 	mock.ExpectExec("INSERT INTO workspaces").
@@ -980,6 +1002,10 @@ func TestRegister_NoInboundSecret_OmitsField(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM workspace_auth_tokens").
 		WithArgs(wsID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	// resolveDeliveryMode — no row yet, default push (#2339).
+	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+		WithArgs(wsID).
+		WillReturnError(sql.ErrNoRows)
 	mock.ExpectExec("INSERT INTO workspaces").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("SELECT url FROM workspaces WHERE id").
 		WithArgs(wsID).
@@ -1063,9 +1089,14 @@ func TestRegister_DBErrorResponseIsOpaque(t *testing.T) {
 		WithArgs("ws-errtest").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
+	// resolveDeliveryMode — no row yet, default push (#2339).
+	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+		WithArgs("ws-errtest").
+		WillReturnError(sql.ErrNoRows)
+
 	// DB upsert fails with a descriptive internal error.
 	mock.ExpectExec("INSERT INTO workspaces").
-		WithArgs("ws-errtest", "ws-errtest", "http://localhost:9200", `{"name":"err-agent"}`).
+		WithArgs("ws-errtest", "ws-errtest", "http://localhost:9200", `{"name":"err-agent"}`, "push").
 		WillReturnError(sql.ErrConnDone)
 
 	w := httptest.NewRecorder()
@@ -1281,5 +1312,213 @@ func TestHeartbeat_MonthlySpend_Zero_NoUpdate(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("monthly_spend=0 must not trigger a DB write for spend: %v", err)
+	}
+}
+
+// ==================== Register — delivery_mode (#2339) ====================
+
+// TestRegister_PollMode_AcceptsEmptyURL verifies the new contract:
+// when delivery_mode=poll, URL is optional. A poll-mode workspace
+// (e.g. operator's laptop running molecule-mcp-claude-channel) has
+// no public URL to register, and we must NOT reject the registration
+// for that. The proxy short-circuits poll-mode A2A in PR 2 — no URL
+// needed there either.
+func TestRegister_PollMode_AcceptsEmptyURL(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewRegistryHandler(broadcaster)
+
+	const wsID = "ws-poll-no-url"
+
+	// Bootstrap path — no live tokens, so requireWorkspaceToken passes
+	// without an Authorization header.
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM workspace_auth_tokens").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	// resolveDeliveryMode: payload sets "poll" explicitly, so we should
+	// NOT hit the DB lookup at all (the helper short-circuits when
+	// payload value is non-empty). Asserted by the absence of an
+	// ExpectQuery for SELECT delivery_mode here.
+
+	// Upsert MUST run with empty URL (sql.NullString) and delivery_mode=poll.
+	mock.ExpectExec("INSERT INTO workspaces").
+		WithArgs(wsID, wsID, sql.NullString{}, `{"name":"poll-agent"}`, "poll").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// SELECT url for cache: returns NULL/empty for poll-mode rows. The
+	// handler skips the cache writes in that case (no CacheURL /
+	// CacheInternalURL expectations).
+	mock.ExpectQuery("SELECT url FROM workspaces WHERE id").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"url"}).AddRow(""))
+
+	mock.ExpectExec("INSERT INTO structure_events").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// Token issuance — first-register path.
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM workspace_auth_tokens").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec("INSERT INTO workspace_auth_tokens").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`SELECT platform_inbound_secret FROM workspaces WHERE id = \$1`).
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"platform_inbound_secret"}).AddRow(nil))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/registry/register",
+		bytes.NewBufferString(`{"id":"`+wsID+`","delivery_mode":"poll","agent_card":{"name":"poll-agent"}}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.Register(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("poll-mode + empty URL: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	if resp["delivery_mode"] != "poll" {
+		t.Errorf("response.delivery_mode = %v, want %q", resp["delivery_mode"], "poll")
+	}
+	// First-register must still mint a token regardless of delivery_mode.
+	if resp["auth_token"] == nil {
+		t.Error("expected auth_token in response (first-register path)")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestRegister_PushMode_RejectsEmptyURL verifies the symmetric contract:
+// push-mode (the default) still requires a URL. Skipping URL validation
+// in poll-mode mustn't accidentally relax the push-mode invariant — that
+// would silently break dispatch for the rest of the fleet.
+func TestRegister_PushMode_RejectsEmptyURL(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewRegistryHandler(broadcaster)
+
+	// Bootstrap path through requireWorkspaceToken.
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM workspace_auth_tokens").
+		WithArgs("ws-push-no-url").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	// resolveDeliveryMode: no row yet, defaults to push. The handler
+	// then validates the URL — which is empty — and returns 400.
+	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+		WithArgs("ws-push-no-url").
+		WillReturnError(sql.ErrNoRows)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/registry/register",
+		bytes.NewBufferString(`{"id":"ws-push-no-url","agent_card":{"name":"push-agent"}}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.Register(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("push-mode + empty URL: expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "url is required") {
+		t.Errorf("expected 'url is required' in error body, got: %s", w.Body.String())
+	}
+}
+
+// TestRegister_InvalidDeliveryMode rejects payloads that declare an
+// unrecognised delivery_mode — defends against a typo silently
+// becoming "push" and leaving the operator wondering why polling
+// doesn't work.
+func TestRegister_InvalidDeliveryMode(t *testing.T) {
+	setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewRegistryHandler(broadcaster)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/registry/register",
+		bytes.NewBufferString(`{"id":"ws-x","url":"http://localhost:8000","agent_card":{"name":"a"},"delivery_mode":"webhook"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.Register(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("invalid delivery_mode: expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "delivery_mode") {
+		t.Errorf("expected error body to mention delivery_mode, got: %s", w.Body.String())
+	}
+}
+
+// TestRegister_PollMode_PreservesExistingValue: when the row already
+// has delivery_mode=poll and the payload doesn't set it, the resolved
+// mode should be poll — i.e. "absent payload mode" must NOT silently
+// downgrade an existing poll workspace to push. Ensures Telegram-style
+// stability: mode is sticky once set.
+func TestRegister_PollMode_PreservesExistingValue(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewRegistryHandler(broadcaster)
+
+	const wsID = "ws-existing-poll"
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM workspace_auth_tokens").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	// resolveDeliveryMode: row exists with delivery_mode=poll.
+	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"delivery_mode"}).AddRow("poll"))
+
+	// Upsert carries the resolved poll mode forward — even though
+	// payload didn't restate it. URL still empty (poll-mode shape).
+	mock.ExpectExec("INSERT INTO workspaces").
+		WithArgs(wsID, wsID, sql.NullString{}, `{"name":"a"}`, "poll").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT url FROM workspaces WHERE id").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"url"}).AddRow(""))
+	mock.ExpectExec("INSERT INTO structure_events").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM workspace_auth_tokens").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec("INSERT INTO workspace_auth_tokens").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`SELECT platform_inbound_secret FROM workspaces WHERE id = \$1`).
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"platform_inbound_secret"}).AddRow(nil))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	// No delivery_mode in payload — must inherit "poll" from the row.
+	c.Request = httptest.NewRequest("POST", "/registry/register",
+		bytes.NewBufferString(`{"id":"`+wsID+`","agent_card":{"name":"a"}}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.Register(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["delivery_mode"] != "poll" {
+		t.Errorf("delivery_mode = %v, want %q (must inherit existing row's mode when payload absent)",
+			resp["delivery_mode"], "poll")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 }

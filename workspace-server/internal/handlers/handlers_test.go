@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -100,9 +101,14 @@ func TestRegisterHandler(t *testing.T) {
 	broadcaster := newTestBroadcaster()
 	handler := NewRegistryHandler(broadcaster)
 
+	// resolveDeliveryMode preflight — no row yet, default push (#2339).
+	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+		WithArgs("ws-123").
+		WillReturnError(sql.ErrNoRows)
+
 	// Expect the upsert INSERT ... ON CONFLICT
 	mock.ExpectExec("INSERT INTO workspaces").
-		WithArgs("ws-123", "ws-123", "http://localhost:8000", `{"name":"test"}`).
+		WithArgs("ws-123", "ws-123", "http://localhost:8000", `{"name":"test"}`, "push").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// Expect the SELECT url query (for cache URL logic)
@@ -290,8 +296,9 @@ func TestWorkspaceCreate(t *testing.T) {
 
 	// Expect workspace INSERT (uuid is dynamic, use AnyArg for id, runtime, awareness_namespace).
 	// Default tier is 3 (Privileged) — see workspace.go create-handler comment.
+	// delivery_mode defaults to "push" when payload omits it (#2339).
 	mock.ExpectExec("INSERT INTO workspaces").
-		WithArgs(sqlmock.AnyArg(), "Test Agent", nil, 3, "langgraph", sqlmock.AnyArg(), (*string)(nil), nil, "none", (*int64)(nil), models.DefaultMaxConcurrentTasks).
+		WithArgs(sqlmock.AnyArg(), "Test Agent", nil, 3, "langgraph", sqlmock.AnyArg(), (*string)(nil), nil, "none", (*int64)(nil), models.DefaultMaxConcurrentTasks, "push").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// Expect transaction commit (no secrets in this payload)
