@@ -153,43 +153,39 @@ jobs:
           path: canvas/test-results/
           retention-days: 14
 
-      # Safety-net teardown mirrors the bash-harness workflow — if
-      # globalTeardown didn't run (worker crash, runner cancel), this
-      # step sweeps any e2e-canvas-* org tagged with today's date.
+      # Safety-net teardown — fires only when Playwright's globalTeardown
+      # didn't (worker crash, runner cancel). Reads the slug from
+      # canvas/.playwright-staging-state.json (written by staging-setup
+      # as its first action, before any CP call) and deletes only that
+      # slug.
+      #
+      # Earlier versions of this step pattern-swept `e2e-canvas-<today>-*`
+      # orgs to compensate for setup-crash-before-state-file-write. That
+      # over-aggressive cleanup raced concurrent canvas-E2E runs and
+      # poisoned each other's tenants — observed 2026-04-30 when three
+      # real-test runs killed each other mid-test, surfacing as
+      # `getaddrinfo ENOTFOUND` once CP had cleaned up the just-deleted
+      # DNS record. Pattern-sweep removed; setup now writes the state
+      # file before any CP work, so the slug is always recoverable.
       - name: Teardown safety net
         if: always() && needs.detect-changes.outputs.canvas == 'true'
         env:
           ADMIN_TOKEN: ${{ secrets.MOLECULE_STAGING_ADMIN_TOKEN }}
         run: |
           set +e
-          # Midnight-UTC rollover guard: a single-date filter misses
-          # orgs created on the prior UTC day when the run crosses
-          # midnight (incident 2026-04-26 23:46Z → 2026-04-27 00:12Z:
-          # slug `e2e-canvas-20260426-1u8nz3` survived because the
-          # safety-net step ran on the 27th, computed `today=20260427`,
-          # and the filter `e2e-canvas-20260427-` never matched). Sweep
-          # both today AND yesterday's dates so a cross-midnight run
-          # still cleans up its own slug.
-          orgs=$(curl -sS "$MOLECULE_CP_URL/cp/admin/orgs" \
-            -H "Authorization: Bearer $ADMIN_TOKEN" 2>/dev/null \
-            | python3 -c "
-          import json, sys, datetime
-          d = json.load(sys.stdin)
-          today = datetime.date.today()
-          yesterday = today - datetime.timedelta(days=1)
-          prefixes = (
-              f'e2e-canvas-{today.strftime(\"%Y%m%d\")}-',
-              f'e2e-canvas-{yesterday.strftime(\"%Y%m%d\")}-',
-          )
-          candidates = [o['slug'] for o in d.get('orgs', [])
-                        if any(o.get('slug','').startswith(p) for p in prefixes)
-                        and o.get('status') not in ('purged',)]
-          print('\n'.join(candidates))
-          " 2>/dev/null)
-          for slug in $orgs; do
-            curl -sS -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
-              -H "Authorization: Bearer $ADMIN_TOKEN" \
-              -H "Content-Type: application/json" \
-              -d "{\"confirm\":\"$slug\"}" >/dev/null || true
-          done
+          STATE_FILE=".playwright-staging-state.json"
+          if [ ! -f "$STATE_FILE" ]; then
+            echo "::notice::No state file at canvas/$STATE_FILE — Playwright globalTeardown handled it (or setup never ran)."
+            exit 0
+          fi
+          slug=$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('slug',''))")
+          if [ -z "$slug" ]; then
+            echo "::warning::State file present but slug missing; nothing to clean up."
+            exit 0
+          fi
+          echo "Deleting orphan tenant: $slug"
+          curl -sS -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"confirm\":\"$slug\"}" >/dev/null || true
           exit 0

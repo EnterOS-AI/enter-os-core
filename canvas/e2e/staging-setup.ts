@@ -111,6 +111,20 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
   const adminAuth = { Authorization: `Bearer ${ADMIN_TOKEN}` };
   console.log(`[staging-setup] Using slug=${slug}`);
 
+  // Write the state file FIRST, before any CP call. Teardown (both
+  // Playwright globalTeardown and the workflow safety-net) reads this
+  // file to identify the slug it must clean up. If we wait until the
+  // end of setup to write it (the previous behavior), a crash during
+  // any of steps 1-6 leaves the org orphaned in CP with no record on
+  // disk — forcing the workflow safety-net into a pattern-sweep over
+  // every `e2e-canvas-<date>-*` org, which races with concurrent
+  // canvas-E2E runs and deletes their live tenants. Race observed
+  // 2026-04-30 on PR #2264 staging→main: three real-test runs killed
+  // each other's tenants mid-test, surfacing as `getaddrinfo ENOTFOUND`
+  // when CP cleaned up the just-deleted DNS record.
+  const stateFile = join(process.cwd(), ".playwright-staging-state.json");
+  writeFileSync(stateFile, JSON.stringify({ slug }, null, 2));
+
   // 1. Create org via admin endpoint — no WorkOS session needed
   const create = await jsonFetch(`${CP_URL}/cp/admin/orgs`, {
     method: "POST",
@@ -245,8 +259,8 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
   );
   console.log(`[staging-setup] Workspace online`);
 
-  // 7. Hand state off to tests + teardown
-  const stateFile = join(process.cwd(), ".playwright-staging-state.json");
+  // 7. Hand state off to tests + teardown — overwrite the slug-only
+  // bootstrap state with the full state spec tests need.
   writeFileSync(
     stateFile,
     JSON.stringify({ slug, tenantURL, workspaceId, tenantToken }, null, 2),

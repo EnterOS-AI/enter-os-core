@@ -24,7 +24,11 @@ export default async function globalTeardown(): Promise<void> {
 
   const stateFile = join(process.cwd(), ".playwright-staging-state.json");
   if (!existsSync(stateFile)) {
-    console.warn("[staging-teardown] no state file — setup must have failed before org create; nothing to tear down");
+    // staging-setup writes this file as its first action, before any
+    // CP call. Missing here means setup never ran (CANVAS_E2E_STAGING
+    // unset, or ran in a different cwd) — there's no slug we created
+    // that needs cleaning up.
+    console.warn("[staging-teardown] no state file — nothing to tear down");
     return;
   }
 
