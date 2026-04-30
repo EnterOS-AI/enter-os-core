@@ -44,6 +44,15 @@ cd tests/harness
 ./down.sh               # tear down + remove volumes
 ```
 
+To run every replay in one shot (boot, seed, run-all, teardown):
+
+```bash
+cd tests/harness
+./run-all-replays.sh    # full lifecycle; non-zero exit if any replay fails
+KEEP_UP=1 ./run-all-replays.sh   # leave harness up for debugging
+REBUILD=1 ./run-all-replays.sh   # rebuild images before booting
+```
+
 First-time setup needs an `/etc/hosts` entry so `harness-tenant.localhost`
 resolves to the local cf-proxy:
 
@@ -71,8 +80,8 @@ To add a new replay:
 2. The script's purpose: reproduce the production failure mode against
    the harness, then assert the fix is present. PASS criterion is the
    post-fix behavior.
-3. Wire it into the `tests/harness/run-all-replays.sh` runner (TODO,
-   Phase 2).
+3. The `run-all-replays.sh` runner picks up every `replays/*.sh` script
+   automatically — no per-replay registration needed.
 
 ## Extending the cp-stub
 
@@ -102,9 +111,9 @@ its mandate of "exercise the tenant binary in production-shape topology."
 
 ## Roadmap
 
-- **Phase 1 (this PR):** harness + cp-stub + cf-proxy + 2 replays.
+- **Phase 1 (shipped):** harness + cp-stub + cf-proxy + 2 replays + `run-all-replays.sh` runner.
 - **Phase 2:** convert `tests/e2e/test_api.sh` to run against the
   harness instead of localhost. Make harness-based E2E a required CI
-  check.
+  check (a workflow that invokes `run-all-replays.sh` on every PR).
 - **Phase 3:** config-coherence lint that diffs harness env list
   against production CP's env list, fails CI on drift.
