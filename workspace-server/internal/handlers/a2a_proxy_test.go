@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -1137,13 +1138,112 @@ func TestNormalizeA2APayload_PreservesExistingMessageId(t *testing.T) {
 }
 
 func TestNormalizeA2APayload_MissingMethodReturnsEmpty(t *testing.T) {
-	raw := []byte(`{"params":{"message":{"role":"user"}}}`)
+	// Method extraction returns empty string when method is absent,
+	// regardless of message validity. Include parts: [] so the v0.2→v0.3
+	// compat check (#2345) doesn't reject before method extraction.
+	raw := []byte(`{"params":{"message":{"role":"user","parts":[]}}}`)
 	_, method, perr := normalizeA2APayload(raw)
 	if perr != nil {
 		t.Fatalf("unexpected error: %+v", perr)
 	}
 	if method != "" {
 		t.Errorf("expected empty method, got %q", method)
+	}
+}
+
+// --- v0.2 → v0.3 compat shim (#2345) ---
+
+func TestNormalizeA2APayload_ConvertsV02StringContentToParts(t *testing.T) {
+	raw := []byte(`{"method":"message/send","params":{"message":{"role":"user","content":"hello world"}}}`)
+	out, _, perr := normalizeA2APayload(raw)
+	if perr != nil {
+		t.Fatalf("unexpected error: %+v", perr)
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("output not valid JSON: %v", err)
+	}
+	msg := parsed["params"].(map[string]interface{})["message"].(map[string]interface{})
+	if _, stillHasContent := msg["content"]; stillHasContent {
+		t.Error("v0.2 'content' field should be removed after conversion")
+	}
+	parts, ok := msg["parts"].([]interface{})
+	if !ok || len(parts) != 1 {
+		t.Fatalf("expected 1 part, got %v", msg["parts"])
+	}
+	part := parts[0].(map[string]interface{})
+	if part["kind"] != "text" || part["text"] != "hello world" {
+		t.Errorf("expected {kind:text, text:'hello world'}, got %v", part)
+	}
+}
+
+func TestNormalizeA2APayload_ConvertsV02ListContentToParts(t *testing.T) {
+	raw := []byte(`{"method":"message/send","params":{"message":{"role":"user","content":[{"kind":"text","text":"hi"}]}}}`)
+	out, _, perr := normalizeA2APayload(raw)
+	if perr != nil {
+		t.Fatalf("unexpected error: %+v", perr)
+	}
+	var parsed map[string]interface{}
+	_ = json.Unmarshal(out, &parsed)
+	msg := parsed["params"].(map[string]interface{})["message"].(map[string]interface{})
+	parts, ok := msg["parts"].([]interface{})
+	if !ok || len(parts) != 1 {
+		t.Fatalf("expected list preserved as parts, got %v", msg["parts"])
+	}
+}
+
+func TestNormalizeA2APayload_PreservesV03Parts(t *testing.T) {
+	raw := []byte(`{"method":"message/send","params":{"message":{"role":"user","parts":[{"kind":"text","text":"hi"}]}}}`)
+	out, _, perr := normalizeA2APayload(raw)
+	if perr != nil {
+		t.Fatalf("unexpected error: %+v", perr)
+	}
+	var parsed map[string]interface{}
+	_ = json.Unmarshal(out, &parsed)
+	msg := parsed["params"].(map[string]interface{})["message"].(map[string]interface{})
+	if _, hasContent := msg["content"]; hasContent {
+		t.Error("did not expect content field in v0.3-shaped payload output")
+	}
+	parts := msg["parts"].([]interface{})
+	if len(parts) != 1 {
+		t.Errorf("expected 1 part preserved, got %d", len(parts))
+	}
+}
+
+func TestNormalizeA2APayload_RejectsMessageWithNeitherContentNorParts(t *testing.T) {
+	raw := []byte(`{"method":"message/send","params":{"message":{"role":"user","metadata":{}}}}`)
+	_, _, perr := normalizeA2APayload(raw)
+	if perr == nil {
+		t.Fatal("expected error for message with neither content nor parts")
+	}
+	if perr.Status != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", perr.Status)
+	}
+	errMsg, _ := perr.Response["error"].(string)
+	if !strings.Contains(errMsg, "parts") || !strings.Contains(errMsg, "content") {
+		t.Errorf("error message should mention both 'parts' and 'content', got: %q", errMsg)
+	}
+}
+
+func TestNormalizeA2APayload_RejectsContentWithUnsupportedType(t *testing.T) {
+	raw := []byte(`{"method":"message/send","params":{"message":{"role":"user","content":42}}}`)
+	_, _, perr := normalizeA2APayload(raw)
+	if perr == nil {
+		t.Fatal("expected error for non-string non-list content")
+	}
+	if perr.Status != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", perr.Status)
+	}
+}
+
+func TestNormalizeA2APayload_NoMessageNoCheck(t *testing.T) {
+	raw := []byte(`{"method":"tasks/list","params":{}}`)
+	_, method, perr := normalizeA2APayload(raw)
+	if perr != nil {
+		t.Fatalf("unexpected error on params-message-absent payload: %+v", perr)
+	}
+	if method != "tasks/list" {
+		t.Errorf("expected method=tasks/list, got %q", method)
 	}
 }
 

@@ -486,10 +486,53 @@ func normalizeA2APayload(body []byte) ([]byte, string, *proxyA2AError) {
 	}
 
 	// Ensure params.message.messageId exists (required by a2a-sdk)
+	// AND v0.2→v0.3 compat (#2345): when sender supplies
+	// params.message.content (v0.2) instead of params.message.parts
+	// (v0.3), wrap the content as a single text Part so the downstream
+	// a2a-sdk's v0.3 Pydantic validator accepts the message.
+	//
+	// Pre-fix: Design Director silently dropped briefs whose sender
+	// used v0.2 shape — Pydantic rejected at parse time, the rejection
+	// went only to logs, and the sender saw a happy 200/202.
+	//
+	// Reject loud (HTTP 400) when neither content nor parts is present;
+	// previously the SDK's own rejection happened post-handler-dispatch
+	// and was invisible to the original sender.
 	if params, ok := payload["params"].(map[string]interface{}); ok {
 		if msg, ok := params["message"].(map[string]interface{}); ok {
 			if _, hasID := msg["messageId"]; !hasID {
 				msg["messageId"] = uuid.New().String()
+			}
+			_, hasParts := msg["parts"]
+			rawContent, hasContent := msg["content"]
+			if !hasParts {
+				if hasContent {
+					switch v := rawContent.(type) {
+					case string:
+						msg["parts"] = []interface{}{
+							map[string]interface{}{"kind": "text", "text": v},
+						}
+					case []interface{}:
+						msg["parts"] = v
+					default:
+						return nil, "", &proxyA2AError{
+							Status: http.StatusBadRequest,
+							Response: gin.H{
+								"error": "invalid params.message.content type",
+								"hint":  "content must be a string (v0.2 compat) or omitted in favour of parts (v0.3)",
+							},
+						}
+					}
+					delete(msg, "content")
+				} else {
+					return nil, "", &proxyA2AError{
+						Status: http.StatusBadRequest,
+						Response: gin.H{
+							"error": "params.message must contain either 'parts' (v0.3) or 'content' (v0.2 compat)",
+							"hint":  "v0.3 example: {\"parts\":[{\"kind\":\"text\",\"text\":\"...\"}]}",
+						},
+					}
+				}
 			}
 		}
 	}
