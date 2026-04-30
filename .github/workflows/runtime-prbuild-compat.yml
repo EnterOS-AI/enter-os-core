@@ -34,12 +34,14 @@ on:
       # changes (it controls the wheel layout).
       - 'workspace/**'
       - 'scripts/build_runtime_package.py'
+      - 'scripts/wheel_smoke.py'
       - '.github/workflows/runtime-prbuild-compat.yml'
   pull_request:
     branches: [main, staging]
     paths:
       - 'workspace/**'
       - 'scripts/build_runtime_package.py'
+      - 'scripts/wheel_smoke.py'
       - '.github/workflows/runtime-prbuild-compat.yml'
   workflow_dispatch:
   # Required-check support: when this becomes a branch-protection gate,
@@ -94,7 +96,9 @@ jobs:
           /tmp/venv-built/bin/pip show molecule-ai-workspace-runtime a2a-sdk \
             | grep -E '^(Name|Version):'
       - name: Smoke import the PR-built wheel
-        env:
-          WORKSPACE_ID: 00000000-0000-0000-0000-000000000001
+        # Same script publish-runtime.yml runs against the to-be-PyPI wheel.
+        # Closes the PR-time vs publish-time gap: a PR adding a new SDK
+        # call-shape no longer passes here (narrow `import main_sync`) only
+        # to fail post-merge in publish-runtime's broader smoke.
         run: |
-          /tmp/venv-built/bin/python -c "from molecule_runtime.main import main_sync; print('PR-built runtime imports OK')"
+          /tmp/venv-built/bin/python "$GITHUB_WORKSPACE/scripts/wheel_smoke.py"
