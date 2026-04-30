@@ -28,6 +28,7 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
 )
 
@@ -224,3 +225,69 @@ func TestMintWorkspaceSecrets_PersistsInboundSecretInSaaSMode(t *testing.T) {
 		t.Errorf("SaaS mode should not inject .auth_token into cfg.ConfigFiles (no Docker volume) — got entry")
 	}
 }
+
+// TestPrepareProvisionContext_ParentIDInjection pins the PARENT_ID env
+// contract added in #2367: when payload.ParentID is set (currently only
+// TeamHandler.Expand populates it), prepareProvisionContext MUST
+// surface it as envVars["PARENT_ID"] so workspace/coordinator.py can
+// read it on startup. Pre-fix #2367 the env was set inline in
+// TeamHandler.Expand on cfg.EnvVars; the refactor moved it into the
+// shared prepare so any future provision path with a parent_id
+// inherits it automatically.
+func TestPrepareProvisionContext_ParentIDInjection(t *testing.T) {
+	cases := []struct {
+		name       string
+		parentID   *string
+		expectKey  bool
+		expectVal  string
+	}{
+		{
+			name:      "parentID nil → no PARENT_ID env",
+			parentID:  nil,
+			expectKey: false,
+		},
+		{
+			name:      "parentID empty string → no PARENT_ID env",
+			parentID:  ptrStr(""),
+			expectKey: false,
+		},
+		{
+			name:      "parentID set → PARENT_ID env populated",
+			parentID:  ptrStr("ws-parent-123"),
+			expectKey: true,
+			expectVal: "ws-parent-123",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := setupTestDB(t)
+			// loadWorkspaceSecrets queries: empty rows + empty rows = clean prep.
+			mock.ExpectQuery(`SELECT key, encrypted_value, encryption_version FROM global_secrets`).
+				WillReturnRows(sqlmock.NewRows([]string{"key", "encrypted_value", "encryption_version"}))
+			mock.ExpectQuery(`SELECT key, encrypted_value, encryption_version FROM workspace_secrets`).
+				WithArgs("ws-child").
+				WillReturnRows(sqlmock.NewRows([]string{"key", "encrypted_value", "encryption_version"}))
+
+			handler := NewWorkspaceHandler(&captureBroadcaster{}, nil, "http://localhost:8080", t.TempDir())
+			payload := models.CreateWorkspacePayload{
+				Name:     "child",
+				Tier:     1,
+				ParentID: tc.parentID,
+			}
+			prepared, abort := handler.prepareProvisionContext(context.Background(), "ws-child", "/nonexistent", nil, payload, false)
+			if abort != nil {
+				t.Fatalf("unexpected abort: %s", abort.Msg)
+			}
+			val, present := prepared.EnvVars["PARENT_ID"]
+			if present != tc.expectKey {
+				t.Errorf("PARENT_ID present=%v, want %v (env=%v)", present, tc.expectKey, prepared.EnvVars)
+			}
+			if tc.expectKey && val != tc.expectVal {
+				t.Errorf("PARENT_ID=%q, want %q", val, tc.expectVal)
+			}
+		})
+	}
+}
+
+func ptrStr(s string) *string { return &s }
