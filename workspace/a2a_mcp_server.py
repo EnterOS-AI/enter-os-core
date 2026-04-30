@@ -201,5 +201,34 @@ async def main():  # pragma: no cover
             break
 
 
-if __name__ == "__main__":  # pragma: no cover
+def cli_main() -> None:  # pragma: no cover
+    """Synchronous entry point for the ``molecule-mcp`` console script.
+
+    Declared in scripts/build_runtime_package.py as the wheel's
+    entry-point target (``molecule-mcp = "molecule_runtime.a2a_mcp_server:cli_main"``).
+    External-runtime operators install ``molecule-ai-workspace-runtime``
+    and register this binary as an MCP server in their agent's config —
+    Claude Code, hermes, codex, anything that speaks MCP stdio.
+
+    Required environment:
+        WORKSPACE_ID                  — this workspace's UUID (must
+                                        already be registered on the
+                                        platform).
+        PLATFORM_URL                  — base URL of the Molecule
+                                        platform (e.g. https://your-
+                                        tenant.staging.moleculesai.app).
+        MOLECULE_WORKSPACE_TOKEN      — bearer token for this workspace
+                                        (issued by the platform on
+                                        first /registry/register).
+
+    Mirrors the ``main_sync`` pattern in main.py — wheel-smoke gates
+    in scripts/wheel_smoke.py assert this name is importable so a
+    silent rename can't break every external-runtime operator's MCP
+    install (the 0.1.16 main_sync incident is the cautionary
+    precedent).
+    """
     asyncio.run(main())
+
+
+if __name__ == "__main__":  # pragma: no cover
+    cli_main()

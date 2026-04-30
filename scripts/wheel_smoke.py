@@ -32,6 +32,17 @@ def smoke_imports_and_invariants() -> None:
     from molecule_runtime.builtin_tools import memory  # noqa: F401
     from molecule_runtime.adapters import get_adapter, BaseAdapter, AdapterConfig
 
+    # cli_main + mcp_cli.main are the molecule-mcp console-script entry
+    # points — the external-runtime universal MCP path. Same regression
+    # class as the 0.1.16 main_sync incident: a silent rename or missed
+    # rewrite here would break every external operator's MCP install on
+    # the next wheel publish. Pin both names because pyproject points
+    # at mcp_cli.main, which then imports a2a_mcp_server.cli_main.
+    from molecule_runtime.a2a_mcp_server import cli_main  # noqa: F401
+    from molecule_runtime.mcp_cli import main as mcp_cli_main  # noqa: F401
+    assert callable(cli_main), "a2a_mcp_server.cli_main must be callable"
+    assert callable(mcp_cli_main), "mcp_cli.main must be callable"
+
     assert a2a_client._A2A_ERROR_PREFIX, "a2a_client missing error sentinel"
     assert callable(get_adapter), "adapters.get_adapter must be callable"
     assert hasattr(BaseAdapter, "name"), "BaseAdapter interface broken"

@@ -39,22 +39,42 @@ def _token_file() -> Path:
 
 
 def get_token() -> str | None:
-    """Return the cached token, reading it from disk on first call."""
+    """Return the cached token, reading it from disk on first call.
+
+    Resolution order:
+        1. In-process cache (hot path)
+        2. ``${CONFIGS_DIR}/.auth_token`` file (in-container default —
+           the platform writes this on provision and rotates it on
+           restart)
+        3. ``MOLECULE_WORKSPACE_TOKEN`` env var (external-runtime path —
+           operators running the universal MCP server outside a
+           container have no /configs volume to populate, so they pass
+           the token via env)
+
+    File-first preserves in-container behavior unchanged: containers
+    always have /configs/.auth_token on disk, env-var fallback only
+    fires when there's no file. This is additive — no existing caller
+    sees a behavior change.
+    """
     global _cached_token
     if _cached_token is not None:
         return _cached_token
     path = _token_file()
-    if not path.exists():
-        return None
-    try:
-        tok = path.read_text().strip()
-    except OSError as exc:
-        logger.warning("platform_auth: failed to read %s: %s", path, exc)
-        return None
-    if not tok:
-        return None
-    _cached_token = tok
-    return tok
+    if path.exists():
+        try:
+            tok = path.read_text().strip()
+        except OSError as exc:
+            logger.warning("platform_auth: failed to read %s: %s", path, exc)
+            tok = ""
+        if tok:
+            _cached_token = tok
+            return tok
+    # File missing or empty — fall back to env (external-runtime path).
+    env_tok = os.environ.get("MOLECULE_WORKSPACE_TOKEN", "").strip()
+    if env_tok:
+        _cached_token = env_tok
+        return env_tok
+    return None
 
 
 def save_token(token: str) -> None:
