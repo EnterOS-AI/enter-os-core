@@ -153,13 +153,21 @@ func sweepStaleRemoteWorkspaces(ctx context.Context, onOffline OfflineHandler) {
 	}
 
 	for _, id := range ids {
-		log.Printf("Health sweep (remote): %s heartbeat stale (>%s) — marking offline", id, staleAfter)
+		// External workspaces flip to 'awaiting_agent' (re-registrable
+		// via /registry/register) instead of 'offline' (which was the
+		// terminal-feeling status used pre-2026-04-30). The CLI's
+		// `molecule connect` command (RFC #10 in molecule-cli) re-
+		// registers on each invocation, bringing the workspace back
+		// online. 'offline' was confusing because it implied "agent
+		// crashed and needs operator intervention" when often the
+		// operator simply closed their laptop overnight.
+		log.Printf("Health sweep (remote): %s heartbeat stale (>%s) — marking awaiting_agent", id, staleAfter)
 
 		_, err = db.DB.ExecContext(ctx,
-			`UPDATE workspaces SET status = 'offline', updated_at = now()
+			`UPDATE workspaces SET status = 'awaiting_agent', updated_at = now()
 			 WHERE id = $1 AND status NOT IN ('removed', 'provisioning', 'paused')`, id)
 		if err != nil {
-			log.Printf("Health sweep (remote): failed to mark %s offline: %v", id, err)
+			log.Printf("Health sweep (remote): failed to mark %s awaiting_agent: %v", id, err)
 			continue
 		}
 

@@ -65,7 +65,7 @@ func TestRegister_DBError(t *testing.T) {
 	// (#2339) New preflight after C18 token check; HasAnyLiveToken's COUNT
 	// query has no mock here and fails-open per requireWorkspaceToken's
 	// DB-error handling, so the next DB hit is this delivery_mode lookup.
-	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+	mock.ExpectQuery(`SELECT delivery_mode, runtime FROM workspaces WHERE id`).
 		WithArgs("ws-fail").
 		WillReturnError(sql.ErrNoRows)
 
@@ -588,7 +588,7 @@ func TestRegister_GuardAgainstResurrectingRemovedRow(t *testing.T) {
 	handler := NewRegistryHandler(broadcaster)
 
 	// resolveDeliveryMode preflight — no row yet, default push (#2339).
-	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+	mock.ExpectQuery(`SELECT delivery_mode, runtime FROM workspaces WHERE id`).
 		WithArgs("ws-resurrect").
 		WillReturnError(sql.ErrNoRows)
 	// This regex-ish match requires the guard. If the handler ever drops
@@ -856,7 +856,7 @@ func TestRegister_C18_BootstrapAllowedNoTokens(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
 	// resolveDeliveryMode — no row yet, default push (#2339).
-	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+	mock.ExpectQuery(`SELECT delivery_mode, runtime FROM workspaces WHERE id`).
 		WithArgs("ws-new").
 		WillReturnError(sql.ErrNoRows)
 
@@ -928,7 +928,7 @@ func TestRegister_ReturnsPlatformInboundSecret_RFC2312_PRF(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
 	// resolveDeliveryMode — no row yet, default push (#2339).
-	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+	mock.ExpectQuery(`SELECT delivery_mode, runtime FROM workspaces WHERE id`).
 		WithArgs(wsID).
 		WillReturnError(sql.ErrNoRows)
 
@@ -1014,7 +1014,7 @@ func TestRegister_NoInboundSecret_LazyHeals(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM workspace_auth_tokens").
 		WithArgs(wsID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
-	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+	mock.ExpectQuery(`SELECT delivery_mode, runtime FROM workspaces WHERE id`).
 		WithArgs(wsID).
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectExec("INSERT INTO workspaces").WillReturnResult(sqlmock.NewResult(0, 1))
@@ -1077,7 +1077,7 @@ func TestRegister_NoInboundSecret_LazyHealMintFailureOmitsField(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM workspace_auth_tokens").
 		WithArgs(wsID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
-	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+	mock.ExpectQuery(`SELECT delivery_mode, runtime FROM workspaces WHERE id`).
 		WithArgs(wsID).
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectExec("INSERT INTO workspaces").WillReturnResult(sqlmock.NewResult(0, 1))
@@ -1167,7 +1167,7 @@ func TestRegister_DBErrorResponseIsOpaque(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
 	// resolveDeliveryMode — no row yet, default push (#2339).
-	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+	mock.ExpectQuery(`SELECT delivery_mode, runtime FROM workspaces WHERE id`).
 		WithArgs("ws-errtest").
 		WillReturnError(sql.ErrNoRows)
 
@@ -1490,7 +1490,7 @@ func TestRegister_PushMode_RejectsEmptyURL(t *testing.T) {
 
 	// resolveDeliveryMode: no row yet, defaults to push. The handler
 	// then validates the URL — which is empty — and returns 400.
-	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+	mock.ExpectQuery(`SELECT delivery_mode, runtime FROM workspaces WHERE id`).
 		WithArgs("ws-push-no-url").
 		WillReturnError(sql.ErrNoRows)
 
@@ -1554,9 +1554,9 @@ func TestRegister_PollMode_PreservesExistingValue(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
 	// resolveDeliveryMode: row exists with delivery_mode=poll.
-	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+	mock.ExpectQuery(`SELECT delivery_mode, runtime FROM workspaces WHERE id`).
 		WithArgs(wsID).
-		WillReturnRows(sqlmock.NewRows([]string{"delivery_mode"}).AddRow("poll"))
+		WillReturnRows(sqlmock.NewRows([]string{"delivery_mode", "runtime"}).AddRow("poll", "langgraph"))
 
 	// Upsert carries the resolved poll mode forward — even though
 	// payload didn't restate it. URL still empty (poll-mode shape).
@@ -1594,6 +1594,134 @@ func TestRegister_PollMode_PreservesExistingValue(t *testing.T) {
 	if resp["delivery_mode"] != "poll" {
 		t.Errorf("delivery_mode = %v, want %q (must inherit existing row's mode when payload absent)",
 			resp["delivery_mode"], "poll")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestRegister_ExternalRuntime_DefaultsToPoll covers the 2026-04-30
+// flip: a workspace with runtime='external' and an empty
+// delivery_mode (existing or payload) defaults to poll instead of
+// push. Rationale: external workspaces are operator-driven (laptops,
+// no public HTTPS) — push-mode would hard-fail at register time
+// because validateAgentURL rejects RFC1918 / loopback. The CLI
+// (`molecule connect`) registers without --mode and expects this
+// default to land it in poll-mode.
+func TestRegister_ExternalRuntime_DefaultsToPoll(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewRegistryHandler(broadcaster)
+
+	const wsID = "ws-external-default-poll"
+
+	// requireWorkspaceToken: no live tokens yet (first register).
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM workspace_auth_tokens").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	// resolveDeliveryMode: row exists with empty delivery_mode + runtime=external.
+	// Branch under test: delivery_mode is empty → fall through to runtime
+	// check → return poll.
+	mock.ExpectQuery(`SELECT delivery_mode, runtime FROM workspaces WHERE id`).
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"delivery_mode", "runtime"}).
+			AddRow(sql.NullString{}, "external"))
+
+	mock.ExpectExec("INSERT INTO workspaces").
+		WithArgs(wsID, wsID, sql.NullString{}, `{"name":"a"}`, "poll").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT url FROM workspaces WHERE id").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"url"}).AddRow(""))
+	mock.ExpectExec("INSERT INTO structure_events").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM workspace_auth_tokens").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec("INSERT INTO workspace_auth_tokens").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`SELECT platform_inbound_secret FROM workspaces WHERE id = \$1`).
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"platform_inbound_secret"}).AddRow(nil))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/registry/register",
+		bytes.NewBufferString(`{"id":"`+wsID+`","agent_card":{"name":"a"}}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.Register(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["delivery_mode"] != "poll" {
+		t.Errorf("delivery_mode = %v, want %q (external runtime + empty mode → poll)",
+			resp["delivery_mode"], "poll")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestRegister_NonExternalRuntime_StillDefaultsToPush guards the
+// inverse: a non-external runtime (langgraph, hermes, etc.) with
+// empty delivery_mode keeps the historical push default. Catches
+// any future "all empty modes default to poll" overshoot.
+func TestRegister_NonExternalRuntime_StillDefaultsToPush(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewRegistryHandler(broadcaster)
+
+	const wsID = "ws-langgraph-default-push"
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM workspace_auth_tokens").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	mock.ExpectQuery(`SELECT delivery_mode, runtime FROM workspaces WHERE id`).
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"delivery_mode", "runtime"}).
+			AddRow(sql.NullString{}, "langgraph"))
+
+	mock.ExpectExec("INSERT INTO workspaces").
+		WithArgs(wsID, wsID, "http://localhost:8000", `{"name":"a"}`, "push").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT url FROM workspaces WHERE id").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"url"}).AddRow("http://localhost:8000"))
+	mock.ExpectExec("INSERT INTO structure_events").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM workspace_auth_tokens").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec("INSERT INTO workspace_auth_tokens").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`SELECT platform_inbound_secret FROM workspaces WHERE id = \$1`).
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"platform_inbound_secret"}).AddRow(nil))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/registry/register",
+		bytes.NewBufferString(`{"id":"`+wsID+`","url":"http://localhost:8000","agent_card":{"name":"a"}}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.Register(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["delivery_mode"] != "push" {
+		t.Errorf("delivery_mode = %v, want %q (non-external runtime keeps push default)",
+			resp["delivery_mode"], "push")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)

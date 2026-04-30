@@ -125,21 +125,30 @@ func (h *RegistryHandler) SetQueueDrainFunc(f QueueDrainFunc) {
 // Resolution order:
 //  1. payload value if non-empty (caller validated it's push/poll already)
 //  2. existing row's delivery_mode if the row exists
-//  3. "push" (the schema default — safe fallback for both new rows and
-//     a row whose delivery_mode is somehow NULL despite the NOT NULL
-//     CHECK constraint, which is forward-defensive only)
+//  3. "poll" if the existing row's runtime is "external" — most external
+//     operators run on a laptop without public HTTPS; poll is the
+//     no-public-URL path. This default flipped 2026-04-30 (issue #10
+//     in molecule-cli) when `molecule connect` shipped — push-mode
+//     stays available via explicit payload.delivery_mode="push" for
+//     VM/server operators who opt in.
+//  4. "push" (the schema default — safe fallback for non-external
+//     runtimes whose row exists with NULL delivery_mode, which is
+//     forward-defensive only)
 //
 // Returns ("", err) only on a real DB error; sql.ErrNoRows is treated
-// as "no row yet, default to push" — that's the first-register flow.
+// as "no row yet, default to push" — that's the first-register flow,
+// and at that point we don't know the runtime yet so push is the
+// historical compatible default.
 func (h *RegistryHandler) resolveDeliveryMode(ctx context.Context, workspaceID, payloadMode string) (string, error) {
 	if payloadMode != "" {
 		// Validated by IsValidDeliveryMode in the caller.
 		return payloadMode, nil
 	}
 	var existing sql.NullString
+	var runtime sql.NullString
 	err := db.DB.QueryRowContext(ctx,
-		`SELECT delivery_mode FROM workspaces WHERE id = $1`, workspaceID,
-	).Scan(&existing)
+		`SELECT delivery_mode, runtime FROM workspaces WHERE id = $1`, workspaceID,
+	).Scan(&existing, &runtime)
 	if errors.Is(err, sql.ErrNoRows) {
 		return models.DeliveryModePush, nil
 	}
@@ -148,6 +157,9 @@ func (h *RegistryHandler) resolveDeliveryMode(ctx context.Context, workspaceID, 
 	}
 	if existing.Valid && existing.String != "" {
 		return existing.String, nil
+	}
+	if runtime.Valid && runtime.String == "external" {
+		return models.DeliveryModePoll, nil
 	}
 	return models.DeliveryModePush, nil
 }

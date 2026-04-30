@@ -60,7 +60,8 @@ func TestSweepOnlineWorkspaces_DeadContainer(t *testing.T) {
 	mock.ExpectQuery("SELECT id FROM workspaces WHERE status IN").
 		WillReturnRows(rows)
 
-	// Mock: update to offline
+	// Mock: update to offline (Docker sweep keeps 'offline' status —
+	// 'awaiting_agent' is the external-runtime path).
 	mock.ExpectExec("UPDATE workspaces SET status = 'offline'").
 		WithArgs("ws-dead-123").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -155,7 +156,7 @@ func TestStartHealthSweep_NilChecker(t *testing.T) {
 // verify the SQL shape, the offline-path side effects, and the
 // environment-variable override for the staleness window.
 
-func TestSweepStaleRemoteWorkspaces_MarksStaleOffline(t *testing.T) {
+func TestSweepStaleRemoteWorkspaces_MarksStaleAwaitingAgent(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)
 
@@ -164,10 +165,10 @@ func TestSweepStaleRemoteWorkspaces_MarksStaleOffline(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).
 			AddRow("ws-stale-1").
 			AddRow("ws-stale-2"))
-	mock.ExpectExec(`UPDATE workspaces SET status = 'offline'`).
+	mock.ExpectExec(`UPDATE workspaces SET status = 'awaiting_agent'`).
 		WithArgs("ws-stale-1").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(`UPDATE workspaces SET status = 'offline'`).
+	mock.ExpectExec(`UPDATE workspaces SET status = 'awaiting_agent'`).
 		WithArgs("ws-stale-2").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -209,7 +210,7 @@ func TestSweepStaleRemoteWorkspaces_NilCallbackNoPanic(t *testing.T) {
 
 	mock.ExpectQuery(`FROM workspaces`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ws-x"))
-	mock.ExpectExec(`UPDATE workspaces SET status = 'offline'`).
+	mock.ExpectExec(`UPDATE workspaces SET status = 'awaiting_agent'`).
 		WithArgs("ws-x").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

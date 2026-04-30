@@ -323,7 +323,7 @@ func TestRegister_ProvisionerURLPreserved(t *testing.T) {
 	handler := NewRegistryHandler(broadcaster)
 
 	// resolveDeliveryMode preflight — no row yet, default push (#2339).
-	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+	mock.ExpectQuery(`SELECT delivery_mode, runtime FROM workspaces WHERE id`).
 		WithArgs("ws-prov").
 		WillReturnError(sql.ErrNoRows)
 
