@@ -29,6 +29,7 @@ package handlers
 // conversation payloads.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -82,6 +83,82 @@ const chatUploadMaxBytes = 50 * 1024 * 1024
 // path, so any consumer parsing those URIs has the constant to
 // reference.
 const chatUploadDir = "/workspace/.molecule/chat-uploads"
+
+// resolveWorkspaceForwardCreds resolves the workspace's URL +
+// platform_inbound_secret for an /internal/* forward, applying
+// lazy-heal on a missing inbound secret (RFC #2312 backfill — the
+// 2026-04-30 fix that closes the existing-workspace gap left by the
+// shared-mint refactor).
+//
+// On any failure path the function HAS ALREADY written the appropriate
+// status + JSON body to c (404 / 503 / 500) and returns ok=false.
+// On success returns the URL + secret + ok=true.
+//
+// op is the human-readable feature label ("upload"/"download") used
+// in log messages and the 503 RFC-#2312 detail copy so operators can
+// distinguish which feature ran.
+//
+// Centralized here (rather than inline in Upload + Download) so the
+// next forward-time condition we add — secret rotation, audit, etc. —
+// goes in ONE place. Drift between the two handlers is the same class
+// of bug as the original SaaS provision drift fixed in #2366; this
+// extraction prevents that class on the consumer side.
+func resolveWorkspaceForwardCreds(c *gin.Context, ctx context.Context, workspaceID, op string) (wsURL, secret string, ok bool) {
+	if err := db.DB.QueryRowContext(ctx,
+		`SELECT COALESCE(url, '') FROM workspaces WHERE id = $1`, workspaceID,
+	).Scan(&wsURL); err != nil {
+		log.Printf("chat_files %s: workspace lookup failed for %s: %v", op, workspaceID, err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
+		return "", "", false
+	}
+	if wsURL == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "workspace url not registered yet"})
+		return "", "", false
+	}
+	// Trust note: workspaces.url passes validateAgentURL at /registry/
+	// register write time, blocking SSRF-shaped URLs. We rely on that
+	// upstream gate rather than re-validating here. Tracked at #2316
+	// for follow-up: forward-time re-validation as defense-in-depth.
+
+	secret, err := wsauth.ReadPlatformInboundSecret(ctx, db.DB, workspaceID)
+	if err != nil {
+		if errors.Is(err, wsauth.ErrNoInboundSecret) {
+			// Lazy-heal: mint the secret now so future requests
+			// succeed. Pre-2026-04-30 the SaaS provision path didn't
+			// mint — every prod workspace started life with NULL
+			// platform_inbound_secret. The shared-mint refactor closes
+			// the new-workspace gap; this lazy-heal closes the
+			// existing-workspace gap without requiring a destructive
+			// reprovision.
+			//
+			// Why the request still 503s: the workspace's local
+			// /configs/.platform_inbound_secret is also empty until the
+			// next /registry/register response (registry.go:344-362)
+			// propagates the freshly-minted secret. The user retries
+			// once the workspace's heartbeat picks up the new secret
+			// (typically <30s).
+			if _, mintErr := wsauth.IssuePlatformInboundSecret(ctx, db.DB, workspaceID); mintErr != nil {
+				log.Printf("chat_files %s: lazy-heal mint failed for %s: %v", op, workspaceID, mintErr)
+				c.JSON(http.StatusServiceUnavailable, gin.H{
+					"error":  "workspace not yet enrolled in v2 " + op + " (RFC #2312)",
+					"detail": "Failed to mint inbound secret. Reprovision the workspace if this persists.",
+				})
+				return "", "", false
+			}
+			log.Printf("chat_files %s: lazy-healed platform_inbound_secret for %s — retry once workspace re-registers (#2312 backfill)", op, workspaceID)
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error":               "workspace re-registering — please retry in 30 seconds",
+				"detail":              "Inbound secret was just minted. Workspace will pick it up on its next heartbeat.",
+				"retry_after_seconds": 30,
+			})
+			return "", "", false
+		}
+		log.Printf("chat_files %s: read platform_inbound_secret failed for %s: %v", op, workspaceID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read workspace secret"})
+		return "", "", false
+	}
+	return wsURL, secret, true
+}
 
 // urlPathEscape percent-encodes every byte outside the RFC 3986
 // unreserved set — stricter than net/url.PathEscape (which leaves
@@ -168,64 +245,8 @@ func (h *ChatFilesHandler) Upload(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	// Resolve workspace URL + inbound secret. Both must be present;
-	// either one missing means the workspace was provisioned before
-	// migration 044 or the row got into a bad state. Surface as 503
-	// rather than silently failing — operators should notice.
-	var wsURL string
-	if err := db.DB.QueryRowContext(ctx,
-		`SELECT COALESCE(url, '') FROM workspaces WHERE id = $1`, workspaceID,
-	).Scan(&wsURL); err != nil {
-		log.Printf("chat_files Upload: workspace lookup failed for %s: %v", workspaceID, err)
-		c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
-		return
-	}
-	if wsURL == "" {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "workspace url not registered yet"})
-		return
-	}
-	// Trust note: workspaces.url passes validateAgentURL at /registry/
-	// register write time, blocking SSRF-shaped URLs. We rely on that
-	// upstream gate rather than re-validating here. Tracked at #2316
-	// for follow-up: forward-time re-validation as defense-in-depth.
-
-	secret, err := wsauth.ReadPlatformInboundSecret(ctx, db.DB, workspaceID)
-	if err != nil {
-		if errors.Is(err, wsauth.ErrNoInboundSecret) {
-			// Lazy-heal: mint the secret now so future requests
-			// succeed. Pre-2026-04-30 the SaaS provision path didn't
-			// mint — every prod workspace started life with a NULL
-			// inbound secret. The shared-mint refactor closes the
-			// new-workspace gap; this lazy-heal closes the existing-
-			// workspace gap without requiring a destructive
-			// reprovision.
-			//
-			// Why the request still 503s: the workspace's local
-			// /configs/.platform_inbound_secret is also empty until
-			// the next /registry/register response (registry.go:344-
-			// 362) propagates the freshly-minted secret. The user
-			// needs to retry once the workspace's heartbeat picks up
-			// the new secret (typically <30s).
-			minted, mintErr := wsauth.IssuePlatformInboundSecret(ctx, db.DB, workspaceID)
-			if mintErr != nil {
-				log.Printf("chat_files Upload: lazy-heal mint failed for %s: %v", workspaceID, mintErr)
-				c.JSON(http.StatusServiceUnavailable, gin.H{
-					"error":  "workspace not yet enrolled in v2 upload (RFC #2312)",
-					"detail": "Failed to mint inbound secret. Reprovision the workspace if this persists.",
-				})
-				return
-			}
-			_ = minted // platform now has it; workspace picks up next heartbeat
-			log.Printf("chat_files Upload: lazy-healed platform_inbound_secret for %s — retry once workspace re-registers (#2312 backfill)", workspaceID)
-			c.JSON(http.StatusServiceUnavailable, gin.H{
-				"error":  "workspace re-registering — please retry in 30 seconds",
-				"detail": "Inbound secret was just minted. Workspace will pick it up on its next heartbeat.",
-				"retry_after_seconds": 30,
-			})
-			return
-		}
-		log.Printf("chat_files Upload: read platform_inbound_secret failed for %s: %v", workspaceID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read workspace secret"})
+	wsURL, secret, ok := resolveWorkspaceForwardCreds(c, ctx, workspaceID, "upload")
+	if !ok {
 		return
 	}
 
@@ -327,49 +348,8 @@ func (h *ChatFilesHandler) Download(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	// Resolve workspace URL + inbound secret. Same shape as Upload —
-	// see chat_files.go::Upload for the rationale on why each missing-
-	// piece path surfaces as 404 / 503.
-	var wsURL string
-	if err := db.DB.QueryRowContext(ctx,
-		`SELECT COALESCE(url, '') FROM workspaces WHERE id = $1`, workspaceID,
-	).Scan(&wsURL); err != nil {
-		log.Printf("chat_files Download: workspace lookup failed for %s: %v", workspaceID, err)
-		c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
-		return
-	}
-	if wsURL == "" {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "workspace url not registered yet"})
-		return
-	}
-
-	secret, err := wsauth.ReadPlatformInboundSecret(ctx, db.DB, workspaceID)
-	if err != nil {
-		if errors.Is(err, wsauth.ErrNoInboundSecret) {
-			// Lazy-heal — same shape as the upload handler. Mint the
-			// secret now; workspace picks it up on next heartbeat.
-			// User retries in ~30s. See chat_files.go Upload handler
-			// for full rationale.
-			minted, mintErr := wsauth.IssuePlatformInboundSecret(ctx, db.DB, workspaceID)
-			if mintErr != nil {
-				log.Printf("chat_files Download: lazy-heal mint failed for %s: %v", workspaceID, mintErr)
-				c.JSON(http.StatusServiceUnavailable, gin.H{
-					"error":  "workspace not yet enrolled in v2 download (RFC #2312)",
-					"detail": "Failed to mint inbound secret. Reprovision the workspace if this persists.",
-				})
-				return
-			}
-			_ = minted
-			log.Printf("chat_files Download: lazy-healed platform_inbound_secret for %s — retry once workspace re-registers (#2312 backfill)", workspaceID)
-			c.JSON(http.StatusServiceUnavailable, gin.H{
-				"error":  "workspace re-registering — please retry in 30 seconds",
-				"detail": "Inbound secret was just minted. Workspace will pick it up on its next heartbeat.",
-				"retry_after_seconds": 30,
-			})
-			return
-		}
-		log.Printf("chat_files Download: read platform_inbound_secret failed for %s: %v", workspaceID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read workspace secret"})
+	wsURL, secret, ok := resolveWorkspaceForwardCreds(c, ctx, workspaceID, "download")
+	if !ok {
 		return
 	}
 
