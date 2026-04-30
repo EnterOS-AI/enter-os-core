@@ -1,17 +1,43 @@
 name: publish-workspace-server-image
 
-# Builds and pushes Docker images to GHCR when staging is promoted to main.
-# PRs target staging (default branch). Only main push triggers production builds.
+# Builds and pushes Docker images to GHCR on staging or main pushes.
 # EC2 tenant instances pull the tenant image from GHCR.
+#
+# Branch / tag policy (see Compute tags step for the per-branch logic):
+#
+#   staging push  → builds image, tags :staging-<sha> + :staging-latest.
+#                   staging-CP pins TENANT_IMAGE=:staging-latest, so it
+#                   picks up staging-branch code automatically. This is
+#                   what makes staging-CP actually test staging-branch
+#                   code instead of "yesterday's main" — pre-fix, this
+#                   workflow only ran on main, so staging tenants
+#                   silently served stale code (#2308 fix RFC #2312
+#                   landed on staging but never reached tenants because
+#                   staging→main was wedged on path-filter parity bugs).
+#
+#   main push     → builds image, tags :staging-<sha> + :staging-latest
+#                   (same as before). canary-verify.yml retags
+#                   :staging-<sha> → :latest after canary tenants
+#                   green-light the digest. The :staging-latest retag
+#                   on main push is intentional: when main lands AFTER a
+#                   staging push, staging-CP gets the post-promote code
+#                   (which equals what it had + any merge resolution),
+#                   so the canary-on-staging-CP step still runs against
+#                   the prod-bound digest.
+#
+# In the steady state both branches refresh :staging-latest; the
+# semantic is "most recent staging-or-main build of tenant code."
+# Drift between the two is bounded by the staging→main auto-promote
+# cadence and is corrected on the next staging push.
 
 on:
   push:
-    branches: [main]
+    branches: [staging, main]
     paths:
       - 'workspace-server/**'
       - 'canvas/**'
       - 'manifest.json'
-      - '.github/workflows/publish-platform-image.yml'
+      - '.github/workflows/publish-workspace-server-image.yml'
   workflow_dispatch:
 
 permissions:
@@ -63,29 +89,32 @@ jobs:
         run: |
           echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
-      # Canary-gated release: we publish :staging-<sha> ONLY here. The
-      # :latest tag (which existing prod tenants auto-pull every 5 min)
-      # is promoted by .github/workflows/canary-verify.yml after the
-      # staging canary fleet green-lights this digest.
-      # That means:
-      #   - Every main merge produces a :staging-<sha> image
-      #   - Canary tenants (configured to pull :staging-<sha>) pick it up
-      #   - canary-verify.yml runs smoke tests against them
-      #   - On green → canary-verify retags :staging-<sha> → :latest
-      #   - On red → :latest stays on the prior good digest, prod is safe
-      # Every push of :staging-<sha> also retags the same digest as
-      # :staging-latest so staging CP (which pins TENANT_IMAGE at
-      # :staging-latest) picks up new builds automatically — no more manual
-      # Railway env-var edits. Prod's :latest retag still happens in
-      # canary-verify.yml after the canary fleet greenlights this digest;
-      # :staging-latest is strictly the "most recent main build," not a
-      # canary-verified promotion.
+      # Canary-gated release flow:
+      #   - This step always publishes :staging-<sha> + :staging-latest.
+      #   - On staging push, staging-CP picks up :staging-latest immediately
+      #     (its TENANT_IMAGE pin is :staging-latest) — so staging-branch
+      #     code reaches staging tenants without waiting for main.
+      #   - On main push, canary-verify.yml runs smoke tests against
+      #     canary tenants (which pin :staging-<sha>), and on green retags
+      #     :staging-<sha> → :latest. Prod tenants pull :latest.
+      #   - On red, :latest stays on the prior good digest — prod is safe.
       #
-      # Before this, TENANT_IMAGE on Railway staging was pinned to a static
-      # :staging-<sha> and drifted months behind (2026-04-24 incident:
-      # canary tenant ran :staging-a14cf86, 10 days stale, which lacked
-      # applyRuntimeModelEnv and caused every E2E to route hermes+openai
-      # through openrouter → 401). See issue filed with this PR.
+      # Why :staging-latest is retagged on main push too: when main lands
+      # after a staging promote, staging-CP gets the post-promote code so
+      # the canary-on-staging-CP step still runs against the prod-bound
+      # digest. In a healthy flow the post-promote main code == the
+      # current staging code, so this is effectively a no-op except for
+      # the canary fleet pin handoff.
+      #
+      # Pre-fix history: this workflow used to only trigger on main. That
+      # meant staging-CP served "yesterday's main" indefinitely whenever
+      # staging→main was wedged. The 2026-04-30 dogfooding session
+      # surfaced this when RFC #2312 (chat upload HTTP-forward) landed on
+      # staging but staging tenants kept failing chat upload because they
+      # were running pre-RFC code. Adding the staging trigger above closes
+      # that gap. Earlier 2026-04-24 incident: a static :staging-<sha> pin
+      # drifted 10 days behind staging — same class of bug, different
+      # mechanism.
       - name: Build & push platform image to GHCR (staging-<sha> + staging-latest)
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
