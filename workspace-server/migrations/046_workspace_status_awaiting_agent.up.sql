@@ -1,0 +1,60 @@
+-- 046_workspace_status_awaiting_agent.up.sql
+--
+-- Add the missing 'awaiting_agent' and 'hibernating' values to the
+-- workspace_status enum.
+--
+-- Migration 043 (2026-04-25) introduced the workspace_status enum but
+-- omitted two values that application code had already been writing:
+--
+--   'awaiting_agent' — handlers/workspace.go:333 (since 2026-04-24,
+--                      commit 1e8b5e01, "first-class BYO-compute"):
+--                      external workspaces created without a URL are
+--                      meant to park here until the agent registers.
+--   'hibernating'    — handlers/workspace_restart.go:271-272 (since
+--                      29_workspace_hibernation): intermediate state
+--                      between 'online' and the final 'hibernated';
+--                      acts as a DB-level claim while provisioner.Stop
+--                      runs.
+--
+-- Every UPDATE that tried to write either value failed with
+-- `invalid input value for enum workspace_status: "..."`. The
+-- consequences were silent because both call sites either dropped or
+-- log-and-continued the error:
+--
+--   - workspace.go:333 discards the Exec result entirely. Canvas shows
+--     `awaiting_agent` in the response, but the row stays in
+--     'provisioning' until first /registry/register.
+--   - workspace_restart.go:277 logs and returns; hibernation simply
+--     never happens. Idle workspaces consumed resources indefinitely
+--     for five days before this gate flagged it.
+--
+-- 2026-04-30 PR #2382 ("default external runtime to poll-mode +
+-- awaiting_agent") added two more silent-fail sites in
+-- registry/liveness.go and registry/healthsweep.go. Both log + continue.
+-- Result: liveness expiry no longer transitions runtime='external'
+-- rows, and the heartbeat-staleness sweep is a no-op for them.
+-- UI/canvas shows external workspaces stuck on 'online' or 'degraded'
+-- indefinitely after the agent disconnects.
+--
+-- Tests across all four sites used sqlmock, which matches SQL by regex
+-- but does not validate against the live enum constraint, so unit
+-- tests passed despite the prod-only failures. See
+-- feedback_mock_at_drifting_layer in operator memory.
+--
+-- This migration adds both enum values so all six call sites start
+-- succeeding. IF NOT EXISTS makes the migration idempotent across
+-- re-runs (RunMigrations in postgres.go re-applies migrations until
+-- schema_migrations records them; a future operator-driven re-run is
+-- harmless).
+--
+-- ALTER TYPE ADD VALUE is committed immediately by Postgres regardless
+-- of transaction wrapping, and does NOT take a heavy lock on workspaces.
+-- Safe to run during normal traffic.
+--
+-- A regression gate lives at internal/db/workspace_status_enum_drift_test.go:
+-- it parses every UPDATE/INSERT against `workspaces` in the Go tree
+-- and asserts every status literal is in the enum. That test would
+-- have caught both omissions on the day they shipped.
+
+ALTER TYPE workspace_status ADD VALUE IF NOT EXISTS 'awaiting_agent';
+ALTER TYPE workspace_status ADD VALUE IF NOT EXISTS 'hibernating';
