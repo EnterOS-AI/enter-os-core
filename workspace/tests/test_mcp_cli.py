@@ -311,6 +311,97 @@ def test_token_resolved_from_file_when_no_env(monkeypatch, tmp_path):
     assert captured_token["t"] == "file-token"
 
 
+def test_register_401_exits_with_actionable_error(monkeypatch, capsys):
+    """Bad token at startup must hard-fail. Otherwise the operator
+    sees no error in their MCP client (which spawns the binary in a
+    subprocess), the heartbeat thread silently 401's forever, and
+    every tool call also 401's — needle-in-haystack debugging.
+    Hard-exiting prints a clear pointer to the canvas Tokens tab."""
+
+    class FakeResp:
+        status_code = 401
+        text = "invalid workspace auth token"
+
+    class FakeClient:
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_a): return False
+        def post(self, *_a, **_kw): return FakeResp()
+
+    import types
+    fake_httpx = types.ModuleType("httpx")
+    fake_httpx.Client = FakeClient
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    with pytest.raises(SystemExit) as exc_info:
+        mcp_cli._platform_register(
+            "https://test.moleculesai.app",
+            "ws-bad-token",
+            "wrong-token",
+        )
+    assert exc_info.value.code == 3
+    err = capsys.readouterr().err
+    assert "401" in err
+    assert "ws-bad-token" in err
+    assert "Tokens tab" in err or "canvas" in err.lower()
+
+
+def test_register_403_also_exits(monkeypatch, capsys):
+    """403 is the C18 hijack-prevention rejection — same operator
+    action (regenerate token) as 401."""
+
+    class FakeResp:
+        status_code = 403
+        text = "C18: live tokens exist; bearer didn't match"
+
+    class FakeClient:
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_a): return False
+        def post(self, *_a, **_kw): return FakeResp()
+
+    import types
+    fake_httpx = types.ModuleType("httpx")
+    fake_httpx.Client = FakeClient
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    with pytest.raises(SystemExit) as exc_info:
+        mcp_cli._platform_register(
+            "https://test.moleculesai.app",
+            "ws-hijack",
+            "stolen-token",
+        )
+    assert exc_info.value.code == 3
+
+
+def test_register_500_does_not_exit(monkeypatch):
+    """Transient platform errors (500, 503) must NOT hard-fail —
+    those clear on retry and the heartbeat thread will surface
+    persistent failures via warning logs."""
+
+    class FakeResp:
+        status_code = 503
+        text = "service unavailable"
+
+    class FakeClient:
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_a): return False
+        def post(self, *_a, **_kw): return FakeResp()
+
+    import types
+    fake_httpx = types.ModuleType("httpx")
+    fake_httpx.Client = FakeClient
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    # Should return cleanly, no SystemExit raised
+    mcp_cli._platform_register(
+        "https://test.moleculesai.app",
+        "ws-ok",
+        "tok",
+    )
+
+
 def test_register_payload_shape(monkeypatch):
     """The register POST body must use the field names the workspace-
     server expects (id/url/agent_card/delivery_mode), and must include

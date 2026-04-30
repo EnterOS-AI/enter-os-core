@@ -53,15 +53,22 @@ HEARTBEAT_INTERVAL_SECONDS = 20.0
 
 
 def _platform_register(platform_url: str, workspace_id: str, token: str) -> None:
-    """Best-effort one-shot register at startup.
+    """One-shot register at startup; fails fast on auth errors.
 
     Lifts the workspace from ``awaiting_agent`` to ``online`` for
     operators who never ran the curl-register snippet. Safe to call
-    repeatedly: the platform's register handler is an upsert that just
-    refreshes ``url``, ``agent_card``, and ``status``. Skips silently
-    on transport/HTTP errors so a misconfigured PLATFORM_URL doesn't
-    abort the MCP loop — the heartbeat thread will keep retrying and
-    surface the persistent failure that way.
+    repeatedly: the platform's register handler is an upsert that
+    just refreshes ``url``, ``agent_card``, and ``status``.
+
+    Failure model (post-review):
+        - 401 / 403  → ``sys.exit(3)`` immediately. The operator's
+          token is wrong; silently looping in a broken state would
+          make this hard to diagnose because the MCP tools would 401
+          on every call too. Hard-fail is the kindest option.
+        - Other 4xx/5xx → log a warning + continue. The heartbeat
+          thread will surface persistent failures; transient platform
+          blips shouldn't abort the MCP loop.
+        - Network / transport errors → log + continue. Same reasoning.
 
     Origin header is required by the SaaS edge WAF; without it
     /registry/register currently still works (it's on the WAF
@@ -94,6 +101,14 @@ def _platform_register(platform_url: str, workspace_id: str, token: str) -> None
                 json=payload,
                 headers=headers,
             )
+        if resp.status_code in (401, 403):
+            print(
+                f"molecule-mcp: register rejected with HTTP {resp.status_code} — "
+                f"the token in MOLECULE_WORKSPACE_TOKEN is invalid for workspace "
+                f"{workspace_id}. Regenerate from the canvas → Tokens tab.",
+                file=sys.stderr,
+            )
+            sys.exit(3)
         if resp.status_code >= 400:
             logger.warning(
                 "molecule-mcp: register POST returned HTTP %d: %s",
@@ -105,6 +120,8 @@ def _platform_register(platform_url: str, workspace_id: str, token: str) -> None
                 "molecule-mcp: registered workspace %s with platform",
                 workspace_id,
             )
+    except SystemExit:
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.warning("molecule-mcp: register POST failed: %s", exc)
 

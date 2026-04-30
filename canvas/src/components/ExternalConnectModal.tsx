@@ -97,12 +97,16 @@ export function ExternalConnectModal({ info, onClose }: Props) {
     'MOLECULE_WORKSPACE_TOKENS=<paste auth_token from create response>',
     `MOLECULE_WORKSPACE_TOKENS=${info.auth_token}`,
   );
-  // Universal MCP snippet uses the same "<paste from create response>"
-  // placeholder pattern as the curl tab — the auth token is exported
-  // as WORKSPACE_AUTH_TOKEN and reused inline for `molecule-mcp`.
+  // Universal MCP snippet uses MOLECULE_WORKSPACE_TOKEN as the env-var
+  // name passed through to molecule-mcp via `claude mcp add ... -- env
+  // MOLECULE_WORKSPACE_TOKEN=...`. The placeholder must match the
+  // template's literal — pre-2026-04-30 polish this looked for
+  // WORKSPACE_AUTH_TOKEN (carryover from the curl tab), which silently
+  // skipped the substitution and left "<paste from create response>"
+  // visible in the operator's clipboard.
   const filledUniversalMcp = info.universal_mcp_snippet?.replace(
-    'WORKSPACE_AUTH_TOKEN="<paste from create response>"',
-    `WORKSPACE_AUTH_TOKEN="${info.auth_token}"`,
+    'MOLECULE_WORKSPACE_TOKEN="<paste from create response>"',
+    `MOLECULE_WORKSPACE_TOKEN="${info.auth_token}"`,
   );
 
   return (
