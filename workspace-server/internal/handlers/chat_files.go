@@ -259,24 +259,7 @@ func (h *ChatFilesHandler) Upload(c *gin.Context) {
 		req.ContentLength = c.Request.ContentLength
 	}
 
-	resp, err := h.httpClient.Do(req)
-	if err != nil {
-		log.Printf("chat_files Upload: forward to %s failed: %v", forwardURL, err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "workspace unreachable"})
-		return
-	}
-	defer resp.Body.Close()
-
-	// Stream response back. Copy headers we know are safe + the body.
-	if ct := resp.Header.Get("Content-Type"); ct != "" {
-		c.Header("Content-Type", ct)
-	}
-	c.Status(resp.StatusCode)
-	if _, err := io.Copy(c.Writer, resp.Body); err != nil {
-		// Mid-stream failure — too late to write a JSON error, just
-		// log so ops can correlate with the workspace's logs.
-		log.Printf("chat_files Upload: stream response back failed for %s: %v", workspaceID, err)
-	}
+	h.streamWorkspaceResponse(c, "upload", workspaceID, forwardURL, req, []string{"Content-Type"})
 }
 
 // Download handles GET /workspaces/:id/chat/download?path=<abs path>.
@@ -351,27 +334,42 @@ func (h *ChatFilesHandler) Download(c *gin.Context) {
 	}
 	req.Header.Set("Authorization", "Bearer "+secret)
 
+	h.streamWorkspaceResponse(c, "download", workspaceID, forwardURL, req,
+		[]string{"Content-Type", "Content-Length", "Content-Disposition"})
+}
+
+// streamWorkspaceResponse executes the prepared forward request and
+// streams the workspace's response back to the inbound caller.
+// Forwards the named response headers verbatim. Centralizes the
+// "do request → check err → defer close → copy headers → set status →
+// io.Copy" tail that's identical between Upload and Download.
+//
+// op is the human-readable feature label ("upload"/"download") used
+// in log messages so operators can distinguish which feature ran.
+func (h *ChatFilesHandler) streamWorkspaceResponse(
+	c *gin.Context,
+	op, workspaceID, forwardURL string,
+	req *http.Request,
+	forwardHeaders []string,
+) {
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
-		log.Printf("chat_files Download: forward to %s failed: %v", forwardURL, err)
+		log.Printf("chat_files %s: forward to %s failed: %v", op, forwardURL, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "workspace unreachable"})
 		return
 	}
 	defer resp.Body.Close()
 
-	// Stream response back, including the workspace's headers so the
-	// client gets the correct Content-Type + Content-Disposition (the
-	// workspace constructs them from the actual file's extension +
-	// basename — keeping that logic on the workspace side avoids a
-	// double-source-of-truth on filename encoding rules).
-	for _, hdr := range []string{"Content-Type", "Content-Length", "Content-Disposition"} {
+	for _, hdr := range forwardHeaders {
 		if v := resp.Header.Get(hdr); v != "" {
 			c.Header(hdr, v)
 		}
 	}
 	c.Status(resp.StatusCode)
 	if _, err := io.Copy(c.Writer, resp.Body); err != nil {
-		log.Printf("chat_files Download: stream response back failed for %s: %v", workspaceID, err)
+		// Mid-stream failure — too late to write a JSON error, just
+		// log so ops can correlate with the workspace's logs.
+		log.Printf("chat_files %s: stream response back failed for %s: %v", op, workspaceID, err)
 	}
 }
 
