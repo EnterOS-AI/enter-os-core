@@ -41,9 +41,23 @@ func StartLivenessMonitor(ctx context.Context, onOffline OfflineHandler) {
 
 			log.Printf("Liveness: workspace %s TTL expired", workspaceID)
 
-			// Mark offline in Postgres — skip paused and hibernated workspaces (no active container)
+			// Status target depends on runtime:
+			//   external → 'awaiting_agent' (re-registrable via
+			//     /registry/register; `molecule connect` brings it
+			//     back online on next invocation — typical case is
+			//     the operator closed their laptop overnight).
+			//   non-external → 'offline' (terminal-feeling status
+			//     consistent with Docker/CP-managed runtimes whose
+			//     recovery path is restart, not re-register).
+			//
+			// The conditional flip is done in a single UPDATE so the
+			// non-external case stays cheap (no extra round-trip)
+			// and there's no TOCTOU between the runtime read and the
+			// status write.
 			_, err := db.DB.ExecContext(ctx, `
-				UPDATE workspaces SET status = 'offline', updated_at = now()
+				UPDATE workspaces
+				SET status = CASE WHEN runtime = 'external' THEN 'awaiting_agent' ELSE 'offline' END,
+				    updated_at = now()
 				WHERE id = $1 AND status NOT IN ('removed', 'paused', 'hibernated')
 			`, workspaceID)
 			if err != nil {

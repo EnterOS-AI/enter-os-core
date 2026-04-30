@@ -80,8 +80,11 @@ func TestStartLivenessMonitor_KeyExpiryTriggersOffline(t *testing.T) {
 		called <- wsID
 	}
 
-	// Expect the UPDATE when liveness key expires
-	mock.ExpectExec("UPDATE workspaces SET status = 'offline'").
+	// Expect the UPDATE when liveness key expires. The status is now
+	// CASE-expression-driven on runtime: external → 'awaiting_agent',
+	// other → 'offline'. sqlmock matches on regex so the SET clause
+	// just needs to mention the conditional.
+	mock.ExpectExec(`UPDATE workspaces\s+SET status = CASE WHEN runtime = 'external' THEN 'awaiting_agent' ELSE 'offline' END`).
 		WithArgs("ws-expire-test").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
