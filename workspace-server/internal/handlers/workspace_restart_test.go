@@ -124,6 +124,61 @@ func TestRestartHandler_AncestorPausedBlocksRestart(t *testing.T) {
 	}
 }
 
+func TestRestartHandler_ExternalRuntimeNoOps(t *testing.T) {
+	// Manual Restart on a runtime=external workspace must short-circuit:
+	// no Stop, no provision, no token revoke. Pre-fix, this path ran the
+	// full re-provision pipeline and silently revoked the operator's
+	// bearer token on every click.
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+
+	mock.ExpectQuery("SELECT status, name, tier, COALESCE").
+		WithArgs("ws-external").
+		WillReturnRows(sqlmock.NewRows([]string{"status", "name", "tier", "runtime"}).
+			AddRow("offline", "External Agent", 1, "external"))
+
+	// isParentPaused: no parent
+	mock.ExpectQuery("SELECT parent_id FROM workspaces WHERE id =").
+		WithArgs("ws-external").
+		WillReturnRows(sqlmock.NewRows([]string{"parent_id"}))
+
+	// No further expectations — Restart must NOT touch the DB or the
+	// provisioner from this point. sqlmock will fail the test if any
+	// unexpected query runs (UPDATE workspaces SET status=..., the
+	// RevokeAllForWorkspace DELETE, etc.).
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-external"}}
+	c.Request = httptest.NewRequest("POST", "/workspaces/ws-external/restart", nil)
+
+	handler.Restart(c)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got, _ := resp["status"].(string); got != "noop" {
+		t.Errorf("expected status=noop, got %v", resp["status"])
+	}
+	if got, _ := resp["runtime"].(string); got != "external" {
+		t.Errorf("expected runtime=external, got %v", resp["runtime"])
+	}
+	if msg, _ := resp["message"].(string); !strings.Contains(msg, "operator-driven") {
+		t.Errorf("expected message about operator-driven, got %v", resp["message"])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations (or unexpected queries — token revoke or status update would trigger this): %v", err)
+	}
+}
+
 func TestRestartHandler_NilProvisionerReturns503(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)

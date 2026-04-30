@@ -89,6 +89,27 @@ func (h *WorkspaceHandler) Restart(c *gin.Context) {
 		return
 	}
 
+	// runtime=external: the workspace has no Docker container or EC2 — its
+	// lifecycle is operator-driven (a remote poller heartbeats from outside
+	// the platform). Pre-fix, this handler still ran the full re-provision
+	// pipeline, which calls issueAndInjectToken → RevokeAllForWorkspace.
+	// That silently destroyed the operator's local bearer token on every
+	// "Restart" click, leaving them with a 401-spamming poller and no
+	// platform-side recovery path short of regenerating from the canvas
+	// Tokens tab. Auto-restart already short-circuits external (see
+	// runRestartCycle below). Mirror that here so manual + automatic
+	// behavior agree, and surface a clear message instead of silently
+	// no-op'ing — the canvas can show the operator that the fix is on
+	// their side.
+	if dbRuntime == "external" {
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "noop",
+			"runtime": "external",
+			"message": "external workspaces are operator-driven — restart your local poller; platform has nothing to restart",
+		})
+		return
+	}
+
 	// SaaS mode: cpProv handles workspace EC2 lifecycle. Self-hosted mode:
 	// provisioner handles local Docker containers. At least one must be
 	// available — previously only `provisioner` was checked, which broke
