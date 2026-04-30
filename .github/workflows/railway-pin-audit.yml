@@ -1,0 +1,207 @@
+name: Railway pin audit (drift detection)
+
+# Daily audit of Railway env vars for drift-prone image-tag pins —
+# automation-cadence layer over the detection script + regression test
+# shipped in PR #2168 (#2001 closure).
+#
+# Background: on 2026-04-24 a stale `:staging-a14cf86` SHA pin in CP's
+# TENANT_IMAGE caused 3+ hours of E2E failure with the appearance that
+# "every fix didn't propagate" — really the tenant image was so old it
+# didn't read the env vars those fixes produced. The audit script
+# (scripts/ops/audit-railway-sha-pins.sh) flags drift; this workflow
+# runs the same check unattended on a daily cron.
+#
+# Cadence: once a day, 13:00 UTC (06:00 PT). Daily is the right
+# cadence for variables-tier config — Railway env var changes are
+# deliberate operator actions, low-frequency. Hourly would risk
+# Railway API rate-limit surprises and is overkill for the change rate.
+#
+# Issue-on-failure: drift triggers a priority-high issue, mirroring
+# .github/workflows/e2e-staging-sanity.yml's pattern. Drift is
+# medium-priority "config slipped, fix at next ops window," not
+# active-outage paging.
+#
+# Secret hardening: per feedback_schedule_vs_dispatch_secrets_hardening,
+# the schedule trigger HARD-FAILS on missing RAILWAY_AUDIT_TOKEN
+# (silent-success on schedule was the failure-mode class that bit the
+# team before; cron firing without checking anything is worse than no
+# cron). The workflow_dispatch trigger SOFT-SKIPS on missing secret so
+# an operator can dry-run the workflow shape during initial provisioning
+# without tripping a fake red.
+
+on:
+  schedule:
+    - cron: '0 13 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: railway-pin-audit
+  cancel-in-progress: false
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  audit:
+    name: Audit Railway env vars for drift-prone pins
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Verify RAILWAY_AUDIT_TOKEN present
+        # Schedule trigger: hard-fail when the secret is missing —
+        # otherwise the cron silently runs against the wrong scope (or
+        # exits 2 from the script and we issue-spam) without anyone
+        # noticing the token rot.
+        # Dispatch trigger: soft-skip — operator may be dry-running the
+        # workflow shape before provisioning the secret. Logged as a
+        # workflow notice, not a failure.
+        env:
+          RAILWAY_AUDIT_TOKEN: ${{ secrets.RAILWAY_AUDIT_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+        id: secret_check
+        run: |
+          set -euo pipefail
+          if [ -n "${RAILWAY_AUDIT_TOKEN:-}" ]; then
+            echo "have_secret=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "have_secret=false" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "::notice::RAILWAY_AUDIT_TOKEN not configured — soft-skipping (manual dispatch)"
+            exit 0
+          fi
+          echo "::error::RAILWAY_AUDIT_TOKEN secret missing — schedule trigger requires it. Provision the token (read-only \`variables\` scope on the molecule-platform Railway project) and store as repo secret RAILWAY_AUDIT_TOKEN."
+          exit 1
+
+      - name: Install Railway CLI
+        if: steps.secret_check.outputs.have_secret == 'true'
+        # Pinned hash matching the public install instructions; bump in
+        # tandem with the audit-script's documented Railway CLI version.
+        run: |
+          set -euo pipefail
+          curl -fsSL https://railway.com/install.sh | sh
+          # The installer drops the binary in ~/.railway/bin
+          echo "$HOME/.railway/bin" >> "$GITHUB_PATH"
+
+      - name: Verify Railway CLI authenticated
+        if: steps.secret_check.outputs.have_secret == 'true'
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_AUDIT_TOKEN }}
+        run: |
+          set -euo pipefail
+          # `railway whoami` exits non-zero when the token is
+          # unauthenticated or doesn't have any project access.
+          if ! railway whoami >/dev/null 2>&1; then
+            echo "::error::Railway CLI failed to authenticate with RAILWAY_AUDIT_TOKEN — token may be revoked or scoped incorrectly"
+            exit 2
+          fi
+
+      - name: Link molecule-platform project
+        if: steps.secret_check.outputs.have_secret == 'true'
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_AUDIT_TOKEN }}
+        # Project ID from reference_production_stack: molecule-platform
+        # / 7ccc8c68-61f4-42ab-9be5-586eeee11768. Linking is per-process,
+        # so we re-link in this CI shell (the audit script comment says
+        # it deliberately doesn't chdir for you because the linked
+        # project's identity matters).
+        run: |
+          set -euo pipefail
+          railway link --project 7ccc8c68-61f4-42ab-9be5-586eeee11768
+
+      - name: Run drift audit
+        if: steps.secret_check.outputs.have_secret == 'true'
+        id: audit
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_AUDIT_TOKEN }}
+        run: |
+          set +e
+          bash scripts/ops/audit-railway-sha-pins.sh 2>&1 | tee /tmp/audit.log
+          rc=${PIPESTATUS[0]}
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          # Capture the audit log for the issue body.
+          {
+            echo 'log<<AUDIT_EOF'
+            cat /tmp/audit.log
+            echo 'AUDIT_EOF'
+          } >> "$GITHUB_OUTPUT"
+          # Exit codes from the script:
+          #   0 — no drift; workflow goes green
+          #   1 — drift detected; we'll file an issue and fail the run
+          #   2 — railway CLI unauthenticated / project unlinked; fail
+          # Anything else: also fail.
+          case "$rc" in
+            0) exit 0 ;;
+            1) echo "::warning::Drift-prone pin(s) detected — issue will be filed"; exit 1 ;;
+            2) echo "::error::Railway CLI auth/link failed mid-script — token or project ID drift"; exit 2 ;;
+            *) echo "::error::Unexpected audit rc=$rc"; exit 1 ;;
+          esac
+
+      - name: Open / update drift issue
+        if: failure() && steps.audit.outputs.rc == '1'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          AUDIT_LOG: ${{ steps.audit.outputs.log }}
+        with:
+          script: |
+            const title = "🚨 Railway env-var drift detected";
+            const runURL = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body =
+              `Daily Railway pin audit found drift-prone image-tag pins in the molecule-platform Railway project.\n\n` +
+              `**What this means:** an env var (likely on \`controlplane\`) is pinned to a SHA-shaped or semver tag instead of a floating tag. ` +
+              `Same pattern that caused the 2026-04-24 TENANT_IMAGE incident — fix-PRs land but the running service doesn't pick them up.\n\n` +
+              `**Recovery:** open the Railway dashboard, replace the flagged value with a floating tag (\`:staging-latest\`, \`:main\`) unless the pin is intentional and documented in the ops runbook.\n\n` +
+              `**Audit output:**\n\n\`\`\`\n${process.env.AUDIT_LOG || '(log unavailable)'}\n\`\`\`\n\n` +
+              `Run: ${runURL}\n\n` +
+              `Closes automatically when a subsequent daily run reports clean.`;
+
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'railway-drift',
+            });
+            const match = existing.find(i => i.title === title);
+            if (match) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: match.number,
+                body: `Still drifting. ${runURL}\n\n\`\`\`\n${process.env.AUDIT_LOG || '(log unavailable)'}\n\`\`\``,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body,
+                labels: ['railway-drift', 'bug', 'priority-high'],
+              });
+            }
+
+      - name: Close stale drift issue on clean run
+        # When a previously-flagged drift gets fixed by an operator,
+        # the next daily run goes green. Close any open `railway-drift`
+        # issue with a confirmation comment so the queue doesn't carry
+        # stale ones.
+        if: success() && steps.audit.outputs.rc == '0'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const runURL = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'railway-drift',
+            });
+            for (const issue of existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `Daily audit clean — drift resolved. ${runURL}`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+                state_reason: 'completed',
+              });
+            }
