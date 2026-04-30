@@ -18,10 +18,14 @@ import mcp_cli
 @pytest.fixture(autouse=True)
 def _isolate(monkeypatch, tmp_path):
     """Each test starts with no Molecule env vars set + a fresh
-    CONFIGS_DIR pointing at an empty tmpdir."""
+    CONFIGS_DIR pointing at an empty tmpdir. The heartbeat thread is
+    disabled by default so happy-path tests don't spawn a background
+    POST loop against a fake URL — individual tests opt back in via
+    monkeypatch.delenv when they want to assert heartbeat behavior."""
     for var in ("WORKSPACE_ID", "PLATFORM_URL", "MOLECULE_WORKSPACE_TOKEN"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("CONFIGS_DIR", str(tmp_path))
+    monkeypatch.setenv("MOLECULE_MCP_DISABLE_HEARTBEAT", "1")
     yield
 
 
@@ -139,3 +143,259 @@ def test_help_lists_canvas_tokens_tab_pointer(capsys):
     code, err = _run_main_capturing_exit(capsys)
     assert code == 2
     assert "Tokens tab" in err or "canvas" in err.lower()
+
+
+# ==================== Standalone register + heartbeat ====================
+# molecule-mcp must be a single-process standalone runtime: it registers
+# the workspace at startup AND continuously heartbeats so the platform
+# healthsweep doesn't flip status back to awaiting_agent. Without these,
+# the operator sees "OFFLINE — Restart" in the canvas within ~60s of
+# launching the agent, which was the bug that motivated this PR.
+
+
+def test_register_called_at_startup(monkeypatch):
+    """When env is valid and heartbeat enabled, register fires once
+    before the MCP loop starts."""
+    monkeypatch.setenv("WORKSPACE_ID", "00000000-0000-0000-0000-000000000000")
+    monkeypatch.setenv("PLATFORM_URL", "https://test.moleculesai.app")
+    monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN", "tok")
+    monkeypatch.delenv("MOLECULE_MCP_DISABLE_HEARTBEAT", raising=False)
+
+    register_calls: list[tuple[str, str, str]] = []
+
+    def fake_register(platform_url, workspace_id, token):
+        register_calls.append((platform_url, workspace_id, token))
+
+    def fake_start_thread(*_args, **_kwargs):
+        # Return a dummy thread-shaped object so the caller's reference
+        # is harmless. Real thread spawning is asserted separately.
+        class _Stub:
+            def join(self): pass
+        return _Stub()
+
+    monkeypatch.setattr(mcp_cli, "_platform_register", fake_register)
+    monkeypatch.setattr(mcp_cli, "_start_heartbeat_thread", fake_start_thread)
+
+    spy_called: dict[str, bool] = {"called": False}
+
+    def fake_cli_main():
+        spy_called["called"] = True
+
+    import types
+    fake_module = types.ModuleType("a2a_mcp_server")
+    fake_module.cli_main = fake_cli_main
+    monkeypatch.setitem(sys.modules, "a2a_mcp_server", fake_module)
+
+    mcp_cli.main()
+
+    assert register_calls == [
+        ("https://test.moleculesai.app", "00000000-0000-0000-0000-000000000000", "tok"),
+    ]
+    assert spy_called["called"], "MCP loop must run AFTER register"
+
+
+def test_heartbeat_thread_started(monkeypatch):
+    """The heartbeat daemon thread must start before the MCP loop runs."""
+    monkeypatch.setenv("WORKSPACE_ID", "00000000-0000-0000-0000-000000000000")
+    monkeypatch.setenv("PLATFORM_URL", "https://test.moleculesai.app")
+    monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN", "tok")
+    monkeypatch.delenv("MOLECULE_MCP_DISABLE_HEARTBEAT", raising=False)
+
+    monkeypatch.setattr(mcp_cli, "_platform_register", lambda *a, **k: None)
+
+    thread_started: dict[str, bool] = {"started": False}
+
+    def fake_start_thread(platform_url, workspace_id, token):
+        thread_started["started"] = True
+        thread_started["args"] = (platform_url, workspace_id, token)
+        class _Stub:
+            def join(self): pass
+        return _Stub()
+
+    monkeypatch.setattr(mcp_cli, "_start_heartbeat_thread", fake_start_thread)
+
+    import types
+    fake_module = types.ModuleType("a2a_mcp_server")
+    fake_module.cli_main = lambda: None
+    monkeypatch.setitem(sys.modules, "a2a_mcp_server", fake_module)
+
+    mcp_cli.main()
+
+    assert thread_started["started"], "heartbeat thread must be spawned"
+    assert thread_started["args"][1] == "00000000-0000-0000-0000-000000000000"
+    assert thread_started["args"][2] == "tok"
+
+
+def test_heartbeat_disable_env_skips_both(monkeypatch):
+    """MOLECULE_MCP_DISABLE_HEARTBEAT=1 (the test fixture default + the
+    in-container escape hatch) must skip BOTH register and heartbeat,
+    so the in-container heartbeat loop in heartbeat.py doesn't compete
+    with this thread."""
+    monkeypatch.setenv("WORKSPACE_ID", "00000000-0000-0000-0000-000000000000")
+    monkeypatch.setenv("PLATFORM_URL", "https://test.moleculesai.app")
+    monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN", "tok")
+    # MOLECULE_MCP_DISABLE_HEARTBEAT=1 is set by the autouse fixture.
+
+    register_called: dict[str, bool] = {"called": False}
+    thread_started: dict[str, bool] = {"started": False}
+
+    monkeypatch.setattr(
+        mcp_cli, "_platform_register",
+        lambda *a, **k: register_called.update(called=True),
+    )
+    monkeypatch.setattr(
+        mcp_cli, "_start_heartbeat_thread",
+        lambda *a, **k: thread_started.update(started=True),
+    )
+
+    import types
+    fake_module = types.ModuleType("a2a_mcp_server")
+    fake_module.cli_main = lambda: None
+    monkeypatch.setitem(sys.modules, "a2a_mcp_server", fake_module)
+
+    mcp_cli.main()
+
+    assert register_called["called"] is False, "disable env must skip register"
+    assert thread_started["started"] is False, "disable env must skip heartbeat thread"
+
+
+def test_token_resolved_from_env_when_no_file(monkeypatch):
+    """Operator without a /configs volume — token comes from env var."""
+    monkeypatch.setenv("WORKSPACE_ID", "00000000-0000-0000-0000-000000000000")
+    monkeypatch.setenv("PLATFORM_URL", "https://test.moleculesai.app")
+    monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN", "env-token")
+    monkeypatch.delenv("MOLECULE_MCP_DISABLE_HEARTBEAT", raising=False)
+
+    captured_token: dict[str, str] = {}
+
+    def fake_register(platform_url, workspace_id, token):
+        captured_token["t"] = token
+
+    monkeypatch.setattr(mcp_cli, "_platform_register", fake_register)
+    monkeypatch.setattr(mcp_cli, "_start_heartbeat_thread", lambda *a, **k: None)
+
+    import types
+    fake_module = types.ModuleType("a2a_mcp_server")
+    fake_module.cli_main = lambda: None
+    monkeypatch.setitem(sys.modules, "a2a_mcp_server", fake_module)
+
+    mcp_cli.main()
+
+    assert captured_token["t"] == "env-token"
+
+
+def test_token_resolved_from_file_when_no_env(monkeypatch, tmp_path):
+    """In-container parity: token comes from /configs/.auth_token when
+    env is unset. Mirrors platform_auth.get_token resolution order."""
+    (tmp_path / ".auth_token").write_text("file-token")
+    monkeypatch.setenv("WORKSPACE_ID", "00000000-0000-0000-0000-000000000000")
+    monkeypatch.setenv("PLATFORM_URL", "https://test.moleculesai.app")
+    monkeypatch.delenv("MOLECULE_WORKSPACE_TOKEN", raising=False)
+    monkeypatch.delenv("MOLECULE_MCP_DISABLE_HEARTBEAT", raising=False)
+
+    captured_token: dict[str, str] = {}
+
+    def fake_register(platform_url, workspace_id, token):
+        captured_token["t"] = token
+
+    monkeypatch.setattr(mcp_cli, "_platform_register", fake_register)
+    monkeypatch.setattr(mcp_cli, "_start_heartbeat_thread", lambda *a, **k: None)
+
+    import types
+    fake_module = types.ModuleType("a2a_mcp_server")
+    fake_module.cli_main = lambda: None
+    monkeypatch.setitem(sys.modules, "a2a_mcp_server", fake_module)
+
+    mcp_cli.main()
+
+    assert captured_token["t"] == "file-token"
+
+
+def test_register_payload_shape(monkeypatch):
+    """The register POST body must use the field names the workspace-
+    server expects (id/url/agent_card/delivery_mode), and must include
+    the Origin header for the SaaS edge WAF."""
+    captured: dict[str, object] = {}
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+
+    class FakeClient:
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_a): return False
+        def post(self, url, json=None, headers=None):
+            captured["url"] = url
+            captured["json"] = json
+            captured["headers"] = headers
+            return FakeResp()
+
+    import types
+    fake_httpx = types.ModuleType("httpx")
+    fake_httpx.Client = FakeClient
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    mcp_cli._platform_register(
+        "https://test.moleculesai.app",
+        "ws-abc",
+        "tok",
+    )
+
+    assert captured["url"] == "https://test.moleculesai.app/registry/register"
+    body = captured["json"]
+    assert body["id"] == "ws-abc"
+    assert body["delivery_mode"] == "poll"
+    assert body["url"] == ""
+    assert "agent_card" in body
+    headers = captured["headers"]
+    assert headers["Authorization"] == "Bearer tok"
+    assert headers["Origin"] == "https://test.moleculesai.app"
+
+
+def test_heartbeat_loop_posts_to_correct_endpoint(monkeypatch):
+    """Heartbeat thread must POST to /registry/heartbeat with the
+    workspace_id + Origin/Authorization headers."""
+    captured: dict[str, object] = {}
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+
+    class FakeClient:
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_a): return False
+        def post(self, url, json=None, headers=None):
+            captured["url"] = url
+            captured["json"] = json
+            captured["headers"] = headers
+            return FakeResp()
+
+    import types
+    fake_httpx = types.ModuleType("httpx")
+    fake_httpx.Client = FakeClient
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    # Patch sleep so the loop exits after one tick (raise to break out).
+    sleep_calls: list[float] = []
+
+    def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+        raise SystemExit  # break out of the infinite loop
+
+    monkeypatch.setattr("time.sleep", fake_sleep)
+
+    with pytest.raises(SystemExit):
+        mcp_cli._heartbeat_loop(
+            "https://test.moleculesai.app",
+            "ws-abc",
+            "tok",
+            interval=20.0,
+        )
+
+    assert captured["url"] == "https://test.moleculesai.app/registry/heartbeat"
+    assert captured["json"]["workspace_id"] == "ws-abc"
+    assert captured["headers"]["Authorization"] == "Bearer tok"
+    assert captured["headers"]["Origin"] == "https://test.moleculesai.app"
+    assert sleep_calls == [20.0], "heartbeat must sleep the configured interval"
