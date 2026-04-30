@@ -308,11 +308,12 @@ jobs:
           fi
 
           # Belt-and-suspenders sanity floor: same logic as the staging
-          # variant — if MORE than half the prod fleet is unreachable,
-          # this is a real outage, not a teardown race. Hard-fail.
+          # variant — see that file's comment for the full rationale.
+          # Floor only applies when fleet >= 4; below that, canary-verify
+          # is the actual gate.
           TOTAL_VERIFIED=${#SLUGS[@]}
-          if [ $UNREACHABLE_COUNT -gt $((TOTAL_VERIFIED / 2)) ]; then
-            echo "::error::$UNREACHABLE_COUNT of $TOTAL_VERIFIED tenant(s) unreachable — exceeds 50% threshold. Likely real outage, not teardown race."
+          if [ $TOTAL_VERIFIED -ge 4 ] && [ $UNREACHABLE_COUNT -gt $((TOTAL_VERIFIED / 2)) ]; then
+            echo "::error::$UNREACHABLE_COUNT of $TOTAL_VERIFIED tenant(s) unreachable — exceeds 50% threshold on a fleet large enough that this signals a real outage, not teardown race."
             exit 1
           fi
 

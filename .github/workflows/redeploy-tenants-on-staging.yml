@@ -285,13 +285,20 @@ jobs:
           fi
 
           # Belt-and-suspenders sanity floor: if MORE than half the fleet is
-          # unreachable, this isn't a teardown race — it's a real outage
-          # (e.g. the new image crashes on startup). Hard-fail. Canary-verify
-          # would catch this on the canary tenant first; this guard is a
-          # fallback for canary-skip dispatches and same-batch races.
+          # unreachable AND the fleet is large enough that "half down" is
+          # statistically meaningful, this is a real outage (e.g. new image
+          # crashes on startup), not a teardown race. Hard-fail.
+          #
+          # Floor only applies when TOTAL_VERIFIED >= 4 — below that, the
+          # canary-verify step is the actual gate for "all tenants down"
+          # detection (it runs against the canary first and aborts the
+          # rollout if the canary fails to come up). Without the >=4 gate,
+          # a 1-tenant fleet (e.g. a single ephemeral e2e-* tenant on a
+          # quiet staging push) would re-flake on the exact teardown-race
+          # condition #2402 fixed: 1 of 1 unreachable = 100% > 50% → fail.
           TOTAL_VERIFIED=${#SLUGS[@]}
-          if [ $UNREACHABLE_COUNT -gt $((TOTAL_VERIFIED / 2)) ]; then
-            echo "::error::$UNREACHABLE_COUNT of $TOTAL_VERIFIED staging tenant(s) unreachable — exceeds 50% threshold. Likely real outage, not teardown race."
+          if [ $TOTAL_VERIFIED -ge 4 ] && [ $UNREACHABLE_COUNT -gt $((TOTAL_VERIFIED / 2)) ]; then
+            echo "::error::$UNREACHABLE_COUNT of $TOTAL_VERIFIED staging tenant(s) unreachable — exceeds 50% threshold on a fleet large enough that this signals a real outage, not teardown race."
             exit 1
           fi
 
