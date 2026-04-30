@@ -21,7 +21,19 @@ COPY workspace-server/go.mod workspace-server/go.sum ./
 RUN echo 'replace github.com/Molecule-AI/molecule-ai-plugin-github-app-auth => /plugin' >> go.mod
 RUN go mod download
 COPY workspace-server/ .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /platform ./cmd/server
+
+# GIT_SHA is baked into the binary via -ldflags so /buildinfo can return
+# it at runtime. CI passes ${{ github.sha }}; local builds default to
+# "dev" so an unset value never reads as a real SHA.
+#
+# Why this matters: the redeploy verification step compares each tenant's
+# /buildinfo against the SHA the workflow expects. If GIT_SHA isn't
+# threaded through here, every tenant returns "dev" and the verification
+# fails closed — which is the correct fail-direction (#2395 root fix).
+ARG GIT_SHA=dev
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags "-X github.com/Molecule-AI/molecule-monorepo/platform/internal/buildinfo.GitSHA=${GIT_SHA}" \
+    -o /platform ./cmd/server
 
 # ── Stage 2: Canvas Next.js standalone ────────────────────────────────
 FROM node:20-alpine AS canvas-builder

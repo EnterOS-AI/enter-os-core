@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 )
 
 // OfflineHandler is called when a workspace's liveness key expires.
@@ -54,12 +55,16 @@ func StartLivenessMonitor(ctx context.Context, onOffline OfflineHandler) {
 			// non-external case stays cheap (no extra round-trip)
 			// and there's no TOCTOU between the runtime read and the
 			// status write.
+			// CASE branches use placeholders so the typed constants drive
+			// the values — keeps the atomicity of the single UPDATE while
+			// pinning external→awaiting_agent and other→offline at compile
+			// time. $2 = external arm, $3 = non-external arm.
 			_, err := db.DB.ExecContext(ctx, `
 				UPDATE workspaces
-				SET status = CASE WHEN runtime = 'external' THEN 'awaiting_agent' ELSE 'offline' END,
+				SET status = CASE WHEN runtime = 'external' THEN $2 ELSE $3 END,
 				    updated_at = now()
 				WHERE id = $1 AND status NOT IN ('removed', 'paused', 'hibernated')
-			`, workspaceID)
+			`, workspaceID, models.StatusAwaitingAgent, models.StatusOffline)
 			if err != nil {
 				log.Printf("Liveness: failed to mark %s offline: %v", workspaceID, err)
 				continue

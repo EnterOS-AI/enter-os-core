@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/gin-gonic/gin"
 )
 
@@ -223,7 +224,7 @@ func TestPauseHandler_SuccessNoChildren(t *testing.T) {
 		WithArgs("ws-pause-ok").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}))
 
-	mock.ExpectExec("UPDATE workspaces SET status = 'paused'").
+	mock.ExpectExec("UPDATE workspaces SET status =").
 		WithArgs("ws-pause-ok").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -357,7 +358,7 @@ func TestHibernateWorkspace_ActiveTasksNotHibernated(t *testing.T) {
 
 	// The atomic claim UPDATE returns 0 rows because active_tasks > 0 fails the WHERE.
 	mock.ExpectExec(`UPDATE workspaces`).
-		WithArgs("ws-active").
+		WithArgs("ws-active", models.StatusHibernating).
 		WillReturnResult(sqlmock.NewResult(0, 0)) // rowsAffected = 0
 
 	handler.HibernateWorkspace(context.Background(), "ws-active")
@@ -388,7 +389,7 @@ func TestHibernateWorkspace_AlreadyHibernatingNotHibernated(t *testing.T) {
 	// Another goroutine already transitioned the workspace to 'hibernating',
 	// so this UPDATE finds nothing matching the WHERE clause.
 	mock.ExpectExec(`UPDATE workspaces`).
-		WithArgs("ws-already").
+		WithArgs("ws-already", models.StatusHibernating).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
 	handler.HibernateWorkspace(context.Background(), "ws-already")
@@ -417,7 +418,7 @@ func TestHibernateWorkspace_SuccessPath(t *testing.T) {
 
 	// Step 1: atomic claim succeeds
 	mock.ExpectExec(`UPDATE workspaces`).
-		WithArgs("ws-ok").
+		WithArgs("ws-ok", models.StatusHibernating).
 		WillReturnResult(sqlmock.NewResult(0, 1)) // rowsAffected = 1
 
 	// Name/tier fetch after claim
@@ -426,8 +427,8 @@ func TestHibernateWorkspace_SuccessPath(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"name", "tier"}).AddRow("My Agent", 1))
 
 	// Step 3: final hibernated UPDATE
-	mock.ExpectExec(`UPDATE workspaces SET status = 'hibernated'`).
-		WithArgs("ws-ok").
+	mock.ExpectExec(`UPDATE workspaces SET status =`).
+		WithArgs(models.StatusHibernated, "ws-ok").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// broadcaster INSERT
@@ -468,20 +469,20 @@ func TestHibernateWorkspace_ConcurrentOnlyOneStop(t *testing.T) {
 
 	// ── Caller A wins the race ────────────────────────────────────────────────
 	mock.ExpectExec(`UPDATE workspaces`).
-		WithArgs("ws-race").
+		WithArgs("ws-race", models.StatusHibernating).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(`SELECT name, tier FROM workspaces WHERE id`).
 		WithArgs("ws-race").
 		WillReturnRows(sqlmock.NewRows([]string{"name", "tier"}).AddRow("Race Agent", 2))
-	mock.ExpectExec(`UPDATE workspaces SET status = 'hibernated'`).
-		WithArgs("ws-race").
+	mock.ExpectExec(`UPDATE workspaces SET status =`).
+		WithArgs(models.StatusHibernated, "ws-race").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO structure_events`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// ── Caller B loses — workspace is already 'hibernating' ───────────────────
 	mock.ExpectExec(`UPDATE workspaces`).
-		WithArgs("ws-race").
+		WithArgs("ws-race", models.StatusHibernating).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
 	// Execute sequentially (sqlmock is not safe for concurrent goroutines);
@@ -517,7 +518,7 @@ func TestHibernateWorkspace_DBErrorOnClaim(t *testing.T) {
 	}
 
 	mock.ExpectExec(`UPDATE workspaces`).
-		WithArgs("ws-dberr").
+		WithArgs("ws-dberr", models.StatusHibernating).
 		WillReturnError(sql.ErrConnDone)
 
 	handler.HibernateWorkspace(context.Background(), "ws-dberr")

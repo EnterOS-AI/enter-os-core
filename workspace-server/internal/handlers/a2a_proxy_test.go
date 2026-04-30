@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
 	"github.com/gin-gonic/gin"
 )
@@ -281,8 +282,8 @@ func TestProxyA2A_Upstream502_TriggersContainerDeadCheck(t *testing.T) {
 	mock.ExpectQuery(`SELECT COALESCE\(runtime, 'langgraph'\) FROM workspaces WHERE id =`).
 		WithArgs("ws-tunnel-dead").
 		WillReturnRows(sqlmock.NewRows([]string{"runtime"}).AddRow("hermes"))
-	mock.ExpectExec(`UPDATE workspaces SET status = 'offline'`).
-		WithArgs("ws-tunnel-dead").
+	mock.ExpectExec(`UPDATE workspaces SET status =`).
+		WithArgs(models.StatusOffline, "ws-tunnel-dead").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	w := httptest.NewRecorder()
@@ -1808,8 +1809,8 @@ func TestMaybeMarkContainerDead_CPOnly_NotRunning(t *testing.T) {
 	mock.ExpectQuery(`SELECT COALESCE\(runtime, 'langgraph'\) FROM workspaces WHERE id =`).
 		WithArgs("ws-saas-dead").
 		WillReturnRows(sqlmock.NewRows([]string{"runtime"}).AddRow("hermes"))
-	mock.ExpectExec(`UPDATE workspaces SET status = 'offline'`).
-		WithArgs("ws-saas-dead").
+	mock.ExpectExec(`UPDATE workspaces SET status =`).
+		WithArgs(models.StatusOffline, "ws-saas-dead").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	got := handler.maybeMarkContainerDead(context.Background(), "ws-saas-dead")

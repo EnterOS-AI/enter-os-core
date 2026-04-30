@@ -142,6 +142,13 @@ jobs:
             ${{ env.IMAGE_NAME }}:staging-latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # GIT_SHA bakes into the Go binary via -ldflags so /buildinfo
+          # returns it at runtime — see Dockerfile + buildinfo/buildinfo.go.
+          # This is the same value as the OCI revision label below; passing
+          # it twice is intentional, the OCI label is for registry tooling
+          # while /buildinfo is for the redeploy verification step.
+          build-args: |
+            GIT_SHA=${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -172,6 +179,7 @@ jobs:
           # NEXT_PUBLIC_PLATFORM_URL=http://localhost:8080).
           build-args: |
             NEXT_PUBLIC_PLATFORM_URL=
+            GIT_SHA=${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}

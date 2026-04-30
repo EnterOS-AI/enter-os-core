@@ -175,4 +175,140 @@ jobs:
             echo "::error::redeploy-fleet reported ok=false (see summary for which tenant halted the rollout)"
             exit 1
           fi
-          echo "::notice::Tenant fleet redeploy complete."
+          echo "::notice::Tenant fleet redeploy reported ssm_status=Success — verifying actual image roll on each tenant..."
+
+          # Stash the response for the verify step. $RUNNER_TEMP outlasts
+          # the step boundary; $HTTP_RESPONSE doesn't.
+          cp "$HTTP_RESPONSE" "$RUNNER_TEMP/redeploy-response.json"
+
+      - name: Verify each tenant /buildinfo matches published SHA
+        # ROOT FIX FOR #2395.
+        #
+        # `redeploy-fleet`'s `ssm_status=Success` means "the SSM RPC
+        # didn't error" — NOT "the new image is running on the tenant."
+        # `:latest` lives in the local Docker daemon's image cache; if
+        # the SSM document does `docker compose up -d` without an
+        # explicit `docker pull`, the daemon serves the previously-
+        # cached digest and the container restarts on stale code.
+        # 2026-04-30 incident: hongmingwang's tenant reported
+        # ssm_status=Success at 17:00:53Z but kept serving pre-501a42d7
+        # chat_files for 30+ min — the lazy-heal fix never reached the
+        # user despite green deploy + green redeploy.
+        #
+        # This step closes the gap by curling each tenant's /buildinfo
+        # endpoint (added in workspace-server/internal/buildinfo +
+        # /Dockerfile* GIT_SHA build-arg, this PR) and comparing the
+        # returned git_sha to the SHA the workflow expects. Mismatches
+        # fail the workflow, which is what `ok=true` should have
+        # guaranteed all along.
+        #
+        # When the redeploy was triggered by workflow_dispatch with a
+        # specific tag (target_tag != "latest"), the expected SHA may
+        # not equal ${{ github.sha }} — in that case we resolve via
+        # GHCR's manifest. For workflow_run (default :latest) the
+        # workflow_run.head_sha is the SHA that just published.
+        env:
+          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          TARGET_TAG: ${{ inputs.target_tag || 'latest' }}
+          # Tenant subdomain template — slugs from the response are
+          # appended. Production CP issues `<slug>.moleculesai.app`;
+          # staging CP issues `<slug>.staging.moleculesai.app`. This
+          # workflow runs on main → prod CP → no `staging.` infix.
+          TENANT_DOMAIN: 'moleculesai.app'
+        run: |
+          set -euo pipefail
+
+          if [ "$TARGET_TAG" != "latest" ] && [ "$TARGET_TAG" != "$EXPECTED_SHA" ]; then
+            # workflow_dispatch with a pinned tag that isn't the head
+            # SHA — operator is rolling back / pinning. Skip the
+            # verification because we don't have the expected SHA in
+            # this context (would need to crane-inspect the GHCR
+            # manifest, which is a follow-up). Failing-open here is
+            # safe: the operator chose the tag deliberately.
+            echo "::notice::target_tag=$TARGET_TAG (operator-pinned) — skipping per-tenant SHA verification."
+            exit 0
+          fi
+
+          RESP="$RUNNER_TEMP/redeploy-response.json"
+          if [ ! -s "$RESP" ]; then
+            echo "::error::redeploy-response.json missing or empty — verify step ran without a response to read"
+            exit 1
+          fi
+
+          # Pull only successfully-redeployed tenants. Any tenant that
+          # halted the rollout already failed the previous step, so we
+          # don't double-count them here.
+          mapfile -t SLUGS < <(jq -r '.results[]? | select(.healthz_ok == true) | .slug' "$RESP")
+          if [ ${#SLUGS[@]} -eq 0 ]; then
+            echo "::warning::No tenants reported healthz_ok — nothing to verify"
+            exit 0
+          fi
+
+          echo "Verifying ${#SLUGS[@]} tenant(s) against EXPECTED_SHA=${EXPECTED_SHA:0:7}..."
+
+          # Two distinct failure modes — STALE (the #2395 bug class, hard-fail)
+          # vs UNREACHABLE (teardown race, soft-warn). See the staging variant's
+          # comment for the full rationale; same logic applies on prod even
+          # though prod has fewer ephemeral tenants — the asymmetry would be a
+          # gratuitous fork.
+          STALE_COUNT=0
+          UNREACHABLE_COUNT=0
+          STALE_LINES=()
+          UNREACHABLE_LINES=()
+          for slug in "${SLUGS[@]}"; do
+            URL="https://${slug}.${TENANT_DOMAIN}/buildinfo"
+            # 30s total: tenant just SSM-restarted, may still be coming
+            # up. Retry-on-empty rather than retry-on-status — we want
+            # to fail fast on "responded with wrong SHA", not "still
+            # warming up".
+            BODY=$(curl -sS --max-time 30 --retry 3 --retry-delay 5 --retry-connrefused "$URL" || true)
+            ACTUAL_SHA=$(echo "$BODY" | jq -r '.git_sha // ""' 2>/dev/null || echo "")
+            if [ -z "$ACTUAL_SHA" ]; then
+              UNREACHABLE_COUNT=$((UNREACHABLE_COUNT + 1))
+              UNREACHABLE_LINES+=("| $slug | (no /buildinfo response) | ${EXPECTED_SHA:0:7} | ⚠ unreachable (likely teardown race) |")
+              continue
+            fi
+            if [ "$ACTUAL_SHA" = "$EXPECTED_SHA" ]; then
+              echo "  $slug: ${ACTUAL_SHA:0:7} ✓"
+            else
+              STALE_COUNT=$((STALE_COUNT + 1))
+              STALE_LINES+=("| $slug | ${ACTUAL_SHA:0:7} | ${EXPECTED_SHA:0:7} | ❌ stale |")
+            fi
+          done
+
+          {
+            echo ""
+            echo "### Per-tenant /buildinfo verification"
+            echo ""
+            echo "Expected SHA: \`${EXPECTED_SHA:0:7}\`"
+            echo ""
+            if [ $STALE_COUNT -gt 0 ]; then
+              echo "**${STALE_COUNT} STALE tenant(s) — these did NOT pick up the new image despite ssm_status=Success:**"
+              echo ""
+              echo "| Slug | Actual /buildinfo SHA | Expected | Status |"
+              echo "|------|----------------------|----------|--------|"
+              for line in "${STALE_LINES[@]}"; do echo "$line"; done
+              echo ""
+            fi
+            if [ $UNREACHABLE_COUNT -gt 0 ]; then
+              echo "**${UNREACHABLE_COUNT} unreachable tenant(s) — likely teardown race (soft-warn, not failing):**"
+              echo ""
+              echo "| Slug | Actual /buildinfo SHA | Expected | Status |"
+              echo "|------|----------------------|----------|--------|"
+              for line in "${UNREACHABLE_LINES[@]}"; do echo "$line"; done
+              echo ""
+            fi
+            if [ $STALE_COUNT -eq 0 ] && [ $UNREACHABLE_COUNT -eq 0 ]; then
+              echo "All ${#SLUGS[@]} tenants returned matching SHA. ✓"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ $UNREACHABLE_COUNT -gt 0 ]; then
+            echo "::warning::$UNREACHABLE_COUNT tenant(s) unreachable post-redeploy. Likely benign teardown race — CP healthz monitor catches real outages."
+          fi
+          if [ $STALE_COUNT -gt 0 ]; then
+            echo "::error::$STALE_COUNT tenant(s) returned a stale SHA. ssm_status=Success was misleading — see job summary."
+            exit 1
+          fi
+
+          echo "::notice::Tenant fleet redeploy complete — all reachable tenants on ${EXPECTED_SHA:0:7} (${UNREACHABLE_COUNT} unreachable, soft-warned)."

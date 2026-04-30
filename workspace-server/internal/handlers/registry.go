@@ -645,8 +645,8 @@ func (h *RegistryHandler) evaluateStatus(c *gin.Context, payload models.Heartbea
 	// degraded card without the operator scraping container logs.
 	if payload.RuntimeState == "wedged" && currentStatus == "online" {
 		_, err := db.DB.ExecContext(ctx,
-			`UPDATE workspaces SET status = 'degraded', updated_at = now() WHERE id = $1 AND status = 'online'`,
-			payload.WorkspaceID)
+			`UPDATE workspaces SET status = $1, updated_at = now() WHERE id = $2 AND status = 'online'`,
+			models.StatusDegraded, payload.WorkspaceID)
 		if err != nil {
 			log.Printf("Heartbeat: failed to mark %s degraded (wedged): %v", payload.WorkspaceID, err)
 		}
@@ -668,7 +668,7 @@ func (h *RegistryHandler) evaluateStatus(c *gin.Context, payload models.Heartbea
 	nativeStatus := runtimeOverrides.HasCapability(payload.WorkspaceID, "status_mgmt")
 
 	if !nativeStatus && currentStatus == "online" && payload.ErrorRate >= 0.5 {
-		if _, err := db.DB.ExecContext(ctx, `UPDATE workspaces SET status = 'degraded', updated_at = now() WHERE id = $1`, payload.WorkspaceID); err != nil {
+		if _, err := db.DB.ExecContext(ctx, `UPDATE workspaces SET status = $1, updated_at = now() WHERE id = $2`, models.StatusDegraded, payload.WorkspaceID); err != nil {
 			log.Printf("Heartbeat: failed to mark %s degraded: %v", payload.WorkspaceID, err)
 		}
 		h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_DEGRADED", payload.WorkspaceID, map[string]interface{}{
@@ -687,7 +687,7 @@ func (h *RegistryHandler) evaluateStatus(c *gin.Context, payload models.Heartbea
 	// Skipped under native_status_mgmt for the same reason as the
 	// degrade branch above: the adapter owns the transition.
 	if !nativeStatus && currentStatus == "degraded" && payload.ErrorRate < 0.1 && payload.RuntimeState == "" {
-		if _, err := db.DB.ExecContext(ctx, `UPDATE workspaces SET status = 'online', updated_at = now() WHERE id = $1`, payload.WorkspaceID); err != nil {
+		if _, err := db.DB.ExecContext(ctx, `UPDATE workspaces SET status = $1, updated_at = now() WHERE id = $2`, models.StatusOnline, payload.WorkspaceID); err != nil {
 			log.Printf("Heartbeat: failed to recover %s to online: %v", payload.WorkspaceID, err)
 		}
 		h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_ONLINE", payload.WorkspaceID, map[string]interface{}{})
@@ -697,7 +697,7 @@ func (h *RegistryHandler) evaluateStatus(c *gin.Context, payload models.Heartbea
 	// #73 guard: `AND status = 'offline'` makes the flip conditional in a single statement,
 	// so a Delete that races with this recovery can't flip 'removed' back to 'online'.
 	if currentStatus == "offline" {
-		if _, err := db.DB.ExecContext(ctx, `UPDATE workspaces SET status = 'online', updated_at = now() WHERE id = $1 AND status = 'offline'`, payload.WorkspaceID); err != nil {
+		if _, err := db.DB.ExecContext(ctx, `UPDATE workspaces SET status = $1, updated_at = now() WHERE id = $2 AND status = 'offline'`, models.StatusOnline, payload.WorkspaceID); err != nil {
 			log.Printf("Heartbeat: failed to recover %s from offline: %v", payload.WorkspaceID, err)
 		}
 		h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_ONLINE", payload.WorkspaceID, map[string]interface{}{})
@@ -710,7 +710,7 @@ func (h *RegistryHandler) evaluateStatus(c *gin.Context, payload models.Heartbea
 	// transition is the only mechanism that moves newly-started workspaces out of
 	// the phantom-idle state. (#1784)
 	if currentStatus == "provisioning" {
-		if _, err := db.DB.ExecContext(ctx, `UPDATE workspaces SET status = 'online', updated_at = now() WHERE id = $1 AND status = 'provisioning'`, payload.WorkspaceID); err != nil {
+		if _, err := db.DB.ExecContext(ctx, `UPDATE workspaces SET status = $1, updated_at = now() WHERE id = $2 AND status = 'provisioning'`, models.StatusOnline, payload.WorkspaceID); err != nil {
 			log.Printf("Heartbeat: failed to transition %s from provisioning to online: %v", payload.WorkspaceID, err)
 		} else {
 			log.Printf("Heartbeat: transitioned %s from provisioning to online (heartbeat received)", payload.WorkspaceID)

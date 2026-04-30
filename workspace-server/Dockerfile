@@ -16,7 +16,11 @@ RUN echo 'replace github.com/Molecule-AI/molecule-ai-plugin-github-app-auth => /
 RUN sed -i 's|replace github.com/Molecule-AI/molecule-monorepo/platform => .*|replace github.com/Molecule-AI/molecule-monorepo/platform => /app|' /plugin/go.mod
 RUN go mod download
 COPY workspace-server/ .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /platform ./cmd/server
+# GIT_SHA mirror of Dockerfile.tenant — see that file for the rationale.
+ARG GIT_SHA=dev
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags "-X github.com/Molecule-AI/molecule-monorepo/platform/internal/buildinfo.GitSHA=${GIT_SHA}" \
+    -o /platform ./cmd/server
 
 # Clone templates + plugins at build time from manifest.json
 FROM alpine:3.20 AS templates

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/gin-gonic/gin"
 )
 
@@ -26,7 +27,7 @@ func TestBootstrapFailed_HappyPath(t *testing.T) {
 
 	// UPDATE only flips from provisioning → re-check the predicate.
 	mock.ExpectExec(`UPDATE workspaces`).
-		WithArgs("ws-crashed", sqlmock.AnyArg()).
+		WithArgs("ws-crashed", sqlmock.AnyArg(), models.StatusFailed).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	// RecordAndBroadcast inserts into structure_events.
 	mock.ExpectExec(`INSERT INTO structure_events`).
@@ -58,7 +59,7 @@ func TestBootstrapFailed_AlreadyTransitioned(t *testing.T) {
 	// UPDATE affects 0 rows when the predicate `status = 'provisioning'`
 	// doesn't match.
 	mock.ExpectExec(`UPDATE workspaces`).
-		WithArgs("ws-online", sqlmock.AnyArg()).
+		WithArgs("ws-online", sqlmock.AnyArg(), models.StatusFailed).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	// No structure_events INSERT expected.
 
@@ -109,7 +110,7 @@ func TestBootstrapFailed_TruncatesOversizedLogTail(t *testing.T) {
 	}
 
 	mock.ExpectExec(`UPDATE workspaces`).
-		WithArgs("ws-spammy", sqlmock.AnyArg()).
+		WithArgs("ws-spammy", sqlmock.AnyArg(), models.StatusFailed).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO structure_events`).
 		WithArgs("WORKSPACE_PROVISION_FAILED", "ws-spammy", sqlmock.AnyArg()).

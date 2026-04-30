@@ -201,7 +201,7 @@ func (h *TeamHandler) Collapse(c *gin.Context) {
 
 		// Mark as removed
 		if _, err := db.DB.ExecContext(ctx,
-			`UPDATE workspaces SET status = 'removed', updated_at = now() WHERE id = $1`, childID); err != nil {
+			`UPDATE workspaces SET status = $1, updated_at = now() WHERE id = $2`, models.StatusRemoved, childID); err != nil {
 			log.Printf("Team collapse: failed to remove workspace %s: %v", childID, err)
 		}
 		if _, err := db.DB.ExecContext(ctx,

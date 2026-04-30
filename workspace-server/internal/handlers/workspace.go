@@ -336,7 +336,7 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 	if payload.External || payload.Runtime == "external" {
 		var connectionToken string
 		if payload.URL != "" {
-			db.DB.ExecContext(ctx, `UPDATE workspaces SET url = $1, status = 'online', runtime = 'external', updated_at = now() WHERE id = $2`, payload.URL, id)
+			db.DB.ExecContext(ctx, `UPDATE workspaces SET url = $1, status = $2, runtime = 'external', updated_at = now() WHERE id = $3`, payload.URL, models.StatusOnline, id)
 			if err := db.CacheURL(ctx, id, payload.URL); err != nil {
 				log.Printf("External workspace: failed to cache URL for %s: %v", id, err)
 			}
@@ -348,7 +348,7 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 			// in awaiting_agent. First POST /registry/register call
 			// from the external agent (with this token + its URL)
 			// flips the row to online.
-			db.DB.ExecContext(ctx, `UPDATE workspaces SET status = 'awaiting_agent', runtime = 'external', updated_at = now() WHERE id = $1`, id)
+			db.DB.ExecContext(ctx, `UPDATE workspaces SET status = $1, runtime = 'external', updated_at = now() WHERE id = $2`, models.StatusAwaitingAgent, id)
 			tok, tokErr := wsauth.IssueToken(ctx, db.DB, id)
 			if tokErr != nil {
 				log.Printf("External workspace %s: token issuance failed: %v", id, tokErr)
@@ -460,7 +460,7 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 			ON CONFLICT (workspace_id) DO UPDATE SET data = $2::jsonb
 		`, id, cfgJSON)
 		db.DB.ExecContext(ctx,
-			`UPDATE workspaces SET status = 'failed', last_sample_error = 'Docker not available — workspace containers require a Docker daemon or external provisioning.', updated_at = now() WHERE id = $1`, id)
+			`UPDATE workspaces SET status = $1, last_sample_error = 'Docker not available — workspace containers require a Docker daemon or external provisioning.', updated_at = now() WHERE id = $2`, models.StatusFailed, id)
 		h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_PROVISION_FAILED", id, map[string]interface{}{
 			"error": "Docker not available on this platform instance",
 		})

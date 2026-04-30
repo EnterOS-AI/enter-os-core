@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/buildinfo"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/channels"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
@@ -78,6 +79,18 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 	// Health
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
+	})
+
+	// Build info — public, no auth. Returns the git SHA the binary was
+	// linked from. Existence reason is in buildinfo/buildinfo.go: lets the
+	// redeploy workflow verify each tenant is actually running the
+	// published code (closing #2395 — ssm_status=Success is "the deploy
+	// command ran", not "the new code is running"). Public is intentional:
+	// it's a build identifier, not operational state. The same string is
+	// already published as org.opencontainers.image.revision on the
+	// container image, so no new info is exposed.
+	r.GET("/buildinfo", func(c *gin.Context) {
+		c.JSON(200, gin.H{"git_sha": buildinfo.GitSHA})
 	})
 
 	// /admin/liveness — per-subsystem last-tick timestamps. Operators read this

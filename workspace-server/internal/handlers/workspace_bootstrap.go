@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/gin-gonic/gin"
 )
 
@@ -59,12 +60,12 @@ func (h *WorkspaceHandler) BootstrapFailed(c *gin.Context) {
 	// that already reached online/failed — only act on `provisioning`.
 	res, err := db.DB.ExecContext(c.Request.Context(), `
 		UPDATE workspaces
-		   SET status = 'failed',
+		   SET status = $3,
 		       last_sample_error = $2,
 		       updated_at = now()
 		 WHERE id = $1
 		   AND status = 'provisioning'
-	`, id, truncateString(errMsg+"\n\n"+tail, 8192))
+	`, id, truncateString(errMsg+"\n\n"+tail, 8192), models.StatusFailed)
 	if err != nil {
 		log.Printf("BootstrapFailed: db update %s: %v", id, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db update failed"})

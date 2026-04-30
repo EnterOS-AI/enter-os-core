@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/gin-gonic/gin"
 )
 
@@ -148,8 +149,8 @@ func TestHeartbeat_NativeStatusMgmt_WedgedStillRespected(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("online"))
 
 	// Wedged degrade UPDATE — must still happen even with native_status_mgmt
-	mock.ExpectExec("UPDATE workspaces SET status = 'degraded'").
-		WithArgs("ws-wedged").
+	mock.ExpectExec("UPDATE workspaces SET status =").
+		WithArgs(models.StatusDegraded, "ws-wedged").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// WORKSPACE_DEGRADED broadcast still fires

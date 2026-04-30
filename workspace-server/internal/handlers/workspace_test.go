@@ -568,7 +568,7 @@ func TestWorkspaceDelete_CascadeWithChildren(t *testing.T) {
 
 	// #73: single batch UPDATE covering [self + descendants] BEFORE stopping
 	// containers (prevents heartbeat/restart resurrection races).
-	mock.ExpectExec("UPDATE workspaces SET status = 'removed'").
+	mock.ExpectExec("UPDATE workspaces SET status =").
 		WillReturnResult(sqlmock.NewResult(2, 2))
 	// Batch canvas_layouts DELETE for the same id set.
 	mock.ExpectExec("DELETE FROM canvas_layouts WHERE workspace_id = ANY").
@@ -631,7 +631,7 @@ func TestWorkspaceDelete_DisablesSchedules(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}))
 
 	// Mark workspace as removed
-	mock.ExpectExec("UPDATE workspaces SET status = 'removed'").
+	mock.ExpectExec("UPDATE workspaces SET status =").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	// Canvas layouts cleanup
 	mock.ExpectExec("DELETE FROM canvas_layouts WHERE workspace_id = ANY").
@@ -689,7 +689,7 @@ func TestWorkspaceDelete_CascadeDisablesDescendantSchedules(t *testing.T) {
 			AddRow(grandchildID))
 
 	// Mark all 3 as removed
-	mock.ExpectExec("UPDATE workspaces SET status = 'removed'").
+	mock.ExpectExec("UPDATE workspaces SET status =").
 		WillReturnResult(sqlmock.NewResult(0, 3))
 	// Canvas layouts
 	mock.ExpectExec("DELETE FROM canvas_layouts WHERE workspace_id = ANY").
@@ -753,7 +753,7 @@ func TestWorkspaceDelete_ScheduleDisableOnlyTargetsDeletedWorkspace(t *testing.T
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}))
 
 	// Mark only workspace A as removed
-	mock.ExpectExec("UPDATE workspaces SET status = 'removed'").
+	mock.ExpectExec("UPDATE workspaces SET status =").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM canvas_layouts WHERE workspace_id = ANY").
 		WillReturnResult(sqlmock.NewResult(0, 0))
