@@ -1,0 +1,54 @@
+{
+  "functions": [
+    {
+      "is_abstract": false,
+      "is_async": false,
+      "name": "auth_headers",
+      "parameters": [],
+      "return_annotation": "dict[str, str]"
+    },
+    {
+      "is_abstract": false,
+      "is_async": false,
+      "name": "get_token",
+      "parameters": [],
+      "return_annotation": "str | None"
+    },
+    {
+      "is_abstract": false,
+      "is_async": false,
+      "name": "refresh_cache",
+      "parameters": [],
+      "return_annotation": "str | None"
+    },
+    {
+      "is_abstract": false,
+      "is_async": false,
+      "name": "save_token",
+      "parameters": [
+        {
+          "annotation": "str",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "token"
+        }
+      ],
+      "return_annotation": "None"
+    },
+    {
+      "is_abstract": false,
+      "is_async": false,
+      "name": "self_source_headers",
+      "parameters": [
+        {
+          "annotation": "str",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "workspace_id"
+        }
+      ],
+      "return_annotation": "dict[str, str]"
+    }
+  ],
+  "module": "platform_auth"
+}

@@ -267,6 +267,32 @@ jobs:
           echo "promote_pr_num=${PR_NUM}" >> "$GITHUB_OUTPUT"
         id: promote_pr
 
+      # Mint a short-lived GitHub App installation token for the dispatch
+      # step below. We CANNOT use `secrets.GITHUB_TOKEN` to dispatch the
+      # downstream publish chain — workflow runs created by GITHUB_TOKEN
+      # do not fire `workflow_run` triggers on completion (the
+      # documented "no recursion" rule —
+      # https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow).
+      #
+      # Symptom this caused (root-caused on 2026-04-30): publish-image
+      # ran successfully twice (21313dc 14:41Z, 59dec57 15:21Z) but
+      # canary-verify and redeploy-tenants-on-main never chained,
+      # because the publish run's `triggering_actor` was
+      # `github-actions[bot]` (i.e. GITHUB_TOKEN). A manual dispatch
+      # earlier in the day with the operator's PAT (d850ec7 06:52Z) did
+      # chain — same workflow file, only the actor differed.
+      #
+      # An App token's triggering_actor is the App user (e.g.
+      # `molecule-ai[bot]`), which IS allowed to fire downstream
+      # workflow_run cascades.
+      - name: Mint App token for downstream dispatch
+        if: steps.promote_pr.outputs.promote_pr_num != ''
+        id: app-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          app-id: ${{ secrets.MOLECULE_AI_APP_ID }}
+          private-key: ${{ secrets.MOLECULE_AI_APP_PRIVATE_KEY }}
+
       - name: Wait for promote merge, then dispatch publish + redeploy (#2357)
         # GITHUB_TOKEN-initiated merges suppress downstream `push` events
         # (https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow).
@@ -276,18 +302,20 @@ jobs:
         # tenants stay on stale code (issue #2357).
         #
         # Workaround: poll for the merge to land, then explicitly
-        # `gh workflow run` publish-workspace-server-image. workflow_dispatch
-        # is the documented exception to the GITHUB_TOKEN suppression rule —
-        # dispatch DOES create a new workflow run. canary-verify chains via
-        # workflow_run (no branch filter) and redeploys to fleet via the
-        # existing chain.
+        # `gh workflow run` publish-workspace-server-image. The dispatch
+        # MUST authenticate as the molecule-ai App (App token minted
+        # above) — not GITHUB_TOKEN — so that the resulting publish
+        # run's completion event can fire the workflow_run cascade
+        # into canary-verify + redeploy-tenants-on-main. See the prior
+        # step's comment for the GITHUB_TOKEN no-recursion details.
         #
-        # Long-term fix: switch the auto-merge call above to a GitHub App
-        # token (actions/create-github-app-token) and remove this polling
-        # tail step. Tracked in #2357.
+        # Long-term fix: switch the auto-merge call above to use the
+        # same App token, so the merge's push event fires
+        # publish-workspace-server-image naturally and this polling tail
+        # becomes unnecessary. Tracked in #2357.
         if: steps.promote_pr.outputs.promote_pr_num != ''
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
           PR_NUM: ${{ steps.promote_pr.outputs.promote_pr_num }}
         run: |
@@ -318,17 +346,18 @@ jobs:
             exit 0
           fi
 
-          # Dispatch publish on main. workflow_dispatch via GITHUB_TOKEN
-          # IS allowed to create new workflow runs (per the linked docs).
+          # Dispatch publish on main using the App token. App-initiated
+          # workflow_dispatch DOES propagate the workflow_run cascade,
+          # unlike GITHUB_TOKEN-initiated dispatch.
           # publish completes → canary-verify chains via workflow_run →
           # redeploy-tenants-on-main chains via workflow_run + branches:[main].
           if gh workflow run publish-workspace-server-image.yml \
               --repo "$REPO" --ref main 2>&1; then
-            echo "::notice::Dispatched publish-workspace-server-image on ref=main — canary-verify and redeploy-tenants-on-main will chain via workflow_run."
+            echo "::notice::Dispatched publish-workspace-server-image on ref=main as molecule-ai App — canary-verify and redeploy-tenants-on-main will chain via workflow_run."
             {
               echo "## 🚀 Tenant redeploy chain dispatched"
               echo
-              echo "- publish-workspace-server-image (workflow_dispatch on \`main\`)"
+              echo "- publish-workspace-server-image (workflow_dispatch on \`main\`, actor: \`molecule-ai[bot]\`)"
               echo "- canary-verify will chain on completion"
               echo "- redeploy-tenants-on-main will chain on canary green"
             } >> "$GITHUB_STEP_SUMMARY"
