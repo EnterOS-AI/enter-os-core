@@ -31,8 +31,9 @@ func TestWorkspaceCreate_WithParentID(t *testing.T) {
 	parentID := "parent-ws-123"
 	mock.ExpectBegin()
 	// Default tier is 3 (Privileged) — see workspace.go create-handler comment.
+	// delivery_mode defaults to "push" when payload omits it (#2339).
 	mock.ExpectExec("INSERT INTO workspaces").
-		WithArgs(sqlmock.AnyArg(), "Child Agent", nil, 3, "langgraph", sqlmock.AnyArg(), &parentID, nil, "none", (*int64)(nil), models.DefaultMaxConcurrentTasks).
+		WithArgs(sqlmock.AnyArg(), "Child Agent", nil, 3, "langgraph", sqlmock.AnyArg(), &parentID, nil, "none", (*int64)(nil), models.DefaultMaxConcurrentTasks, "push").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	mock.ExpectExec("INSERT INTO canvas_layouts").
@@ -66,8 +67,9 @@ func TestWorkspaceCreate_ExplicitClaudeCodeRuntime(t *testing.T) {
 	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
 
 	mock.ExpectBegin()
+	// delivery_mode defaults to "push" when payload omits it (#2339).
 	mock.ExpectExec("INSERT INTO workspaces").
-		WithArgs(sqlmock.AnyArg(), "CC Agent", nil, 2, "claude-code", sqlmock.AnyArg(), (*string)(nil), nil, "none", (*int64)(nil), models.DefaultMaxConcurrentTasks).
+		WithArgs(sqlmock.AnyArg(), "CC Agent", nil, 2, "claude-code", sqlmock.AnyArg(), (*string)(nil), nil, "none", (*int64)(nil), models.DefaultMaxConcurrentTasks, "push").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	mock.ExpectExec("INSERT INTO canvas_layouts").
@@ -288,7 +290,7 @@ func TestWorkspaceCreate_MaxConcurrentTasksOverride(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectExec("INSERT INTO workspaces").
-		WithArgs(sqlmock.AnyArg(), "Leader Agent", nil, 3, "claude-code", sqlmock.AnyArg(), (*string)(nil), nil, "none", (*int64)(nil), 3).
+		WithArgs(sqlmock.AnyArg(), "Leader Agent", nil, 3, "claude-code", sqlmock.AnyArg(), (*string)(nil), nil, "none", (*int64)(nil), 3, "push").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	mock.ExpectExec("INSERT INTO canvas_layouts").
@@ -320,8 +322,13 @@ func TestRegister_ProvisionerURLPreserved(t *testing.T) {
 	broadcaster := newTestBroadcaster()
 	handler := NewRegistryHandler(broadcaster)
 
+	// resolveDeliveryMode preflight — no row yet, default push (#2339).
+	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+		WithArgs("ws-prov").
+		WillReturnError(sql.ErrNoRows)
+
 	mock.ExpectExec("INSERT INTO workspaces").
-		WithArgs("ws-prov", "ws-prov", "http://localhost:8000", `{"name":"agent"}`).
+		WithArgs("ws-prov", "ws-prov", "http://localhost:8000", `{"name":"agent"}`, "push").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// DB returns provisioner URL (127.0.0.1) — should take precedence over agent-reported URL

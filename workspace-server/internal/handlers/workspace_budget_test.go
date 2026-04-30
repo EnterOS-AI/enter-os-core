@@ -152,6 +152,7 @@ func TestWorkspaceBudget_Create_WithLimit(t *testing.T) {
 			"none",           // workspace_access
 			&budgetVal,       // budget_limit ($10)
 			models.DefaultMaxConcurrentTasks, // max_concurrent_tasks default
+			"push",           // delivery_mode default (#2339)
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()

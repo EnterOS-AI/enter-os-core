@@ -32,16 +32,42 @@ type Workspace struct {
 	UptimeSeconds      int             `json:"uptime_seconds" db:"uptime_seconds"`
 	CreatedAt          time.Time       `json:"created_at" db:"created_at"`
 	UpdatedAt          time.Time       `json:"updated_at" db:"updated_at"`
+	// DeliveryMode: "push" (synchronous to URL — default) or "poll" (logged
+	// to activity_logs, agent reads via GET /activity?since_id=). See
+	// migration 045 + RFC #2339.
+	DeliveryMode       string          `json:"delivery_mode" db:"delivery_mode"`
 	// Canvas layout fields (from JOIN)
 	X         float64 `json:"x"`
 	Y         float64 `json:"y"`
 	Collapsed bool    `json:"collapsed"`
 }
 
+// Delivery mode constants. Matches the CHECK constraint in migration 045.
+const (
+	DeliveryModePush = "push"
+	DeliveryModePoll = "poll"
+)
+
+// IsValidDeliveryMode reports whether s is one of the recognised
+// delivery modes. Empty string is NOT valid here — callers must
+// resolve the default ("push") before calling.
+func IsValidDeliveryMode(s string) bool {
+	return s == DeliveryModePush || s == DeliveryModePoll
+}
+
 type RegisterPayload struct {
-	ID        string          `json:"id" binding:"required"`
-	URL       string          `json:"url" binding:"required"`
-	AgentCard json.RawMessage `json:"agent_card" binding:"required"`
+	ID string `json:"id" binding:"required"`
+	// URL is required for push-mode workspaces; optional / unused for
+	// poll-mode (the platform never dispatches to it). The handler
+	// enforces the conditional requirement based on the resolved
+	// delivery mode (payload value, falling back to the row's existing
+	// value, falling back to "push").
+	URL          string          `json:"url"`
+	AgentCard    json.RawMessage `json:"agent_card" binding:"required"`
+	// DeliveryMode is optional. Empty string means "keep the existing
+	// value on the workspace row, or default to push for new rows".
+	// When set, must be one of DeliveryModePush / DeliveryModePoll.
+	DeliveryMode string          `json:"delivery_mode,omitempty"`
 }
 
 type HeartbeatPayload struct {
@@ -127,7 +153,11 @@ type CreateWorkspacePayload struct {
 	Model    string  `json:"model"`
 	Runtime      string  `json:"runtime"`       // "langgraph" (default), "claude-code", etc.
 	External     bool    `json:"external"`      // true = no Docker container, just a registered URL
-	URL          string  `json:"url"`           // for external workspaces: the A2A endpoint URL
+	URL          string  `json:"url"`           // for external workspaces: the A2A endpoint URL (push mode only — omit for poll)
+	// DeliveryMode: "push" (default) sends inbound A2A to URL synchronously;
+	// "poll" records inbound to activity_logs for the agent to consume via
+	// GET /activity?since_id=. Poll mode does not require a URL. See #2339.
+	DeliveryMode string  `json:"delivery_mode,omitempty"`
 	WorkspaceDir    string  `json:"workspace_dir"`    // host path to mount as /workspace (empty = isolated volume)
 	WorkspaceAccess string  `json:"workspace_access"` // "none" (default), "read_only", or "read_write" — see #65
 	ParentID        *string `json:"parent_id"`

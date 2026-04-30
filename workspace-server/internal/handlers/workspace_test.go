@@ -155,7 +155,7 @@ func TestWorkspaceCreate_DBInsertError(t *testing.T) {
 	// Transaction begins, workspace INSERT fails, transaction is rolled back.
 	mock.ExpectBegin()
 	mock.ExpectExec("INSERT INTO workspaces").
-		WithArgs(sqlmock.AnyArg(), "Failing Agent", nil, 3, "langgraph", sqlmock.AnyArg(), (*string)(nil), nil, "none", (*int64)(nil), models.DefaultMaxConcurrentTasks).
+		WithArgs(sqlmock.AnyArg(), "Failing Agent", nil, 3, "langgraph", sqlmock.AnyArg(), (*string)(nil), nil, "none", (*int64)(nil), models.DefaultMaxConcurrentTasks, "push").
 		WillReturnError(sql.ErrConnDone)
 	mock.ExpectRollback()
 
@@ -188,7 +188,7 @@ func TestWorkspaceCreate_DefaultsApplied(t *testing.T) {
 	// Expect workspace INSERT with defaulted tier=3 (Privileged — the
 	// handler default in workspace.go), runtime="langgraph"
 	mock.ExpectExec("INSERT INTO workspaces").
-		WithArgs(sqlmock.AnyArg(), "Default Agent", nil, 3, "langgraph", sqlmock.AnyArg(), (*string)(nil), nil, "none", (*int64)(nil), models.DefaultMaxConcurrentTasks).
+		WithArgs(sqlmock.AnyArg(), "Default Agent", nil, 3, "langgraph", sqlmock.AnyArg(), (*string)(nil), nil, "none", (*int64)(nil), models.DefaultMaxConcurrentTasks, "push").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
@@ -239,7 +239,7 @@ func TestWorkspaceCreate_WithSecrets_Persists(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectExec("INSERT INTO workspaces").
-		WithArgs(sqlmock.AnyArg(), "Hermes Agent", nil, 3, "hermes", sqlmock.AnyArg(), (*string)(nil), nil, "none", (*int64)(nil), models.DefaultMaxConcurrentTasks).
+		WithArgs(sqlmock.AnyArg(), "Hermes Agent", nil, 3, "hermes", sqlmock.AnyArg(), (*string)(nil), nil, "none", (*int64)(nil), models.DefaultMaxConcurrentTasks, "push").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	// Secret inserted inside the same transaction.
 	mock.ExpectExec("INSERT INTO workspace_secrets").
@@ -1258,7 +1258,7 @@ runtime_config:
 	mock.ExpectExec("INSERT INTO workspaces").
 		WithArgs(
 			sqlmock.AnyArg(), "Hermes Agent", nil, 3, "hermes",
-			sqlmock.AnyArg(), (*string)(nil), nil, "none", (*int64)(nil), models.DefaultMaxConcurrentTasks).
+			sqlmock.AnyArg(), (*string)(nil), nil, "none", (*int64)(nil), models.DefaultMaxConcurrentTasks, "push").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	mock.ExpectExec("INSERT INTO canvas_layouts").
@@ -1315,7 +1315,7 @@ model: anthropic:claude-sonnet-4-5
 	mock.ExpectExec("INSERT INTO workspaces").
 		WithArgs(
 			sqlmock.AnyArg(), "Legacy Agent", nil, 3, "langgraph",
-			sqlmock.AnyArg(), (*string)(nil), nil, "none", (*int64)(nil), models.DefaultMaxConcurrentTasks).
+			sqlmock.AnyArg(), (*string)(nil), nil, "none", (*int64)(nil), models.DefaultMaxConcurrentTasks, "push").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	mock.ExpectExec("INSERT INTO canvas_layouts").
@@ -1368,7 +1368,7 @@ runtime_config:
 	mock.ExpectExec("INSERT INTO workspaces").
 		WithArgs(
 			sqlmock.AnyArg(), "Custom Hermes", nil, 3, "hermes",
-			sqlmock.AnyArg(), (*string)(nil), nil, "none", (*int64)(nil), models.DefaultMaxConcurrentTasks).
+			sqlmock.AnyArg(), (*string)(nil), nil, "none", (*int64)(nil), models.DefaultMaxConcurrentTasks, "push").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	mock.ExpectExec("INSERT INTO canvas_layouts").
