@@ -7,6 +7,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 )
@@ -84,8 +85,8 @@ func TestStartLivenessMonitor_KeyExpiryTriggersOffline(t *testing.T) {
 	// CASE-expression-driven on runtime: external → 'awaiting_agent',
 	// other → 'offline'. sqlmock matches on regex so the SET clause
 	// just needs to mention the conditional.
-	mock.ExpectExec(`UPDATE workspaces\s+SET status = CASE WHEN runtime = 'external' THEN 'awaiting_agent' ELSE 'offline' END`).
-		WithArgs("ws-expire-test").
+	mock.ExpectExec(`UPDATE workspaces\s+SET status = CASE WHEN runtime = 'external' THEN \$2 ELSE \$3 END`).
+		WithArgs("ws-expire-test", models.StatusAwaitingAgent, models.StatusOffline).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	go StartLivenessMonitor(ctx, onOffline)
@@ -148,8 +149,8 @@ func TestStartLivenessMonitor_NilCallback(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	mock.ExpectExec("UPDATE workspaces SET status = 'offline'").
-		WithArgs("ws-nocallback").
+	mock.ExpectExec(`UPDATE workspaces\s+SET status = CASE WHEN runtime = 'external' THEN \$2 ELSE \$3 END`).
+		WithArgs("ws-nocallback", models.StatusAwaitingAgent, models.StatusOffline).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	go StartLivenessMonitor(ctx, nil)

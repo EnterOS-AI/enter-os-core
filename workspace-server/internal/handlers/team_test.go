@@ -76,7 +76,7 @@ func TestTeamCollapse_WithChildren(t *testing.T) {
 			AddRow("child-2", "Worker B"))
 
 	// UPDATE + DELETE + broadcast for child-1
-	mock.ExpectExec("UPDATE workspaces SET status = 'removed'").
+	mock.ExpectExec("UPDATE workspaces SET status =").
 		WithArgs("child-1").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM canvas_layouts").
@@ -86,7 +86,7 @@ func TestTeamCollapse_WithChildren(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// UPDATE + DELETE + broadcast for child-2
-	mock.ExpectExec("UPDATE workspaces SET status = 'removed'").
+	mock.ExpectExec("UPDATE workspaces SET status =").
 		WithArgs("child-2").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM canvas_layouts").

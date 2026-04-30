@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 )
 
 // ContainerChecker checks if a workspace container is running via Docker API.
@@ -99,8 +100,9 @@ func sweepOnlineWorkspaces(ctx context.Context, checker ContainerChecker, onOffl
 		log.Printf("Health sweep: container for %s is gone — marking offline", id)
 
 		_, err = db.DB.ExecContext(ctx,
-			`UPDATE workspaces SET status = 'offline', updated_at = now()
-			 WHERE id = $1 AND status NOT IN ('removed', 'provisioning')`, id)
+			`UPDATE workspaces SET status = $1, updated_at = now()
+			 WHERE id = $2 AND status NOT IN ('removed', 'provisioning')`,
+			models.StatusOffline, id)
 		if err != nil {
 			log.Printf("Health sweep: failed to mark %s offline: %v", id, err)
 			continue
@@ -164,8 +166,9 @@ func sweepStaleRemoteWorkspaces(ctx context.Context, onOffline OfflineHandler) {
 		log.Printf("Health sweep (remote): %s heartbeat stale (>%s) — marking awaiting_agent", id, staleAfter)
 
 		_, err = db.DB.ExecContext(ctx,
-			`UPDATE workspaces SET status = 'awaiting_agent', updated_at = now()
-			 WHERE id = $1 AND status NOT IN ('removed', 'provisioning', 'paused')`, id)
+			`UPDATE workspaces SET status = $1, updated_at = now()
+			 WHERE id = $2 AND status NOT IN ('removed', 'provisioning', 'paused')`,
+			models.StatusAwaitingAgent, id)
 		if err != nil {
 			log.Printf("Health sweep (remote): failed to mark %s awaiting_agent: %v", id, err)
 			continue

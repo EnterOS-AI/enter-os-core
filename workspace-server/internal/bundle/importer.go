@@ -7,6 +7,7 @@ import (
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
 	"github.com/google/uuid"
 )
@@ -131,7 +132,8 @@ func buildBundleConfigFiles(b *Bundle) map[string][]byte {
 
 func markFailed(ctx context.Context, wsID string, broadcaster *events.Broadcaster, err error) {
 	db.DB.ExecContext(ctx,
-		`UPDATE workspaces SET status = 'failed', updated_at = now() WHERE id = $1`, wsID)
+		`UPDATE workspaces SET status = $1, updated_at = now() WHERE id = $2`,
+		models.StatusFailed, wsID)
 	broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_PROVISION_FAILED", wsID, map[string]interface{}{
 		"error": err.Error(),
 	})

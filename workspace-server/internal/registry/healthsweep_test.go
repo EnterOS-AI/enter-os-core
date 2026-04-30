@@ -8,6 +8,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 )
@@ -62,8 +63,8 @@ func TestSweepOnlineWorkspaces_DeadContainer(t *testing.T) {
 
 	// Mock: update to offline (Docker sweep keeps 'offline' status —
 	// 'awaiting_agent' is the external-runtime path).
-	mock.ExpectExec("UPDATE workspaces SET status = 'offline'").
-		WithArgs("ws-dead-123").
+	mock.ExpectExec("UPDATE workspaces SET status =").
+		WithArgs(models.StatusOffline, "ws-dead-123").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	checker := &mockChecker{running: map[string]bool{
@@ -165,11 +166,11 @@ func TestSweepStaleRemoteWorkspaces_MarksStaleAwaitingAgent(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).
 			AddRow("ws-stale-1").
 			AddRow("ws-stale-2"))
-	mock.ExpectExec(`UPDATE workspaces SET status = 'awaiting_agent'`).
-		WithArgs("ws-stale-1").
+	mock.ExpectExec(`UPDATE workspaces SET status =`).
+		WithArgs(models.StatusAwaitingAgent, "ws-stale-1").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(`UPDATE workspaces SET status = 'awaiting_agent'`).
-		WithArgs("ws-stale-2").
+	mock.ExpectExec(`UPDATE workspaces SET status =`).
+		WithArgs(models.StatusAwaitingAgent, "ws-stale-2").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	var offlineCalls []string
@@ -210,8 +211,8 @@ func TestSweepStaleRemoteWorkspaces_NilCallbackNoPanic(t *testing.T) {
 
 	mock.ExpectQuery(`FROM workspaces`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ws-x"))
-	mock.ExpectExec(`UPDATE workspaces SET status = 'awaiting_agent'`).
-		WithArgs("ws-x").
+	mock.ExpectExec(`UPDATE workspaces SET status =`).
+		WithArgs(models.StatusAwaitingAgent, "ws-x").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// Must not panic with nil callback

@@ -1143,8 +1143,8 @@ func TestProvisionWorkspace_NoInternalErrorsInBroadcast(t *testing.T) {
 	// path skipped last_sample_error; the shared helper now always
 	// persists it so users see the failure in the UI without having
 	// to grep server logs.
-	mock.ExpectExec(`UPDATE workspaces SET status = 'failed'`).
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
+	mock.ExpectExec(`UPDATE workspaces SET status =`).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	cap := &captureBroadcaster{}
@@ -1241,8 +1241,8 @@ func TestProvisionWorkspaceCP_NoInternalErrorsInBroadcast(t *testing.T) {
 	// On cpProv.Start failure, provisionWorkspaceCP also marks the
 	// workspace failed. Match-anything on args so the test isn't
 	// coupled to the exact UPDATE column order.
-	mock.ExpectExec(`UPDATE workspaces SET status = 'failed'`).
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
+	mock.ExpectExec(`UPDATE workspaces SET status =`).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	cap := &captureBroadcaster{}

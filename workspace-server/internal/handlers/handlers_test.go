@@ -209,8 +209,8 @@ func TestHeartbeatHandler_Degraded(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("online"))
 
 	// Expect status transition to degraded
-	mock.ExpectExec("UPDATE workspaces SET status = 'degraded'").
-		WithArgs("ws-123").
+	mock.ExpectExec("UPDATE workspaces SET status =").
+		WithArgs(models.StatusDegraded, "ws-123").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// Expect RecordAndBroadcast INSERT for WORKSPACE_DEGRADED
@@ -257,8 +257,8 @@ func TestHeartbeatHandler_Recovery(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("degraded"))
 
 	// Expect status transition back to online
-	mock.ExpectExec("UPDATE workspaces SET status = 'online'").
-		WithArgs("ws-123").
+	mock.ExpectExec("UPDATE workspaces SET status =").
+		WithArgs(models.StatusOnline, "ws-123").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// Expect RecordAndBroadcast INSERT for WORKSPACE_ONLINE

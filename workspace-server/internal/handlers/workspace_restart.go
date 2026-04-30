@@ -136,7 +136,7 @@ func (h *WorkspaceHandler) Restart(c *gin.Context) {
 
 	// Reset to provisioning
 	db.DB.ExecContext(ctx,
-		`UPDATE workspaces SET status = 'provisioning', url = '', updated_at = now() WHERE id = $1`, id)
+		`UPDATE workspaces SET status = $1, url = '', updated_at = now() WHERE id = $2`, models.StatusProvisioning, id)
 	h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_PROVISIONING", id, map[string]interface{}{
 		"name":    wsName,
 		"tier":    tier,
@@ -269,10 +269,10 @@ func (h *WorkspaceHandler) HibernateWorkspace(ctx context.Context, workspaceID s
 	// active_tasks = 0 predicate ensures we never interrupt a running task.
 	result, err := db.DB.ExecContext(ctx, `
 		UPDATE workspaces
-		SET    status = 'hibernating', updated_at = now()
+		SET    status = $2, updated_at = now()
 		WHERE  id = $1
 		  AND  status IN ('online', 'degraded')
-		  AND  active_tasks = 0`, workspaceID)
+		  AND  active_tasks = 0`, workspaceID, models.StatusHibernating)
 	if err != nil {
 		log.Printf("Hibernate: atomic claim failed for %s: %v", workspaceID, err)
 		return
@@ -306,8 +306,8 @@ func (h *WorkspaceHandler) HibernateWorkspace(ctx context.Context, workspaceID s
 
 	// ── Step 3: Mark fully hibernated ─────────────────────────────────────────
 	if _, err = db.DB.ExecContext(ctx,
-		`UPDATE workspaces SET status = 'hibernated', url = '', updated_at = now() WHERE id = $1`,
-		workspaceID); err != nil {
+		`UPDATE workspaces SET status = $1, url = '', updated_at = now() WHERE id = $2`,
+		models.StatusHibernated, workspaceID); err != nil {
 		log.Printf("Hibernate: failed to mark hibernated for %s: %v", workspaceID, err)
 		return
 	}
@@ -453,7 +453,7 @@ func (h *WorkspaceHandler) runRestartCycle(workspaceID string) {
 	h.stopForRestart(ctx, workspaceID)
 
 	db.DB.ExecContext(ctx,
-		`UPDATE workspaces SET status = 'provisioning', url = '', updated_at = now() WHERE id = $1`, workspaceID)
+		`UPDATE workspaces SET status = $1, url = '', updated_at = now() WHERE id = $2`, models.StatusProvisioning, workspaceID)
 	h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_PROVISIONING", workspaceID, map[string]interface{}{
 		"name": wsName, "tier": tier, "runtime": dbRuntime,
 	})
@@ -534,7 +534,7 @@ func (h *WorkspaceHandler) Pause(c *gin.Context) {
 			h.provisioner.Stop(ctx, ws.id)
 		}
 		db.DB.ExecContext(ctx,
-			`UPDATE workspaces SET status = 'paused', url = '', updated_at = now() WHERE id = $1`, ws.id)
+			`UPDATE workspaces SET status = $1, url = '', updated_at = now() WHERE id = $2`, models.StatusPaused, ws.id)
 		db.ClearWorkspaceKeys(ctx, ws.id)
 		h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_PAUSED", ws.id, map[string]interface{}{
 			"name": ws.name,
@@ -604,7 +604,7 @@ func (h *WorkspaceHandler) Resume(c *gin.Context) {
 	// Re-provision all
 	for _, ws := range toResume {
 		db.DB.ExecContext(ctx,
-			`UPDATE workspaces SET status = 'provisioning', updated_at = now() WHERE id = $1`, ws.id)
+			`UPDATE workspaces SET status = $1, updated_at = now() WHERE id = $2`, models.StatusProvisioning, ws.id)
 		h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_PROVISIONING", ws.id, map[string]interface{}{
 			"name": ws.name, "tier": ws.tier, "runtime": ws.runtime,
 		})

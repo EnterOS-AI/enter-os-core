@@ -378,8 +378,8 @@ func TestHeartbeat_ExactThreshold_Degraded(t *testing.T) {
 	mock.ExpectQuery("SELECT status FROM workspaces WHERE id =").
 		WithArgs("ws-edge").
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("online"))
-	mock.ExpectExec("UPDATE workspaces SET status = 'degraded'").
-		WithArgs("ws-edge").
+	mock.ExpectExec("UPDATE workspaces SET status =").
+		WithArgs(models.StatusDegraded, "ws-edge").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO structure_events").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -419,8 +419,8 @@ func TestHeartbeat_DegradedRecovery(t *testing.T) {
 	mock.ExpectQuery("SELECT status FROM workspaces WHERE id =").
 		WithArgs("ws-rec").
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("degraded"))
-	mock.ExpectExec("UPDATE workspaces SET status = 'online'").
-		WithArgs("ws-rec").
+	mock.ExpectExec("UPDATE workspaces SET status =").
+		WithArgs(models.StatusOnline, "ws-rec").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO structure_events").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -1000,8 +1000,8 @@ func TestPause_Success(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}))
 
 	// UPDATE status to paused
-	mock.ExpectExec("UPDATE workspaces SET status = 'paused'").
-		WithArgs("ws-pause").
+	mock.ExpectExec("UPDATE workspaces SET status =").
+		WithArgs(models.StatusPaused, "ws-pause").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// RecordAndBroadcast
@@ -1098,22 +1098,22 @@ func TestPause_WithDescendants(t *testing.T) {
 			AddRow("ws-worker-2", "Worker 2"))
 
 	// UPDATE + broadcast for parent (ws-team)
-	mock.ExpectExec("UPDATE workspaces SET status = 'paused'").
-		WithArgs("ws-team").
+	mock.ExpectExec("UPDATE workspaces SET status =").
+		WithArgs(models.StatusPaused, "ws-team").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO structure_events").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// UPDATE + broadcast for child-1
-	mock.ExpectExec("UPDATE workspaces SET status = 'paused'").
-		WithArgs("ws-worker-1").
+	mock.ExpectExec("UPDATE workspaces SET status =").
+		WithArgs(models.StatusPaused, "ws-worker-1").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO structure_events").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// UPDATE + broadcast for child-2
-	mock.ExpectExec("UPDATE workspaces SET status = 'paused'").
-		WithArgs("ws-worker-2").
+	mock.ExpectExec("UPDATE workspaces SET status =").
+		WithArgs(models.StatusPaused, "ws-worker-2").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO structure_events").
 		WillReturnResult(sqlmock.NewResult(0, 1))
