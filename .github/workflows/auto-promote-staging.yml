@@ -76,6 +76,27 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  # actions: write is needed by the post-merge dispatch tail step
+  # (#2358 / #2357) — `gh workflow run publish-workspace-server-image.yml`
+  # POSTs to /actions/workflows/.../dispatches which requires this scope.
+  # Without it the call 403s and the publish/canary/redeploy chain still
+  # doesn't run on staging→main promotions, undoing #2358.
+  actions: write
+
+# Serialize auto-promote runs. Multiple staging gate completions can land
+# in quick succession (CI + E2E + CodeQL all finish within seconds of
+# each other on a green PR) — without this, two parallel runs both:
+#   1. Open / re-use the same promote PR.
+#   2. Both call `gh pr merge --auto` (idempotent — fine).
+#   3. Both poll for the same mergedAt and both `gh workflow run` publish
+#      → 2× redundant publish builds racing for the same `:staging-latest`
+#      retag, and 2× canary-verify chains.
+# cancel-in-progress: false because we don't want a brand-new run to kill
+# a polling-tail that's about to dispatch — the polling tail's 30 min cap
+# is the right backstop, not workflow-level cancel.
+concurrency:
+  group: auto-promote-staging
+  cancel-in-progress: false
 
 jobs:
   check-all-gates-green:
@@ -271,19 +292,29 @@ jobs:
           PR_NUM: ${{ steps.promote_pr.outputs.promote_pr_num }}
         run: |
           # Poll for merge — max 30 min (60 × 30s). The merge queue
-          # typically lands within 5-10 min when gates are green.
+          # typically lands within 5-10 min when gates are green. Break
+          # early if the PR is closed without merging (operator action,
+          # gates flipped red post-approval, branch-protection rejection)
+          # so we don't tie up a runner for the full 30 min on a dead PR.
           MERGED=""
+          STATE=""
           for _ in $(seq 1 60); do
-            MERGED=$(gh pr view "$PR_NUM" --repo "$REPO" --json mergedAt --jq '.mergedAt // ""')
+            VIEW=$(gh pr view "$PR_NUM" --repo "$REPO" --json mergedAt,state)
+            MERGED=$(echo "$VIEW" | jq -r '.mergedAt // ""')
+            STATE=$(echo "$VIEW" | jq -r '.state // ""')
             if [ -n "$MERGED" ] && [ "$MERGED" != "null" ]; then
               echo "::notice::Promote PR #${PR_NUM} merged at ${MERGED}"
               break
+            fi
+            if [ "$STATE" = "CLOSED" ]; then
+              echo "::warning::Promote PR #${PR_NUM} was closed without merging — skipping deploy dispatch."
+              exit 0
             fi
             sleep 30
           done
 
           if [ -z "$MERGED" ] || [ "$MERGED" = "null" ]; then
-            echo "::warning::Promote PR #${PR_NUM} didn't merge within 30min — skipping deploy dispatch (manually run \`gh workflow run redeploy-tenants-on-main.yml\` once it lands)."
+            echo "::warning::Promote PR #${PR_NUM} didn't merge within 30min — skipping deploy dispatch (manually run \`gh workflow run publish-workspace-server-image.yml --ref main\` once it lands)."
             exit 0
           fi
 
