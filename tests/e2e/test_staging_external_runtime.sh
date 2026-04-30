@@ -257,12 +257,25 @@ ok "DB row stored as awaiting_agent (proof migration 046 applied)"
 # PR #2382.
 log "5/8 Registering workspace via /registry/register..."
 [ -z "$WS_AUTH_TOKEN" ] && fail "No workspace auth token returned — register impossible"
-REGISTER_RESP=$(curl "${CURL_COMMON[@]}" -X POST "$TENANT_URL/registry/register" \
+# Payload contract (workspace-server/internal/models/workspace.go RegisterPayload):
+#   id           — required, the workspace UUID (NOT "workspace_id" — that's the
+#                  heartbeat payload field; mixing them yields a 400 from
+#                  ShouldBindJSON because `id` has binding:"required").
+#   agent_card   — required (binding:"required"); minimal valid card is name+skills.
+#   url          — only validated for push-mode workspaces; runtime=external
+#                  resolves to poll (registry.go:resolveDeliveryMode), so
+#                  example.invalid is accepted as a placeholder URL the
+#                  platform never dispatches to.
+REGISTER_BODY=$(printf '{"id":"%s","url":"https://example.invalid:443","agent_card":{"name":"e2e-ext","skills":[{"id":"echo","name":"Echo"}]}}' "$WS_ID")
+# Disable --fail-with-body for this one call so a 4xx surfaces the response
+# body (the bare CURL_COMMON would `set -e`-kill before we could log it).
+REGISTER_RESP=$(curl -sS --max-time 30 -w "\nHTTP_CODE=%{http_code}" -X POST "$TENANT_URL/registry/register" \
   -H "Authorization: Bearer $WS_AUTH_TOKEN" \
   -H "X-Molecule-Org-Id: $ORG_ID" \
   -H "Content-Type: application/json" \
-  -d "{\"workspace_id\":\"$WS_ID\",\"url\":\"https://example.invalid:443\"}")
-log "    register response: $(echo "$REGISTER_RESP" | head -c 200)"
+  -d "$REGISTER_BODY") || true
+log "    register response: $(echo "$REGISTER_RESP" | head -c 300)"
+echo "$REGISTER_RESP" | grep -q "HTTP_CODE=200" || fail "register returned non-200 — see body above"
 
 GET_RESP=$(tenant_call GET "/workspaces/$WS_ID")
 ONLINE_STATUS=$(echo "$GET_RESP" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))")
@@ -296,12 +309,15 @@ ok "Heartbeat-staleness sweep transitioned online → awaiting_agent (proof heal
 # This proves the awaiting_agent state is recoverable (re-registrable),
 # which is the whole point of using it instead of 'offline'.
 log "7/8 Re-registering after stale → confirming recovery to online..."
-REREG_RESP=$(curl "${CURL_COMMON[@]}" -X POST "$TENANT_URL/registry/register" \
+# Same payload contract as step 5 (id + agent_card both required). See note
+# there for why workspace_id would 400.
+REREG_RESP=$(curl -sS --max-time 30 -w "\nHTTP_CODE=%{http_code}" -X POST "$TENANT_URL/registry/register" \
   -H "Authorization: Bearer $WS_AUTH_TOKEN" \
   -H "X-Molecule-Org-Id: $ORG_ID" \
   -H "Content-Type: application/json" \
-  -d "{\"workspace_id\":\"$WS_ID\",\"url\":\"https://example.invalid:443\"}")
-log "    re-register response: $(echo "$REREG_RESP" | head -c 200)"
+  -d "$REGISTER_BODY") || true
+log "    re-register response: $(echo "$REREG_RESP" | head -c 300)"
+echo "$REREG_RESP" | grep -q "HTTP_CODE=200" || fail "re-register returned non-200 — see body above"
 
 GET_RESP=$(tenant_call GET "/workspaces/$WS_ID")
 RECOVERED_STATUS=$(echo "$GET_RESP" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))")
