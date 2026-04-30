@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -23,7 +25,7 @@ func NewActivityHandler(b *events.Broadcaster) *ActivityHandler {
 	return &ActivityHandler{broadcaster: b}
 }
 
-// List handles GET /workspaces/:id/activity?type=&source=&limit=&since_secs=
+// List handles GET /workspaces/:id/activity?type=&source=&limit=&since_secs=&since_id=
 //
 // since_secs filters to activity_logs.created_at >= NOW() - INTERVAL '$N seconds'.
 // Optional, additive — callers that don't pass it get today's behavior (the
@@ -33,12 +35,29 @@ func NewActivityHandler(b *events.Broadcaster) *ActivityHandler {
 // Capped at 30 days (2_592_000s) — anything older has typically been paged
 // out anyway, and a defensive ceiling keeps a paranoid client from triggering
 // a full-table scan via since_secs=99999999999. Closes #2268.
+//
+// since_id is a CURSOR for poll-mode workspaces (#2339 PR 3). The agent
+// passes the id of the last activity_logs row it has consumed; the server
+// returns rows STRICTLY AFTER that cursor in chronological (ASC) order so
+// the agent processes events in the order they were recorded. Telegram
+// getUpdates / Slack RTM shape — same proven pattern.
+//
+// Cross-workspace safety: the cursor lookup is scoped by workspace_id, so a
+// caller cannot peek at another workspace's activity by guessing its UUIDs.
+//
+// Cursor-not-found: returns 410 Gone. The client should reset its cursor
+// (omit since_id) and re-fetch the recent backlog. This avoids the silent
+// loss-window where a pruned cursor silently filters everything out.
+//
+// since_id + since_secs together: both filters apply (AND). Output is ASC
+// when since_id is set (polling order), DESC otherwise (recent feed order).
 func (h *ActivityHandler) List(c *gin.Context) {
 	workspaceID := c.Param("id")
 	activityType := c.Query("type")
 	source := c.Query("source") // "canvas" = source_id IS NULL, "agent" = source_id IS NOT NULL
 	limitStr := c.DefaultQuery("limit", "100")
 	sinceSecsStr := c.Query("since_secs")
+	sinceID := c.Query("since_id")
 
 	limit := 100
 	if n, err := strconv.Atoi(limitStr); err == nil && n > 0 {
@@ -63,6 +82,37 @@ func (h *ActivityHandler) List(c *gin.Context) {
 			n = maxSinceSecs
 		}
 		sinceSecs = n
+	}
+
+	// Resolve since_id cursor (if set) BEFORE building the main query so we
+	// can 410 cleanly when the cursor row is gone — and so the cursor's
+	// created_at is bound as a regular timestamp parameter (not a subquery)
+	// for clean sqlmock matching and to keep the planner predictable.
+	//
+	// The lookup is scoped by workspace_id: a caller cannot enumerate or
+	// peek at another workspace's events by passing a UUID belonging to a
+	// different workspace. Mismatched-workspace cursor → 410, same as
+	// "row not found" — both indicate the cursor is no longer usable for
+	// this caller, no information leak.
+	var cursorTime time.Time
+	usingCursor := false
+	if sinceID != "" {
+		err := db.DB.QueryRowContext(c.Request.Context(),
+			`SELECT created_at FROM activity_logs WHERE id = $1 AND workspace_id = $2`,
+			sinceID, workspaceID,
+		).Scan(&cursorTime)
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusGone, gin.H{
+				"error": "since_id cursor not found (row may have been pruned or belongs to a different workspace); omit since_id to reset",
+			})
+			return
+		}
+		if err != nil {
+			log.Printf("Activity since_id cursor lookup error for ws=%s id=%s: %v", workspaceID, sinceID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "cursor lookup failed"})
+			return
+		}
+		usingCursor = true
 	}
 
 	// Build query with optional filters
@@ -94,8 +144,22 @@ func (h *ActivityHandler) List(c *gin.Context) {
 		args = append(args, sinceSecs)
 		argIdx++
 	}
+	if usingCursor {
+		// Strictly after — never replay the cursor row itself.
+		query += fmt.Sprintf(" AND created_at > $%d", argIdx)
+		args = append(args, cursorTime)
+		argIdx++
+	}
 
-	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", argIdx)
+	// Polling clients (since_id) need oldest-first within the new window so
+	// they process events in recorded order. The recent-feed view (no
+	// since_id) keeps DESC — that's the canvas/UI shape and changing it
+	// would surprise existing callers.
+	if usingCursor {
+		query += fmt.Sprintf(" ORDER BY created_at ASC LIMIT $%d", argIdx)
+	} else {
+		query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", argIdx)
+	}
 	args = append(args, limit)
 
 	rows, err := db.DB.QueryContext(c.Request.Context(), query, args...)
