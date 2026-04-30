@@ -120,8 +120,18 @@ jobs:
         # run-all-replays.sh: boot via up.sh → seed via seed.sh → run
         # every replays/*.sh → tear down via down.sh on EXIT (trap).
         # Non-zero exit on any replay failure.
+        #
+        # KEEP_UP=1: without this, the script's trap-on-EXIT tears
+        # down containers immediately on failure, leaving the dump
+        # step below with nothing to dump (verified on PR #2410's
+        # first run — tenant became unhealthy, trap fired, dump
+        # step saw empty containers). Keeping them up lets the
+        # failure path collect tenant/cp-stub/cf-proxy logs. The
+        # always-run "Force teardown" step does the actual cleanup.
         if: needs.detect-changes.outputs.run == 'true'
         working-directory: tests/harness
+        env:
+          KEEP_UP: "1"
         run: ./run-all-replays.sh
 
       - name: Dump compose logs on failure
@@ -139,10 +149,10 @@ jobs:
           echo "=== postgres logs (last 100) ==="
           docker compose -f compose.yml logs --tail 100 postgres || true
 
-      - name: Force teardown (belt-and-suspenders)
-        # run-all-replays.sh's trap should already have torn down,
-        # but if something killed bash before the trap fired, this
-        # ensures the runner doesn't leak the network/volumes.
+      - name: Force teardown
+        # We pass KEEP_UP=1 to run-all-replays.sh so the dump step
+        # above sees real containers — that means we own teardown
+        # explicitly here. Always run.
         if: always() && needs.detect-changes.outputs.run == 'true'
         working-directory: tests/harness
         run: ./down.sh || true
