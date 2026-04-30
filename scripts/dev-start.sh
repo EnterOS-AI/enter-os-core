@@ -105,11 +105,43 @@ echo "==> Running infra/scripts/setup.sh (infra + template registry)"
 "$ROOT/infra/scripts/setup.sh"
 
 # ─────────────────────────────────────────────── 3. platform
+#
+# Two paths:
+#   (a) `go` is on PATH → run the platform directly via `go run`.
+#       Fast iteration, attaches to /tmp/molecule-platform.log.
+#   (b) `go` is NOT on PATH → fall back to the published platform
+#       container image. Slower first run (image pull) but the script
+#       still works on a fresh dev box without forcing the dev to
+#       install Go just to read logs.
+#
+# The earlier version of this script silently called `go run` and died
+# with `go: not found` on dev boxes where Go wasn't installed; the
+# script's own prerequisite list (line 13-21) said "Go 1.25+" but the
+# user had no signpost between "open the doc" and "command not found
+# at line 111." This branch makes the failure path either succeed
+# (fallback) or fail loud with explicit install guidance.
 
-echo "==> Starting Platform (Go :8080)"
-cd "$ROOT/workspace-server"
-go run ./cmd/server > /tmp/molecule-platform.log 2>&1 &
-PLATFORM_PID=$!
+if command -v go >/dev/null 2>&1; then
+    echo "==> Starting Platform (Go :8080)"
+    cd "$ROOT/workspace-server"
+    go run ./cmd/server > /tmp/molecule-platform.log 2>&1 &
+    PLATFORM_PID=$!
+else
+    echo "==> Go not found on PATH — falling back to docker-compose platform service"
+    echo "    (Install Go 1.25+ for faster iteration: https://go.dev/dl/)"
+    cd "$ROOT"
+    # Bring up just the platform service from docker-compose.yml. infra/setup.sh
+    # already brought up postgres+redis+etc on docker-compose.infra.yml; this
+    # adds the platform container on top, mapped to :8080 so the rest of this
+    # script's wait-for-/health loop works unchanged.
+    docker compose up -d --build platform > /tmp/molecule-platform.log 2>&1 || {
+        echo "    ✗ docker compose up platform failed — see /tmp/molecule-platform.log"
+        echo "    Either install Go 1.25+ (https://go.dev/dl/) and rerun, or fix the docker fallback."
+        exit 1
+    }
+    # PLATFORM_PID is unset on this path; cleanup() handles that with `kill ... 2>/dev/null || true`.
+    PLATFORM_PID=
+fi
 
 echo "    Waiting for Platform /health..."
 PLATFORM_READY=0
