@@ -1,24 +1,42 @@
 package db_test
 
-// Static drift gate: every workspaces.status literal written in the Go
-// tree must exist in the workspace_status enum defined by the migrations.
+// Static drift gate: every value declared in models.AllWorkspaceStatuses
+// must exist in the workspace_status enum after every migration applies.
 //
-// Why this exists: the `workspace_status` enum (migrations 043 + 046)
-// shipped without 'awaiting_agent' even though application code wrote
-// that value, and every UPDATE silently failed in production for five
-// days before the gap surfaced (see 046_workspace_status_awaiting_agent.up.sql).
-// The unit tests passed because sqlmock matches SQL by regex, not against
-// a live enum constraint.
+// Why this exists: the workspace_status enum (migration 043) initially
+// shipped without 'awaiting_agent' and 'hibernating' even though
+// application code already wrote both. Every UPDATE silently failed in
+// production for five days because:
 //
-// Approach: extract every Go string literal whose body matches
-// (?i)workspaces[^a-z_].*status (so "UPDATE workspaces SET status",
-// "FROM workspaces WHERE ... status", "INSERT INTO workspaces ... status",
-// CTEs that reference workspaces, etc.). For each such SQL fragment,
-// pull the single-quoted status values out of `status =`, `status IN`,
-// `THEN`, and `ELSE`. Every value must be in the union of CREATE TYPE +
-// ALTER TYPE ADD VALUE across all migrations.
+//   - Status values were ad-hoc string literals scattered across raw
+//     SQL strings in 8+ files, with no compile-time check.
+//   - sqlmock matched SQL by regex, not against the live enum.
+//   - Errors were dropped or log-and-continued at every call site.
+//
+// The fix is layered. This gate is the static layer:
+//
+//   - models.AllWorkspaceStatuses is the source of truth for the
+//     codebase side. Every status write goes through one of those
+//     typed constants (the parameterized-write refactor enforces this).
+//   - The migrations are the source of truth for the DB side.
+//   - This test parses both and asserts the codebase set ⊆ migration set.
+//
+// If you add a new status:
+//
+//   1. Add a `Status…` constant in models/workspace_status.go AND
+//      append it to AllWorkspaceStatuses.
+//   2. Open a migration `ALTER TYPE workspace_status ADD VALUE 'X'`.
+//   3. This test confirms both happened in the same PR.
+//
+// If you intend to retire a status: keep it in the enum as long as any
+// row could legitimately still hold it, then drop it from
+// AllWorkspaceStatuses (the gate runs the inclusion in one direction
+// only — extras in the enum are fine).
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -32,32 +50,31 @@ func TestWorkspaceStatusEnum_NoLiteralDrift(t *testing.T) {
 
 	repoRoot := findRepoRoot(t)
 	migrationsDir := filepath.Join(repoRoot, "workspace-server", "migrations")
-	internalDir := filepath.Join(repoRoot, "workspace-server", "internal")
+	statusFile := filepath.Join(repoRoot, "workspace-server", "internal", "models", "workspace_status.go")
 
 	enum := loadWorkspaceStatusEnum(t, migrationsDir)
 	if len(enum) == 0 {
 		t.Fatalf("could not parse workspace_status enum from %s — gate is non-functional", migrationsDir)
 	}
 
-	literals := collectWorkspacesStatusLiterals(t, internalDir)
-	if len(literals) == 0 {
-		t.Fatalf("found zero workspaces.status literals under %s — gate is non-functional", internalDir)
+	codebase := loadAllWorkspaceStatuses(t, statusFile)
+	if len(codebase) == 0 {
+		t.Fatalf("could not parse models.AllWorkspaceStatuses from %s — gate is non-functional", statusFile)
 	}
 
 	var rogue []string
-	for lit := range literals {
-		if _, ok := enum[lit]; ok {
-			continue
+	for lit := range codebase {
+		if _, ok := enum[lit]; !ok {
+			rogue = append(rogue, lit)
 		}
-		rogue = append(rogue, lit)
 	}
 	if len(rogue) > 0 {
 		sort.Strings(rogue)
 		t.Errorf(
-			"workspaces.status literal(s) %v are written by Go code but not in the workspace_status enum.\n"+
-				"Add a migration `ALTER TYPE workspace_status ADD VALUE 'X';` (see 046 for shape).\n"+
-				"Enum currently is: %v",
-			rogue, sortedKeys(enum),
+			"workspace status constants %v are declared in models.AllWorkspaceStatuses but not in the workspace_status enum.\n"+
+				"Add a migration `ALTER TYPE workspace_status ADD VALUE 'X';` (see migration 046 for shape).\n"+
+				"Enum currently: %v\nCodebase declares: %v",
+			rogue, sortedKeys(enum), sortedKeys(codebase),
 		)
 	}
 }
@@ -101,99 +118,117 @@ func loadWorkspaceStatusEnum(t *testing.T, migrationsDir string) map[string]stru
 	return out
 }
 
-// collectWorkspacesStatusLiterals walks every non-test .go file under
-// root, finds Go string literals that contain `UPDATE workspaces` or
-// `INSERT INTO workspaces`, and extracts the status literals appearing
-// inside the matching SQL statement.
+// loadAllWorkspaceStatuses parses workspace_status.go and extracts:
 //
-// Why this scope: any UPDATE/INSERT against `workspaces` is the moment
-// a status literal hits the column constrained by the enum. Read-side
-// SQL (SELECT ... WHERE status = 'X') cannot fail on enum drift, so it's
-// out of scope. JOINs to `workspaces` from other tables (e.g. approvals
-// joining workspaces for display) write to a different table's status —
-// also out of scope. Anchoring on the leading `UPDATE workspaces` /
-// `INSERT INTO workspaces` keyword unambiguously identifies the writes
-// we care about.
-func collectWorkspacesStatusLiterals(t *testing.T, root string) map[string]struct{} {
+//   - Every `Status… WorkspaceStatus = "..."` declaration in the const block.
+//   - Every entry in the AllWorkspaceStatuses slice literal.
+//
+// The gate asserts the slice's set equals (or is a subset of) the const
+// block's set, so a new status added to the const block but forgotten
+// in AllWorkspaceStatuses surfaces here. AllWorkspaceStatuses is the
+// canonical "what the codebase expects the DB to accept" list — any
+// const not in the slice is unenforced by the gate.
+func loadAllWorkspaceStatuses(t *testing.T, statusFile string) map[string]struct{} {
 	t.Helper()
 
-	// Match raw-string and double-quoted Go string literals. Backtick
-	// strings can span multiple lines. Both forms are extracted via the
-	// same DOTALL regex over the whole file body.
-	rawRE := regexp.MustCompile("(?s)`([^`]*?)`")
-	dquoteRE := regexp.MustCompile(`"((?:[^"\\]|\\.)*)"`)
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, statusFile, nil, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse %s: %v", statusFile, err)
+	}
 
-	// A SQL string is in scope if it begins (after optional leading
-	// whitespace) with UPDATE workspaces or INSERT INTO workspaces.
-	// `(?i)` is case-insensitive; `\s*` allows the format-friendly
-	// leading newline and indent that the codebase uses.
-	updateWorkspacesRE := regexp.MustCompile(`(?is)^\s*UPDATE\s+workspaces\b`)
-	insertWorkspacesRE := regexp.MustCompile(`(?is)^\s*INSERT\s+INTO\s+workspaces\b`)
+	consts := make(map[string]string)        // const name → string value
+	var sliceEntries []string                 // identifiers used in AllWorkspaceStatuses
+	allWorkspaceStatusesFound := false
 
-	// Inside a scoped SQL fragment, status literals appear in:
-	//   status = 'X'           — assignment in SET (or filter in WHERE)
-	//   status IN ('X', ...)   — filter
-	//   status NOT IN ('X')    — filter
-	//   THEN 'X'               — CASE arm
-	//   ELSE 'X'               — CASE default
-	statusEqRE := regexp.MustCompile(`(?i)status\s*(?:=|!=|<>)\s*'([a-z_]+)'`)
-	statusInRE := regexp.MustCompile(`(?i)status\s+(?:NOT\s+)?IN\s*\(([^)]*)\)`)
-	thenRE := regexp.MustCompile(`(?i)THEN\s+'([a-z_]+)'`)
-	elseRE := regexp.MustCompile(`(?i)ELSE\s+'([a-z_]+)'`)
-	inListLiteralRE := regexp.MustCompile(`'([a-z_]+)'`)
-
-	out := make(map[string]struct{})
-
-	walkErr := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") {
-			return nil
-		}
-		if strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		body, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		text := string(body)
-
-		harvest := func(fragment string) {
-			if !updateWorkspacesRE.MatchString(fragment) && !insertWorkspacesRE.MatchString(fragment) {
-				return
-			}
-			for _, m := range statusEqRE.FindAllStringSubmatch(fragment, -1) {
-				out[m[1]] = struct{}{}
-			}
-			for _, m := range statusInRE.FindAllStringSubmatch(fragment, -1) {
-				for _, lit := range inListLiteralRE.FindAllStringSubmatch(m[1], -1) {
-					out[lit[1]] = struct{}{}
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch decl := n.(type) {
+		case *ast.GenDecl:
+			if decl.Tok == token.CONST {
+				for _, spec := range decl.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					for i, name := range vs.Names {
+						if !strings.HasPrefix(name.Name, "Status") {
+							continue
+						}
+						if i >= len(vs.Values) {
+							continue
+						}
+						lit, ok := vs.Values[i].(*ast.BasicLit)
+						if !ok || lit.Kind != token.STRING {
+							continue
+						}
+						unquoted := strings.Trim(lit.Value, `"`)
+						consts[name.Name] = unquoted
+					}
 				}
 			}
-			for _, m := range thenRE.FindAllStringSubmatch(fragment, -1) {
-				out[m[1]] = struct{}{}
+			if decl.Tok == token.VAR {
+				for _, spec := range decl.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					for i, name := range vs.Names {
+						if name.Name != "AllWorkspaceStatuses" {
+							continue
+						}
+						allWorkspaceStatusesFound = true
+						if i >= len(vs.Values) {
+							continue
+						}
+						composite, ok := vs.Values[i].(*ast.CompositeLit)
+						if !ok {
+							continue
+						}
+						for _, elt := range composite.Elts {
+							ident, ok := elt.(*ast.Ident)
+							if !ok {
+								continue
+							}
+							sliceEntries = append(sliceEntries, ident.Name)
+						}
+					}
+				}
 			}
-			for _, m := range elseRE.FindAllStringSubmatch(fragment, -1) {
-				out[m[1]] = struct{}{}
-			}
 		}
-
-		for _, m := range rawRE.FindAllStringSubmatch(text, -1) {
-			harvest(m[1])
-		}
-		for _, m := range dquoteRE.FindAllStringSubmatch(text, -1) {
-			harvest(m[1])
-		}
-		return nil
+		return true
 	})
-	if walkErr != nil {
-		t.Fatalf("walk %s: %v", root, walkErr)
+
+	if !allWorkspaceStatusesFound {
+		t.Fatalf("AllWorkspaceStatuses not found in %s", statusFile)
 	}
+
+	// Cross-check: every slice entry must resolve to a known const.
+	out := make(map[string]struct{})
+	for _, entry := range sliceEntries {
+		v, ok := consts[entry]
+		if !ok {
+			t.Errorf("AllWorkspaceStatuses references undefined identifier %q in %s", entry, statusFile)
+			continue
+		}
+		out[v] = struct{}{}
+	}
+
+	// Cross-check: every const must be in the slice (otherwise the
+	// gate runs against an outdated source-of-truth list).
+	sliceSet := make(map[string]struct{}, len(sliceEntries))
+	for _, e := range sliceEntries {
+		sliceSet[e] = struct{}{}
+	}
+	for name := range consts {
+		if _, ok := sliceSet[name]; !ok {
+			t.Errorf(
+				"const %q is declared but missing from AllWorkspaceStatuses in %s — "+
+					"add it to the slice or the drift gate cannot enforce migration coverage for it",
+				name, statusFile,
+			)
+		}
+	}
+
 	return out
 }
 

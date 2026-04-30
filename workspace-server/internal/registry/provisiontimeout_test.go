@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 )
 
 // fakeEmitter records every RecordAndBroadcast call so tests can assert
@@ -61,7 +62,7 @@ func TestSweepStuckProvisioning_FlipsOverdue(t *testing.T) {
 		WillReturnRows(candidateRows([3]any{"ws-stuck", "claude-code", 700}))
 
 	mock.ExpectExec(`UPDATE workspaces`).
-		WithArgs("ws-stuck", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs("ws-stuck", sqlmock.AnyArg(), sqlmock.AnyArg(), models.StatusFailed).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	emit := &fakeEmitter{}
@@ -116,7 +117,7 @@ func TestSweepStuckProvisioning_HermesPastDeadline(t *testing.T) {
 	mock.ExpectQuery(`SELECT id, COALESCE\(runtime, ''\), EXTRACT`).
 		WillReturnRows(candidateRows([3]any{"ws-hermes-stuck", "hermes", 1860}))
 	mock.ExpectExec(`UPDATE workspaces`).
-		WithArgs("ws-hermes-stuck", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs("ws-hermes-stuck", sqlmock.AnyArg(), sqlmock.AnyArg(), models.StatusFailed).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	emit := &fakeEmitter{}
@@ -146,7 +147,7 @@ func TestSweepStuckProvisioning_RaceSafe(t *testing.T) {
 		WillReturnRows(candidateRows([3]any{"ws-raced", "claude-code", 700}))
 
 	mock.ExpectExec(`UPDATE workspaces`).
-		WithArgs("ws-raced", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs("ws-raced", sqlmock.AnyArg(), sqlmock.AnyArg(), models.StatusFailed).
 		WillReturnResult(sqlmock.NewResult(0, 0)) // 0 rows — raced
 
 	emit := &fakeEmitter{}
@@ -193,10 +194,10 @@ func TestSweepStuckProvisioning_MultipleStuck(t *testing.T) {
 		))
 
 	mock.ExpectExec(`UPDATE workspaces`).
-		WithArgs("ws-claude-code", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs("ws-claude-code", sqlmock.AnyArg(), sqlmock.AnyArg(), models.StatusFailed).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE workspaces`).
-		WithArgs("ws-hermes", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs("ws-hermes", sqlmock.AnyArg(), sqlmock.AnyArg(), models.StatusFailed).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	emit := &fakeEmitter{}
@@ -216,7 +217,7 @@ func TestSweepStuckProvisioning_BroadcastFailureDoesNotCrash(t *testing.T) {
 	mock.ExpectQuery(`SELECT id, COALESCE\(runtime, ''\), EXTRACT`).
 		WillReturnRows(candidateRows([3]any{"ws-stuck", "claude-code", 700}))
 	mock.ExpectExec(`UPDATE workspaces`).
-		WithArgs("ws-stuck", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs("ws-stuck", sqlmock.AnyArg(), sqlmock.AnyArg(), models.StatusFailed).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	emit := &fakeEmitter{fail: true}

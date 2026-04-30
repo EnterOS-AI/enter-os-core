@@ -187,7 +187,7 @@ func (h *WorkspaceHandler) maybeMarkContainerDead(ctx context.Context, workspace
 		return false
 	}
 	log.Printf("ProxyA2A: container for %s is dead — marking offline and triggering restart", workspaceID)
-	if _, err := db.DB.ExecContext(ctx, `UPDATE workspaces SET status = 'offline', updated_at = now() WHERE id = $1 AND status NOT IN ('removed', 'provisioning')`, workspaceID); err != nil {
+	if _, err := db.DB.ExecContext(ctx, `UPDATE workspaces SET status = $1, updated_at = now() WHERE id = $2 AND status NOT IN ('removed', 'provisioning')`, models.StatusOffline, workspaceID); err != nil {
 		log.Printf("ProxyA2A: failed to mark workspace %s offline: %v", workspaceID, err)
 	}
 	db.ClearWorkspaceKeys(ctx, workspaceID)

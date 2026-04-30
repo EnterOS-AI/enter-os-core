@@ -28,7 +28,7 @@ func TestExtended_WorkspaceDelete(t *testing.T) {
 
 	// #73: batch UPDATE happens BEFORE any container teardown.
 	// Uses ANY($1::uuid[]) even with a single ID for consistency.
-	mock.ExpectExec("UPDATE workspaces SET status = 'removed'").
+	mock.ExpectExec("UPDATE workspaces SET status =").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	// Batch canvas layout delete (same id set).

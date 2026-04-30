@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/gin-gonic/gin"
 )
 
@@ -116,8 +117,8 @@ func TestHeartbeatHandler_OfflineToOnline(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("offline"))
 
 	// Expect status transition back to online
-	mock.ExpectExec("UPDATE workspaces SET status = 'online'").
-		WithArgs("ws-offline").
+	mock.ExpectExec("UPDATE workspaces SET status =").
+		WithArgs(models.StatusOnline, "ws-offline").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// Expect RecordAndBroadcast INSERT for WORKSPACE_ONLINE
@@ -166,8 +167,8 @@ func TestHeartbeatHandler_ProvisioningToOnline(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("provisioning"))
 
 	// Expect status transition to online (#1784)
-	mock.ExpectExec("UPDATE workspaces SET status = 'online'").
-		WithArgs("ws-provisioning").
+	mock.ExpectExec("UPDATE workspaces SET status =").
+		WithArgs(models.StatusOnline, "ws-provisioning").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// Expect RecordAndBroadcast INSERT for WORKSPACE_ONLINE
@@ -340,8 +341,8 @@ func TestHeartbeatHandler_RuntimeWedged_FlipsOnlineToDegraded(t *testing.T) {
 	// The wedge-handling branch fires the degraded UPDATE with the
 	// `AND status = 'online'` guard (race-safe against concurrent
 	// removal). Match the SQL with the guard included.
-	mock.ExpectExec("UPDATE workspaces SET status = 'degraded'.*status = 'online'").
-		WithArgs("ws-wedged").
+	mock.ExpectExec("UPDATE workspaces SET status =.*status = 'online'").
+		WithArgs(models.StatusDegraded, "ws-wedged").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// RecordAndBroadcast for WORKSPACE_DEGRADED
@@ -436,8 +437,8 @@ func TestHeartbeatHandler_DegradedToOnline_AfterWedgeClears(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("degraded"))
 
 	// Recovery UPDATE fires (degraded → online).
-	mock.ExpectExec("UPDATE workspaces SET status = 'online'").
-		WithArgs("ws-recovered").
+	mock.ExpectExec("UPDATE workspaces SET status =").
+		WithArgs(models.StatusOnline, "ws-recovered").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	mock.ExpectExec("INSERT INTO structure_events").

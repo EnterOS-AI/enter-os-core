@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/gin-gonic/gin"
 )
 
@@ -51,7 +52,7 @@ func TestHibernateWorkspace_OnlineWorkspace_Success(t *testing.T) {
 
 	// Step 1: atomic claim UPDATE succeeds.
 	mock.ExpectExec(`UPDATE workspaces`).
-		WithArgs(wsID).
+		WithArgs(wsID, models.StatusHibernating).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// Post-claim SELECT for name/tier.
@@ -60,8 +61,8 @@ func TestHibernateWorkspace_OnlineWorkspace_Success(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"name", "tier"}).AddRow("Idle Agent", 1))
 
 	// Step 3: final UPDATE to 'hibernated'.
-	mock.ExpectExec(`UPDATE workspaces SET status = 'hibernated'`).
-		WithArgs(wsID).
+	mock.ExpectExec(`UPDATE workspaces SET status =`).
+		WithArgs(models.StatusHibernated, wsID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// Broadcaster inserts a structure_events row.
@@ -98,7 +99,7 @@ func TestHibernateWorkspace_NotEligible_NoOp(t *testing.T) {
 
 	// Atomic claim finds nothing matching WHERE (workspace offline, paused, etc.).
 	mock.ExpectExec(`UPDATE workspaces`).
-		WithArgs(wsID).
+		WithArgs(wsID, models.StatusHibernating).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
 	// Set a Redis key to confirm it is NOT cleared by early return.
@@ -129,7 +130,7 @@ func TestHibernateWorkspace_DBUpdateFails_NoCrash(t *testing.T) {
 
 	// Step 1: atomic claim succeeds.
 	mock.ExpectExec(`UPDATE workspaces`).
-		WithArgs(wsID).
+		WithArgs(wsID, models.StatusHibernating).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// Post-claim SELECT.
@@ -138,8 +139,8 @@ func TestHibernateWorkspace_DBUpdateFails_NoCrash(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"name", "tier"}).AddRow("Flaky Agent", 2))
 
 	// Step 3: final UPDATE fails.
-	mock.ExpectExec(`UPDATE workspaces SET status = 'hibernated'`).
-		WithArgs(wsID).
+	mock.ExpectExec(`UPDATE workspaces SET status =`).
+		WithArgs(models.StatusHibernated, wsID).
 		WillReturnError(fmt.Errorf("db: connection refused"))
 
 	// Must not panic — test will catch a panic via t.Fatal.
@@ -203,7 +204,7 @@ func TestHibernateHandler_Online_Returns200(t *testing.T) {
 
 	// HibernateWorkspace() step 1: atomic claim.
 	mock.ExpectExec(`UPDATE workspaces`).
-		WithArgs(wsID).
+		WithArgs(wsID, models.StatusHibernating).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// Post-claim SELECT for name/tier.
@@ -212,8 +213,8 @@ func TestHibernateHandler_Online_Returns200(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"name", "tier", "active_tasks"}).AddRow("Online Bot", 1, 0))
 
 	// Step 3: final UPDATE.
-	mock.ExpectExec(`UPDATE workspaces SET status = 'hibernated'`).
-		WithArgs(wsID).
+	mock.ExpectExec(`UPDATE workspaces SET status =`).
+		WithArgs(models.StatusHibernated, wsID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// Broadcaster INSERT.
@@ -318,7 +319,7 @@ func TestHibernateHandler_ActiveTasks_ForceTrue_Returns200(t *testing.T) {
 
 	// HibernateWorkspace claim
 	mock.ExpectExec(`UPDATE workspaces`).
-		WithArgs(wsID).
+		WithArgs(wsID, models.StatusHibernating).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// Post-claim SELECT
@@ -327,8 +328,8 @@ func TestHibernateHandler_ActiveTasks_ForceTrue_Returns200(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"name", "tier"}).AddRow("Force Bot", 1))
 
 	// Final UPDATE to hibernated
-	mock.ExpectExec(`UPDATE workspaces SET status = 'hibernated'`).
-		WithArgs(wsID).
+	mock.ExpectExec(`UPDATE workspaces SET status =`).
+		WithArgs(models.StatusHibernated, wsID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// Broadcaster

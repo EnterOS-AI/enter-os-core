@@ -214,8 +214,8 @@ func (h *WorkspaceHandler) markProvisionFailed(ctx context.Context, workspaceID,
 	}
 	h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_PROVISION_FAILED", workspaceID, extra)
 	if _, dbErr := db.DB.ExecContext(ctx,
-		`UPDATE workspaces SET status = 'failed', last_sample_error = $2, updated_at = now() WHERE id = $1`,
-		workspaceID, msg); dbErr != nil {
+		`UPDATE workspaces SET status = $3, last_sample_error = $2, updated_at = now() WHERE id = $1`,
+		workspaceID, msg, models.StatusFailed); dbErr != nil {
 		// Non-fatal: the broadcast already fired, the operator sees the
 		// failure event in the canvas. The DB row stays at whatever
 		// status it had — provisioning event log is the source of truth.

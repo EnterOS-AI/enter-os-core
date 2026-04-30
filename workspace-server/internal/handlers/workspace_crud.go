@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/wsauth"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -359,8 +360,8 @@ func (h *WorkspaceHandler) Delete(c *gin.Context) {
 	// existing `status NOT IN ('removed', ...)` guards.
 	allIDs := append([]string{id}, descendantIDs...)
 	if _, err := db.DB.ExecContext(ctx,
-		`UPDATE workspaces SET status = 'removed', updated_at = now() WHERE id = ANY($1::uuid[])`,
-		pq.Array(allIDs)); err != nil {
+		`UPDATE workspaces SET status = $1, updated_at = now() WHERE id = ANY($2::uuid[])`,
+		models.StatusRemoved, pq.Array(allIDs)); err != nil {
 		log.Printf("Delete status update error for %s: %v", id, err)
 	}
 	if _, err := db.DB.ExecContext(ctx,

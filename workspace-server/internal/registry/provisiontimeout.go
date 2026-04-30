@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 )
 
 // ProvisionTimeoutEmitter is the narrow broadcaster dependency the sweeper
@@ -148,13 +149,13 @@ func sweepStuckProvisioning(ctx context.Context, emitter ProvisionTimeoutEmitter
 		msg := "provisioning timed out — container started but never called /registry/register. Check container logs and network connectivity to the platform."
 		res, err := db.DB.ExecContext(ctx, `
 			UPDATE workspaces
-			   SET status = 'failed',
+			   SET status = $4,
 			       last_sample_error = $2,
 			       updated_at = now()
 			 WHERE id = $1
 			   AND status = 'provisioning'
 			   AND updated_at < now() - ($3 || ' seconds')::interval
-		`, c.id, msg, timeoutSec)
+		`, c.id, msg, timeoutSec, models.StatusFailed)
 		if err != nil {
 			log.Printf("Provision-timeout sweep: failed to flip %s to failed: %v", c.id, err)
 			continue
