@@ -40,6 +40,21 @@ on:
       - '.github/workflows/publish-workspace-server-image.yml'
   workflow_dispatch:
 
+# Serialize per-branch so two rapid staging pushes don't race the same
+# :staging-latest tag retag. Allow staging and main to run in parallel
+# (different github.ref → different concurrency group) since they
+# produce different :staging-<sha> tags and last-write-wins on
+# :staging-latest is acceptable across branches (the post-promote
+# main code equals current staging code in a healthy flow).
+#
+# cancel-in-progress: false → in-flight builds finish; the next push's
+# build queues. This avoids a partially-pushed image and keeps the
+# canary fleet pin (:staging-<sha>) consistent with what was actually
+# tested at canary-verify time.
+concurrency:
+  group: publish-workspace-server-image-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
   packages: write

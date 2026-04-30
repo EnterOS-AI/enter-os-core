@@ -1,0 +1,184 @@
+name: redeploy-tenants-on-staging
+
+# Auto-refresh staging tenant EC2s after every staging-branch merge.
+#
+# Mirror of redeploy-tenants-on-main.yml, with the staging-CP host and
+# the :staging-latest tag. Sister workflow exists for prod (rolls
+# :latest after canary-verify). Both share the same shape — just
+# different CP_URL + target_tag + admin token secret.
+#
+# Why this workflow exists: publish-workspace-server-image now builds
+# on every staging-branch push (PR #2335), pushing
+# platform-tenant:staging-latest to GHCR. Existing tenants pulled
+# their image once at boot and never re-pull, so the new image just
+# sits unused until the tenant is reprovisioned.
+#
+# This workflow closes the gap by calling staging-CP's
+# /cp/admin/tenants/redeploy-fleet, which performs a canary-first,
+# batched, health-gated SSM redeploy across every live staging tenant.
+# Same endpoint shape as prod CP — only the host differs.
+#
+# Runtime ordering:
+#   1. publish-workspace-server-image completes on staging branch →
+#      new :staging-latest in GHCR.
+#   2. This workflow fires via workflow_run, waits 30s for GHCR's CDN
+#      to propagate the new tag.
+#   3. Calls redeploy-fleet with no canary (staging IS canary; we don't
+#      need a sub-canary inside it). Soak still applies to the first
+#      tenant in case of bad-deploy detection.
+#   4. Any failure aborts the rollout and leaves older tenants on the
+#      prior image — safer default than half-and-half state.
+#
+# Rollback path: re-run with workflow_dispatch + target_tag=staging-<sha>
+# of a known-good build.
+
+on:
+  workflow_run:
+    workflows: ['publish-workspace-server-image']
+    types: [completed]
+    branches: [staging]
+  workflow_dispatch:
+    inputs:
+      target_tag:
+        description: 'Tenant image tag to deploy (e.g. "staging-latest" or "staging-a59f1a6c"). Defaults to staging-latest when empty.'
+        required: false
+        type: string
+        default: 'staging-latest'
+      canary_slug:
+        description: 'Tenant slug to deploy first + soak (empty = skip canary, fan out immediately). Default empty for staging since staging itself is the canary.'
+        required: false
+        type: string
+        default: ''
+      soak_seconds:
+        description: 'Seconds to wait after canary before fanning out. Only meaningful if canary_slug is set.'
+        required: false
+        type: string
+        default: '60'
+      batch_size:
+        description: 'How many tenants SSM redeploys in parallel per batch.'
+        required: false
+        type: string
+        default: '3'
+      dry_run:
+        description: 'Plan only — do not actually redeploy.'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  # No write scopes needed — the workflow hits an external CP endpoint,
+  # not the GitHub API.
+
+# Serialize per-branch so two rapid staging pushes' redeploys don't
+# overlap and cause confusing per-tenant SSM state. cancel-in-progress
+# is false because aborting a half-rolled-out fleet leaves tenants
+# stuck on whatever image they happened to be on when cancelled.
+concurrency:
+  group: redeploy-tenants-on-staging
+  cancel-in-progress: false
+
+jobs:
+  redeploy:
+    # Skip the auto-trigger if publish-workspace-server-image didn't
+    # actually succeed. workflow_run fires on any completion state; we
+    # don't want to redeploy against a half-built image.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Wait for GHCR tag propagation
+        # GHCR's edge cache takes ~15-30s to consistently serve the new
+        # :staging-latest manifest after the registry accepts the push.
+        # Same rationale as redeploy-tenants-on-main.yml.
+        run: sleep 30
+
+      - name: Call staging-CP redeploy-fleet
+        # CP_STAGING_ADMIN_API_TOKEN must be set as a repo/org secret
+        # on Molecule-AI/molecule-core, matching staging-CP's
+        # CP_ADMIN_API_TOKEN env var (visible in Railway controlplane
+        # / staging environment). Stored separately from the prod
+        # CP_ADMIN_API_TOKEN so a leak of one doesn't auth the other.
+        env:
+          CP_URL: ${{ vars.STAGING_CP_URL || 'https://staging-api.moleculesai.app' }}
+          CP_STAGING_ADMIN_API_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+          TARGET_TAG: ${{ inputs.target_tag || 'staging-latest' }}
+          CANARY_SLUG: ${{ inputs.canary_slug || '' }}
+          SOAK_SECONDS: ${{ inputs.soak_seconds || '60' }}
+          BATCH_SIZE: ${{ inputs.batch_size || '3' }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+        run: |
+          set -euo pipefail
+
+          # Schedule-vs-dispatch hardening (mirrors sweep-cf-orphans
+          # and sweep-cf-tunnels): hard-fail on auto-trigger when the
+          # secret is missing so a misconfigured-repo doesn't silently
+          # serve stale staging tenants. Soft-skip on operator dispatch.
+          if [ -z "${CP_STAGING_ADMIN_API_TOKEN:-}" ]; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "::warning::CP_STAGING_ADMIN_API_TOKEN secret not set — skipping redeploy"
+              echo "::warning::Set CP_STAGING_ADMIN_API_TOKEN in repo secrets to enable auto-redeploy."
+              echo "::notice::Pull the value from staging-CP's CP_ADMIN_API_TOKEN env in Railway."
+              exit 0
+            fi
+            echo "::error::staging redeploy cannot run — CP_STAGING_ADMIN_API_TOKEN secret missing"
+            echo "::error::set it at Settings → Secrets and Variables → Actions; pull from staging-CP's CP_ADMIN_API_TOKEN env in Railway."
+            exit 1
+          fi
+
+          BODY=$(jq -nc \
+            --arg tag "$TARGET_TAG" \
+            --arg canary "$CANARY_SLUG" \
+            --argjson soak "$SOAK_SECONDS" \
+            --argjson batch "$BATCH_SIZE" \
+            --argjson dry "$DRY_RUN" \
+            '{
+              target_tag: $tag,
+              canary_slug: $canary,
+              soak_seconds: $soak,
+              batch_size: $batch,
+              dry_run: $dry
+            }')
+
+          echo "POST $CP_URL/cp/admin/tenants/redeploy-fleet"
+          echo "  body: $BODY"
+
+          HTTP_RESPONSE=$(mktemp)
+          HTTP_CODE=$(curl -sS -o "$HTTP_RESPONSE" -w '%{http_code}' \
+            -m 1200 \
+            -H "Authorization: Bearer $CP_STAGING_ADMIN_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -X POST "$CP_URL/cp/admin/tenants/redeploy-fleet" \
+            -d "$BODY" || echo "000")
+
+          echo "HTTP $HTTP_CODE"
+          cat "$HTTP_RESPONSE" | jq . || cat "$HTTP_RESPONSE"
+
+          {
+            echo "## Staging tenant redeploy fleet"
+            echo ""
+            echo "**Target tag:** \`$TARGET_TAG\`"
+            echo "**Canary:** \`${CANARY_SLUG:-(none — staging is itself the canary)}\` (soak ${SOAK_SECONDS}s)"
+            echo "**Batch size:** $BATCH_SIZE"
+            echo "**Dry run:** $DRY_RUN"
+            echo "**HTTP:** $HTTP_CODE"
+            echo ""
+            echo "### Per-tenant result"
+            echo ""
+            echo '| Slug | Phase | SSM Status | Exit | Healthz | Error |'
+            echo '|------|-------|------------|------|---------|-------|'
+            jq -r '.results[]? | "| \(.slug) | \(.phase) | \(.ssm_status // "-") | \(.ssm_exit_code) | \(.healthz_ok) | \(.error // "-") |"' "$HTTP_RESPONSE" || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::redeploy-fleet returned HTTP $HTTP_CODE"
+            exit 1
+          fi
+          OK=$(jq -r '.ok' "$HTTP_RESPONSE")
+          if [ "$OK" != "true" ]; then
+            echo "::error::redeploy-fleet reported ok=false (see summary for which tenant halted the rollout)"
+            exit 1
+          fi
+          echo "::notice::Staging tenant fleet redeploy complete."
