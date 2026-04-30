@@ -1,0 +1,311 @@
+{
+  "class": "BaseAdapter",
+  "methods": [
+    {
+      "is_abstract": false,
+      "is_async": false,
+      "name": "append_to_memory_hook",
+      "parameters": [
+        {
+          "annotation": "",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "self"
+        },
+        {
+          "annotation": "AdapterConfig",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "config"
+        },
+        {
+          "annotation": "str",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "filename"
+        },
+        {
+          "annotation": "str",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "content"
+        }
+      ],
+      "return_annotation": "None"
+    },
+    {
+      "is_abstract": false,
+      "is_async": false,
+      "name": "capabilities",
+      "parameters": [
+        {
+          "annotation": "",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "self"
+        }
+      ],
+      "return_annotation": "RuntimeCapabilities"
+    },
+    {
+      "is_abstract": true,
+      "is_async": true,
+      "name": "create_executor",
+      "parameters": [
+        {
+          "annotation": "",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "self"
+        },
+        {
+          "annotation": "AdapterConfig",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "config"
+        }
+      ],
+      "return_annotation": "AgentExecutor"
+    },
+    {
+      "is_abstract": true,
+      "is_async": false,
+      "name": "description",
+      "parameters": [],
+      "return_annotation": "str"
+    },
+    {
+      "is_abstract": true,
+      "is_async": false,
+      "name": "display_name",
+      "parameters": [],
+      "return_annotation": "str"
+    },
+    {
+      "is_abstract": false,
+      "is_async": false,
+      "name": "get_config_schema",
+      "parameters": [],
+      "return_annotation": "dict"
+    },
+    {
+      "is_abstract": false,
+      "is_async": false,
+      "name": "idle_timeout_override",
+      "parameters": [
+        {
+          "annotation": "",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "self"
+        }
+      ],
+      "return_annotation": "int | None"
+    },
+    {
+      "is_abstract": false,
+      "is_async": true,
+      "name": "inject_plugins",
+      "parameters": [
+        {
+          "annotation": "",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "self"
+        },
+        {
+          "annotation": "AdapterConfig",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "config"
+        },
+        {
+          "annotation": "",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "plugins"
+        }
+      ],
+      "return_annotation": "None"
+    },
+    {
+      "is_abstract": false,
+      "is_async": true,
+      "name": "install_plugins_via_registry",
+      "parameters": [
+        {
+          "annotation": "",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "self"
+        },
+        {
+          "annotation": "AdapterConfig",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "config"
+        },
+        {
+          "annotation": "",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "plugins"
+        }
+      ],
+      "return_annotation": "list"
+    },
+    {
+      "is_abstract": false,
+      "is_async": false,
+      "name": "memory_filename",
+      "parameters": [
+        {
+          "annotation": "",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "self"
+        }
+      ],
+      "return_annotation": "str"
+    },
+    {
+      "is_abstract": true,
+      "is_async": false,
+      "name": "name",
+      "parameters": [],
+      "return_annotation": "str"
+    },
+    {
+      "is_abstract": false,
+      "is_async": false,
+      "name": "pre_stop_state",
+      "parameters": [
+        {
+          "annotation": "",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "self"
+        }
+      ],
+      "return_annotation": "dict"
+    },
+    {
+      "is_abstract": false,
+      "is_async": false,
+      "name": "register_subagent_hook",
+      "parameters": [
+        {
+          "annotation": "",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "self"
+        },
+        {
+          "annotation": "str",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "name"
+        },
+        {
+          "annotation": "dict",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "spec"
+        }
+      ],
+      "return_annotation": "None"
+    },
+    {
+      "is_abstract": false,
+      "is_async": false,
+      "name": "register_tool_hook",
+      "parameters": [
+        {
+          "annotation": "",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "self"
+        },
+        {
+          "annotation": "str",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "name"
+        },
+        {
+          "annotation": "",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "fn"
+        }
+      ],
+      "return_annotation": "None"
+    },
+    {
+      "is_abstract": false,
+      "is_async": false,
+      "name": "restore_state",
+      "parameters": [
+        {
+          "annotation": "",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "self"
+        },
+        {
+          "annotation": "dict",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "snapshot"
+        }
+      ],
+      "return_annotation": "None"
+    },
+    {
+      "is_abstract": true,
+      "is_async": true,
+      "name": "setup",
+      "parameters": [
+        {
+          "annotation": "",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "self"
+        },
+        {
+          "annotation": "AdapterConfig",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "config"
+        }
+      ],
+      "return_annotation": "None"
+    },
+    {
+      "is_abstract": false,
+      "is_async": true,
+      "name": "transcript_lines",
+      "parameters": [
+        {
+          "annotation": "",
+          "has_default": false,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "self"
+        },
+        {
+          "annotation": "int",
+          "has_default": true,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "since"
+        },
+        {
+          "annotation": "int",
+          "has_default": true,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "limit"
+        }
+      ],
+      "return_annotation": "dict"
+    }
+  ]
+}
