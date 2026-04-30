@@ -100,14 +100,75 @@ def _build_signature_snapshot() -> dict:
     return {"class": "BaseAdapter", "methods": methods}
 
 
+def _dataclass_record(cls: type) -> dict:
+    """Stable JSON shape for a public dataclass exported from
+    adapter_base. Captures field name + type annotation + default
+    presence so renaming, retyping, or making-required-vs-optional
+    drift trips the gate.
+
+    Note on defaults: we record presence-of-default, not the default
+    value. A literal default like ``False`` or ``None`` is part of the
+    contract (templates inherit it), but reproducing it here would
+    require value-shape stringifying that's brittle for non-trivial
+    defaults (lists, dataclasses-as-defaults). Presence is enough to
+    catch the dangerous transitions (required → optional and vice
+    versa).
+    """
+    import dataclasses as _dc
+
+    fields = []
+    for f in _dc.fields(cls):
+        fields.append({
+            "name": f.name,
+            "annotation": _annotation_repr(f.type) if not isinstance(f.type, str) else f.type,
+            "has_default": f.default is not _dc.MISSING or f.default_factory is not _dc.MISSING,
+        })
+    return {
+        "name": cls.__name__,
+        "frozen": getattr(cls, "__dataclass_params__").frozen,
+        "fields": fields,
+    }
+
+
+def _build_dataclass_snapshot() -> list[dict]:
+    """Snapshot the public dataclasses exported from adapter_base.
+
+    These types form the call-and-return shape between the platform
+    and every adapter:
+      - SetupResult: returned by adapter._common_setup()
+      - AdapterConfig: passed into adapter setup hooks
+      - RuntimeCapabilities: returned by adapter.capabilities() and
+        consumed by platform-side dispatch routing (#117). A field
+        rename here silently disables every native-capability flag
+        every adapter currently declares.
+    """
+    from adapter_base import AdapterConfig, RuntimeCapabilities, SetupResult
+
+    classes = [SetupResult, AdapterConfig, RuntimeCapabilities]
+    return [_dataclass_record(cls) for cls in classes]
+
+
+def _build_full_snapshot() -> dict:
+    """Combined snapshot — BaseAdapter methods + public dataclasses."""
+    return {
+        **_build_signature_snapshot(),
+        "dataclasses": _build_dataclass_snapshot(),
+    }
+
+
 def test_base_adapter_signature_matches_snapshot():
     """Pin BaseAdapter's public API surface against a frozen snapshot.
+
+    Covers BOTH method signatures AND public dataclass field shapes
+    (SetupResult, AdapterConfig, RuntimeCapabilities). Renaming a
+    RuntimeCapabilities field would silently disable every adapter's
+    capability declaration without this gate.
 
     On failure, the test prints both the expected and actual snapshot
     JSON so the diff is human-readable. Updating the snapshot is the
     explicit ack that a template-affecting API change is intentional.
     """
-    actual = _build_signature_snapshot()
+    actual = _build_full_snapshot()
     if not SNAPSHOT_PATH.exists():
         # First-run convenience: write the snapshot if missing. A reviewer
         # of the introducing PR sees the new file in the diff.
@@ -126,7 +187,7 @@ def test_base_adapter_signature_matches_snapshot():
         expected_str = json.dumps(expected, indent=2, sort_keys=True)
         pytest.fail(
             "BaseAdapter signature drifted from snapshot.\n\n"
-            f"To update intentionally:\n  cp <(python -c 'from tests.test_adapter_base_signature import _build_signature_snapshot; import json; print(json.dumps(_build_signature_snapshot(), indent=2, sort_keys=True))') {SNAPSHOT_PATH}\n"
+            f"To update intentionally:\n  cp <(python -c 'from tests.test_adapter_base_signature import _build_full_snapshot; import json; print(json.dumps(_build_full_snapshot(), indent=2, sort_keys=True))') {SNAPSHOT_PATH}\n"
             "Or rerun with the snapshot deleted to regenerate.\n\n"
             f"=== EXPECTED ({SNAPSHOT_PATH.name}) ===\n{expected_str}\n\n"
             f"=== ACTUAL (current adapter_base.py) ===\n{actual_str}\n"
@@ -164,3 +225,59 @@ def test_snapshot_has_required_methods():
             "updates AND remove the entry from `required` in this test with "
             "a justification."
         )
+
+
+def test_snapshot_has_required_dataclass_fields():
+    """Defense-in-depth for the dataclass shapes — same rationale as
+    test_snapshot_has_required_methods but for fields that adapters
+    pattern-match on.
+
+    The most load-bearing case: RuntimeCapabilities flags drive
+    platform-side dispatch routing. Renaming a flag silently turns
+    every adapter's native-capability declaration into a no-op
+    (the platform fallback runs), with no AttributeError to surface
+    the breakage.
+    """
+    if not SNAPSHOT_PATH.exists():
+        pytest.skip(f"{SNAPSHOT_PATH.name} not generated yet")
+
+    snapshot = json.loads(SNAPSHOT_PATH.read_text())
+    dataclasses = {dc["name"]: dc for dc in snapshot.get("dataclasses", [])}
+
+    expected = {
+        "RuntimeCapabilities": {
+            # Each flag here drives a specific platform-side consumer
+            # (heartbeat, cron, session, etc). Removing one without
+            # coordinated platform-side migration silently drops back
+            # to the platform fallback — see project memory
+            # `project_runtime_native_pluggable.md`.
+            "provides_native_heartbeat",
+            "provides_native_scheduler",
+            "provides_native_session",
+        },
+        "AdapterConfig": {
+            "model",
+            "system_prompt",
+        },
+        "SetupResult": {
+            "system_prompt",
+            "loaded_skills",
+        },
+    }
+
+    for cls_name, required_fields in expected.items():
+        if cls_name not in dataclasses:
+            pytest.fail(
+                f"Public dataclass {cls_name} missing from snapshot — "
+                "either it was removed from adapter_base, OR the snapshot "
+                "wasn't regenerated after a refactor."
+            )
+        actual_fields = {f["name"] for f in dataclasses[cls_name]["fields"]}
+        missing = required_fields - actual_fields
+        if missing:
+            pytest.fail(
+                f"{cls_name} is missing required fields: {sorted(missing)}.\n"
+                "Either restore them on adapter_base.py, OR coordinate template "
+                "updates AND remove the entry from `expected` in this test "
+                "with a justification."
+            )

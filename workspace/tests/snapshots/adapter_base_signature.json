@@ -1,5 +1,130 @@
 {
   "class": "BaseAdapter",
+  "dataclasses": [
+    {
+      "fields": [
+        {
+          "annotation": "str",
+          "has_default": false,
+          "name": "system_prompt"
+        },
+        {
+          "annotation": "list",
+          "has_default": false,
+          "name": "loaded_skills"
+        },
+        {
+          "annotation": "list",
+          "has_default": false,
+          "name": "langchain_tools"
+        },
+        {
+          "annotation": "bool",
+          "has_default": false,
+          "name": "is_coordinator"
+        },
+        {
+          "annotation": "list",
+          "has_default": false,
+          "name": "children"
+        }
+      ],
+      "frozen": false,
+      "name": "SetupResult"
+    },
+    {
+      "fields": [
+        {
+          "annotation": "str",
+          "has_default": false,
+          "name": "model"
+        },
+        {
+          "annotation": "str | None",
+          "has_default": true,
+          "name": "system_prompt"
+        },
+        {
+          "annotation": "list[str]",
+          "has_default": true,
+          "name": "tools"
+        },
+        {
+          "annotation": "dict[str, typing.Any]",
+          "has_default": true,
+          "name": "runtime_config"
+        },
+        {
+          "annotation": "str",
+          "has_default": true,
+          "name": "config_path"
+        },
+        {
+          "annotation": "str",
+          "has_default": true,
+          "name": "workspace_id"
+        },
+        {
+          "annotation": "list[str]",
+          "has_default": true,
+          "name": "prompt_files"
+        },
+        {
+          "annotation": "int",
+          "has_default": true,
+          "name": "a2a_port"
+        },
+        {
+          "annotation": "Any",
+          "has_default": true,
+          "name": "heartbeat"
+        }
+      ],
+      "frozen": false,
+      "name": "AdapterConfig"
+    },
+    {
+      "fields": [
+        {
+          "annotation": "bool",
+          "has_default": true,
+          "name": "provides_native_heartbeat"
+        },
+        {
+          "annotation": "bool",
+          "has_default": true,
+          "name": "provides_native_scheduler"
+        },
+        {
+          "annotation": "bool",
+          "has_default": true,
+          "name": "provides_native_session"
+        },
+        {
+          "annotation": "bool",
+          "has_default": true,
+          "name": "provides_native_status_mgmt"
+        },
+        {
+          "annotation": "bool",
+          "has_default": true,
+          "name": "provides_native_retry"
+        },
+        {
+          "annotation": "bool",
+          "has_default": true,
+          "name": "provides_activity_decoration"
+        },
+        {
+          "annotation": "bool",
+          "has_default": true,
+          "name": "provides_channel_dispatch"
+        }
+      ],
+      "frozen": true,
+      "name": "RuntimeCapabilities"
+    }
+  ],
   "methods": [
     {
       "is_abstract": false,
