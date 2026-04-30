@@ -23,9 +23,12 @@ from a2a_tools import (
     tool_delegate_task,
     tool_delegate_task_async,
     tool_get_workspace_info,
+    tool_inbox_peek,
+    tool_inbox_pop,
     tool_list_peers,
     tool_recall_memory,
     tool_send_message_to_user,
+    tool_wait_for_message,
 )
 from platform_tools.registry import TOOLS as _PLATFORM_TOOL_SPECS
 
@@ -111,6 +114,18 @@ async def handle_tool_call(name: str, arguments: dict) -> str:
         return await tool_recall_memory(
             arguments.get("query", ""),
             arguments.get("scope", ""),
+        )
+    elif name == "wait_for_message":
+        return await tool_wait_for_message(
+            arguments.get("timeout_secs", 60.0),
+        )
+    elif name == "inbox_peek":
+        return await tool_inbox_peek(
+            arguments.get("limit", 10),
+        )
+    elif name == "inbox_pop":
+        return await tool_inbox_pop(
+            arguments.get("activity_id", ""),
         )
     return f"Unknown tool: {name}"
 

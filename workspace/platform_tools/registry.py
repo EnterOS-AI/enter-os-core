@@ -56,9 +56,12 @@ from a2a_tools import (
     tool_delegate_task,
     tool_delegate_task_async,
     tool_get_workspace_info,
+    tool_inbox_peek,
+    tool_inbox_pop,
     tool_list_peers,
     tool_recall_memory,
     tool_send_message_to_user,
+    tool_wait_for_message,
 )
 
 # Section name maps to the heading in the agent-facing system prompt.
@@ -300,6 +303,94 @@ _SEND_MESSAGE_TO_USER = ToolSpec(
 
 
 # ---------------------------------------------------------------------------
+# Inbox — inbound delivery for the standalone molecule-mcp path.
+#
+# These tools observe a poller-fed in-memory queue (see workspace/inbox.py).
+# They are universally registered so docs + adapters stay aligned, but
+# they only return real data in the standalone molecule-mcp runtime;
+# in-container runtimes return an informational "not enabled" message
+# because their delivery loop is push-based via the canvas WebSocket.
+# ---------------------------------------------------------------------------
+
+_WAIT_FOR_MESSAGE = ToolSpec(
+    name="wait_for_message",
+    short=(
+        "Block until the next inbound message (canvas user OR peer "
+        "agent) arrives, or until ``timeout_secs`` elapses."
+    ),
+    when_to_use=(
+        "Standalone-runtime ONLY (molecule-mcp wrapper). After "
+        "you reply, call this to wait for the next message — forms "
+        "the loop ``wait_for_message → respond → wait_for_message``. "
+        "Returns the head message non-destructively; call inbox_pop "
+        "with the activity_id once you've handled it. In-container "
+        "runtimes receive messages via push and should not call this."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "timeout_secs": {
+                "type": "number",
+                "description": (
+                    "Max seconds to block. Capped at 300. "
+                    "Default 60."
+                ),
+            },
+        },
+    },
+    impl=tool_wait_for_message,
+    section=A2A_SECTION,
+)
+
+_INBOX_PEEK = ToolSpec(
+    name="inbox_peek",
+    short="List pending inbound messages without removing them.",
+    when_to_use=(
+        "Standalone-runtime ONLY. Use to inspect what's queued "
+        "before deciding which to handle. Non-destructive — pair "
+        "with inbox_pop to consume after replying."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "description": "Max messages to return. Default 10.",
+            },
+        },
+    },
+    impl=tool_inbox_peek,
+    section=A2A_SECTION,
+)
+
+_INBOX_POP = ToolSpec(
+    name="inbox_pop",
+    short="Remove a handled message from the inbox queue by activity_id.",
+    when_to_use=(
+        "Standalone-runtime ONLY. Call after you've replied to a "
+        "message returned from wait_for_message or inbox_peek to "
+        "drop it from the queue. Idempotent — popping a missing "
+        "id reports removed=false without erroring."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "activity_id": {
+                "type": "string",
+                "description": (
+                    "activity_id of the message to remove (from "
+                    "inbox_peek / wait_for_message output)."
+                ),
+            },
+        },
+        "required": ["activity_id"],
+    },
+    impl=tool_inbox_pop,
+    section=A2A_SECTION,
+)
+
+
+# ---------------------------------------------------------------------------
 # HMA — hierarchical persistent memory
 # ---------------------------------------------------------------------------
 
@@ -374,6 +465,10 @@ TOOLS: list[ToolSpec] = [
     _LIST_PEERS,
     _GET_WORKSPACE_INFO,
     _SEND_MESSAGE_TO_USER,
+    # Inbox (standalone-only; in-container returns informational error)
+    _WAIT_FOR_MESSAGE,
+    _INBOX_PEEK,
+    _INBOX_POP,
     # HMA
     _COMMIT_MEMORY,
     _RECALL_MEMORY,

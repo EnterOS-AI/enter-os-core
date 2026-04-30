@@ -334,6 +334,14 @@ _CLI_A2A_COMMAND_KEYWORDS: dict[str, str | None] = {
     # grows a `say` or `message` subcommand, change `None` to that
     # keyword and the alignment test will start passing.
     "send_message_to_user": None,
+    # Inbox tools live in the standalone molecule-mcp wrapper only;
+    # CLI-subprocess runtimes have their own delivery loop and never
+    # invoke these. The alignment test allows None entries — they
+    # appear in registry.TOOLS for adapter consistency without
+    # forcing a CLI subcommand.
+    "wait_for_message": None,
+    "inbox_peek": None,
+    "inbox_pop": None,
 }
 
 
