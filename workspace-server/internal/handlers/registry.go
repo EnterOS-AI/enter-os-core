@@ -451,29 +451,19 @@ func (h *RegistryHandler) Register(c *gin.Context) {
 	// has no volume to write into.
 	//
 	// Lazy-heal (2026-04-30): if the column is NULL (legacy workspace
-	// provisioned before the shared-mint refactor), mint it inline and
-	// include in the response. Without this, legacy workspaces would need
-	// two round-trips before chat upload works — chat_files lazy-heals
-	// platform-side on first attempt, then the workspace must heartbeat
-	// to receive the freshly-minted secret. Heal-on-register collapses
-	// that to one round-trip.
-	secret, secretErr := wsauth.ReadPlatformInboundSecret(ctx, db.DB, payload.ID)
-	if secretErr != nil && errors.Is(secretErr, wsauth.ErrNoInboundSecret) {
-		minted, mintErr := wsauth.IssuePlatformInboundSecret(ctx, db.DB, payload.ID)
-		if mintErr != nil {
-			log.Printf("Registry: lazy-heal mint of platform_inbound_secret failed for %s: %v — workspace will 503 on chat upload until next register", payload.ID, mintErr)
-		} else {
-			secret = minted
-			secretErr = nil
-			log.Printf("Registry: lazy-healed platform_inbound_secret for %s (#2312 backfill)", payload.ID)
-		}
-	}
-	if secretErr == nil {
+	// provisioned before the shared-mint refactor), mint inline and
+	// include in the response. Without this, legacy workspaces would
+	// need two round-trips before chat upload works — chat_files
+	// lazy-heals platform-side on first attempt, then the workspace
+	// must heartbeat to receive the freshly-minted secret.
+	// Heal-on-register collapses that to one round-trip.
+	if secret, _, healErr := readOrLazyHealInboundSecret(ctx, payload.ID, "Registry"); healErr == nil {
 		response["platform_inbound_secret"] = secret
-	} else if !errors.Is(secretErr, wsauth.ErrNoInboundSecret) {
-		// Non-NoInboundSecret read errors (DB hiccup, etc.) — log loud.
-		log.Printf("Registry: read platform_inbound_secret for %s failed: %v", payload.ID, secretErr)
 	}
+	// Errors are non-fatal here — the workspace is online and can serve
+	// non-/internal traffic. The lazy-heal helper has already logged
+	// whichever sub-step failed (read or mint). If the secret never lands,
+	// chat upload surfaces the issue loudly with the RFC-#2312 hint.
 
 	c.JSON(http.StatusOK, response)
 }

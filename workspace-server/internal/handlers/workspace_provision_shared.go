@@ -36,13 +36,48 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"log"
 	"path/filepath"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/wsauth"
 )
+
+// readOrLazyHealInboundSecret reads the workspace's
+// platform_inbound_secret. On ErrNoInboundSecret it mints inline
+// (lazy-heal — RFC #2312 backfill for workspaces provisioned before
+// the shared-mint refactor closed the gap).
+//
+// Returns:
+//   - (secret, false, nil) — secret was already present
+//   - (secret, true,  nil) — secret was missing; just minted
+//   - ("",     false, err) — read failed (non-NoInboundSecret) OR mint failed
+//
+// opLabel prefixes log lines so operators can tell which feature
+// triggered the heal (e.g. "Registry", "chat_files Upload"). Centralized
+// here so the next "what to do when the secret is missing" decision —
+// rotation, audit, alerting — goes in ONE place. Same drift-prevention
+// rationale as resolveWorkspaceForwardCreds and mintWorkspaceSecrets.
+func readOrLazyHealInboundSecret(ctx context.Context, workspaceID, opLabel string) (secret string, healed bool, err error) {
+	s, readErr := wsauth.ReadPlatformInboundSecret(ctx, db.DB, workspaceID)
+	if readErr == nil {
+		return s, false, nil
+	}
+	if !errors.Is(readErr, wsauth.ErrNoInboundSecret) {
+		log.Printf("%s: read platform_inbound_secret failed for %s: %v", opLabel, workspaceID, readErr)
+		return "", false, readErr
+	}
+	minted, mintErr := wsauth.IssuePlatformInboundSecret(ctx, db.DB, workspaceID)
+	if mintErr != nil {
+		log.Printf("%s: lazy-heal mint of platform_inbound_secret failed for %s: %v", opLabel, workspaceID, mintErr)
+		return "", false, mintErr
+	}
+	log.Printf("%s: lazy-healed platform_inbound_secret for %s (#2312 backfill)", opLabel, workspaceID)
+	return minted, true, nil
+}
 
 // preparedProvisionContext carries the computed env + cfg through
 // the per-mode provisioner-Start step. Returned from

@@ -30,7 +30,6 @@ package handlers
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -41,7 +40,6 @@ import (
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
-	"github.com/Molecule-AI/molecule-monorepo/platform/internal/wsauth"
 	"github.com/gin-gonic/gin"
 )
 
@@ -120,41 +118,28 @@ func resolveWorkspaceForwardCreds(c *gin.Context, ctx context.Context, workspace
 	// upstream gate rather than re-validating here. Tracked at #2316
 	// for follow-up: forward-time re-validation as defense-in-depth.
 
-	secret, err := wsauth.ReadPlatformInboundSecret(ctx, db.DB, workspaceID)
+	secret, healed, err := readOrLazyHealInboundSecret(ctx, workspaceID, "chat_files "+op)
 	if err != nil {
-		if errors.Is(err, wsauth.ErrNoInboundSecret) {
-			// Lazy-heal: mint the secret now so future requests
-			// succeed. Pre-2026-04-30 the SaaS provision path didn't
-			// mint — every prod workspace started life with NULL
-			// platform_inbound_secret. The shared-mint refactor closes
-			// the new-workspace gap; this lazy-heal closes the
-			// existing-workspace gap without requiring a destructive
-			// reprovision.
-			//
-			// Why the request still 503s: the workspace's local
-			// /configs/.platform_inbound_secret is also empty until the
-			// next /registry/register response (registry.go:344-362)
-			// propagates the freshly-minted secret. The user retries
-			// once the workspace's heartbeat picks up the new secret
-			// (typically <30s).
-			if _, mintErr := wsauth.IssuePlatformInboundSecret(ctx, db.DB, workspaceID); mintErr != nil {
-				log.Printf("chat_files %s: lazy-heal mint failed for %s: %v", op, workspaceID, mintErr)
-				c.JSON(http.StatusServiceUnavailable, gin.H{
-					"error":  "workspace not yet enrolled in v2 " + op + " (RFC #2312)",
-					"detail": "Failed to mint inbound secret. Reprovision the workspace if this persists.",
-				})
-				return "", "", false
-			}
-			log.Printf("chat_files %s: lazy-healed platform_inbound_secret for %s — retry once workspace re-registers (#2312 backfill)", op, workspaceID)
-			c.JSON(http.StatusServiceUnavailable, gin.H{
-				"error":               "workspace re-registering — please retry in 30 seconds",
-				"detail":              "Inbound secret was just minted. Workspace will pick it up on its next heartbeat.",
-				"retry_after_seconds": 30,
-			})
-			return "", "", false
-		}
-		log.Printf("chat_files %s: read platform_inbound_secret failed for %s: %v", op, workspaceID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read workspace secret"})
+		// Either a non-NoInboundSecret read error (DB hiccup) or a mint
+		// failure during lazy-heal. The chat_files contract is to surface
+		// 503 with the RFC-#2312 reprovision hint in both cases — the user
+		// can't proceed and needs ops attention.
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":  "workspace not yet enrolled in v2 " + op + " (RFC #2312)",
+			"detail": "Failed to mint inbound secret. Reprovision the workspace if this persists.",
+		})
+		return "", "", false
+	}
+	if healed {
+		// The platform now has the secret but the workspace's
+		// /configs/.platform_inbound_secret is still empty until the next
+		// /registry/register response propagates it. User retries after
+		// the workspace's next heartbeat picks up the new secret (~30s).
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":               "workspace re-registering — please retry in 30 seconds",
+			"detail":              "Inbound secret was just minted. Workspace will pick it up on its next heartbeat.",
+			"retry_after_seconds": 30,
+		})
 		return "", "", false
 	}
 	return wsURL, secret, true
