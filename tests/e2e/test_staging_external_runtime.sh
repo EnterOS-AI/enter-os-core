@@ -258,15 +258,25 @@ ok "DB row stored as awaiting_agent (proof migration 046 applied)"
 log "5/8 Registering workspace via /registry/register..."
 [ -z "$WS_AUTH_TOKEN" ] && fail "No workspace auth token returned — register impossible"
 # Payload contract (workspace-server/internal/models/workspace.go RegisterPayload):
-#   id           — required, the workspace UUID (NOT "workspace_id" — that's the
-#                  heartbeat payload field; mixing them yields a 400 from
-#                  ShouldBindJSON because `id` has binding:"required").
-#   agent_card   — required (binding:"required"); minimal valid card is name+skills.
-#   url          — only validated for push-mode workspaces; runtime=external
-#                  resolves to poll (registry.go:resolveDeliveryMode), so
-#                  example.invalid is accepted as a placeholder URL the
-#                  platform never dispatches to.
-REGISTER_BODY=$(printf '{"id":"%s","url":"https://example.invalid:443","agent_card":{"name":"e2e-ext","skills":[{"id":"echo","name":"Echo"}]}}' "$WS_ID")
+#   id            — required, the workspace UUID (NOT "workspace_id" — that's the
+#                   heartbeat payload field; mixing them yields a 400 from
+#                   ShouldBindJSON because `id` has binding:"required").
+#   agent_card    — required (binding:"required"); minimal valid card is name+skills.
+#   delivery_mode — set explicitly to "poll" so url validation is skipped
+#                   regardless of whether the deployed image has the
+#                   runtime=external→poll default from PR #2382. Observed
+#                   2026-04-30 17:18Z: a freshly-provisioned staging tenant
+#                   was running an older workspace-server :latest image
+#                   that lacked resolveDeliveryMode's external→poll branch,
+#                   so the implicit default was push and validateAgentURL
+#                   400'd on example.invalid. Asserting on the implicit
+#                   default makes the *register call* itself fragile to
+#                   image-tag drift on the fleet — verify the default
+#                   separately (step 5b assertion) without depending on it
+#                   here.
+#   url           — accepted but not dispatched-to in poll mode, so
+#                   example.invalid is a valid sentinel.
+REGISTER_BODY=$(printf '{"id":"%s","url":"https://example.invalid:443","delivery_mode":"poll","agent_card":{"name":"e2e-ext","skills":[{"id":"echo","name":"Echo"}]}}' "$WS_ID")
 # Disable --fail-with-body for this one call so a 4xx surfaces the response
 # body (the bare CURL_COMMON would `set -e`-kill before we could log it).
 REGISTER_RESP=$(curl -sS --max-time 30 -w "\nHTTP_CODE=%{http_code}" -X POST "$TENANT_URL/registry/register" \
@@ -282,12 +292,16 @@ ONLINE_STATUS=$(echo "$GET_RESP" | python3 -c "import json,sys; print(json.load(
 [ "$ONLINE_STATUS" != "online" ] && fail "Expected online after register, got $ONLINE_STATUS"
 ok "Workspace transitioned to online"
 
-# Confirm delivery_mode defaulted to poll for runtime=external (PR #2382).
+# Confirm explicit delivery_mode=poll round-trips correctly. We now pass
+# poll explicitly above (see REGISTER_BODY) rather than rely on the
+# runtime=external→poll default, so this is a round-trip smoke check, not
+# a default-resolution check. The default is exercised by integration
+# tests in workspace-server/internal/handlers/registry_test.go.
 DELIVERY_MODE=$(echo "$GET_RESP" | python3 -c "import json,sys; print(json.load(sys.stdin).get('delivery_mode',''))")
 if [ "$DELIVERY_MODE" = "poll" ]; then
-  ok "delivery_mode=poll (resolveDeliveryMode external default working)"
+  ok "delivery_mode=poll (explicit-poll round-trip)"
 else
-  log "    delivery_mode=$DELIVERY_MODE (poll default may be off — non-fatal for this test)"
+  fail "Expected delivery_mode=poll (explicitly set in REGISTER_BODY), got $DELIVERY_MODE — register UPDATE not honoring payload.delivery_mode"
 fi
 
 # ─── 6. Stop heartbeating; wait past REMOTE_LIVENESS_STALE_AFTER ────────
