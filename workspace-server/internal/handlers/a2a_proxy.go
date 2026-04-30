@@ -21,6 +21,7 @@ import (
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/registry"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/wsauth"
@@ -305,16 +306,53 @@ func (h *WorkspaceHandler) proxyA2ARequest(ctx context.Context, workspaceID stri
 		return 0, nil, proxyErr
 	}
 
-	agentURL, proxyErr := h.resolveAgentURL(ctx, workspaceID)
-	if proxyErr != nil {
-		return 0, nil, proxyErr
-	}
-
+	// Normalize the JSON-RPC envelope BEFORE the poll-mode short-circuit
+	// so the activity_logs entry carries the protocol method name (initialize,
+	// message/send, etc.) — the polling agent uses that to dispatch the
+	// request body to the right handler. Doing it here also means a
+	// malformed payload fails the same way for push and poll callers
+	// (consistent 400 instead of "queued garbage").
 	normalizedBody, a2aMethod, proxyErr := normalizeA2APayload(body)
 	if proxyErr != nil {
 		return 0, nil, proxyErr
 	}
 	body = normalizedBody
+
+	// #2339 PR 2 — poll-mode short-circuit. When the target workspace
+	// is registered as delivery_mode=poll (e.g. an operator's laptop
+	// running molecule-mcp-claude-channel), the platform does NOT
+	// dispatch over HTTP — the agent has no public URL. Instead we record
+	// the A2A request to activity_logs and the agent picks it up via
+	// GET /activity?since_id= (PR 3).
+	//
+	// Returning here means we skip resolveAgentURL entirely (no SSRF check
+	// needed — there's no URL to validate; no DNS lookup against potentially-
+	// changing operator-side IPs) and skip the dispatch path completely
+	// (no Do(), no maybeMarkContainerDead). The response is a synthetic
+	// {status:"queued"} envelope so the caller (canvas, another workspace)
+	// knows delivery is acknowledged but pending consumption.
+	if lookupDeliveryMode(ctx, workspaceID) == models.DeliveryModePoll {
+		if logActivity {
+			h.logA2AReceiveQueued(ctx, workspaceID, callerID, body, a2aMethod)
+		}
+		respBody, marshalErr := json.Marshal(gin.H{
+			"status":        "queued",
+			"delivery_mode": models.DeliveryModePoll,
+			"method":        a2aMethod,
+		})
+		if marshalErr != nil {
+			return 0, nil, &proxyA2AError{
+				Status:   http.StatusInternalServerError,
+				Response: gin.H{"error": "failed to marshal poll-mode response"},
+			}
+		}
+		return http.StatusOK, respBody, nil
+	}
+
+	agentURL, proxyErr := h.resolveAgentURL(ctx, workspaceID)
+	if proxyErr != nil {
+		return 0, nil, proxyErr
+	}
 
 	startTime := time.Now()
 	resp, cancelFwd, err := h.dispatchA2A(ctx, workspaceID, agentURL, body, callerID)
