@@ -19,6 +19,7 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -291,3 +292,104 @@ func TestPrepareProvisionContext_ParentIDInjection(t *testing.T) {
 }
 
 func ptrStr(s string) *string { return &s }
+
+// TestReadOrLazyHealInboundSecret pins the four branches of the
+// shared lazy-heal helper directly. Each call site (chat_files,
+// registry) has its own integration test, but those go through the
+// public handlers and conflate the helper's behavior with the
+// caller's response shape. This direct test pins the (secret, healed,
+// err) contract on its own so a future refactor that breaks the
+// helper signal — e.g., returning healed=true on a read-success path,
+// or swallowing a mint error — fails immediately.
+//
+// The four branches:
+//
+//   1. Secret already present → (s, false, nil)
+//   2. Secret missing, mint succeeds → (minted, true, nil)
+//   3. Secret missing, mint fails → ("", false, mint-err)
+//   4. Read fails (non-NoInboundSecret) → ("", false, read-err)
+func TestReadOrLazyHealInboundSecret(t *testing.T) {
+	t.Run("secret already present → no heal, no error", func(t *testing.T) {
+		mock := setupTestDB(t)
+		mock.ExpectQuery(`SELECT platform_inbound_secret FROM workspaces WHERE id = \$1`).
+			WithArgs("ws-1").
+			WillReturnRows(sqlmock.NewRows([]string{"platform_inbound_secret"}).AddRow("present-secret"))
+
+		secret, healed, err := readOrLazyHealInboundSecret(context.Background(), "ws-1", "TestOp")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if secret != "present-secret" {
+			t.Errorf("secret: got %q, want %q", secret, "present-secret")
+		}
+		if healed {
+			t.Errorf("healed should be false when secret was already present")
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("unexpected sqlmock state — read happened but mint should NOT have: %v", err)
+		}
+	})
+
+	t.Run("secret missing → mint succeeds → returns healed=true", func(t *testing.T) {
+		mock := setupTestDB(t)
+		mock.ExpectQuery(`SELECT platform_inbound_secret FROM workspaces WHERE id = \$1`).
+			WithArgs("ws-2").
+			WillReturnRows(sqlmock.NewRows([]string{"platform_inbound_secret"}).AddRow(nil))
+		mock.ExpectExec(`UPDATE workspaces SET platform_inbound_secret = \$1 WHERE id = \$2`).
+			WithArgs(sqlmock.AnyArg(), "ws-2").
+			WillReturnResult(sqlmock.NewResult(0, 1))
+
+		secret, healed, err := readOrLazyHealInboundSecret(context.Background(), "ws-2", "TestOp")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if secret == "" {
+			t.Error("expected a freshly-minted secret string, got empty")
+		}
+		if !healed {
+			t.Error("healed should be true after lazy-heal mint succeeded")
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("sqlmock expectations not met — mint did NOT run: %v", err)
+		}
+	})
+
+	t.Run("secret missing → mint fails → returns err and not healed", func(t *testing.T) {
+		mock := setupTestDB(t)
+		mock.ExpectQuery(`SELECT platform_inbound_secret FROM workspaces WHERE id = \$1`).
+			WithArgs("ws-3").
+			WillReturnRows(sqlmock.NewRows([]string{"platform_inbound_secret"}).AddRow(nil))
+		mock.ExpectExec(`UPDATE workspaces SET platform_inbound_secret = \$1 WHERE id = \$2`).
+			WithArgs(sqlmock.AnyArg(), "ws-3").
+			WillReturnError(sql.ErrConnDone)
+
+		secret, healed, err := readOrLazyHealInboundSecret(context.Background(), "ws-3", "TestOp")
+		if err == nil {
+			t.Fatal("expected mint error, got nil")
+		}
+		if secret != "" {
+			t.Errorf("expected empty secret on mint failure, got %q", secret)
+		}
+		if healed {
+			t.Error("healed must be false when mint failed")
+		}
+	})
+
+	t.Run("read fails (non-NoInboundSecret) → returns err and not healed", func(t *testing.T) {
+		mock := setupTestDB(t)
+		mock.ExpectQuery(`SELECT platform_inbound_secret FROM workspaces WHERE id = \$1`).
+			WithArgs("ws-4").
+			WillReturnError(sql.ErrConnDone)
+
+		secret, healed, err := readOrLazyHealInboundSecret(context.Background(), "ws-4", "TestOp")
+		if err == nil {
+			t.Fatal("expected read error, got nil")
+		}
+		if secret != "" {
+			t.Errorf("expected empty secret on read failure, got %q", secret)
+		}
+		if healed {
+			t.Error("healed must be false when read failed")
+		}
+	})
+}
