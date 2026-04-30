@@ -246,8 +246,15 @@ jobs:
 
           echo "Verifying ${#SLUGS[@]} tenant(s) against EXPECTED_SHA=${EXPECTED_SHA:0:7}..."
 
-          MISMATCH_COUNT=0
-          MISMATCH_LINES=()
+          # Two distinct failure modes — STALE (the #2395 bug class, hard-fail)
+          # vs UNREACHABLE (teardown race, soft-warn). See the staging variant's
+          # comment for the full rationale; same logic applies on prod even
+          # though prod has fewer ephemeral tenants — the asymmetry would be a
+          # gratuitous fork.
+          STALE_COUNT=0
+          UNREACHABLE_COUNT=0
+          STALE_LINES=()
+          UNREACHABLE_LINES=()
           for slug in "${SLUGS[@]}"; do
             URL="https://${slug}.${TENANT_DOMAIN}/buildinfo"
             # 30s total: tenant just SSM-restarted, may still be coming
@@ -257,15 +264,15 @@ jobs:
             BODY=$(curl -sS --max-time 30 --retry 3 --retry-delay 5 --retry-connrefused "$URL" || true)
             ACTUAL_SHA=$(echo "$BODY" | jq -r '.git_sha // ""' 2>/dev/null || echo "")
             if [ -z "$ACTUAL_SHA" ]; then
-              MISMATCH_COUNT=$((MISMATCH_COUNT + 1))
-              MISMATCH_LINES+=("| $slug | (no /buildinfo response) | ${EXPECTED_SHA:0:7} | ❌ unreachable |")
+              UNREACHABLE_COUNT=$((UNREACHABLE_COUNT + 1))
+              UNREACHABLE_LINES+=("| $slug | (no /buildinfo response) | ${EXPECTED_SHA:0:7} | ⚠ unreachable (likely teardown race) |")
               continue
             fi
             if [ "$ACTUAL_SHA" = "$EXPECTED_SHA" ]; then
               echo "  $slug: ${ACTUAL_SHA:0:7} ✓"
             else
-              MISMATCH_COUNT=$((MISMATCH_COUNT + 1))
-              MISMATCH_LINES+=("| $slug | ${ACTUAL_SHA:0:7} | ${EXPECTED_SHA:0:7} | ❌ stale |")
+              STALE_COUNT=$((STALE_COUNT + 1))
+              STALE_LINES+=("| $slug | ${ACTUAL_SHA:0:7} | ${EXPECTED_SHA:0:7} | ❌ stale |")
             fi
           done
 
@@ -275,20 +282,33 @@ jobs:
             echo ""
             echo "Expected SHA: \`${EXPECTED_SHA:0:7}\`"
             echo ""
-            if [ $MISMATCH_COUNT -gt 0 ]; then
-              echo "**${MISMATCH_COUNT} mismatch(es) — these tenants did NOT pick up the new image despite ssm_status=Success:**"
+            if [ $STALE_COUNT -gt 0 ]; then
+              echo "**${STALE_COUNT} STALE tenant(s) — these did NOT pick up the new image despite ssm_status=Success:**"
               echo ""
               echo "| Slug | Actual /buildinfo SHA | Expected | Status |"
               echo "|------|----------------------|----------|--------|"
-              for line in "${MISMATCH_LINES[@]}"; do echo "$line"; done
-            else
+              for line in "${STALE_LINES[@]}"; do echo "$line"; done
+              echo ""
+            fi
+            if [ $UNREACHABLE_COUNT -gt 0 ]; then
+              echo "**${UNREACHABLE_COUNT} unreachable tenant(s) — likely teardown race (soft-warn, not failing):**"
+              echo ""
+              echo "| Slug | Actual /buildinfo SHA | Expected | Status |"
+              echo "|------|----------------------|----------|--------|"
+              for line in "${UNREACHABLE_LINES[@]}"; do echo "$line"; done
+              echo ""
+            fi
+            if [ $STALE_COUNT -eq 0 ] && [ $UNREACHABLE_COUNT -eq 0 ]; then
               echo "All ${#SLUGS[@]} tenants returned matching SHA. ✓"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ $MISMATCH_COUNT -gt 0 ]; then
-            echo "::error::$MISMATCH_COUNT tenant(s) did not pick up the new image. ssm_status=Success was misleading — see job summary."
+          if [ $UNREACHABLE_COUNT -gt 0 ]; then
+            echo "::warning::$UNREACHABLE_COUNT tenant(s) unreachable post-redeploy. Likely benign teardown race — CP healthz monitor catches real outages."
+          fi
+          if [ $STALE_COUNT -gt 0 ]; then
+            echo "::error::$STALE_COUNT tenant(s) returned a stale SHA. ssm_status=Success was misleading — see job summary."
             exit 1
           fi
 
-          echo "::notice::Tenant fleet redeploy complete + verified — all tenants on ${EXPECTED_SHA:0:7}."
+          echo "::notice::Tenant fleet redeploy complete — all reachable tenants on ${EXPECTED_SHA:0:7} (${UNREACHABLE_COUNT} unreachable, soft-warned)."
