@@ -306,6 +306,17 @@ jobs:
           if [ $UNREACHABLE_COUNT -gt 0 ]; then
             echo "::warning::$UNREACHABLE_COUNT tenant(s) unreachable post-redeploy. Likely benign teardown race — CP healthz monitor catches real outages."
           fi
+
+          # Belt-and-suspenders sanity floor: same logic as the staging
+          # variant — see that file's comment for the full rationale.
+          # Floor only applies when fleet >= 4; below that, canary-verify
+          # is the actual gate.
+          TOTAL_VERIFIED=${#SLUGS[@]}
+          if [ $TOTAL_VERIFIED -ge 4 ] && [ $UNREACHABLE_COUNT -gt $((TOTAL_VERIFIED / 2)) ]; then
+            echo "::error::$UNREACHABLE_COUNT of $TOTAL_VERIFIED tenant(s) unreachable — exceeds 50% threshold on a fleet large enough that this signals a real outage, not teardown race."
+            exit 1
+          fi
+
           if [ $STALE_COUNT -gt 0 ]; then
             echo "::error::$STALE_COUNT tenant(s) returned a stale SHA. ssm_status=Success was misleading — see job summary."
             exit 1

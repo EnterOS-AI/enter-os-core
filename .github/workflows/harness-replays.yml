@@ -1,0 +1,167 @@
+name: Harness Replays
+
+# Boots tests/harness (production-shape compose topology with TenantGuard,
+# /cp/* proxy, canvas proxy, real production Dockerfile.tenant) and runs
+# every replay under tests/harness/replays/. Fails the PR if any replay
+# fails.
+#
+# Why this exists: 2026-04-30 we shipped #2398 which added /buildinfo as
+# a public route in router.go but forgot to add it to TenantGuard's
+# allowlist. The handler-level test in buildinfo_test.go constructed a
+# minimal gin engine without TenantGuard — green. The harness's
+# buildinfo-stale-image.sh replay would have caught it (cf-proxy doesn't
+# inject X-Molecule-Org-Id, so the curl path is identical to production's
+# redeploy verifier), but no one ran the harness pre-merge. The bug
+# shipped; the redeploy verifier silently soft-warned every tenant as
+# "unreachable" for ~1 day before being noticed.
+#
+# This gate makes "did you actually run the harness?" a CI invariant
+# instead of a memory-discipline thing.
+#
+# Trigger model — match e2e-api.yml: always FIRES on push/pull_request
+# to staging+main, real work is gated per-step on detect-changes output.
+# One job → one check run → branch-protection-clean (the SKIPPED-in-set
+# trap from PR #2264 is documented in e2e-api.yml's e2e-api job comment).
+
+on:
+  push:
+    branches: [main, staging]
+    paths:
+      - 'workspace-server/**'
+      - 'canvas/**'
+      - 'tests/harness/**'
+      - '.github/workflows/harness-replays.yml'
+  pull_request:
+    branches: [main, staging]
+    paths:
+      - 'workspace-server/**'
+      - 'canvas/**'
+      - 'tests/harness/**'
+      - '.github/workflows/harness-replays.yml'
+  workflow_dispatch:
+  merge_group:
+    types: [checks_requested]
+
+concurrency:
+  # Per-SHA grouping. Per-ref kept hitting the auto-promote-staging
+  # cancellation deadlock — see e2e-api.yml's concurrency block for
+  # the 2026-04-28 incident that codified this pattern.
+  group: harness-replays-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        id: filter
+        with:
+          filters: |
+            run:
+              - 'workspace-server/**'
+              - 'canvas/**'
+              - 'tests/harness/**'
+              - '.github/workflows/harness-replays.yml'
+      - id: decide
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=${{ steps.filter.outputs.run }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ONE job that always runs. Real work is gated per-step on
+  # detect-changes.outputs.run so an unrelated PR (e.g. doc-only
+  # change to molecule-controlplane wired here later) emits the
+  # required check without spending CI cycles. Single-job pattern
+  # matches e2e-api.yml — see that workflow's comment for why a
+  # job-level `if: false` would block branch protection via the
+  # SKIPPED-in-set bug.
+  harness-replays:
+    needs: detect-changes
+    name: Harness Replays
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: No-op pass (paths filter excluded this commit)
+        if: needs.detect-changes.outputs.run != 'true'
+        run: |
+          echo "No workspace-server / canvas / tests/harness / workflow changes — Harness Replays gate satisfied without running."
+          echo "::notice::Harness Replays no-op pass (paths filter excluded this commit)."
+
+      - if: needs.detect-changes.outputs.run == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Checkout sibling plugin repo
+        # Dockerfile.tenant copies molecule-ai-plugin-github-app-auth/
+        # at the build-context root (see workspace-server/Dockerfile.tenant
+        # line 19). PLUGIN_REPO_PAT pattern matches publish-workspace-server-image.yml.
+        if: needs.detect-changes.outputs.run == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: Molecule-AI/molecule-ai-plugin-github-app-auth
+          path: molecule-ai-plugin-github-app-auth
+          token: ${{ secrets.PLUGIN_REPO_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Add /etc/hosts entry for harness-tenant.localhost
+        # ubuntu-latest doesn't auto-resolve *.localhost the way macOS
+        # sometimes does. seed.sh + replay scripts curl
+        # http://harness-tenant.localhost:8080 — without the entry
+        # they'd fail with getaddrinfo ENOTFOUND.
+        if: needs.detect-changes.outputs.run == 'true'
+        run: |
+          echo "127.0.0.1 harness-tenant.localhost" | sudo tee -a /etc/hosts >/dev/null
+          getent hosts harness-tenant.localhost
+
+      - name: Install Python deps for replays
+        # peer-discovery-404 (and future replays) eval Python against the
+        # running tenant — importing workspace/a2a_client.py pulls in
+        # httpx. tests/harness/requirements.txt holds just the HTTP-client
+        # surface to keep CI install fast (~3s) vs the full
+        # workspace/requirements.txt (~30s).
+        if: needs.detect-changes.outputs.run == 'true'
+        run: pip install -r tests/harness/requirements.txt
+
+      - name: Run all replays against the harness
+        # run-all-replays.sh: boot via up.sh → seed via seed.sh → run
+        # every replays/*.sh → tear down via down.sh on EXIT (trap).
+        # Non-zero exit on any replay failure.
+        #
+        # KEEP_UP=1: without this, the script's trap-on-EXIT tears
+        # down containers immediately on failure, leaving the dump
+        # step below with nothing to dump (verified on PR #2410's
+        # first run — tenant became unhealthy, trap fired, dump
+        # step saw empty containers). Keeping them up lets the
+        # failure path collect tenant/cp-stub/cf-proxy logs. The
+        # always-run "Force teardown" step does the actual cleanup.
+        if: needs.detect-changes.outputs.run == 'true'
+        working-directory: tests/harness
+        env:
+          KEEP_UP: "1"
+        run: ./run-all-replays.sh
+
+      - name: Dump compose logs on failure
+        if: failure() && needs.detect-changes.outputs.run == 'true'
+        working-directory: tests/harness
+        run: |
+          echo "=== docker compose ps ==="
+          docker compose -f compose.yml ps || true
+          echo "=== tenant logs ==="
+          docker compose -f compose.yml logs tenant || true
+          echo "=== cp-stub logs ==="
+          docker compose -f compose.yml logs cp-stub || true
+          echo "=== cf-proxy logs ==="
+          docker compose -f compose.yml logs cf-proxy || true
+          echo "=== postgres logs (last 100) ==="
+          docker compose -f compose.yml logs --tail 100 postgres || true
+
+      - name: Force teardown
+        # We pass KEEP_UP=1 to run-all-replays.sh so the dump step
+        # above sees real containers — that means we own teardown
+        # explicitly here. Always run.
+        if: always() && needs.detect-changes.outputs.run == 'true'
+        working-directory: tests/harness
+        run: ./down.sh || true

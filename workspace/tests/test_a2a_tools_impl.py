@@ -536,11 +536,54 @@ class TestToolSendMessageToUser:
 
 class TestToolListPeers:
 
-    async def test_no_peers_returns_isolated_message(self):
+    async def test_true_empty_returns_no_peers_message_without_diagnostic(self):
+        """200 + empty list → 'no peers in the platform registry' (no failure)."""
         import a2a_tools
-        with patch("a2a_tools.get_peers", return_value=[]):
+        with patch("a2a_tools.get_peers_with_diagnostic", return_value=([], None)):
             result = await a2a_tools.tool_list_peers()
-        assert "No peers available" in result
+        # The new wording explicitly says no peers exist (no parent/sibling/child).
+        # Avoids the misleading "may be isolated" hint when discovery succeeded.
+        assert "no peers" in result.lower()
+        assert "No peers found." not in result  # diagnostic prefix should NOT appear on the success branch
+        assert "may be isolated" not in result
+
+    async def test_auth_failure_surfaces_restart_hint(self):
+        """401/403 → tool_list_peers must surface the auth failure + restart hint, not 'isolated'."""
+        import a2a_tools
+        diag = "Authentication to platform failed (HTTP 401). Restart the workspace to re-mint."
+        with patch("a2a_tools.get_peers_with_diagnostic", return_value=([], diag)):
+            result = await a2a_tools.tool_list_peers()
+        assert "401" in result
+        assert "Authentication" in result
+        # The "isolated" message was the bug — make sure the regression doesn't return.
+        assert "may be isolated" not in result
+
+    async def test_404_surfaces_registration_hint(self):
+        """404 → tool_list_peers tells the user re-registration is needed."""
+        import a2a_tools
+        diag = "Workspace ID ws-test is not registered with the platform (HTTP 404). Re-register."
+        with patch("a2a_tools.get_peers_with_diagnostic", return_value=([], diag)):
+            result = await a2a_tools.tool_list_peers()
+        assert "404" in result
+        assert "registered" in result.lower()
+
+    async def test_5xx_surfaces_platform_error(self):
+        """5xx → 'Platform error' surfaced; agent / user can correctly route to oncall."""
+        import a2a_tools
+        diag = "Platform error: HTTP 503."
+        with patch("a2a_tools.get_peers_with_diagnostic", return_value=([], diag)):
+            result = await a2a_tools.tool_list_peers()
+        assert "503" in result
+        assert "Platform error" in result
+
+    async def test_network_error_surfaces_unreachable(self):
+        """Network error → operator can tell that the workspace can't reach the platform at all."""
+        import a2a_tools
+        diag = "Cannot reach platform at http://platform.example: timed out"
+        with patch("a2a_tools.get_peers_with_diagnostic", return_value=([], diag)):
+            result = await a2a_tools.tool_list_peers()
+        assert "Cannot reach platform" in result
+        assert "timed out" in result
 
     async def test_peers_returned_formatted_lines(self):
         """Peers list is formatted as '- name (ID: ..., status: ..., role: ...)'."""
@@ -550,7 +593,7 @@ class TestToolListPeers:
             {"id": "ws-1", "name": "Alpha", "status": "online", "role": "worker"},
             {"id": "ws-2", "name": "Beta", "status": "idle", "role": "analyst"},
         ]
-        with patch("a2a_tools.get_peers", return_value=peers):
+        with patch("a2a_tools.get_peers_with_diagnostic", return_value=(peers, None)):
             result = await a2a_tools.tool_list_peers()
 
         assert "Alpha" in result
@@ -567,7 +610,7 @@ class TestToolListPeers:
         # Clear any prior cache entries for these IDs
         a2a_tools._peer_names.pop("ws-cache-test", None)
         peers = [{"id": "ws-cache-test", "name": "CacheMe", "status": "online", "role": "w"}]
-        with patch("a2a_tools.get_peers", return_value=peers):
+        with patch("a2a_tools.get_peers_with_diagnostic", return_value=(peers, None)):
             await a2a_tools.tool_list_peers()
 
         assert a2a_tools._peer_names.get("ws-cache-test") == "CacheMe"
@@ -577,7 +620,7 @@ class TestToolListPeers:
         import a2a_tools
 
         peers = [{"id": "ws-3", "name": "Gamma"}]  # no status, no role
-        with patch("a2a_tools.get_peers", return_value=peers):
+        with patch("a2a_tools.get_peers_with_diagnostic", return_value=(peers, None)):
             result = await a2a_tools.tool_list_peers()
 
         assert "Gamma" in result

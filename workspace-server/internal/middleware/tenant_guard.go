@@ -53,6 +53,7 @@ const tenantOrgIDHeader = "X-Molecule-Org-Id"
 // here only bypasses the cross-org routing check, not auth.
 var tenantGuardAllowlist = map[string]struct{}{
 	"/health":             {},
+	"/buildinfo":          {},
 	"/metrics":            {},
 	"/registry/register":  {},
 	"/registry/heartbeat": {},

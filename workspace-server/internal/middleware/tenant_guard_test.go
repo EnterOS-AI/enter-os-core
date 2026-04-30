@@ -8,13 +8,15 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// helper: build a router with TenantGuard configured to `orgID` and two
-// representative routes — a regular API route and two allowlisted ones.
+// helper: build a router with TenantGuard configured to `orgID` and a
+// representative API route plus the public allowlisted ones (/health,
+// /buildinfo, /metrics).
 func newGuardedRouter(orgID string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(TenantGuardWithOrgID(orgID))
 	r.GET("/health", func(c *gin.Context) { c.String(200, "ok") })
+	r.GET("/buildinfo", func(c *gin.Context) { c.String(200, "buildinfo") })
 	r.GET("/metrics", func(c *gin.Context) { c.String(200, "metrics") })
 	r.GET("/workspaces", func(c *gin.Context) { c.String(200, "workspaces") })
 	return r
@@ -71,10 +73,14 @@ func TestTenantGuard_MissingHeaderIs404(t *testing.T) {
 }
 
 // Allowlisted paths bypass the guard even in tenant mode — required for health
-// probes (Fly Machines checks) and Prometheus scrape.
+// probes (Fly Machines checks), Prometheus scrape, and the redeploy-fleet
+// /buildinfo verification step. /buildinfo without an org header used to
+// 404-via-NoRoute → canvas (HTML), which made the redeploy verifier think
+// every tenant was stale even when the binary was current. Pin this so a
+// future allowlist edit can't silently regress that check.
 func TestTenantGuard_AllowlistBypassesCheck(t *testing.T) {
 	r := newGuardedRouter("org-abc")
-	for _, path := range []string{"/health", "/metrics"} {
+	for _, path := range []string{"/health", "/buildinfo", "/metrics"} {
 		w := doRequest(r, path, "") // no header
 		if w.Code != 200 {
 			t.Errorf("%s: allowlisted path should return 200 without header, got %d", path, w.Code)

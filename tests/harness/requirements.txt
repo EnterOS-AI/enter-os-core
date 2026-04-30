@@ -1,0 +1,14 @@
+# Harness-replay Python deps — minimal set for replays/*.sh scripts that
+# eval Python against the running tenant (e.g. importing
+# workspace/a2a_client.py to assert parser behavior).
+#
+# This is intentionally smaller than workspace/requirements.txt: the
+# replays don't need a2a-sdk, langchain, opentelemetry, etc. — only the
+# HTTP client surface that the imported helpers depend on. Adding the
+# full workspace deps would slow every harness CI run by ~30s for no
+# gain.
+#
+# Add a line here (with a version constraint matching workspace/requirements.txt)
+# when a new replay introduces a new Python import.
+
+httpx>=0.28.1

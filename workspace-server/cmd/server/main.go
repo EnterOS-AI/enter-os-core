@@ -223,13 +223,24 @@ func main() {
 		registry.StartLivenessMonitor(c, onWorkspaceOffline)
 	})
 
-	// Proactive container health sweep — detects dead containers faster than Redis TTL.
-	// Checks all "online" workspaces against Docker every 15 seconds.
-	if prov != nil {
-		go supervised.RunWithRecover(ctx, "health-sweep", func(c context.Context) {
-			registry.StartHealthSweep(c, prov, 15*time.Second, onWorkspaceOffline)
-		})
-	}
+	// Proactive health sweep — two passes per tick:
+	//   1. Docker-side: checks "online" workspaces against the local Docker
+	//      daemon (only runs when prov is non-nil, i.e. self-hosted mode).
+	//   2. Remote-side: scans runtime='external' rows whose last_heartbeat_at
+	//      is past REMOTE_LIVENESS_STALE_AFTER and flips them to
+	//      awaiting_agent. Runs regardless of provisioner mode — SaaS
+	//      tenants need this even though they don't run Docker locally,
+	//      because external-runtime workspaces are operator-managed and
+	//      the platform-side liveness sweep is the only thing that
+	//      transitions them off 'online' when the operator's CLI dies.
+	//
+	// Pre-2026-04-30 this goroutine was gated on prov != nil, which silently
+	// disabled the remote-side sweep on every SaaS tenant. The function in
+	// healthsweep.go has always handled nil checker correctly; only the
+	// orchestration was wrong. See #2392's CI failure for the trace.
+	go supervised.RunWithRecover(ctx, "health-sweep", func(c context.Context) {
+		registry.StartHealthSweep(c, prov, 15*time.Second, onWorkspaceOffline)
+	})
 
 	// Orphan-container reconcile sweep — finds running containers
 	// whose workspace row is already status='removed' and stops

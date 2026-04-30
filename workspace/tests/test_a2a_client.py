@@ -578,6 +578,149 @@ class TestGetPeers:
 
 
 # ---------------------------------------------------------------------------
+# get_peers_with_diagnostic — issue #2397
+#
+# Pin: an empty peer list MUST come with an actionable diagnostic on every
+# non-200 + every transport failure. The bug was that get_peers swallowed
+# every failure mode behind `return []`, leaving the agent's tool wrapper
+# with no way to distinguish "you have no peers" from "auth broke" / "404
+# from registry" / "platform 5xx" / "network timeout". Each of these
+# requires a different operator action.
+# ---------------------------------------------------------------------------
+
+class TestGetPeersWithDiagnostic:
+
+    async def test_200_returns_peers_and_no_diagnostic(self):
+        """200 with valid list → (peers, None). diagnostic stays None on success."""
+        import a2a_client
+
+        peers = [{"id": "ws-1", "name": "Alpha"}]
+        resp = _make_response(200, peers)
+        mock_client = _make_mock_client(get_resp=resp)
+
+        with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
+            result, diag = await a2a_client.get_peers_with_diagnostic()
+
+        assert result == peers
+        assert diag is None
+
+    async def test_200_empty_list_returns_no_diagnostic(self):
+        """200 with [] → (peers=[], diag=None). Truly no peers is success, not error."""
+        import a2a_client
+
+        resp = _make_response(200, [])
+        mock_client = _make_mock_client(get_resp=resp)
+
+        with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
+            result, diag = await a2a_client.get_peers_with_diagnostic()
+
+        assert result == []
+        assert diag is None
+
+    async def test_401_returns_auth_diagnostic(self):
+        """401 → diagnostic mentions auth + restart hint."""
+        import a2a_client
+
+        resp = _make_response(401, {"detail": "unauthorized"})
+        mock_client = _make_mock_client(get_resp=resp)
+
+        with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
+            result, diag = await a2a_client.get_peers_with_diagnostic()
+
+        assert result == []
+        assert diag is not None
+        assert "401" in diag
+        assert "Authentication" in diag or "authentication" in diag.lower()
+
+    async def test_403_returns_auth_diagnostic(self):
+        """403 → same auth-failure diagnostic shape as 401."""
+        import a2a_client
+
+        resp = _make_response(403, {"detail": "forbidden"})
+        mock_client = _make_mock_client(get_resp=resp)
+
+        with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
+            result, diag = await a2a_client.get_peers_with_diagnostic()
+
+        assert result == []
+        assert diag is not None
+        assert "403" in diag
+
+    async def test_404_returns_registration_diagnostic(self):
+        """404 → diagnostic tells operator the workspace ID is missing from the registry."""
+        import a2a_client
+
+        resp = _make_response(404, {"detail": "not found"})
+        mock_client = _make_mock_client(get_resp=resp)
+
+        with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
+            result, diag = await a2a_client.get_peers_with_diagnostic()
+
+        assert result == []
+        assert diag is not None
+        assert "404" in diag
+        assert "registered" in diag.lower() or "registration" in diag.lower()
+
+    async def test_500_returns_platform_error_diagnostic(self):
+        """5xx → 'Platform error: HTTP <code>.'"""
+        import a2a_client
+
+        resp = _make_response(503, {"detail": "service unavailable"})
+        mock_client = _make_mock_client(get_resp=resp)
+
+        with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
+            result, diag = await a2a_client.get_peers_with_diagnostic()
+
+        assert result == []
+        assert diag is not None
+        assert "503" in diag
+        assert "Platform error" in diag or "platform error" in diag.lower()
+
+    async def test_network_exception_returns_unreachable_diagnostic(self):
+        """httpx exception → diagnostic mentions PLATFORM_URL + the underlying error."""
+        import a2a_client
+
+        mock_client = _make_mock_client(get_exc=TimeoutError("connection timed out"))
+
+        with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
+            result, diag = await a2a_client.get_peers_with_diagnostic()
+
+        assert result == []
+        assert diag is not None
+        assert "Cannot reach platform" in diag or "cannot reach" in diag.lower()
+        assert "timed out" in diag
+
+    async def test_200_with_non_list_body_returns_diagnostic(self):
+        """200 but body is a dict → diagnostic flags shape mismatch (regression guard)."""
+        import a2a_client
+
+        resp = _make_response(200, {"oops": "should have been a list"})
+        mock_client = _make_mock_client(get_resp=resp)
+
+        with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
+            result, diag = await a2a_client.get_peers_with_diagnostic()
+
+        assert result == []
+        assert diag is not None
+        assert "list" in diag.lower()
+
+    async def test_get_peers_shim_preserves_bare_list_contract(self):
+        """get_peers() still returns just list[dict] — no API break for non-tool callers."""
+        import a2a_client
+
+        peers = [{"id": "ws-1", "name": "Alpha"}]
+        resp = _make_response(200, peers)
+        mock_client = _make_mock_client(get_resp=resp)
+
+        with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
+            result = await a2a_client.get_peers()
+
+        # Must be a list, not a tuple — bare-list shim contract.
+        assert isinstance(result, list)
+        assert result == peers
+
+
+# ---------------------------------------------------------------------------
 # get_workspace_info
 # ---------------------------------------------------------------------------
 
