@@ -469,3 +469,78 @@ def test_tool_instructions_precede_peer_section(tmp_path):
     a2a_idx = result.index("## Inter-Agent Communication")
     peers_idx = result.index("## Your Peers")
     assert a2a_idx < peers_idx, "A2A instructions must come before the peer list"
+
+
+# --- Capabilities preamble (#2332) ---
+
+
+def test_capabilities_preamble_appears_in_mcp_prompt(tmp_path):
+    """MCP-runtime agents see the Platform Capabilities preamble at top."""
+    (tmp_path / "system-prompt.md").write_text("Role-specific content.")
+
+    result = build_system_prompt(
+        config_path=str(tmp_path),
+        workspace_id="ws-1",
+        loaded_skills=[],
+        peers=[],
+    )
+
+    assert "## Platform Capabilities" in result
+
+
+def test_capabilities_preamble_lists_every_registry_tool(tmp_path):
+    """Every tool in the registry appears in the preamble — drift catches at test time."""
+    (tmp_path / "system-prompt.md").write_text("Base.")
+
+    result = build_system_prompt(
+        config_path=str(tmp_path),
+        workspace_id="ws-1",
+        loaded_skills=[],
+        peers=[],
+    )
+
+    from platform_tools.registry import a2a_tools, memory_tools
+
+    preamble_start = result.index("## Platform Capabilities")
+    # Detailed sections come later — only check the slice between the
+    # preamble heading and the next ## heading after it.
+    next_section = result.index("\n## ", preamble_start + 1)
+    preamble_block = result[preamble_start:next_section]
+
+    for spec in a2a_tools() + memory_tools():
+        assert f"`{spec.name}`" in preamble_block, (
+            f"tool {spec.name!r} from registry missing from capabilities preamble"
+        )
+
+
+def test_capabilities_preamble_precedes_prompt_files(tmp_path):
+    """Preamble lands before role-specific prompt files so agents see the
+    toolkit before reading their role docs."""
+    (tmp_path / "system-prompt.md").write_text("ROLE_MARKER_SENTINEL")
+
+    result = build_system_prompt(
+        config_path=str(tmp_path),
+        workspace_id="ws-1",
+        loaded_skills=[],
+        peers=[],
+    )
+
+    cap_idx = result.index("## Platform Capabilities")
+    role_idx = result.index("ROLE_MARKER_SENTINEL")
+    assert cap_idx < role_idx, "Capabilities preamble must precede role prompt files"
+
+
+def test_capabilities_preamble_skipped_for_cli_runtime(tmp_path):
+    """CLI-runtime agents see _A2A_INSTRUCTIONS_CLI's hand-written commands
+    instead — the preamble's MCP tool names would conflict."""
+    (tmp_path / "system-prompt.md").write_text("Base.")
+
+    result = build_system_prompt(
+        config_path=str(tmp_path),
+        workspace_id="ws-1",
+        loaded_skills=[],
+        peers=[],
+        a2a_mcp=False,
+    )
+
+    assert "## Platform Capabilities" not in result

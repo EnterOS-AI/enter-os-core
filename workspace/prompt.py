@@ -4,7 +4,11 @@ import logging
 import os
 from pathlib import Path
 
-from executor_helpers import get_a2a_instructions, get_hma_instructions
+from executor_helpers import (
+    get_a2a_instructions,
+    get_capabilities_preamble,
+    get_hma_instructions,
+)
 from skill_loader.loader import LoadedSkill
 from shared_runtime import build_peer_section
 
@@ -91,6 +95,17 @@ def build_system_prompt(
     if platform_instructions:
         parts.append("# Platform Instructions\n")
         parts.append(platform_instructions)
+
+    # Platform Capabilities preamble (#2332): tight inventory of every
+    # native tool agents have access to, generated from the registry.
+    # Goes BEFORE prompt files so the role-specific docs read against
+    # a known toolkit, not a discovery problem. Detailed when_to_use
+    # docs still appear later in the A2A and HMA sections — this
+    # preamble is the elevator pitch ("you have these"); the later
+    # sections are the manual ("here's when and how").
+    capabilities = get_capabilities_preamble(mcp=a2a_mcp)
+    if capabilities:
+        parts.append(capabilities)
 
     # Load prompt files in order
     files_to_load = list(prompt_files or [])

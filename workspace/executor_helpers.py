@@ -370,6 +370,59 @@ def _render_section(heading: str, specs, footer: str = "") -> str:
     return "\n".join(parts).rstrip() + "\n"
 
 
+def get_capabilities_preamble(mcp: bool = True) -> str:
+    """Return a top-of-prompt one-glance summary of platform-native tools.
+
+    Shipped 2026-04-30 (#2332): the dogfooding session surfaced that
+    agents weren't using A2A delegation, persistent memory, or
+    send_message_to_user — these capabilities WERE documented further
+    down in the system prompt (## Inter-Agent Communication, ## HMA),
+    but agents tend to read top-down and commit to a plan before
+    reaching that section.
+
+    The preamble is the elevator pitch: every tool name + its short
+    description in a tight bulleted block, immediately after Platform
+    Instructions. The detailed when_to_use docs further down still
+    apply — this is "you have these tools; consult the dedicated
+    section for usage details."
+
+    Generated from the same `platform_tools.registry` ToolSpecs as the
+    detailed sections, so renames/additions in registry.py flow through
+    automatically. Returns "" for CLI-runtime agents (mcp=False) — they
+    get a different overall prompt shape and the registry's MCP-named
+    tools wouldn't match the CLI command vocabulary.
+    """
+    if not mcp:
+        # CLI-runtime agents see _A2A_INSTRUCTIONS_CLI's hand-written
+        # command list instead. Skip the preamble to avoid confusing
+        # agents with two name vocabularies (MCP tool names vs CLI
+        # subcommand keywords).
+        return ""
+
+    from platform_tools.registry import a2a_tools, memory_tools
+
+    parts = [
+        "## Platform Capabilities",
+        "",
+        (
+            "You have native access to these platform tools. Use them "
+            "proactively — they're how multi-agent collaboration, "
+            "persistent memory, and user communication actually work. "
+            "Detailed usage guidance for each lives in the dedicated "
+            "sections below; this preamble is just the inventory."
+        ),
+        "",
+        "**Inter-agent collaboration (A2A):**",
+    ]
+    for spec in a2a_tools():
+        parts.append(f"- `{spec.name}` — {spec.short}")
+    parts.append("")
+    parts.append("**Persistent memory (HMA):**")
+    for spec in memory_tools():
+        parts.append(f"- `{spec.name}` — {spec.short}")
+    return "\n".join(parts).rstrip() + "\n"
+
+
 def get_a2a_instructions(mcp: bool = True) -> str:
     """Return inter-agent communication instructions for system-prompt injection.
 
