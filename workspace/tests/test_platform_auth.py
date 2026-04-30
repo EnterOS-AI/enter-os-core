@@ -65,13 +65,34 @@ def test_save_token_rotation_overwrites(tmp_path):
     assert platform_auth.get_token() == "token-v2"
 
 
-def test_auth_headers_when_no_token_is_empty():
+def test_auth_headers_when_no_token_and_no_platform_is_empty(monkeypatch):
+    monkeypatch.delenv("PLATFORM_URL", raising=False)
     assert platform_auth.auth_headers() == {}
 
 
-def test_auth_headers_format():
+def test_auth_headers_when_no_token_includes_origin(monkeypatch):
+    """Origin must be set even without a token — the WAF gates ALL
+    requests to /workspaces and /registry, including pre-token bootstrap
+    register calls. Without Origin those would silently 404 from Next.js."""
+    monkeypatch.setenv("PLATFORM_URL", "https://tenant.moleculesai.app")
+    assert platform_auth.auth_headers() == {"Origin": "https://tenant.moleculesai.app"}
+
+
+def test_auth_headers_format(monkeypatch):
+    monkeypatch.delenv("PLATFORM_URL", raising=False)
     platform_auth.save_token("hello-world")
     assert platform_auth.auth_headers() == {"Authorization": "Bearer hello-world"}
+
+
+def test_auth_headers_includes_origin_when_platform_url_set(monkeypatch):
+    """Both Authorization and Origin land on the same dict so the
+    SaaS edge WAF accepts every workspace-runtime request."""
+    monkeypatch.setenv("PLATFORM_URL", "https://hongmingwang.moleculesai.app")
+    platform_auth.save_token("tok")
+    assert platform_auth.auth_headers() == {
+        "Authorization": "Bearer tok",
+        "Origin": "https://hongmingwang.moleculesai.app",
+    }
 
 
 def test_get_token_caches_after_first_disk_read(tmp_path, monkeypatch):
@@ -119,3 +140,66 @@ def test_default_configs_dir_fallback(tmp_path, monkeypatch):
     # We expect _token_file() to resolve under /configs when env is unset.
     path = platform_auth._token_file()
     assert str(path).startswith("/configs")
+
+
+# ==================== MOLECULE_WORKSPACE_TOKEN env-var fallback ====================
+# External-runtime path: operators running the universal MCP server outside
+# a container have no /configs volume. They pass the token via env. The
+# fallback must NOT override the file when both are present (in-container
+# rotation must keep working) and MUST surface env when the file is absent.
+
+
+def test_get_token_uses_env_when_file_absent(tmp_path, monkeypatch):
+    monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN", "env-token-xyz")
+    assert not (tmp_path / ".auth_token").exists()
+    assert platform_auth.get_token() == "env-token-xyz"
+
+
+def test_get_token_file_takes_priority_over_env(tmp_path, monkeypatch):
+    """In-container rotation must keep working — file overrides env."""
+    (tmp_path / ".auth_token").write_text("file-token")
+    monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN", "env-token-should-be-ignored")
+    assert platform_auth.get_token() == "file-token"
+
+
+def test_get_token_falls_back_to_env_when_file_empty(tmp_path, monkeypatch):
+    """Empty file is equivalent to absent — env still fires."""
+    (tmp_path / ".auth_token").write_text("")
+    monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN", "env-token-fallback")
+    assert platform_auth.get_token() == "env-token-fallback"
+
+
+def test_get_token_strips_env_whitespace(tmp_path, monkeypatch):
+    monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN", "  padded-env-token  \n")
+    assert platform_auth.get_token() == "padded-env-token"
+
+
+def test_get_token_ignores_empty_env(tmp_path, monkeypatch):
+    """Empty string env var is the same as unset — no false positive."""
+    monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN", "")
+    assert platform_auth.get_token() is None
+
+
+def test_get_token_ignores_whitespace_only_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN", "   \n\n   ")
+    assert platform_auth.get_token() is None
+
+
+def test_env_token_caches_like_file_token(tmp_path, monkeypatch):
+    """Once env-token is read, mutating env shouldn't affect cached value."""
+    monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN", "first-env-token")
+    assert platform_auth.get_token() == "first-env-token"
+    monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN", "second-env-token")
+    # Cache returns first value
+    assert platform_auth.get_token() == "first-env-token"
+    # clear_cache forces re-read of env
+    platform_auth.clear_cache()
+    assert platform_auth.get_token() == "second-env-token"
+
+
+def test_auth_headers_works_with_env_token(tmp_path, monkeypatch):
+    """Header construction must use the env-fallback token, not silently
+    return {} when no file exists."""
+    monkeypatch.delenv("PLATFORM_URL", raising=False)
+    monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN", "external-bearer")
+    assert platform_auth.auth_headers() == {"Authorization": "Bearer external-bearer"}

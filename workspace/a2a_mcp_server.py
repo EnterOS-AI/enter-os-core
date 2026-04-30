@@ -201,5 +201,23 @@ async def main():  # pragma: no cover
             break
 
 
-if __name__ == "__main__":  # pragma: no cover
+def cli_main() -> None:  # pragma: no cover
+    """Synchronous wrapper around the async MCP stdio loop.
+
+    Called by ``mcp_cli.main`` (the ``molecule-mcp`` console-script
+    entry point in scripts/build_runtime_package.py) AFTER env
+    validation and the standalone register + heartbeat thread setup.
+    Direct callers (in-container code that already validated env and
+    runs heartbeat.py separately) can also invoke this — it's the
+    smallest possible "run the MCP stdio JSON-RPC loop" surface.
+
+    Wheel-smoke gates in scripts/wheel_smoke.py pin the importability
+    of this name (alongside ``mcp_cli.main``) so a silent rename can't
+    break every external-runtime operator's MCP install — the 0.1.16
+    ``main_sync`` rename incident is the cautionary precedent.
+    """
     asyncio.run(main())
+
+
+if __name__ == "__main__":  # pragma: no cover
+    cli_main()

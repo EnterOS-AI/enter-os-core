@@ -720,6 +720,34 @@ func (h *RegistryHandler) evaluateStatus(c *gin.Context, payload models.Heartbea
 		})
 	}
 
+	// Auto-recovery from awaiting_agent: external workspaces are flipped
+	// to 'awaiting_agent' by registry/healthsweep when their heartbeat
+	// goes stale (>staleAfter). When the operator's poller comes back —
+	// for example when their laptop wakes from sleep — the heartbeat
+	// resumes but does NOT re-register. Without this branch the
+	// workspace would stay 'awaiting_agent' forever (visible as OFFLINE
+	// in the canvas with a "Restart" CTA) even though the agent is
+	// actively heartbeating.
+	//
+	// Discovered while smoke-testing the universal MCP path against a
+	// freshly-registered external workspace: register set status=online
+	// + sent one heartbeat → healthsweep then flipped back to
+	// awaiting_agent because the smoke didn't loop. The molecule-mcp
+	// console script's built-in heartbeat thread (PR #2413) drives
+	// continuous heartbeats now, but without THIS branch those
+	// heartbeats can't lift the workspace out of awaiting_agent on
+	// their own.
+	if currentStatus == "awaiting_agent" {
+		if _, err := db.DB.ExecContext(ctx, `UPDATE workspaces SET status = $1, updated_at = now() WHERE id = $2 AND status = 'awaiting_agent'`, models.StatusOnline, payload.WorkspaceID); err != nil {
+			log.Printf("Heartbeat: failed to recover %s from awaiting_agent: %v", payload.WorkspaceID, err)
+		} else {
+			log.Printf("Heartbeat: transitioned %s from awaiting_agent to online (heartbeat received)", payload.WorkspaceID)
+		}
+		h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_ONLINE", payload.WorkspaceID, map[string]interface{}{
+			"recovered_from": currentStatus,
+		})
+	}
+
 	// #1870 Phase 1: drain one queued A2A request if the target reports
 	// spare capacity. The heartbeat's active_tasks field reflects what the
 	// workspace runtime is ACTUALLY running right now, independent of

@@ -39,22 +39,42 @@ def _token_file() -> Path:
 
 
 def get_token() -> str | None:
-    """Return the cached token, reading it from disk on first call."""
+    """Return the cached token, reading it from disk on first call.
+
+    Resolution order:
+        1. In-process cache (hot path)
+        2. ``${CONFIGS_DIR}/.auth_token`` file (in-container default —
+           the platform writes this on provision and rotates it on
+           restart)
+        3. ``MOLECULE_WORKSPACE_TOKEN`` env var (external-runtime path —
+           operators running the universal MCP server outside a
+           container have no /configs volume to populate, so they pass
+           the token via env)
+
+    File-first preserves in-container behavior unchanged: containers
+    always have /configs/.auth_token on disk, env-var fallback only
+    fires when there's no file. This is additive — no existing caller
+    sees a behavior change.
+    """
     global _cached_token
     if _cached_token is not None:
         return _cached_token
     path = _token_file()
-    if not path.exists():
-        return None
-    try:
-        tok = path.read_text().strip()
-    except OSError as exc:
-        logger.warning("platform_auth: failed to read %s: %s", path, exc)
-        return None
-    if not tok:
-        return None
-    _cached_token = tok
-    return tok
+    if path.exists():
+        try:
+            tok = path.read_text().strip()
+        except OSError as exc:
+            logger.warning("platform_auth: failed to read %s: %s", path, exc)
+            tok = ""
+        if tok:
+            _cached_token = tok
+            return tok
+    # File missing or empty — fall back to env (external-runtime path).
+    env_tok = os.environ.get("MOLECULE_WORKSPACE_TOKEN", "").strip()
+    if env_tok:
+        _cached_token = env_tok
+        return env_tok
+    return None
 
 
 def save_token(token: str) -> None:
@@ -91,11 +111,26 @@ def auth_headers() -> dict[str, str]:
     """Return a header dict to merge into httpx calls. Empty if no token
     is available yet — callers send the request as-is and the platform's
     heartbeat handler grandfathers pre-token workspaces through until
-    their next /registry/register issues one."""
+    their next /registry/register issues one.
+
+    Always sets ``Origin`` to ``PLATFORM_URL`` when that env var is set.
+    On hosted SaaS deployments the tenant's edge WAF requires a same-
+    origin header — without it ``/workspaces/*`` and ``/registry/*/peers``
+    requests get silently rewritten to the canvas Next.js app, which has
+    no such routes and returns an empty 404. Inside-container calls are
+    unaffected (Docker-internal PLATFORM_URLs aren't behind the WAF).
+    Discovered while smoke-testing the molecule-mcp external-runtime
+    path against a live tenant — every tool call returned "not found"
+    because the WAF was eating them.
+    """
+    headers: dict[str, str] = {}
+    platform_url = os.environ.get("PLATFORM_URL", "").strip()
+    if platform_url:
+        headers["Origin"] = platform_url
     tok = get_token()
-    if not tok:
-        return {}
-    return {"Authorization": f"Bearer {tok}"}
+    if tok:
+        headers["Authorization"] = f"Bearer {tok}"
+    return headers
 
 
 def self_source_headers(workspace_id: str) -> dict[str, str]:
