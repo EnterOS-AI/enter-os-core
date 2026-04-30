@@ -112,28 +112,88 @@ func TestChatUpload_WorkspaceNotInDB(t *testing.T) {
 	}
 }
 
-func TestChatUpload_NoInboundSecret(t *testing.T) {
+// TestChatUpload_NoInboundSecret_LazyHeal pins the lazy-heal flow
+// added 2026-04-30 alongside the SaaS shared-prepare refactor:
+//
+//   1. Reading the workspace's platform_inbound_secret returns NULL
+//      (legacy row from before RFC #2312).
+//   2. Handler MUST call wsauth.IssuePlatformInboundSecret (an UPDATE
+//      on the workspaces row) to backfill the secret, so the next
+//      upload after the workspace's heartbeat picks it up succeeds
+//      without operator action.
+//   3. Response is 503 with retry_after_seconds=30 — the workspace's
+//      local /configs/.platform_inbound_secret is also empty, so the
+//      forward this request would do still fails. The user retries
+//      after the next register response delivers the new secret.
+//
+// Pre-fix (before the lazy-heal): handlers returned 503 with
+// "Reprovision the workspace" — accurate, but every legacy workspace
+// would 503 forever until ops manually triggered a reprovision.
+func TestChatUpload_NoInboundSecret_LazyHeal(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)
 
 	// Legacy row: URL set but platform_inbound_secret is NULL.
 	wsID := "00000000-0000-0000-0000-000000000041"
 	expectURL(mock, wsID, "http://127.0.0.1:1")
-	expectInboundSecret(mock, wsID, nil) // NULL
+	expectInboundSecret(mock, wsID, nil) // NULL — triggers lazy-heal
+	// Lazy-heal mint MUST land. If this expectation isn't matched,
+	// the upload handler skipped the backfill and ops would have to
+	// manually reprovision every legacy workspace.
+	mock.ExpectExec(`UPDATE workspaces SET platform_inbound_secret = \$1 WHERE id = \$2`).
+		WithArgs(sqlmock.AnyArg(), wsID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
 	body, ct := uploadFixture(t)
 	c, w := makeUploadRequest(t, wsID, body, ct)
 	h.Upload(c)
 
-	// 503 with detail steering ops to reprovision. NOT 200, NOT a
-	// silent no-bearer forward (which would land as a 401 that the
-	// user can't action).
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected 503 when platform_inbound_secret missing, got %d: %s", w.Code, w.Body.String())
 	}
+	// Lazy-heal-success body steers the user to retry; the failure
+	// body steers them to reprovision. Distinguishing them pins which
+	// branch ran.
+	if !strings.Contains(w.Body.String(), "retry") {
+		t.Errorf("expected lazy-heal success response (retry hint), got: %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "30") {
+		t.Errorf("expected retry_after_seconds=30 in body, got: %s", w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations not met — lazy-heal mint did NOT run, regression of #2312 backfill: %v", err)
+	}
+}
+
+// TestChatUpload_NoInboundSecret_LazyHealFailure pins the alternate
+// branch: the platform_inbound_secret is NULL AND the lazy-heal mint
+// itself fails (e.g. DB unreachable). Handler must surface the
+// reprovision-steering error rather than silently swallowing.
+func TestChatUpload_NoInboundSecret_LazyHealFailure(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	wsID := "00000000-0000-0000-0000-000000000042"
+	expectURL(mock, wsID, "http://127.0.0.1:1")
+	expectInboundSecret(mock, wsID, nil) // NULL — triggers lazy-heal
+	mock.ExpectExec(`UPDATE workspaces SET platform_inbound_secret = \$1 WHERE id = \$2`).
+		WithArgs(sqlmock.AnyArg(), wsID).
+		WillReturnError(sql.ErrConnDone) // mint fails
+
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	body, ct := uploadFixture(t)
+	c, w := makeUploadRequest(t, wsID, body, ct)
+	h.Upload(c)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when lazy-heal fails, got %d: %s", w.Code, w.Body.String())
+	}
 	if !strings.Contains(w.Body.String(), "RFC #2312") {
-		t.Errorf("expected detail to reference RFC #2312, got: %s", w.Body.String())
+		t.Errorf("expected detail to reference RFC #2312 on lazy-heal failure, got: %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "Reprovision") {
+		t.Errorf("expected reprovision hint on mint failure, got: %s", w.Body.String())
 	}
 }
 
@@ -372,13 +432,22 @@ func TestChatDownload_WorkspaceNotInDB(t *testing.T) {
 	}
 }
 
-func TestChatDownload_NoInboundSecret(t *testing.T) {
+// TestChatDownload_NoInboundSecret_LazyHeal — same lazy-heal flow
+// as TestChatUpload_NoInboundSecret_LazyHeal but on the Download
+// handler. Pinned separately because Upload + Download have
+// independent code paths into ReadPlatformInboundSecret; a partial
+// regression that healed Upload but skipped Download is the kind of
+// drift we want to fail the test, not ship.
+func TestChatDownload_NoInboundSecret_LazyHeal(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)
 
 	wsID := "00000000-0000-0000-0000-000000000051"
 	expectURL(mock, wsID, "http://127.0.0.1:1")
 	expectInboundSecret(mock, wsID, nil)
+	mock.ExpectExec(`UPDATE workspaces SET platform_inbound_secret = \$1 WHERE id = \$2`).
+		WithArgs(sqlmock.AnyArg(), wsID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
 	c, w := makeDownloadRequest(t, wsID, "/workspace/foo.txt")
@@ -387,8 +456,34 @@ func TestChatDownload_NoInboundSecret(t *testing.T) {
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected 503 when platform_inbound_secret missing, got %d: %s", w.Code, w.Body.String())
 	}
+	if !strings.Contains(w.Body.String(), "retry") {
+		t.Errorf("expected lazy-heal success response (retry hint), got: %s", w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations not met — Download lazy-heal mint did NOT run: %v", err)
+	}
+}
+
+func TestChatDownload_NoInboundSecret_LazyHealFailure(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	wsID := "00000000-0000-0000-0000-000000000052"
+	expectURL(mock, wsID, "http://127.0.0.1:1")
+	expectInboundSecret(mock, wsID, nil)
+	mock.ExpectExec(`UPDATE workspaces SET platform_inbound_secret = \$1 WHERE id = \$2`).
+		WithArgs(sqlmock.AnyArg(), wsID).
+		WillReturnError(sql.ErrConnDone)
+
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	c, w := makeDownloadRequest(t, wsID, "/workspace/foo.txt")
+	h.Download(c)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when lazy-heal fails, got %d: %s", w.Code, w.Body.String())
+	}
 	if !strings.Contains(w.Body.String(), "RFC #2312") {
-		t.Errorf("expected detail to reference RFC #2312, got: %s", w.Body.String())
+		t.Errorf("expected detail to reference RFC #2312 on lazy-heal failure, got: %s", w.Body.String())
 	}
 }
 
