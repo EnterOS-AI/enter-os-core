@@ -1206,6 +1206,10 @@ func (s *stubFailingCPProv) GetConsoleOutput(_ context.Context, _ string) (strin
 	panic("stubFailingCPProv.GetConsoleOutput not expected on the provisionWorkspaceCP failure path")
 }
 
+func (s *stubFailingCPProv) IsRunning(_ context.Context, _ string) (bool, error) {
+	panic("stubFailingCPProv.IsRunning not expected on the provisionWorkspaceCP failure path")
+}
+
 // TestProvisionWorkspaceCP_NoInternalErrorsInBroadcast asserts that
 // provisionWorkspaceCP never leaks err.Error() in
 // WORKSPACE_PROVISION_FAILED broadcasts. Regression test for #1206.

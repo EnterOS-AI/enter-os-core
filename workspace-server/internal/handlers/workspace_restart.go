@@ -326,7 +326,12 @@ func (h *WorkspaceHandler) HibernateWorkspace(ctx context.Context, workspaceID s
 // in-flight runner picks up the pending request after its current cycle
 // completes, so writes that committed mid-restart are guaranteed to land.
 func (h *WorkspaceHandler) RestartByID(workspaceID string) {
-	if h.provisioner == nil {
+	// At least one of the two provisioners must be wired. Pre-fix this
+	// short-circuited on h.provisioner==nil alone, which silently disabled
+	// reactive auto-restart on every SaaS tenant (where the local Docker
+	// provisioner is intentionally nil). The runRestartCycle below now
+	// branches on which one is set for the Stop call.
+	if h.provisioner == nil && h.cpProv == nil {
 		return
 	}
 	coalesceRestart(workspaceID, func() { h.runRestartCycle(workspaceID) })
@@ -391,6 +396,25 @@ func coalesceRestart(workspaceID string, cycle func()) {
 	}
 }
 
+// stopForRestart dispatches Stop to whichever provisioner is wired (Docker or
+// CP/EC2 — mutually exclusive in production). Docker provisioner.Stop kills
+// the local container; CP provisioner.Stop calls DELETE /cp/workspaces/:id
+// which terminates the EC2 instance. Pre-fix runRestartCycle only called the
+// Docker path, so on SaaS (h.provisioner=nil) the auto-restart cycle silently
+// NPE'd before reaching the reprovision step — which is why every SaaS dead-
+// agent incident pre-this-fix required manual restart from canvas.
+func (h *WorkspaceHandler) stopForRestart(ctx context.Context, workspaceID string) {
+	if h.provisioner != nil {
+		h.provisioner.Stop(ctx, workspaceID)
+		return
+	}
+	if h.cpProv != nil {
+		if err := h.cpProv.Stop(ctx, workspaceID); err != nil {
+			log.Printf("Auto-restart: cpProv.Stop(%s) failed: %v (continuing to reprovision)", workspaceID, err)
+		}
+	}
+}
+
 // runRestartCycle does the actual stop+provision work for one restart
 // iteration. Synchronous (waits for provisionWorkspace to complete) so the
 // outer pending-flag loop in RestartByID can correctly coalesce — if this
@@ -426,7 +450,7 @@ func (h *WorkspaceHandler) runRestartCycle(workspaceID string) {
 
 	log.Printf("Auto-restart: restarting %s (%s) runtime=%q (was: %s)", wsName, workspaceID, dbRuntime, status)
 
-	h.provisioner.Stop(ctx, workspaceID)
+	h.stopForRestart(ctx, workspaceID)
 
 	db.DB.ExecContext(ctx,
 		`UPDATE workspaces SET status = 'provisioning', url = '', updated_at = now() WHERE id = $1`, workspaceID)
@@ -445,7 +469,21 @@ func (h *WorkspaceHandler) runRestartCycle(workspaceID string) {
 	// SYNCHRONOUS provisionWorkspace: returns when the new container is up
 	// (or has failed). The outer loop relies on this to know when it's safe
 	// to start another restart cycle without racing this one's Stop call.
-	h.provisionWorkspace(workspaceID, "", nil, payload)
+	//
+	// Branch on which provisioner is wired — same dispatch as the other call
+	// sites in this package (workspace.go:431-433, workspace_restart.go:197+596).
+	// Pre-fix this only called the Docker variant, so on SaaS the auto-restart
+	// cycle would NPE inside provisionWorkspace's `h.provisioner.VolumeHasFile`
+	// call, get swallowed by coalesceRestart's recover()-without-re-raise (a
+	// platform-stability safeguard), and leave the workspace permanently
+	// stuck in status='provisioning' (the UPDATE above already ran). User-
+	// observable result before this fix on SaaS: dead workspace → manual
+	// canvas restart was the only recovery path.
+	if h.cpProv != nil {
+		h.provisionWorkspaceCP(workspaceID, "", nil, payload)
+	} else {
+		h.provisionWorkspace(workspaceID, "", nil, payload)
+	}
 	// sendRestartContext is a one-way notification to the new container; safe
 	// to fire async — the next restart cycle won't depend on it completing.
 	go h.sendRestartContext(workspaceID, restartData)

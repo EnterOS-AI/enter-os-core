@@ -29,6 +29,16 @@ type CPProvisionerAPI interface {
 	Start(ctx context.Context, cfg WorkspaceConfig) (string, error)
 	Stop(ctx context.Context, workspaceID string) error
 	GetConsoleOutput(ctx context.Context, workspaceID string) (string, error)
+	// IsRunning reports whether the workspace's compute (EC2 instance) is
+	// currently in the running state. Surfaced on the interface (rather than
+	// only on *CPProvisioner) so the a2a-proxy reactive-health path can
+	// detect dead EC2 agents the same way it detects dead Docker containers.
+	// Pre-#NNN, maybeMarkContainerDead only consulted the local Docker
+	// provisioner — for SaaS tenants (h.provisioner=nil) the check was a
+	// no-op, so a dead EC2 agent would leak 502/503 to canvas with no
+	// auto-recovery. (true, err) on transport errors keeps callers on the
+	// alive path; (false, nil) is the only definitive "dead" signal.
+	IsRunning(ctx context.Context, workspaceID string) (bool, error)
 }
 
 // Compile-time assertion: *CPProvisioner satisfies CPProvisionerAPI.

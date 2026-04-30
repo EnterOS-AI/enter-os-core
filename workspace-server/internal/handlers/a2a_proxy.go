@@ -13,6 +13,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -92,13 +93,47 @@ func isSystemCaller(callerID string) bool {
 const maxProxyResponseBody = 10 << 20
 
 // a2aClient is a shared HTTP client for proxying A2A requests to workspace agents.
-// No client-level timeout — timeouts are enforced per-request via context
-// deadlines: canvas = 5 min (Rule 3), agent-to-agent = 30 min (DoS cap). Do NOT
-// set a Client.Timeout here: it is enforced independently of ctx deadlines and
-// would pre-empt legitimate slow cold-start flows (e.g. Claude Code first-token
-// over OAuth can take 30-60s on boot). Callers that want a safety net should
-// build a context.WithTimeout themselves.
-var a2aClient = &http.Client{}
+//
+// Timeout model — three independent budgets, none of which gets in each other's way:
+//
+//   1. Client.Timeout — DELIBERATELY UNSET. Client.Timeout is a hard wall on
+//      the entire request including streamed body reads, and would pre-empt
+//      legitimate slow cold-start flows (Claude Code first-token over OAuth
+//      can take 30-60s on boot; long-running agent synthesis can stream
+//      tokens for minutes). Total-request budget is enforced per-request
+//      via context deadline (canvas = idle-only, agent-to-agent = 30 min ceiling).
+//
+//   2. Transport.DialContext — 10s connect timeout. When a workspace's EC2
+//      black-holes TCP connects (instance terminated mid-flight, security group
+//      flipped, NACL bug), the OS default is 75s on Linux / 21s on macOS — long
+//      enough that Cloudflare's ~100s edge timeout can fire first and surface
+//      a generic 502 page to canvas. 10s is well above realistic intra-region
+//      latencies and well below CF's edge timeout.
+//
+//   3. Transport.ResponseHeaderTimeout — 60s. From request-body-end to
+//      response-headers-start. Covers cold-start first-byte (the 30-60s OAuth
+//      flow above), with margin. Body streaming after headers is governed by
+//      the per-request context deadline, NOT this timeout — so multi-minute
+//      agent responses still work fine.
+//
+// The point of (2) and (3) is to surface a *structured* 503 from
+// handleA2ADispatchError when the workspace agent is unreachable, so canvas
+// gets `{"error":"workspace agent unreachable","restarting":true}` instead
+// of Cloudflare's opaque 502 error page. Without these, dead workspaces hang
+// long enough that CF gives up first and shows its own page.
+var a2aClient = &http.Client{
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ResponseHeaderTimeout: 60 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		// MaxIdleConns / IdleConnTimeout: stdlib defaults are fine; agent
+		// fan-in is bounded by the platform's broadcaster fan-out, not by
+		// connection-pool sizing.
+	},
+}
 
 type proxyA2AError struct {
 	Status   int
@@ -422,6 +457,51 @@ func (h *WorkspaceHandler) proxyA2ARequest(ctx context.Context, workspaceID stri
 		if errMsg == "" {
 			errMsg = http.StatusText(resp.StatusCode)
 		}
+
+		// Upstream returned 502/503/504 (gateway/proxy failure). This is
+		// the "agent process is dead but the tunnel between us and the
+		// workspace is still up" signal — handleA2ADispatchError's
+		// network-error path doesn't run because Do() succeeded at the
+		// HTTP layer. Without this branch, the dead-agent failure mode
+		// surfaces to canvas as a generic 502 (and CF in front of the
+		// platform masks it with its own error page, hiding any
+		// structured response we might write).
+		//
+		// Treatment matches handleA2ADispatchError's container-dead path:
+		//   1. Probe IsRunning via maybeMarkContainerDead. If the
+		//      container truly is dead, mark workspace offline + kick
+		//      a restart goroutine.
+		//   2. Return a structured 503 with restarting=true + Retry-After
+		//      so canvas shows a useful "agent is restarting" message
+		//      (and CF doesn't intercept the 503 the way it does 502).
+		// If IsRunning reports the container is alive, we leave the
+		// upstream status untouched — the agent legitimately returned
+		// 502/503/504 (e.g. it's returning its own Bad-Gateway from
+		// some downstream call) and we shouldn't mistakenly recycle it.
+		//
+		// Empty body is the strong signal here — a CF-tunnel "no-origin"
+		// 502 has 0 bytes; an agent-authored 502 typically has a JSON
+		// error body. We probe IsRunning regardless (it's the
+		// authoritative check) but the empty-body case is what makes
+		// this fix necessary.
+		// 524 = Cloudflare "origin timed out" — origin accepted the
+		// connection but didn't return headers within ~100s. Same
+		// signal as 504/502 for our purposes: the upstream agent is
+		// not responsive. We probe IsRunning to confirm before
+		// triggering a restart.
+		if resp.StatusCode == http.StatusBadGateway ||
+			resp.StatusCode == http.StatusServiceUnavailable ||
+			resp.StatusCode == http.StatusGatewayTimeout ||
+			resp.StatusCode == 524 {
+			if h.maybeMarkContainerDead(ctx, workspaceID) {
+				return 0, nil, &proxyA2AError{
+					Status:   http.StatusServiceUnavailable,
+					Headers:  map[string]string{"Retry-After": "15"},
+					Response: gin.H{"error": "workspace agent unreachable — container restart triggered", "restarting": true, "retry_after": 15},
+				}
+			}
+		}
+
 		return resp.StatusCode, respBody, &proxyA2AError{
 			Status:   resp.StatusCode,
 			Response: gin.H{"error": errMsg},

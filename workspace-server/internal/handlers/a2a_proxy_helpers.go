@@ -141,22 +141,46 @@ func (h *WorkspaceHandler) handleA2ADispatchError(ctx context.Context, workspace
 }
 
 // maybeMarkContainerDead runs the reactive health check after a forward error.
-// If the workspace's Docker container is no longer running (and the workspace
-// isn't external), it marks the workspace offline, clears Redis state,
-// broadcasts WORKSPACE_OFFLINE, and triggers an async restart. Returns true
-// when the container was found dead.
+// If the workspace's compute (Docker container OR EC2 instance) is no longer
+// running (and the workspace isn't external), it marks the workspace offline,
+// clears Redis state, broadcasts WORKSPACE_OFFLINE, and triggers an async
+// restart. Returns true when the compute was found dead.
+//
+// Provisioner selection (mutually exclusive in production):
+//   - h.provisioner != nil  → local Docker deployment; IsRunning does docker inspect.
+//   - h.cpProv != nil       → SaaS / EC2 deployment; IsRunning calls CP's
+//                              /cp/workspaces/:id/status to read the EC2 state.
+//
+// Pre-fix this function ONLY consulted h.provisioner — for SaaS tenants
+// (h.provisioner=nil, h.cpProv=set) it short-circuited to false on every
+// call, so a dead EC2 agent would propagate upstream 502/503/504 to canvas
+// with no auto-recovery and Cloudflare in front would mask the response with
+// its own error page. The 2026-04-30 hongmingwang.moleculesai.app
+// canvas-chat-to-dead-workspace incident traces to exactly this gap.
 func (h *WorkspaceHandler) maybeMarkContainerDead(ctx context.Context, workspaceID string) bool {
 	var wsRuntime string
 	db.DB.QueryRowContext(ctx, `SELECT COALESCE(runtime, 'langgraph') FROM workspaces WHERE id = $1`, workspaceID).Scan(&wsRuntime)
-	if h.provisioner == nil || wsRuntime == "external" {
+	if wsRuntime == "external" {
 		return false
 	}
-	running, inspectErr := h.provisioner.IsRunning(ctx, workspaceID)
+	if h.provisioner == nil && h.cpProv == nil {
+		return false
+	}
+
+	var running bool
+	var inspectErr error
+	if h.provisioner != nil {
+		running, inspectErr = h.provisioner.IsRunning(ctx, workspaceID)
+	} else {
+		// SaaS path: ask the CP about the EC2 state. Same (true, err) on
+		// transport errors contract — keeps the caller on the alive path
+		// instead of triggering a restart cascade on a flaky CP call.
+		running, inspectErr = h.cpProv.IsRunning(ctx, workspaceID)
+	}
 	if inspectErr != nil {
-		// Transient Docker-daemon error (timeout, socket EOF, etc.). Post-
-		// #386, IsRunning returns (true, err) in this case — caller stays
-		// on the alive path and does not trigger a restart cascade. Log
-		// so the defect is visible without being destructive.
+		// Transient backend error (Docker daemon EOF, CP HTTP 5xx, etc.).
+		// IsRunning's contract returns (true, err) in this case so we stay
+		// on the alive path without triggering a restart cascade.
 		log.Printf("ProxyA2A: IsRunning for %s returned transient error (assuming alive): %v", workspaceID, inspectErr)
 	}
 	if running {
