@@ -240,3 +240,67 @@ jobs:
             echo
             echo "Merge queue lands the PR once required gates are green; no human action needed unless gates fail."
           } >> "$GITHUB_STEP_SUMMARY"
+
+          # Hand the PR number to the next step so we can dispatch the
+          # tenant-redeploy chain after the merge queue lands the merge.
+          echo "promote_pr_num=${PR_NUM}" >> "$GITHUB_OUTPUT"
+        id: promote_pr
+
+      - name: Wait for promote merge, then dispatch publish + redeploy (#2357)
+        # GITHUB_TOKEN-initiated merges suppress downstream `push` events
+        # (https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow).
+        # Result: when the merge queue lands the promote PR, the resulting
+        # main-branch push DOES NOT fire publish-workspace-server-image,
+        # so canary-verify and redeploy-tenants-on-main never run and
+        # tenants stay on stale code (issue #2357).
+        #
+        # Workaround: poll for the merge to land, then explicitly
+        # `gh workflow run` publish-workspace-server-image. workflow_dispatch
+        # is the documented exception to the GITHUB_TOKEN suppression rule —
+        # dispatch DOES create a new workflow run. canary-verify chains via
+        # workflow_run (no branch filter) and redeploys to fleet via the
+        # existing chain.
+        #
+        # Long-term fix: switch the auto-merge call above to a GitHub App
+        # token (actions/create-github-app-token) and remove this polling
+        # tail step. Tracked in #2357.
+        if: steps.promote_pr.outputs.promote_pr_num != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUM: ${{ steps.promote_pr.outputs.promote_pr_num }}
+        run: |
+          # Poll for merge — max 30 min (60 × 30s). The merge queue
+          # typically lands within 5-10 min when gates are green.
+          MERGED=""
+          for _ in $(seq 1 60); do
+            MERGED=$(gh pr view "$PR_NUM" --repo "$REPO" --json mergedAt --jq '.mergedAt // ""')
+            if [ -n "$MERGED" ] && [ "$MERGED" != "null" ]; then
+              echo "::notice::Promote PR #${PR_NUM} merged at ${MERGED}"
+              break
+            fi
+            sleep 30
+          done
+
+          if [ -z "$MERGED" ] || [ "$MERGED" = "null" ]; then
+            echo "::warning::Promote PR #${PR_NUM} didn't merge within 30min — skipping deploy dispatch (manually run \`gh workflow run redeploy-tenants-on-main.yml\` once it lands)."
+            exit 0
+          fi
+
+          # Dispatch publish on main. workflow_dispatch via GITHUB_TOKEN
+          # IS allowed to create new workflow runs (per the linked docs).
+          # publish completes → canary-verify chains via workflow_run →
+          # redeploy-tenants-on-main chains via workflow_run + branches:[main].
+          if gh workflow run publish-workspace-server-image.yml \
+              --repo "$REPO" --ref main 2>&1; then
+            echo "::notice::Dispatched publish-workspace-server-image on ref=main — canary-verify and redeploy-tenants-on-main will chain via workflow_run."
+            {
+              echo "## 🚀 Tenant redeploy chain dispatched"
+              echo
+              echo "- publish-workspace-server-image (workflow_dispatch on \`main\`)"
+              echo "- canary-verify will chain on completion"
+              echo "- redeploy-tenants-on-main will chain on canary green"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::Failed to dispatch publish-workspace-server-image. Run manually: gh workflow run publish-workspace-server-image.yml --ref main"
+          fi
