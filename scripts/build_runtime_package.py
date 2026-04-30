@@ -68,6 +68,7 @@ TOP_LEVEL_MODULES = {
     "internal_chat_uploads",
     "internal_file_read",
     "main",
+    "mcp_cli",
     "molecule_ai_status",
     "platform_auth",
     "platform_inbound_auth",
@@ -217,6 +218,7 @@ dependencies = [
 
 [project.scripts]
 molecule-runtime = "molecule_runtime.main:main_sync"
+molecule-mcp = "molecule_runtime.mcp_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -239,6 +241,31 @@ This package is **published from the molecule-core monorepo `workspace/`
 directory** by the `publish-runtime` GitHub Actions workflow on every
 `runtime-v*` tag push. **Do not edit this package directly** — edit
 `workspace/` in the monorepo.
+
+## External-runtime MCP server (`molecule-mcp`)
+
+Operators running an agent outside the platform's container fleet
+(any runtime that supports MCP stdio — Claude Code, hermes, codex,
+etc.) can install this wheel and run the universal MCP server
+locally:
+
+```sh
+pip install molecule-ai-workspace-runtime
+WORKSPACE_ID=<uuid> \\
+  PLATFORM_URL=https://<tenant>.staging.moleculesai.app \\
+  MOLECULE_WORKSPACE_TOKEN=<bearer> \\
+  molecule-mcp
+```
+
+That exposes the same 8 platform tools (`delegate_task`, `list_peers`,
+`send_message_to_user`, `commit_memory`, etc.) that container-bound
+runtimes already get via the workspace's auto-spawned MCP. Register
+the binary in your agent's MCP config (e.g. Claude Code's
+`claude mcp add molecule -- molecule-mcp` with the env above).
+
+The token comes from the canvas → Tokens tab. Restarting an external
+workspace from the canvas no longer revokes the token (PR #2412), so
+operator tokens persist across status nudges.
 
 See [`docs/workspace-runtime-package.md`](https://github.com/Molecule-AI/molecule-core/blob/main/docs/workspace-runtime-package.md)
 for the publish flow and architecture.

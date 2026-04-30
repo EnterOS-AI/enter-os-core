@@ -412,6 +412,17 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 						"{{PLATFORM_URL}}", platformURL),
 					"{{WORKSPACE_ID}}", id,
 				),
+				// Universal MCP snippet — runtime-agnostic outbound
+				// tool path via the molecule-mcp console script. Same
+				// 8 platform tools any MCP-aware runtime can register
+				// (Claude Code, hermes, codex, etc.). Outbound-only:
+				// the snippet calls out that heartbeat/inbound need
+				// pairing with the SDK or channel tab.
+				"universal_mcp_snippet": strings.ReplaceAll(
+					strings.ReplaceAll(externalUniversalMcpTemplate,
+						"{{PLATFORM_URL}}", platformURL),
+					"{{WORKSPACE_ID}}", id,
+				),
 			}
 		}
 		c.JSON(http.StatusCreated, resp)

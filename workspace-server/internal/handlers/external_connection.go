@@ -53,8 +53,14 @@ const externalCurlTemplate = `# Replace AGENT_URL with YOUR agent's public HTTPS
 export WORKSPACE_AUTH_TOKEN="<paste from create response>"
 export AGENT_URL="https://your-agent.example.com"
 
+# NOTE on the "Origin" header below: hosted SaaS tenants run behind an
+# edge WAF that requires same-origin requests. Without "Origin", paths
+# like /workspaces/* silently 404 (rewritten to the canvas Next.js).
+# /registry/register is currently allowed without Origin, but setting
+# it preemptively keeps your snippet working if the WAF rules expand.
 curl -fsS -X POST "{{PLATFORM_URL}}/registry/register" \
   -H "Authorization: Bearer $WORKSPACE_AUTH_TOKEN" \
+  -H "Origin: {{PLATFORM_URL}}" \
   -H "Content-Type: application/json" \
   -d '{
     "id": "{{WORKSPACE_ID}}",
@@ -96,6 +102,51 @@ claude --channels plugin:molecule@Molecule-AI/molecule-mcp-claude-channel
 # Multi-workspace: comma-separate IDs and tokens (same order). See
 # https://github.com/Molecule-AI/molecule-mcp-claude-channel for
 # pairing flow, push-mode upgrade, and v0.2 roadmap.
+`
+
+// externalUniversalMcpTemplate — runtime-agnostic standalone path.
+// Ships as the `molecule-mcp` console script in the
+// molecule-ai-workspace-runtime PyPI wheel (workspace/mcp_cli.py).
+// Any MCP-aware runtime (Claude Code, hermes, codex, third-party)
+// registers it once and gets the same 8 universal tools that
+// container-bound runtimes use today: delegate_task, list_peers,
+// send_message_to_user, commit_memory, etc.
+//
+// Standalone: the binary itself handles register-on-startup +
+// continuous heartbeats (daemon thread, 20s cadence). No separate
+// SDK or channel process needed to keep the workspace online. The
+// only thing it does NOT yet do is poll inbound A2A messages — for
+// runtimes that need their agent to react to canvas messages or
+// peer-initiated tasks, pair with the Claude Code channel tab
+// (poll-based inbound delivery into a Claude Code session) or the
+// Python SDK tab (push-mode inbound + heartbeat).
+//
+// Origin/WAF: handled automatically by platform_auth.auth_headers()
+// in the wheel — operator doesn't need to configure anything.
+const externalUniversalMcpTemplate = `# Universal MCP — standalone register + heartbeat + outbound platform tools
+# for any MCP-aware runtime (Claude Code, hermes, codex, etc.).
+# Pair with the Claude Code or Python SDK tab if your runtime needs
+# inbound A2A delivery (canvas messages → agent conversation turns).
+
+# 1. Install the workspace runtime wheel:
+pip install molecule-ai-workspace-runtime
+
+# 2. Wire molecule-mcp into your agent's MCP config. Claude Code:
+claude mcp add molecule -s user -- env \
+  WORKSPACE_ID={{WORKSPACE_ID}} \
+  PLATFORM_URL={{PLATFORM_URL}} \
+  MOLECULE_WORKSPACE_TOKEN="<paste from create response>" \
+  molecule-mcp
+
+# molecule-mcp registers the workspace + heartbeats every 20s in a
+# daemon thread, then runs the MCP stdio loop. Same env-var contract
+# works with hermes-agent, codex, or any MCP stdio runtime. Tools
+# exposed: delegate_task, delegate_task_async, check_task_status,
+# list_peers, get_workspace_info, send_message_to_user,
+# commit_memory, recall_memory.
+#
+# Origin/WAF handling is built into the wheel — no manual headers
+# needed when calling tools through the MCP server.
 `
 
 // externalPythonTemplate uses molecule-sdk-python's RemoteAgentClient +
