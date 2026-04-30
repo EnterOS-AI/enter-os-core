@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -1137,13 +1138,112 @@ func TestNormalizeA2APayload_PreservesExistingMessageId(t *testing.T) {
 }
 
 func TestNormalizeA2APayload_MissingMethodReturnsEmpty(t *testing.T) {
-	raw := []byte(`{"params":{"message":{"role":"user"}}}`)
+	// Method extraction returns empty string when method is absent,
+	// regardless of message validity. Include parts: [] so the v0.2→v0.3
+	// compat check (#2345) doesn't reject before method extraction.
+	raw := []byte(`{"params":{"message":{"role":"user","parts":[]}}}`)
 	_, method, perr := normalizeA2APayload(raw)
 	if perr != nil {
 		t.Fatalf("unexpected error: %+v", perr)
 	}
 	if method != "" {
 		t.Errorf("expected empty method, got %q", method)
+	}
+}
+
+// --- v0.2 → v0.3 compat shim (#2345) ---
+
+func TestNormalizeA2APayload_ConvertsV02StringContentToParts(t *testing.T) {
+	raw := []byte(`{"method":"message/send","params":{"message":{"role":"user","content":"hello world"}}}`)
+	out, _, perr := normalizeA2APayload(raw)
+	if perr != nil {
+		t.Fatalf("unexpected error: %+v", perr)
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("output not valid JSON: %v", err)
+	}
+	msg := parsed["params"].(map[string]interface{})["message"].(map[string]interface{})
+	if _, stillHasContent := msg["content"]; stillHasContent {
+		t.Error("v0.2 'content' field should be removed after conversion")
+	}
+	parts, ok := msg["parts"].([]interface{})
+	if !ok || len(parts) != 1 {
+		t.Fatalf("expected 1 part, got %v", msg["parts"])
+	}
+	part := parts[0].(map[string]interface{})
+	if part["kind"] != "text" || part["text"] != "hello world" {
+		t.Errorf("expected {kind:text, text:'hello world'}, got %v", part)
+	}
+}
+
+func TestNormalizeA2APayload_ConvertsV02ListContentToParts(t *testing.T) {
+	raw := []byte(`{"method":"message/send","params":{"message":{"role":"user","content":[{"kind":"text","text":"hi"}]}}}`)
+	out, _, perr := normalizeA2APayload(raw)
+	if perr != nil {
+		t.Fatalf("unexpected error: %+v", perr)
+	}
+	var parsed map[string]interface{}
+	_ = json.Unmarshal(out, &parsed)
+	msg := parsed["params"].(map[string]interface{})["message"].(map[string]interface{})
+	parts, ok := msg["parts"].([]interface{})
+	if !ok || len(parts) != 1 {
+		t.Fatalf("expected list preserved as parts, got %v", msg["parts"])
+	}
+}
+
+func TestNormalizeA2APayload_PreservesV03Parts(t *testing.T) {
+	raw := []byte(`{"method":"message/send","params":{"message":{"role":"user","parts":[{"kind":"text","text":"hi"}]}}}`)
+	out, _, perr := normalizeA2APayload(raw)
+	if perr != nil {
+		t.Fatalf("unexpected error: %+v", perr)
+	}
+	var parsed map[string]interface{}
+	_ = json.Unmarshal(out, &parsed)
+	msg := parsed["params"].(map[string]interface{})["message"].(map[string]interface{})
+	if _, hasContent := msg["content"]; hasContent {
+		t.Error("did not expect content field in v0.3-shaped payload output")
+	}
+	parts := msg["parts"].([]interface{})
+	if len(parts) != 1 {
+		t.Errorf("expected 1 part preserved, got %d", len(parts))
+	}
+}
+
+func TestNormalizeA2APayload_RejectsMessageWithNeitherContentNorParts(t *testing.T) {
+	raw := []byte(`{"method":"message/send","params":{"message":{"role":"user","metadata":{}}}}`)
+	_, _, perr := normalizeA2APayload(raw)
+	if perr == nil {
+		t.Fatal("expected error for message with neither content nor parts")
+	}
+	if perr.Status != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", perr.Status)
+	}
+	errMsg, _ := perr.Response["error"].(string)
+	if !strings.Contains(errMsg, "parts") || !strings.Contains(errMsg, "content") {
+		t.Errorf("error message should mention both 'parts' and 'content', got: %q", errMsg)
+	}
+}
+
+func TestNormalizeA2APayload_RejectsContentWithUnsupportedType(t *testing.T) {
+	raw := []byte(`{"method":"message/send","params":{"message":{"role":"user","content":42}}}`)
+	_, _, perr := normalizeA2APayload(raw)
+	if perr == nil {
+		t.Fatal("expected error for non-string non-list content")
+	}
+	if perr.Status != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", perr.Status)
+	}
+}
+
+func TestNormalizeA2APayload_NoMessageNoCheck(t *testing.T) {
+	raw := []byte(`{"method":"tasks/list","params":{}}`)
+	_, method, perr := normalizeA2APayload(raw)
+	if perr != nil {
+		t.Fatalf("unexpected error on params-message-absent payload: %+v", perr)
+	}
+	if method != "tasks/list" {
+		t.Errorf("expected method=tasks/list, got %q", method)
 	}
 }
 
@@ -1702,5 +1802,187 @@ func TestResolveAgentURL_HibernatedWorkspace_NullURLVariant(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet DB expectations: %v", err)
+	}
+}
+
+// ==================== ProxyA2A — poll-mode short-circuit (#2339 PR 2) ====================
+
+// TestProxyA2A_PollMode_ShortCircuits_NoSSRF_NoDispatch verifies the core
+// invariant of #2339 PR 2: when delivery_mode=poll, ProxyA2A must NOT
+// hit resolveAgentURL (which would SSRF-check or 502 on a missing URL)
+// and must NOT dispatch over HTTP. It records the request to activity_logs
+// and returns 200 {status:"queued"} instead.
+//
+// Without this short-circuit, the canvas chat fails for any workspace
+// running molecule-mcp-claude-channel (operator's laptop, no public URL):
+// resolveAgentURL would 502 on the missing URL and the polling agent
+// would never see the inbound message. That's the bug PR 2 fixes.
+func TestProxyA2A_PollMode_ShortCircuits_NoSSRF_NoDispatch(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+
+	const wsID = "ws-poll-shortcircuit"
+
+	// Budget check still runs (above the short-circuit) — affirms the
+	// budget guard is mode-agnostic, which is correct: a poll-mode
+	// workspace shouldn't burn unmetered platform CPU/storage either.
+	expectBudgetCheck(mock, wsID)
+
+	// lookupDeliveryMode SELECT — returns poll, triggering the short-circuit.
+	// Note: NO ExpectQuery for `SELECT url, status FROM workspaces` (that's
+	// resolveAgentURL's query) — the short-circuit must skip resolveAgentURL.
+	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"delivery_mode"}).AddRow("poll"))
+
+	// Activity log: the queued receive (logA2AReceiveQueued in helpers.go).
+	mock.ExpectExec("INSERT INTO activity_logs").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: wsID}}
+
+	body := `{"jsonrpc":"2.0","id":"poll-1","method":"message/send","params":{"message":{"role":"user","parts":[{"text":"hi"}]}}}`
+	c.Request = httptest.NewRequest("POST", "/workspaces/"+wsID+"/a2a", bytes.NewBufferString(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.ProxyA2A(c)
+
+	time.Sleep(50 * time.Millisecond)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (queued), got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	if resp["status"] != "queued" {
+		t.Errorf("response.status = %v, want %q", resp["status"], "queued")
+	}
+	if resp["delivery_mode"] != "poll" {
+		t.Errorf("response.delivery_mode = %v, want %q", resp["delivery_mode"], "poll")
+	}
+	if resp["method"] != "message/send" {
+		t.Errorf("response.method = %v, want %q (the JSON-RPC method that was queued)", resp["method"], "message/send")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// TestProxyA2A_PushMode_NoShortCircuit verifies the symmetric contract:
+// a push-mode workspace (default) is NOT affected by the new short-circuit.
+// It still proceeds to resolveAgentURL + dispatch. Without this guard, a
+// regression in lookupDeliveryMode could silently break the entire fleet.
+func TestProxyA2A_PushMode_NoShortCircuit(t *testing.T) {
+	mock := setupTestDB(t)
+	mr := setupTestRedis(t)
+	allowLoopbackForTest(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+
+	const wsID = "ws-push-default"
+
+	dispatched := false
+	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dispatched = true
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"jsonrpc":"2.0","id":"1","result":{"status":"ok"}}`)
+	}))
+	defer agentServer.Close()
+
+	mr.Set(fmt.Sprintf("ws:%s:url", wsID), agentServer.URL)
+	expectBudgetCheck(mock, wsID)
+
+	// lookupDeliveryMode returns "push" — short-circuit must NOT fire.
+	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"delivery_mode"}).AddRow("push"))
+
+	mock.ExpectExec("INSERT INTO activity_logs").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: wsID}}
+
+	body := `{"jsonrpc":"2.0","id":"push-1","method":"message/send","params":{"message":{"role":"user","parts":[{"text":"hi"}]}}}`
+	c.Request = httptest.NewRequest("POST", "/workspaces/"+wsID+"/a2a", bytes.NewBufferString(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.ProxyA2A(c)
+
+	time.Sleep(50 * time.Millisecond)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (dispatched), got %d: %s", w.Code, w.Body.String())
+	}
+	if !dispatched {
+		t.Error("push-mode workspace: expected the agent server to receive the request, but it did not")
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err == nil {
+		if resp["status"] == "queued" {
+			t.Error("push-mode response leaked queued envelope — short-circuit fired when it shouldn't have")
+		}
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// TestProxyA2A_PollMode_FailsClosedToPush verifies the safety contract:
+// a DB error reading delivery_mode must default to push (the existing
+// behavior), NOT poll. Failing to push means a poll-mode workspace
+// briefly attempts a real dispatch — visible failure (502 / SSRF
+// rejection / restart cascade), not a silent drop into activity_logs
+// where the agent might never look. Loud > silent, recoverable > lost.
+func TestProxyA2A_PollMode_FailsClosedToPush(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t) // empty Redis — forces resolveAgentURL DB lookup
+	broadcaster := newTestBroadcaster()
+	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+
+	const wsID = "ws-mode-db-error"
+
+	expectBudgetCheck(mock, wsID)
+
+	// lookupDeliveryMode hits a transient DB error → must default push.
+	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+		WithArgs(wsID).
+		WillReturnError(sql.ErrConnDone)
+
+	// Push path proceeds to resolveAgentURL — empty result → 502 path.
+	mock.ExpectQuery("SELECT url, status FROM workspaces WHERE id =").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"url", "status"}))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: wsID}}
+
+	body := `{"jsonrpc":"2.0","id":"x","method":"message/send","params":{}}`
+	c.Request = httptest.NewRequest("POST", "/workspaces/"+wsID+"/a2a", bytes.NewBufferString(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.ProxyA2A(c)
+
+	if w.Code == http.StatusOK {
+		var resp map[string]interface{}
+		_ = json.Unmarshal(w.Body.Bytes(), &resp)
+		if resp["status"] == "queued" {
+			t.Errorf("DB error on delivery_mode lookup silently queued the request — must fail-closed-to-push, got body: %s", w.Body.String())
+		}
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
 	}
 }

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -116,6 +117,41 @@ func (h *RegistryHandler) SetQueueDrainFunc(f QueueDrainFunc) {
 // returned IP is checked against the blocklist. This closes the gap where
 // an attacker could register agent.example.com pointing to 169.254.169.254.
 //
+// resolveDeliveryMode returns the EFFECTIVE delivery mode for a register
+// call given the payload's explicit value (which may be empty) and the
+// row's existing stored value (which may not exist yet on first
+// registration).
+//
+// Resolution order:
+//  1. payload value if non-empty (caller validated it's push/poll already)
+//  2. existing row's delivery_mode if the row exists
+//  3. "push" (the schema default — safe fallback for both new rows and
+//     a row whose delivery_mode is somehow NULL despite the NOT NULL
+//     CHECK constraint, which is forward-defensive only)
+//
+// Returns ("", err) only on a real DB error; sql.ErrNoRows is treated
+// as "no row yet, default to push" — that's the first-register flow.
+func (h *RegistryHandler) resolveDeliveryMode(ctx context.Context, workspaceID, payloadMode string) (string, error) {
+	if payloadMode != "" {
+		// Validated by IsValidDeliveryMode in the caller.
+		return payloadMode, nil
+	}
+	var existing sql.NullString
+	err := db.DB.QueryRowContext(ctx,
+		`SELECT delivery_mode FROM workspaces WHERE id = $1`, workspaceID,
+	).Scan(&existing)
+	if errors.Is(err, sql.ErrNoRows) {
+		return models.DeliveryModePush, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if existing.Valid && existing.String != "" {
+		return existing.String, nil
+	}
+	return models.DeliveryModePush, nil
+}
+
 // Returns a non-nil error suitable for including in a 400 Bad Request response.
 func validateAgentURL(rawURL string) error {
 	if rawURL == "" {
@@ -221,15 +257,11 @@ func (h *RegistryHandler) Register(c *gin.Context) {
 		return
 	}
 
-	// C6: reject SSRF-capable URLs before persisting or caching them.
-	if err := validateAgentURL(payload.URL); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
-		return
-	}
-
-	// C6: reject SSRF-capable URLs before persisting or caching them.
-	if err := validateAgentURL(payload.URL); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	// Validate explicit delivery_mode if the agent declared one; empty is
+	// allowed and resolves to the row's existing value (or "push" default)
+	// in the upsert below. See #2339 for the poll/push split rationale.
+	if payload.DeliveryMode != "" && !models.IsValidDeliveryMode(payload.DeliveryMode) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "delivery_mode must be 'push' or 'poll'"})
 		return
 	}
 
@@ -250,9 +282,60 @@ func (h *RegistryHandler) Register(c *gin.Context) {
 		return // 401 response already written by requireWorkspaceToken
 	}
 
+	// Resolve the EFFECTIVE delivery mode for THIS register call: the
+	// payload's explicit value wins; falling back to the existing row's
+	// stored value; falling back to push (the schema default). Done AFTER
+	// the C18 token check so a hijack attempt fails on auth before we
+	// reveal whether a workspace row exists at all (resolveDeliveryMode
+	// would otherwise side-channel that via timing). #2339.
+	effectiveMode, err := h.resolveDeliveryMode(ctx, payload.ID, payload.DeliveryMode)
+	if err != nil {
+		log.Printf("Registry register: resolveDeliveryMode failed for %s: %v", payload.ID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "registration failed"})
+		return
+	}
+
+	// URL handling diverges by mode:
+	//   push: URL is required and must pass the SSRF safety check —
+	//     same as pre-#2339 behavior (the workspace must be reachable for
+	//     the proxy to dispatch).
+	//   poll: URL is optional and ignored when present. We don't even
+	//     validate it because the platform never dispatches to it. Skipping
+	//     validateAgentURL is intentional — a poll-mode workspace doesn't
+	//     need a publicly-routable URL, so a localhost / private IP /
+	//     missing URL is correct, not a mis-configuration.
+	if effectiveMode == models.DeliveryModePush {
+		if payload.URL == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "url is required for push-mode workspaces"})
+			return
+		}
+		if err := validateAgentURL(payload.URL); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
 	agentCardStr := string(payload.AgentCard)
 
-	// Upsert workspace: update url, agent_card, status if already exists.
+	// urlForUpsert: poll-mode workspaces don't need a URL. Empty input
+	// becomes NULL via sql.NullString so the row's URL stays clean (the
+	// CASE below also preserves an existing provisioner-set URL, which
+	// matters for hybrid setups where a workspace was previously push
+	// and is being re-registered as poll).
+	var urlForUpsert sql.NullString
+	if payload.URL != "" {
+		urlForUpsert = sql.NullString{String: payload.URL, Valid: true}
+	}
+
+	// modeForUpsert: empty payload value means "keep what's already on the
+	// row, or default to push for new rows". The COALESCE in the CASE on
+	// the UPDATE branch and the EXCLUDED.delivery_mode on the INSERT branch
+	// implement that. We pass effectiveMode (already resolved above) so
+	// the row's mode is consistent with the URL-validation decision we
+	// just made.
+	modeForUpsert := effectiveMode
+
+	// Upsert workspace: update url, agent_card, status, delivery_mode if already exists.
 	// On INSERT (workspace not yet created via POST /workspaces), use ID as name placeholder.
 	// Keep existing URL if provisioner already set a host-accessible one (starts with http://127.0.0.1).
 	//
@@ -261,9 +344,9 @@ func (h *RegistryHandler) Register(c *gin.Context) {
 	// the row. Without this guard, bulk deletes left tier-3 stragglers because
 	// the last pre-teardown heartbeat flipped status back to 'online' after
 	// Delete's UPDATE.
-	_, err := db.DB.ExecContext(ctx, `
-		INSERT INTO workspaces (id, name, url, agent_card, status, last_heartbeat_at)
-		VALUES ($1, $2, $3, $4::jsonb, 'online', now())
+	_, err = db.DB.ExecContext(ctx, `
+		INSERT INTO workspaces (id, name, url, agent_card, status, last_heartbeat_at, delivery_mode)
+		VALUES ($1, $2, $3, $4::jsonb, 'online', now(), $5)
 		ON CONFLICT (id) DO UPDATE SET
 			url = CASE
 				WHEN workspaces.url LIKE 'http://127.0.0.1%' THEN workspaces.url
@@ -272,9 +355,10 @@ func (h *RegistryHandler) Register(c *gin.Context) {
 			agent_card = EXCLUDED.agent_card,
 			status = 'online',
 			last_heartbeat_at = now(),
+			delivery_mode = EXCLUDED.delivery_mode,
 			updated_at = now()
 		WHERE workspaces.status IS DISTINCT FROM 'removed'
-	`, payload.ID, payload.ID, payload.URL, agentCardStr)
+	`, payload.ID, payload.ID, urlForUpsert, agentCardStr, modeForUpsert)
 	if err != nil {
 		log.Printf("Registry register error: %v (id=%s)", err, payload.ID)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "registration failed"})
@@ -289,6 +373,12 @@ func (h *RegistryHandler) Register(c *gin.Context) {
 	// Cache URL — prefer existing provisioner URL over agent-reported one.
 	// The DB CASE already preserves provisioner URLs, so read from DB as source of truth
 	// instead of adding a Redis round-trip on every registration.
+	//
+	// Poll-mode workspaces typically have no URL at all; skip the cache
+	// writes entirely in that case so we don't poison the cache with an
+	// empty string that another caller might mistake for "registered with
+	// no URL" vs "not yet registered". The proxy short-circuits poll-mode
+	// before consulting the URL cache anyway (see #2339 PR 2).
 	cachedURL := payload.URL
 	var dbURL string
 	if err := db.DB.QueryRowContext(ctx, `SELECT url FROM workspaces WHERE id = $1`, payload.ID).Scan(&dbURL); err == nil {
@@ -296,20 +386,26 @@ func (h *RegistryHandler) Register(c *gin.Context) {
 			cachedURL = dbURL
 		}
 	}
-	if err := db.CacheURL(ctx, payload.ID, cachedURL); err != nil {
-		log.Printf("Registry cache url error: %v", err)
+	if cachedURL != "" {
+		if err := db.CacheURL(ctx, payload.ID, cachedURL); err != nil {
+			log.Printf("Registry cache url error: %v", err)
+		}
 	}
 
 	// Cache agent-reported URL separately for workspace-to-workspace discovery
-	// (Docker containers can reach each other by hostname but not via host ports)
-	if err := db.CacheInternalURL(ctx, payload.ID, payload.URL); err != nil {
-		log.Printf("Registry cache internal url error: %v", err)
+	// (Docker containers can reach each other by hostname but not via host ports).
+	// Same skip-when-empty rule as above.
+	if payload.URL != "" {
+		if err := db.CacheInternalURL(ctx, payload.ID, payload.URL); err != nil {
+			log.Printf("Registry cache internal url error: %v", err)
+		}
 	}
 
 	// Broadcast WORKSPACE_ONLINE
 	if err := h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_ONLINE", payload.ID, map[string]interface{}{
-		"url":        cachedURL,
-		"agent_card": payload.AgentCard,
+		"url":           cachedURL,
+		"agent_card":    payload.AgentCard,
+		"delivery_mode": effectiveMode,
 	}); err != nil {
 		log.Printf("Registry broadcast error: %v", err)
 	}
@@ -324,7 +420,7 @@ func (h *RegistryHandler) Register(c *gin.Context) {
 	// Legacy workspaces that registered before tokens existed have no
 	// live token; they bootstrap one here on their next register call.
 	// New workspaces always pass through this path on their first boot.
-	response := gin.H{"status": "registered"}
+	response := gin.H{"status": "registered", "delivery_mode": effectiveMode}
 	if hasLive, hasLiveErr := wsauth.HasAnyLiveToken(ctx, db.DB, payload.ID); hasLiveErr == nil && !hasLive {
 		token, tokErr := wsauth.IssueToken(ctx, db.DB, payload.ID)
 		if tokErr != nil {

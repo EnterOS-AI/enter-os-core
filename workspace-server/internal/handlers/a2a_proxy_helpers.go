@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/wsauth"
 	"github.com/gin-gonic/gin"
 )
@@ -374,6 +376,74 @@ func parseUsageFromA2AResponse(body []byte) (inputTokens, outputTokens int64) {
 		return in, out
 	}
 	return 0, 0
+}
+
+// lookupDeliveryMode returns the workspace's delivery_mode. On any DB
+// error or missing row it returns DeliveryModePush — the fail-closed
+// default. "Closed" here means "fall back to today's behavior (synchronous
+// dispatch)" rather than "fall back to drop the request silently into
+// activity_logs where the agent might never see it." A poll-mode workspace
+// that briefly reads as push will get its A2A request dispatched to the
+// stored URL (or a 502 if no URL); a push-mode workspace that briefly
+// reads as poll would get its request silently queued with no dispatch.
+// The first failure is loud + recoverable; the second is silent.
+//
+// The function is intentionally lookup-only — it never mutates the row.
+// The register handler (registry.go) is the only writer for delivery_mode.
+//
+// See #2339 PR 1 for the column + register-flow side; this is the
+// proxy-side read used for the short-circuit in proxyA2ARequest.
+func lookupDeliveryMode(ctx context.Context, workspaceID string) string {
+	var mode sql.NullString
+	err := db.DB.QueryRowContext(ctx,
+		`SELECT delivery_mode FROM workspaces WHERE id = $1`, workspaceID,
+	).Scan(&mode)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("ProxyA2A: lookupDeliveryMode(%s) failed (%v) — defaulting to push", workspaceID, err)
+		}
+		return models.DeliveryModePush
+	}
+	if !mode.Valid || mode.String == "" {
+		return models.DeliveryModePush
+	}
+	if !models.IsValidDeliveryMode(mode.String) {
+		log.Printf("ProxyA2A: workspace %s has invalid delivery_mode=%q — defaulting to push", workspaceID, mode.String)
+		return models.DeliveryModePush
+	}
+	return mode.String
+}
+
+// logA2AReceiveQueued records a poll-mode "queued" A2A receive into
+// activity_logs. Same shape as logA2ASuccess but without ResponseBody
+// (there is no response yet — the polling agent will produce one when
+// it picks the request up). status="ok" because the request was
+// successfully queued; the consume side reports its own outcome.
+//
+// The activity_logs row is what the polling agent's GET /activity?since_id=
+// reads in PR 3 — that's how a poll-mode workspace receives inbound A2A
+// without a public URL.
+func (h *WorkspaceHandler) logA2AReceiveQueued(ctx context.Context, workspaceID, callerID string, body []byte, a2aMethod string) {
+	var wsName string
+	db.DB.QueryRowContext(ctx, `SELECT name FROM workspaces WHERE id = $1`, workspaceID).Scan(&wsName)
+	if wsName == "" {
+		wsName = workspaceID
+	}
+	summary := a2aMethod + " → " + wsName + " (queued for poll)"
+	go func(parent context.Context) {
+		logCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), 30*time.Second)
+		defer cancel()
+		LogActivity(logCtx, h.broadcaster, ActivityParams{
+			WorkspaceID:  workspaceID,
+			ActivityType: "a2a_receive",
+			SourceID:     nilIfEmpty(callerID),
+			TargetID:     &workspaceID,
+			Method:       &a2aMethod,
+			Summary:      &summary,
+			RequestBody:  json.RawMessage(body),
+			Status:       "ok",
+		})
+	}(ctx)
 }
 
 // readUsageMap extracts input_tokens / output_tokens from the "usage" key of m.

@@ -224,11 +224,24 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 	if maxConcurrent <= 0 {
 		maxConcurrent = models.DefaultMaxConcurrentTasks
 	}
-	// Insert workspace with runtime persisted in DB (inside transaction)
+	// delivery_mode: explicit payload value (validated below), else default
+	// to push (the schema default + pre-#2339 behavior). Validated here, not
+	// in workspace_provision.go, so a bad value fails the create cleanly
+	// instead of mid-provision after side effects.
+	deliveryMode := payload.DeliveryMode
+	if deliveryMode == "" {
+		deliveryMode = models.DeliveryModePush
+	}
+	if !models.IsValidDeliveryMode(deliveryMode) {
+		tx.Rollback() //nolint:errcheck
+		c.JSON(http.StatusBadRequest, gin.H{"error": "delivery_mode must be 'push' or 'poll'"})
+		return
+	}
+	// Insert workspace with runtime + delivery_mode persisted in DB (inside transaction)
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO workspaces (id, name, role, tier, runtime, awareness_namespace, status, parent_id, workspace_dir, workspace_access, budget_limit, max_concurrent_tasks)
-		VALUES ($1, $2, $3, $4, $5, $6, 'provisioning', $7, $8, $9, $10, $11)
-	`, id, payload.Name, role, payload.Tier, payload.Runtime, awarenessNamespace, payload.ParentID, workspaceDir, workspaceAccess, payload.BudgetLimit, maxConcurrent)
+		INSERT INTO workspaces (id, name, role, tier, runtime, awareness_namespace, status, parent_id, workspace_dir, workspace_access, budget_limit, max_concurrent_tasks, delivery_mode)
+		VALUES ($1, $2, $3, $4, $5, $6, 'provisioning', $7, $8, $9, $10, $11, $12)
+	`, id, payload.Name, role, payload.Tier, payload.Runtime, awarenessNamespace, payload.ParentID, workspaceDir, workspaceAccess, payload.BudgetLimit, maxConcurrent, deliveryMode)
 	if err != nil {
 		tx.Rollback() //nolint:errcheck
 		log.Printf("Create workspace error: %v", err)
