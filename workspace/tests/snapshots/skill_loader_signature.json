@@ -1,0 +1,62 @@
+{
+  "dataclasses": [
+    {
+      "fields": [
+        {
+          "annotation": "str",
+          "has_default": false,
+          "name": "id"
+        },
+        {
+          "annotation": "str",
+          "has_default": false,
+          "name": "name"
+        },
+        {
+          "annotation": "str",
+          "has_default": false,
+          "name": "description"
+        },
+        {
+          "annotation": "list[str]",
+          "has_default": true,
+          "name": "tags"
+        },
+        {
+          "annotation": "list[str]",
+          "has_default": true,
+          "name": "examples"
+        },
+        {
+          "annotation": "list[str]",
+          "has_default": true,
+          "name": "runtime"
+        }
+      ],
+      "frozen": false,
+      "name": "SkillMetadata"
+    },
+    {
+      "fields": [
+        {
+          "annotation": "SkillMetadata",
+          "has_default": false,
+          "name": "metadata"
+        },
+        {
+          "annotation": "str",
+          "has_default": false,
+          "name": "instructions"
+        },
+        {
+          "annotation": "list[typing.Any]",
+          "has_default": true,
+          "name": "tools"
+        }
+      ],
+      "frozen": false,
+      "name": "LoadedSkill"
+    }
+  ],
+  "module": "skill_loader.loader"
+}
