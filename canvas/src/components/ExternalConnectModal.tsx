@@ -32,6 +32,14 @@ export interface ExternalConnectionInfo {
   // haven't shipped molecule-core PR #2304 yet (older response payload
   // omits the field; tab is hidden if empty).
   claude_code_channel_snippet?: string;
+  // Universal MCP snippet — runtime-agnostic outbound tool path via
+  // the `molecule-mcp` console script in the
+  // molecule-ai-workspace-runtime PyPI wheel. Works with any MCP-aware
+  // agent runtime (Claude Code, hermes, codex, third-party). Outbound-
+  // only: pair with claude_code_channel or python tabs for heartbeat
+  // + inbound. Optional for backward compat with platforms that
+  // haven't shipped PR #2413 yet.
+  universal_mcp_snippet?: string;
 }
 
 interface Props {
@@ -39,7 +47,7 @@ interface Props {
   onClose: () => void;
 }
 
-type Tab = "python" | "curl" | "claude" | "fields";
+type Tab = "python" | "curl" | "claude" | "mcp" | "fields";
 
 export function ExternalConnectModal({ info, onClose }: Props) {
   // Default to Claude Code when the platform offers it — that's the
@@ -89,6 +97,13 @@ export function ExternalConnectModal({ info, onClose }: Props) {
     'MOLECULE_WORKSPACE_TOKENS=<paste auth_token from create response>',
     `MOLECULE_WORKSPACE_TOKENS=${info.auth_token}`,
   );
+  // Universal MCP snippet uses the same "<paste from create response>"
+  // placeholder pattern as the curl tab — the auth token is exported
+  // as WORKSPACE_AUTH_TOKEN and reused inline for `molecule-mcp`.
+  const filledUniversalMcp = info.universal_mcp_snippet?.replace(
+    'WORKSPACE_AUTH_TOKEN="<paste from create response>"',
+    `WORKSPACE_AUTH_TOKEN="${info.auth_token}"`,
+  );
 
   return (
     <Dialog.Root open onOpenChange={(o) => !o && onClose()}>
@@ -110,11 +125,19 @@ export function ExternalConnectModal({ info, onClose }: Props) {
             aria-label="Connection snippet format"
             className="mt-4 flex gap-1 border-b border-zinc-800"
           >
-            {(
-              filledChannel
-                ? (["claude", "python", "curl", "fields"] as Tab[])
-                : (["python", "curl", "fields"] as Tab[])
-            ).map((t) => (
+            {(() => {
+              // Build the tab order dynamically. Claude Code first
+              // (when offered) since it's the simplest setup; Python
+              // SDK second (full register+heartbeat+inbound); Universal
+              // MCP third (any MCP-aware runtime, outbound-only); curl
+              // for one-shot register; Fields for raw values.
+              const tabs: Tab[] = [];
+              if (filledChannel) tabs.push("claude");
+              tabs.push("python");
+              if (filledUniversalMcp) tabs.push("mcp");
+              tabs.push("curl", "fields");
+              return tabs;
+            })().map((t) => (
               <button
                 key={t}
                 type="button"
@@ -131,6 +154,8 @@ export function ExternalConnectModal({ info, onClose }: Props) {
                   ? "Claude Code"
                   : t === "python"
                   ? "Python SDK"
+                  : t === "mcp"
+                  ? "Universal MCP"
                   : t === "curl"
                   ? "curl"
                   : "Fields"}
@@ -165,6 +190,15 @@ export function ExternalConnectModal({ info, onClose }: Props) {
                 copyKey="curl"
                 copied={copiedKey === "curl"}
                 onCopy={() => copy(filledCurl, "curl")}
+              />
+            )}
+            {tab === "mcp" && filledUniversalMcp && (
+              <SnippetBlock
+                value={filledUniversalMcp}
+                label="Universal MCP — outbound tools for any MCP-aware runtime (Claude Code, hermes, codex). Pair with Python or Claude Code tab for heartbeat + inbound."
+                copyKey="mcp"
+                copied={copiedKey === "mcp"}
+                onCopy={() => copy(filledUniversalMcp, "mcp")}
               />
             )}
             {tab === "fields" && (
