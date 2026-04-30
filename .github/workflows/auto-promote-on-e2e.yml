@@ -155,6 +155,20 @@ jobs:
           fi
 
           # Upstream is publish-workspace-server-image. Check E2E state.
+          # The jq filter must defend against TWO empty cases that gh
+          # CLI emits indistinguishably:
+          #   1. gh exits non-zero (network blip, auth issue) → handled
+          #      by the `|| echo "none/none"` fallback below.
+          #   2. gh exits zero but returns `[]` (no E2E run on this
+          #      main SHA — the common case for canvas-only / cmd-only
+          #      / sweep-only changes whose paths don't trigger E2E).
+          #      Without `(.[0] // {})`, jq sees `null` and emits
+          #      "null/none" — which the case statement below has no
+          #      branch for, so it falls into *) → exit 1.
+          # Surfaced 2026-04-30 the first time the App-token chain
+          # (#2389) actually fired auto-promote-on-e2e from a publish
+          # upstream — every prior run was E2E-upstream which
+          # short-circuits before this gate.
           RESULT=$(gh run list \
             --repo "$REPO" \
             --workflow e2e-staging-saas.yml \
@@ -162,7 +176,7 @@ jobs:
             --commit "$SHA" \
             --limit 1 \
             --json status,conclusion \
-            --jq '.[0] | "\(.status)/\(.conclusion // "none")"' \
+            --jq '(.[0] // {}) | "\(.status // "none")/\(.conclusion // "none")"' \
             2>/dev/null || echo "none/none")
 
           echo "E2E Staging SaaS for ${SHA:0:7}: $RESULT"
