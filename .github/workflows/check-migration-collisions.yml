@@ -44,8 +44,15 @@ jobs:
           # gh CLI uses GH_TOKEN from env
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Make sure base ref is fetched (checkout@v4 with fetch-depth=0
-          # fetches history but not necessarily named refs in the form we
-          # expect; explicit fetch is cheap insurance).
-          git fetch origin "${{ github.event.pull_request.base.ref }}" --depth=1 || true
+          # Ensure the named base ref exists locally. checkout@v4 with
+          # fetch-depth=0 pulls full history, but the explicit fetch is
+          # cheap insurance against form-of-ref differences across runs.
+          #
+          # IMPORTANT: do NOT pass --depth=1 here. The script below uses
+          # `git diff origin/<base>...<head>` (three-dot, merge-base form),
+          # which fails with "fatal: no merge base" if the base ref is
+          # shallow. The auto-promote staging→main PR (#2361) was blocked
+          # by exactly this for ~5h on 2026-04-30 — the depth=1 fetch
+          # overwrote checkout@v4's full-history clone with a shallow tip.
+          git fetch origin "${{ github.event.pull_request.base.ref }}" || true
           python3 scripts/ops/check_migration_collisions.py
