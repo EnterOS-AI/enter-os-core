@@ -1,0 +1,164 @@
+name: E2E Staging External Runtime
+
+# Regression for the four/five workspaces.status=awaiting_agent transitions
+# that silently failed in production for five days before migration 046
+# extended the workspace_status enum (see
+# workspace-server/migrations/046_workspace_status_awaiting_agent.up.sql).
+#
+# Why this is its own workflow (not folded into e2e-staging-saas.yml):
+#   - The full-saas harness defaults to runtime=hermes, never exercises
+#     external-runtime. Adding an `external` parameter to that script
+#     would force every push to staging through both lifecycles in
+#     series, doubling the EC2 cold-start budget.
+#   - The external lifecycle has unique timing (REMOTE_LIVENESS_STALE_AFTER
+#     window, 90s default + sweep interval), which we wait through
+#     deliberately. Folding it into hermes would make the long path
+#     even longer.
+#   - It can run in parallel with the hermes E2E since both create
+#     fresh tenant orgs with distinct slug prefixes (`e2e-ext-...` vs
+#     `e2e-...`).
+#
+# Triggers:
+#   - Push to staging when any source affecting external runtime,
+#     hibernation, or the migration set changes.
+#   - PR review for the same set.
+#   - Manual workflow_dispatch.
+#   - Daily cron at 07:30 UTC (catches drift on quiet days; staggered
+#     30 min after e2e-staging-saas.yml's 07:00 UTC cron).
+#
+# Concurrency: serialized so two staging pushes don't fight for the
+# same EC2 quota window. cancel-in-progress=false so a half-rolled
+# tenant always finishes its teardown.
+
+on:
+  push:
+    branches: [staging, main]
+    paths:
+      - 'workspace-server/internal/handlers/workspace.go'
+      - 'workspace-server/internal/handlers/registry.go'
+      - 'workspace-server/internal/handlers/workspace_restart.go'
+      - 'workspace-server/internal/registry/healthsweep.go'
+      - 'workspace-server/internal/registry/liveness.go'
+      - 'workspace-server/migrations/**'
+      - 'workspace-server/internal/db/workspace_status_enum_drift_test.go'
+      - 'tests/e2e/test_staging_external_runtime.sh'
+      - '.github/workflows/e2e-staging-external.yml'
+  pull_request:
+    branches: [staging, main]
+    paths:
+      - 'workspace-server/internal/handlers/workspace.go'
+      - 'workspace-server/internal/handlers/registry.go'
+      - 'workspace-server/internal/handlers/workspace_restart.go'
+      - 'workspace-server/internal/registry/healthsweep.go'
+      - 'workspace-server/internal/registry/liveness.go'
+      - 'workspace-server/migrations/**'
+      - 'workspace-server/internal/db/workspace_status_enum_drift_test.go'
+      - 'tests/e2e/test_staging_external_runtime.sh'
+      - '.github/workflows/e2e-staging-external.yml'
+  workflow_dispatch:
+    inputs:
+      keep_org:
+        description: "Skip teardown for debugging (only via manual dispatch)"
+        required: false
+        type: boolean
+        default: false
+      stale_wait_secs:
+        description: "Seconds to wait for the heartbeat-staleness sweep (default 180 = 90s window + 90s buffer)"
+        required: false
+        default: "180"
+  schedule:
+    - cron: '30 7 * * *'
+
+concurrency:
+  group: e2e-staging-external
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-staging-external:
+    name: E2E Staging External Runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    env:
+      MOLECULE_CP_URL: https://staging-api.moleculesai.app
+      MOLECULE_ADMIN_TOKEN: ${{ secrets.MOLECULE_STAGING_ADMIN_TOKEN }}
+      E2E_RUN_ID: "${{ github.run_id }}-${{ github.run_attempt }}"
+      E2E_KEEP_ORG: ${{ github.event.inputs.keep_org && '1' || '0' }}
+      E2E_STALE_WAIT_SECS: ${{ github.event.inputs.stale_wait_secs || '180' }}
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Verify admin token present
+        run: |
+          if [ -z "$MOLECULE_ADMIN_TOKEN" ]; then
+            # Schedule + push triggers must hard-fail when the token is
+            # missing — silent skip would mask infra rot. Manual dispatch
+            # gets the same hard-fail; an operator running this on a fork
+            # without secrets configured needs to know up-front.
+            echo "::error::MOLECULE_STAGING_ADMIN_TOKEN secret not set (Railway staging CP_ADMIN_API_TOKEN)"
+            exit 2
+          fi
+          echo "Admin token present ✓"
+
+      - name: CP staging health preflight
+        run: |
+          code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$MOLECULE_CP_URL/health")
+          if [ "$code" != "200" ]; then
+            echo "::error::Staging CP unhealthy (got HTTP $code). Skipping — not a workspace bug."
+            exit 1
+          fi
+          echo "Staging CP healthy ✓"
+
+      - name: Run external-runtime E2E
+        id: e2e
+        run: bash tests/e2e/test_staging_external_runtime.sh
+
+      # Mirror the e2e-staging-saas.yml safety net: if the runner is
+      # cancelled (e.g. concurrent staging push), the test script's
+      # EXIT trap may not fire, so we sweep e2e-ext-* slugs scoped to
+      # *this* run id.
+      - name: Teardown safety net (runs on cancel/failure)
+        if: always()
+        env:
+          ADMIN_TOKEN: ${{ secrets.MOLECULE_STAGING_ADMIN_TOKEN }}
+        run: |
+          set +e
+          orgs=$(curl -sS "$MOLECULE_CP_URL/cp/admin/orgs" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" 2>/dev/null \
+            | python3 -c "
+          import json, sys, os, datetime
+          run_id = os.environ.get('GITHUB_RUN_ID', '')
+          d = json.load(sys.stdin)
+          # Scope STRICTLY to this run id (e2e-ext-YYYYMMDD-<runid>-...)
+          # so concurrent runs and unrelated dev probes are not touched.
+          # Sweep today AND yesterday so a midnight-crossing run still
+          # cleans up its own slug.
+          today = datetime.date.today()
+          yesterday = today - datetime.timedelta(days=1)
+          dates = (today.strftime('%Y%m%d'), yesterday.strftime('%Y%m%d'))
+          if not run_id:
+              # Without a run id we cannot scope safely; bail rather
+              # than risk deleting unrelated tenants.
+              sys.exit(0)
+          prefixes = tuple(f'e2e-ext-{d}-{run_id}-' for d in dates)
+          for o in d.get('orgs', []):
+              s = o.get('slug', '')
+              if s.startswith(prefixes) and o.get('status') != 'purged':
+                  print(s)
+          " 2>/dev/null)
+          if [ -n "$orgs" ]; then
+            echo "Safety-net sweep: deleting leftover orgs:"
+            echo "$orgs"
+            for slug in $orgs; do
+              curl -sS -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
+                -H "Authorization: Bearer $ADMIN_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "{\"confirm\":\"$slug\"}" >/dev/null 2>&1
+            done
+          else
+            echo "Safety-net sweep: no leftover orgs to clean."
+          fi
