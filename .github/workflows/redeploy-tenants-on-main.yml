@@ -64,6 +64,20 @@ permissions:
   # No write scopes needed — the workflow hits an external CP endpoint,
   # not the GitHub API.
 
+# Serialize redeploys so two rapid main pushes' redeploys don't overlap
+# and cause confusing per-tenant SSM state. Without this, GitHub's
+# implicit workflow_run queueing would *probably* serialize them, but
+# the explicit block makes the invariant defensible. Mirrors the
+# concurrency block on redeploy-tenants-on-staging.yml for shape parity.
+#
+# cancel-in-progress: false → aborting a half-rolled-out fleet would
+# leave tenants stuck on whatever image they happened to be on when
+# cancelled. Better to finish the in-flight rollout before starting
+# the next one.
+concurrency:
+  group: redeploy-tenants-on-main
+  cancel-in-progress: false
+
 jobs:
   redeploy:
     # Skip the auto-trigger if publish-workspace-server-image didn't
