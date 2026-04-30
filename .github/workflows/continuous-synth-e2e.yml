@@ -1,0 +1,160 @@
+name: Continuous synthetic E2E (staging)
+
+# Hard gate (#2342): cron-driven full-lifecycle E2E that catches
+# regressions visible only at runtime — schema drift, deployment-pipeline
+# gaps, vendor outages, env-var rotations, DNS / CF / Railway side-effects.
+#
+# Why this gate exists:
+#   PR-time CI catches code-level regressions but not deployment-time or
+#   integration-time ones. Today's empirical data:
+#     • #2345 (A2A v0.2 silent drop) — passed all unit tests, broke at
+#       JSON-RPC parse layer between sender and receiver. Visible only
+#       to a sender exercising the full path.
+#     • RFC #2312 chat upload — landed on staging-branch but never
+#       reached staging tenants because publish-workspace-server-image
+#       was main-only. Caught by manual dogfooding hours after deploy.
+#   Both would have surfaced within 15-20 min of regression if a
+#   continuous synth-E2E was running.
+#
+# Cadence: every 20 min (3x/hour). The script is conservatively
+# bounded at 10 min wall-clock; even on degraded staging it should
+# finish before the next firing. cron-overlap is guarded by the
+# concurrency group below.
+#
+# Cost: ~3 runs/hour × 5-10 min × $0.008/min GHA = ~$0.50-$1/day.
+# Plus a fresh tenant provisioned + torn down each run (Railway +
+# AWS pennies). Negligible.
+#
+# Failure handling: when the run fails, the workflow exits non-zero
+# and GitHub's standard email/notification path fires. Operators
+# can subscribe to this workflow's failure channel for paging-grade
+# alerting.
+
+on:
+  schedule:
+    # Every 20 minutes, on the :00 :20 :40. Offsets the existing :15
+    # sweep-cf-orphans and :45 sweep-cf-tunnels so the three
+    # operations don't all hit Cloudflare/AWS at the same minute.
+    - cron: '0,20,40 * * * *'
+  workflow_dispatch:
+    inputs:
+      runtime:
+        description: "Runtime to provision (langgraph = fastest, default; hermes = slower but covers SDK-native path; claude-code = needs OAUTH token in tenant env)"
+        required: false
+        default: "langgraph"
+        type: string
+      keep_org:
+        description: "Skip teardown for post-mortem debugging (only manual dispatch — never set this for cron runs)"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  # No issue-write here — failures surface as red runs in the workflow
+  # history. If you want auto-issue-on-fail, add a follow-up step that
+  # uses gh issue create gated on `if: failure()`. Keeping the surface
+  # minimal until that's actually wanted.
+
+# Serialize so two firings can never overlap. Cron firing every 20 min
+# but scripts conservatively bounded at 10 min — overlap shouldn't
+# happen in steady state, but if a run hangs we don't want N more
+# stacking up.
+concurrency:
+  group: continuous-synth-e2e
+  cancel-in-progress: false
+
+jobs:
+  synth:
+    name: Synthetic E2E against staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      # langgraph default keeps cold-start under 5 min on staging EC2.
+      # hermes is slower (~7-10 min) and isn't needed for the
+      # regression class this gate exists to catch (deployment-pipeline
+      # + schema-drift + integration). Operators can pick hermes via
+      # workflow_dispatch when they need to exercise the SDK-native
+      # session path.
+      E2E_RUNTIME: ${{ github.event.inputs.runtime || 'langgraph' }}
+      # Bound to 10 min so a stuck provision fails the run instead of
+      # holding up the next cron firing. 15-min default in the script
+      # is for the on-PR full lifecycle where we have more headroom.
+      E2E_PROVISION_TIMEOUT_SECS: '600'
+      # Slug suffix — namespaced "synth-" so these runs are
+      # distinguishable from PR-driven runs in CP admin.
+      E2E_RUN_ID: synth-${{ github.run_id }}
+      # Forced false for cron; respected for manual dispatch
+      E2E_KEEP_ORG: ${{ github.event.inputs.keep_org == 'true' && '1' || '' }}
+      MOLECULE_CP_URL: ${{ vars.STAGING_CP_URL || 'https://staging-api.moleculesai.app' }}
+      MOLECULE_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Verify required secret present
+        run: |
+          # Schedule-vs-dispatch hardening (mirrors the sweep-cf-* and
+          # redeploy-tenants-on-* workflows): hard-fail on missing secret
+          # for cron firing so a misconfigured-repo doesn't silently
+          # report green while doing nothing. Soft-skip on operator
+          # dispatch — operators can dispatch ad-hoc to verify a fix
+          # without setting up the secret first.
+          if [ -z "${MOLECULE_ADMIN_TOKEN:-}" ]; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "::warning::CP_STAGING_ADMIN_API_TOKEN not set — synth E2E cannot run"
+              echo "::warning::Set it at Settings → Secrets and Variables → Actions"
+              exit 0
+            fi
+            echo "::error::CP_STAGING_ADMIN_API_TOKEN secret missing — synth E2E cannot run"
+            echo "::error::Set it at Settings → Secrets and Variables → Actions; pull from staging-CP's CP_ADMIN_API_TOKEN env in Railway."
+            exit 1
+          fi
+
+      - name: Install required tools
+        run: |
+          # The script depends on jq + curl (already on ubuntu-latest)
+          # and python3 (likewise). Verify they're all present so we
+          # fail fast on a runner image regression rather than mid-script.
+          for cmd in jq curl python3; do
+            command -v "$cmd" >/dev/null 2>&1 || {
+              echo "::error::required tool '$cmd' not on PATH — runner image regression?"
+              exit 1
+            }
+          done
+
+      - name: Run synthetic E2E
+        # The script handles its own teardown via EXIT trap; even on
+        # failure (timeout, assertion), the org is deprovisioned and
+        # leaks are reported. Exit code propagates from the script.
+        run: |
+          bash tests/e2e/test_staging_full_saas.sh
+
+      - name: Failure summary
+        # Runs only on failure. Adds a job summary so the workflow run
+        # page shows a quick "what happened" instead of forcing readers
+        # to scroll through script output.
+        if: failure()
+        run: |
+          {
+            echo "## Continuous synth E2E failed"
+            echo ""
+            echo "**Run ID:** ${{ github.run_id }}"
+            echo "**Trigger:** ${{ github.event_name }}"
+            echo "**Runtime:** ${E2E_RUNTIME}"
+            echo "**Slug:** synth-${{ github.run_id }}"
+            echo ""
+            echo "### What this means"
+            echo ""
+            echo "Staging just regressed on a path that previously worked. Likely classes:"
+            echo "- Schema mismatch between sender and receiver (#2345 class)"
+            echo "- Deployment-pipeline gap (RFC #2312 / staging-tenant-image-stale class)"
+            echo "- Vendor outage (Cloudflare, Railway, AWS, GHCR)"
+            echo "- Staging-CP env var rotation"
+            echo ""
+            echo "### Next steps"
+            echo ""
+            echo "1. Check the script output above for the assertion that failed"
+            echo "2. If it's a vendor outage, no action needed — next firing in ~20 min"
+            echo "3. If it's a code regression, find the causing PR via \`git log\` against last green run and revert/fix"
+            echo "4. Keep an eye on the next 1-2 firings — flake vs persistent fail differs in priority"
+          } >> "$GITHUB_STEP_SUMMARY"
