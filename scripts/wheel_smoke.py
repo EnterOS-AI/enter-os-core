@@ -43,6 +43,21 @@ def smoke_imports_and_invariants() -> None:
     assert callable(cli_main), "a2a_mcp_server.cli_main must be callable"
     assert callable(mcp_cli_main), "mcp_cli.main must be callable"
 
+    # inbox.activate / get_state / start_poller_thread form the inbound
+    # delivery path for the standalone molecule-mcp wrapper. mcp_cli.main
+    # imports + activates these at startup; if a wheel ships without
+    # them, the standalone agent silently loses the wait_for_message /
+    # inbox_peek / inbox_pop tools and reverts to outbound-only.
+    from molecule_runtime.inbox import (  # noqa: F401
+        InboxState,
+        activate as inbox_activate,
+        get_state as inbox_get_state,
+        start_poller_thread as inbox_start_poller_thread,
+    )
+    assert callable(inbox_activate), "inbox.activate must be callable"
+    assert callable(inbox_get_state), "inbox.get_state must be callable"
+    assert callable(inbox_start_poller_thread), "inbox.start_poller_thread must be callable"
+
     assert a2a_client._A2A_ERROR_PREFIX, "a2a_client missing error sentinel"
     assert callable(get_adapter), "adapters.get_adapter must be callable"
     assert hasattr(BaseAdapter, "name"), "BaseAdapter interface broken"

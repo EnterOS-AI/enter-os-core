@@ -6,6 +6,9 @@
 - **list_peers**: List the workspaces this agent can communicate with — name, ID, status, role for each.
 - **get_workspace_info**: Get this workspace's own info — ID, name, role, tier, parent, status.
 - **send_message_to_user**: Send a message directly to the user's canvas chat — pushed instantly via WebSocket. Use this to: (1) acknowledge a task immediately ('Got it, I'll start working on this'), (2) send interim progress updates while doing long work, (3) deliver follow-up results after delegation completes, (4) attach files (zip, pdf, csv, image) for the user to download via the `attachments` field (NEVER paste file URLs in `message`). The message appears in the user's chat as if you're proactively reaching out.
+- **wait_for_message**: Block until the next inbound message (canvas user OR peer agent) arrives, or until ``timeout_secs`` elapses.
+- **inbox_peek**: List pending inbound messages without removing them.
+- **inbox_pop**: Remove a handled message from the inbox queue by activity_id.
 
 ### delegate_task
 Use for QUICK questions and small sub-tasks where you can afford to wait inline. Returns the peer's response text directly. For longer-running work (research, multi-minute jobs) use delegate_task_async + check_task_status instead so you don't hold this workspace busy waiting.
@@ -24,5 +27,14 @@ Use to introspect your own identity (e.g. before reporting back to the user, or 
 
 ### send_message_to_user
 Use proactively across the lifecycle of a task — early to acknowledge, mid-flight to update, late to deliver. Never paste file URLs in the message body — always pass absolute paths in `attachments` so the platform serves them as download chips (works on SaaS where external file hosts are unreachable).
+
+### wait_for_message
+Standalone-runtime ONLY (molecule-mcp wrapper). After you reply, call this to wait for the next message — forms the loop ``wait_for_message → respond → wait_for_message``. Returns the head message non-destructively; call inbox_pop with the activity_id once you've handled it. In-container runtimes receive messages via push and should not call this.
+
+### inbox_peek
+Standalone-runtime ONLY. Use to inspect what's queued before deciding which to handle. Non-destructive — pair with inbox_pop to consume after replying.
+
+### inbox_pop
+Standalone-runtime ONLY. Call after you've replied to a message returned from wait_for_message or inbox_peek to drop it from the queue. Idempotent — popping a missing id reports removed=false without erroring.
 
 Always use list_peers first to discover available workspace IDs. Access control is enforced — you can only reach siblings and parent/children. If a delegation returns a DELEGATION FAILED message, do NOT forward the raw error to the user. Instead: (1) try a different peer, (2) handle the task yourself, or (3) tell the user which peer is unavailable and provide your own best answer.

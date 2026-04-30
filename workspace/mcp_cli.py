@@ -273,11 +273,46 @@ def main() -> None:
         _platform_register(platform_url, workspace_id, token)
         _start_heartbeat_thread(platform_url, workspace_id, token)
 
+    # Inbox poller — the inbound side of the standalone path. Without
+    # this thread, the universal MCP server is OUTBOUND-ONLY: an agent
+    # can call delegate_task / send_message_to_user but never observe
+    # canvas-user or peer-agent messages. The poller fills an in-memory
+    # queue from the platform's /activity?type=a2a_receive endpoint;
+    # the agent reads via wait_for_message / inbox_peek / inbox_pop.
+    #
+    # Same disable pattern as heartbeat: in-container callers (with
+    # push delivery via canvas WebSocket) skip this to avoid duplicate
+    # delivery; tests use the env to keep imports cheap.
+    if not os.environ.get("MOLECULE_MCP_DISABLE_INBOX", "").strip():
+        _start_inbox_poller(platform_url, workspace_id)
+
     # Env is valid — safe to import the heavy module now. Importing
     # earlier would trigger a2a_client.py:22's module-level RuntimeError
     # before our friendly help reaches the user.
     from a2a_mcp_server import cli_main
     cli_main()
+
+
+def _start_inbox_poller(platform_url: str, workspace_id: str) -> None:
+    """Activate the inbox singleton + spawn the poller daemon thread.
+
+    Done lazily here (not at module import) because importing inbox
+    pulls in platform_auth, which only resolves cleanly AFTER env
+    validation succeeds. Activation is idempotent within a process,
+    so a stray double-call (e.g. test harness re-entering main) is
+    harmless.
+
+    The poller thread is daemon=True — dies with the main process.
+    """
+    try:
+        import inbox
+    except ImportError as exc:
+        logger.warning("molecule-mcp: inbox module unavailable: %s", exc)
+        return
+
+    state = inbox.InboxState(cursor_path=inbox.default_cursor_path())
+    inbox.activate(state)
+    inbox.start_poller_thread(state, platform_url, workspace_id)
 
 
 def _read_token_file() -> str:

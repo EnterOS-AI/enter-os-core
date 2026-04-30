@@ -64,6 +64,7 @@ TOP_LEVEL_MODULES = {
     "events",
     "executor_helpers",
     "heartbeat",
+    "inbox",
     "initial_prompt",
     "internal_chat_uploads",
     "internal_file_read",
