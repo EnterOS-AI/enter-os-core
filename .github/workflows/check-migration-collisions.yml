@@ -1,0 +1,51 @@
+name: Check migration collisions
+
+# Hard gate (#2341): fails a PR that adds a migration prefix already
+# claimed by the base branch or another open PR. Caught manually 2026-04-30
+# during PR #2276 rebase: 044_runtime_image_pins collided with
+# 044_platform_inbound_secret from RFC #2312. This workflow makes that
+# check automatic.
+#
+# Trigger model: pull_request only — there's no value running this on
+# pushes to staging or main (those are post-merge; the gate must fire
+# pre-merge to be useful). Path filter scopes to PRs that actually touch
+# migrations.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'workspace-server/migrations/**'
+      - 'scripts/ops/check_migration_collisions.py'
+      - '.github/workflows/check-migration-collisions.yml'
+
+permissions:
+  contents: read
+  # gh pr list/diff need read access to other PRs
+  pull-requests: read
+
+jobs:
+  check:
+    name: Migration version collision check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # Need history to diff against base ref
+          fetch-depth: 0
+
+      - name: Detect collisions
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: origin/${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          # gh CLI uses GH_TOKEN from env
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Make sure base ref is fetched (checkout@v4 with fetch-depth=0
+          # fetches history but not necessarily named refs in the form we
+          # expect; explicit fetch is cheap insurance).
+          git fetch origin "${{ github.event.pull_request.base.ref }}" --depth=1 || true
+          python3 scripts/ops/check_migration_collisions.py
