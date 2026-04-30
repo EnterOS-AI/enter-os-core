@@ -449,12 +449,29 @@ func (h *RegistryHandler) Register(c *gin.Context) {
 	// outbound auth_token's "issue once" lifecycle. Returning it here is
 	// the only delivery path for SaaS, where the platform's CP provisioner
 	// has no volume to write into.
-	if secret, secretErr := wsauth.ReadPlatformInboundSecret(ctx, db.DB, payload.ID); secretErr == nil {
+	//
+	// Lazy-heal (2026-04-30): if the column is NULL (legacy workspace
+	// provisioned before the shared-mint refactor), mint it inline and
+	// include in the response. Without this, legacy workspaces would need
+	// two round-trips before chat upload works — chat_files lazy-heals
+	// platform-side on first attempt, then the workspace must heartbeat
+	// to receive the freshly-minted secret. Heal-on-register collapses
+	// that to one round-trip.
+	secret, secretErr := wsauth.ReadPlatformInboundSecret(ctx, db.DB, payload.ID)
+	if secretErr != nil && errors.Is(secretErr, wsauth.ErrNoInboundSecret) {
+		minted, mintErr := wsauth.IssuePlatformInboundSecret(ctx, db.DB, payload.ID)
+		if mintErr != nil {
+			log.Printf("Registry: lazy-heal mint of platform_inbound_secret failed for %s: %v — workspace will 503 on chat upload until next register", payload.ID, mintErr)
+		} else {
+			secret = minted
+			secretErr = nil
+			log.Printf("Registry: lazy-healed platform_inbound_secret for %s (#2312 backfill)", payload.ID)
+		}
+	}
+	if secretErr == nil {
 		response["platform_inbound_secret"] = secret
 	} else if !errors.Is(secretErr, wsauth.ErrNoInboundSecret) {
-		// ErrNoInboundSecret is the expected case for legacy workspaces
-		// that predate migration 044 — quiet. Other errors (DB hiccup, etc.)
-		// log loud so ops notices.
+		// Non-NoInboundSecret read errors (DB hiccup, etc.) — log loud.
 		log.Printf("Registry: read platform_inbound_secret for %s failed: %v", payload.ID, secretErr)
 	}
 

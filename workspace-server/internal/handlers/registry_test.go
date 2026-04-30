@@ -991,7 +991,19 @@ func TestRegister_ReturnsPlatformInboundSecret_RFC2312_PRF(t *testing.T) {
 // that predate migration 044 (NULL platform_inbound_secret column) still
 // get a successful registration — the field is just omitted from the
 // response. The Register handler logs the absence quietly.
-func TestRegister_NoInboundSecret_OmitsField(t *testing.T) {
+// TestRegister_NoInboundSecret_LazyHeals — legacy workspace path:
+// when ReadPlatformInboundSecret returns ErrNoInboundSecret (NULL
+// column), Register MUST mint inline and include the freshly-minted
+// secret in the response. Without this, legacy workspaces would need
+// two round-trips before chat upload works (chat_files heals
+// platform-side → workspace must heartbeat → next chat upload).
+//
+// Pre-fix this test asserted the field was ABSENT; that was correct
+// for the missing behavior, but happened to pass even with my
+// register-time lazy-heal change because sqlmock unmatched UPDATE
+// caused the mint to fail and fall back to omit-field. Splitting
+// into success + failure tests pins both branches.
+func TestRegister_NoInboundSecret_LazyHeals(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)
 	broadcaster := newTestBroadcaster()
@@ -1002,7 +1014,6 @@ func TestRegister_NoInboundSecret_OmitsField(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM workspace_auth_tokens").
 		WithArgs(wsID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
-	// resolveDeliveryMode — no row yet, default push (#2339).
 	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
 		WithArgs(wsID).
 		WillReturnError(sql.ErrNoRows)
@@ -1019,6 +1030,12 @@ func TestRegister_NoInboundSecret_OmitsField(t *testing.T) {
 	mock.ExpectQuery(`SELECT platform_inbound_secret FROM workspaces WHERE id = \$1`).
 		WithArgs(wsID).
 		WillReturnRows(sqlmock.NewRows([]string{"platform_inbound_secret"}).AddRow(nil))
+	// Lazy-heal mint MUST land. If this expectation isn't matched, the
+	// register handler skipped backfill and legacy workspaces would
+	// need 2 round-trips before chat upload works.
+	mock.ExpectExec(`UPDATE workspaces SET platform_inbound_secret = \$1 WHERE id = \$2`).
+		WithArgs(sqlmock.AnyArg(), wsID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -1029,12 +1046,72 @@ func TestRegister_NoInboundSecret_OmitsField(t *testing.T) {
 	handler.Register(c)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 even without inbound secret, got %d", w.Code)
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	secret, present := resp["platform_inbound_secret"]
+	if !present {
+		t.Errorf("expected platform_inbound_secret to be PRESENT (lazy-healed), got response: %v", resp)
+	}
+	if s, ok := secret.(string); !ok || s == "" {
+		t.Errorf("expected non-empty platform_inbound_secret string, got %T %v", secret, secret)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations not met — register-time lazy-heal mint did NOT run, regression of #2312 backfill: %v", err)
+	}
+}
+
+// TestRegister_NoInboundSecret_LazyHealMintFailureOmitsField pins the
+// alternate branch: if the lazy-heal mint itself fails (DB hiccup),
+// Register MUST still respond 200 (workspace is online) but omit the
+// field. The next register call will retry the heal.
+func TestRegister_NoInboundSecret_LazyHealMintFailureOmitsField(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewRegistryHandler(broadcaster)
+
+	const wsID = "00000000-0000-0000-0000-000000002313"
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM workspace_auth_tokens").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+		WithArgs(wsID).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectExec("INSERT INTO workspaces").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT url FROM workspaces WHERE id").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"url"}).AddRow("http://localhost:9100"))
+	mock.ExpectExec("INSERT INTO structure_events").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM workspace_auth_tokens").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec("INSERT INTO workspace_auth_tokens").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`SELECT platform_inbound_secret FROM workspaces WHERE id = \$1`).
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"platform_inbound_secret"}).AddRow(nil))
+	// Mint fails — handler must NOT 500; just omit field + log.
+	mock.ExpectExec(`UPDATE workspaces SET platform_inbound_secret = \$1 WHERE id = \$2`).
+		WithArgs(sqlmock.AnyArg(), wsID).
+		WillReturnError(sql.ErrConnDone)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/registry/register",
+		bytes.NewBufferString(`{"id":"`+wsID+`","url":"http://localhost:9100","agent_card":{"name":"x"}}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.Register(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 even when lazy-heal fails (workspace is online), got %d: %s", w.Code, w.Body.String())
 	}
 	var resp map[string]interface{}
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if _, present := resp["platform_inbound_secret"]; present {
-		t.Errorf("expected platform_inbound_secret to be ABSENT for legacy workspace, got: %v", resp["platform_inbound_secret"])
+		t.Errorf("expected platform_inbound_secret to be ABSENT when mint failed, got: %v", resp["platform_inbound_secret"])
 	}
 }
 
