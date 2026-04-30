@@ -1806,24 +1806,80 @@ func TestMaybeMarkContainerDead_CPOnly_Running(t *testing.T) {
 	}
 }
 
-// fakeCPProv satisfies provisioner.CPProvisionerAPI for tests that need
-// to exercise the SaaS / EC2-backed path. Only IsRunning is used by the
-// reactive-health path under test; Start/Stop/GetConsoleOutput panic so
-// an unexpected reach into them is a loud test failure rather than a
-// silent passthrough.
+// SaaS-path runRestartCycle: when h.provisioner is nil and h.cpProv is set,
+// the auto-restart cycle MUST call cpProv.Stop (not Docker provisioner.Stop).
+// Pre-fix this dispatched only to h.provisioner.Stop, NPE'd on nil, was
+// silently swallowed by coalesceRestart's recover-without-re-raise, and
+// left the workspace stuck in status='provisioning' forever — making
+// reactive auto-restart on SaaS effectively dead code. The independent
+// review of PR #2362 caught this gap.
+//
+// We drive runRestartCycle directly (not via RestartByID/coalesceRestart)
+// so we don't fight the goroutine's timing in a unit test. The full
+// restart chain (provisionWorkspaceCP) needs its own mocked DB rows that
+// would explode the surface area of this test; what we care about here
+// is the dispatch decision, which is observable on cpProv.stopCalls.
+func TestRunRestartCycle_SaaSPath_DispatchesViaCPProv(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	handler := NewWorkspaceHandler(newTestBroadcaster(), nil, "http://localhost:8080", t.TempDir())
+	cp := &fakeCPProv{}
+	handler.SetCPProvisioner(cp)
+
+	// runRestartCycle's first query — workspace metadata.
+	mock.ExpectQuery(`SELECT name, status, tier, COALESCE\(runtime, 'langgraph'\) FROM workspaces`).
+		WithArgs("ws-saas-restart").
+		WillReturnRows(sqlmock.NewRows([]string{"name", "status", "tier", "runtime"}).
+			AddRow("Test Workspace", "online", 2, "hermes"))
+	// isParentPaused — return nil parent_id so the helper short-circuits.
+	mock.ExpectQuery(`SELECT parent_id FROM workspaces WHERE id =`).
+		WithArgs("ws-saas-restart").
+		WillReturnRows(sqlmock.NewRows([]string{"parent_id"}).AddRow(nil))
+	// After Stop, the cycle UPDATEs status to 'provisioning'. We allow
+	// that and don't mock everything provisionWorkspaceCP touches —
+	// provisionWorkspaceCP will fail at its first unmocked query, which
+	// is downstream of the dispatch decision under test.
+	mock.ExpectExec(`UPDATE workspaces SET status = 'provisioning'`).
+		WithArgs("ws-saas-restart").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// loadRestartContextData query (best-effort lookups; let them not match
+	// and the function returns a zero-valued struct).
+	mock.MatchExpectationsInOrder(false)
+
+	handler.runRestartCycle("ws-saas-restart")
+
+	// The dispatch we're testing: SaaS path → cpProv.Stop, never Docker.
+	if cp.stopCalls != 1 {
+		t.Fatalf("expected cpProv.Stop to be called once on SaaS auto-restart; got %d calls — pre-fix the cycle NPE'd before reaching Stop on the (nil) Docker path", cp.stopCalls)
+	}
+}
+
+// fakeCPProv satisfies provisioner.CPProvisionerAPI for tests that exercise
+// the SaaS / EC2-backed reactive-health path.
+//
+// Methods all record calls. Start/Stop/GetConsoleOutput return nil/empty by
+// default — the maybeMarkContainerDead happy path triggers an async
+// `go h.RestartByID(...)` which calls Stop, so the previous "panic on
+// unexpected call" pattern was unsafe (the panic fires on a goroutine,
+// after the assertions ran). Tests that want to ASSERT a method is unused
+// can check `calls == 0` after a sync barrier.
 type fakeCPProv struct {
-	running bool
-	calls   int
+	running    bool
+	calls      int
+	stopCalls  int
+	startCalls int
 }
 
 func (f *fakeCPProv) Start(_ context.Context, _ provisioner.WorkspaceConfig) (string, error) {
-	panic("fakeCPProv.Start not expected on the maybeMarkContainerDead path")
+	f.startCalls++
+	return "", nil
 }
 func (f *fakeCPProv) Stop(_ context.Context, _ string) error {
-	panic("fakeCPProv.Stop not expected on the maybeMarkContainerDead path")
+	f.stopCalls++
+	return nil
 }
 func (f *fakeCPProv) GetConsoleOutput(_ context.Context, _ string) (string, error) {
-	panic("fakeCPProv.GetConsoleOutput not expected on the maybeMarkContainerDead path")
+	return "", nil
 }
 func (f *fakeCPProv) IsRunning(_ context.Context, _ string) (bool, error) {
 	f.calls++
