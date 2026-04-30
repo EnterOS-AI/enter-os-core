@@ -2,22 +2,16 @@ name: E2E API Smoke Test
 # Extracted from ci.yml so workflow-level concurrency can protect this job
 # from run-level cancellation (issue #458).
 #
-# Trigger model (changed 2026-04-28 — see auto-promote gap below):
+# Trigger model (revised 2026-04-29):
 #
-# This workflow always FIRES on push/pull_request to staging+main, but
-# only does real work when paths under `workspace-server/`,
-# `tests/e2e/`, or this workflow file changed. The detect-changes job
-# uses dorny/paths-filter to decide; the e2e-api job runs only if
-# changes match. Otherwise the no-op job emits success so the workflow
-# always produces a `completed/success` run record.
-#
-# Why: auto-promote-staging.yml's gate-check (line 99) treats "workflow
-# didn't run" as failure, which dead-locked any platform-only or
-# test-only push to staging that didn't touch workspace-server paths.
-# Dropping the path filter on the trigger and gating real work
-# internally guarantees the workflow always emits a result that the
-# auto-promote chain can read. Same pattern applied to
-# e2e-staging-canvas.yml in the same PR.
+# Always FIRES on push/pull_request to staging+main. Real work is gated
+# per-step on `needs.detect-changes.outputs.api` — when paths under
+# `workspace-server/`, `tests/e2e/`, or this workflow file haven't
+# changed, the no-op step alone runs and emits SUCCESS for the
+# `E2E API Smoke Test` check, satisfying branch protection without
+# spending CI cycles. See the in-job comment on the `e2e-api` job for
+# why this is one job (not two-jobs-sharing-name) and the 2026-04-29
+# PR #2264 incident that drove the consolidation.
 
 on:
   push:
@@ -66,27 +60,20 @@ jobs:
             echo "api=${{ steps.filter.outputs.api }}" >> "$GITHUB_OUTPUT"
           fi
 
-  # Same `name:` as the real job below so the check-run produced by the
-  # no-op path is indistinguishable from the real one for branch
-  # protection purposes. Without this, the real job was always skipped on
-  # paths-filtered commits → branch protection on `main` saw "E2E API
-  # Smoke Test" as a missing required check → auto-promote-staging's
-  # `git push origin main` got rejected with GH006. Observed 2026-04-28
-  # 00:22 UTC blocking the staging→main promote despite all gates
-  # actually passing at the workflow level.
-  no-op:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.api != 'true'
-    name: E2E API Smoke Test
-    runs-on: ubuntu-latest
-    steps:
-      - run: |
-          echo "No workspace-server / tests/e2e / workflow changes — E2E API gate satisfied without running tests."
-          echo "::notice::E2E API Smoke Test no-op pass (paths filter excluded this commit)."
-
+  # ONE job (no job-level `if:`) that always runs and reports under the
+  # required-check name `E2E API Smoke Test`. Real work is gated per-step
+  # on `needs.detect-changes.outputs.api`. Reason: GitHub registers a
+  # check run for every job that matches `name:`, and a job-level
+  # `if: false` produces a SKIPPED check run. Branch protection treats
+  # all check runs with a matching context name on the latest commit as a
+  # SET — any SKIPPED in the set fails the required-check eval, even with
+  # SUCCESS siblings. Verified 2026-04-29 on PR #2264 (staging→main):
+  # 4 check runs (2 SKIPPED + 2 SUCCESS) at the head SHA blocked
+  # promotion despite all real work succeeding. Collapsing to a single
+  # always-running job with conditional steps emits exactly one SUCCESS
+  # check run regardless of paths filter — branch-protection-clean.
   e2e-api:
     needs: detect-changes
-    if: needs.detect-changes.outputs.api == 'true'
     name: E2E API Smoke Test
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -97,13 +84,21 @@ jobs:
       PG_CONTAINER: molecule-ci-postgres
       REDIS_CONTAINER: molecule-ci-redis
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      - name: No-op pass (paths filter excluded this commit)
+        if: needs.detect-changes.outputs.api != 'true'
+        run: |
+          echo "No workspace-server / tests/e2e / workflow changes — E2E API gate satisfied without running tests."
+          echo "::notice::E2E API Smoke Test no-op pass (paths filter excluded this commit)."
+      - if: needs.detect-changes.outputs.api == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - if: needs.detect-changes.outputs.api == 'true'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: 'stable'
           cache: true
           cache-dependency-path: workspace-server/go.sum
       - name: Start Postgres (docker)
+        if: needs.detect-changes.outputs.api == 'true'
         run: |
           docker rm -f "$PG_CONTAINER" 2>/dev/null || true
           docker run -d --name "$PG_CONTAINER" -e POSTGRES_USER=dev -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=molecule -p 15432:5432 postgres:16
@@ -118,6 +113,7 @@ jobs:
           docker logs "$PG_CONTAINER" || true
           exit 1
       - name: Start Redis (docker)
+        if: needs.detect-changes.outputs.api == 'true'
         run: |
           docker rm -f "$REDIS_CONTAINER" 2>/dev/null || true
           docker run -d --name "$REDIS_CONTAINER" -p 16379:6379 redis:7
@@ -132,14 +128,17 @@ jobs:
           docker logs "$REDIS_CONTAINER" || true
           exit 1
       - name: Build platform
+        if: needs.detect-changes.outputs.api == 'true'
         working-directory: workspace-server
         run: go build -o platform-server ./cmd/server
       - name: Start platform (background)
+        if: needs.detect-changes.outputs.api == 'true'
         working-directory: workspace-server
         run: |
           ./platform-server > platform.log 2>&1 &
           echo $! > platform.pid
       - name: Wait for /health
+        if: needs.detect-changes.outputs.api == 'true'
         run: |
           for i in $(seq 1 30); do
             if curl -sf http://localhost:8080/health > /dev/null; then
@@ -152,6 +151,7 @@ jobs:
           cat workspace-server/platform.log || true
           exit 1
       - name: Assert migrations applied
+        if: needs.detect-changes.outputs.api == 'true'
         run: |
           tables=$(docker exec "$PG_CONTAINER" psql -U dev -d molecule -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='workspaces'")
           if [ "$tables" != "1" ]; then
@@ -161,25 +161,25 @@ jobs:
           fi
           echo "Migrations OK"
       - name: Run E2E API tests
+        if: needs.detect-changes.outputs.api == 'true'
         run: bash tests/e2e/test_api.sh
       - name: Run notify-with-attachments E2E
+        if: needs.detect-changes.outputs.api == 'true'
         run: bash tests/e2e/test_notify_attachments_e2e.sh
       - name: Run priority-runtimes E2E (claude-code + hermes — skips when keys absent)
-        # Validates the test script itself runs cleanly even with no LLM
-        # keys (both phases skip gracefully). The wire-real coverage with
-        # actual keys runs in canary-staging.yml + e2e-staging-saas.yml.
+        if: needs.detect-changes.outputs.api == 'true'
         run: bash tests/e2e/test_priority_runtimes_e2e.sh
       - name: Dump platform log on failure
-        if: failure()
+        if: failure() && needs.detect-changes.outputs.api == 'true'
         run: cat workspace-server/platform.log || true
       - name: Stop platform
-        if: always()
+        if: always() && needs.detect-changes.outputs.api == 'true'
         run: |
           if [ -f workspace-server/platform.pid ]; then
             kill "$(cat workspace-server/platform.pid)" 2>/dev/null || true
           fi
       - name: Stop service containers
-        if: always()
+        if: always() && needs.detect-changes.outputs.api == 'true'
         run: |
           docker rm -f "$PG_CONTAINER" 2>/dev/null || true
           docker rm -f "$REDIS_CONTAINER" 2>/dev/null || true
