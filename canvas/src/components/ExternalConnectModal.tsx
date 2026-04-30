@@ -1,3 +1,5 @@
+'use client';
+
 // ExternalConnectModal — shown once after creating a runtime="external"
 // workspace. Surfaces the workspace_auth_token + ready-to-paste snippets
 // so the operator can hand them to whoever runs their off-host agent
@@ -24,6 +26,12 @@ export interface ExternalConnectionInfo {
   heartbeat_endpoint: string;
   curl_register_template: string;
   python_snippet: string;
+  // Claude Code channel plugin snippet — for operators whose external
+  // agent IS a Claude Code session. Polling-based; no tunnel required.
+  // Optional in the type for backward compat with platforms that
+  // haven't shipped molecule-core PR #2304 yet (older response payload
+  // omits the field; tab is hidden if empty).
+  claude_code_channel_snippet?: string;
 }
 
 interface Props {
@@ -31,10 +39,14 @@ interface Props {
   onClose: () => void;
 }
 
-type Tab = "python" | "curl" | "fields";
+type Tab = "python" | "curl" | "claude" | "fields";
 
 export function ExternalConnectModal({ info, onClose }: Props) {
-  const [tab, setTab] = useState<Tab>("python");
+  // Default to Claude Code when the platform offers it — that's the
+  // newest + simplest path (no tunnel needed). Falls back to Python
+  // for older platform builds that don't ship the snippet.
+  const initialTab: Tab = info?.claude_code_channel_snippet ? "claude" : "python";
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   const copy = useCallback(async (value: string, key: string) => {
@@ -70,6 +82,13 @@ export function ExternalConnectModal({ info, onClose }: Props) {
     'WORKSPACE_AUTH_TOKEN="<paste from create response>"',
     `WORKSPACE_AUTH_TOKEN="${info.auth_token}"`,
   );
+  // The channel snippet asks the operator to paste the auth_token into
+  // the .env file's MOLECULE_WORKSPACE_TOKENS field. Stamp it server-side
+  // here so the copy-paste-block is truly ready-to-run.
+  const filledChannel = info.claude_code_channel_snippet?.replace(
+    'MOLECULE_WORKSPACE_TOKENS=<paste auth_token from create response>',
+    `MOLECULE_WORKSPACE_TOKENS=${info.auth_token}`,
+  );
 
   return (
     <Dialog.Root open onOpenChange={(o) => !o && onClose()}>
@@ -91,7 +110,11 @@ export function ExternalConnectModal({ info, onClose }: Props) {
             aria-label="Connection snippet format"
             className="mt-4 flex gap-1 border-b border-zinc-800"
           >
-            {(["python", "curl", "fields"] as Tab[]).map((t) => (
+            {(
+              filledChannel
+                ? (["claude", "python", "curl", "fields"] as Tab[])
+                : (["python", "curl", "fields"] as Tab[])
+            ).map((t) => (
               <button
                 key={t}
                 type="button"
@@ -104,17 +127,32 @@ export function ExternalConnectModal({ info, onClose }: Props) {
                     : "border-transparent text-zinc-500 hover:text-zinc-300"
                 }`}
               >
-                {t === "python" ? "Python SDK" : t === "curl" ? "curl" : "Fields"}
+                {t === "claude"
+                  ? "Claude Code"
+                  : t === "python"
+                  ? "Python SDK"
+                  : t === "curl"
+                  ? "curl"
+                  : "Fields"}
               </button>
             ))}
           </div>
 
           {/* Snippet area */}
           <div className="mt-3">
+            {tab === "claude" && filledChannel && (
+              <SnippetBlock
+                value={filledChannel}
+                label="Claude Code channel — polls workspace's A2A; no tunnel needed"
+                copyKey="claude"
+                copied={copiedKey === "claude"}
+                onCopy={() => copy(filledChannel, "claude")}
+              />
+            )}
             {tab === "python" && (
               <SnippetBlock
                 value={filledPython}
-                label="Python (recommended — includes heartbeat loop)"
+                label="Python SDK — includes heartbeat loop (push-mode, needs public URL)"
                 copyKey="python"
                 copied={copiedKey === "python"}
                 onCopy={() => copy(filledPython, "python")}

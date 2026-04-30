@@ -67,6 +67,37 @@ curl -fsS -X POST "{{PLATFORM_URL}}/registry/register" \
   }'
 `
 
+// externalChannelTemplate — Claude Code channel plugin install + .env. For
+// operators whose external agent IS a Claude Code session (laptop or
+// remote dev VM); routes the workspace's A2A traffic into the running
+// Claude Code session as conversation turns via MCP. The plugin source
+// lives at github.com/Molecule-AI/molecule-mcp-claude-channel — polling
+// based, no tunnel required (uses /workspaces/:id/activity?since_secs=,
+// platform-side support shipped in #2300).
+const externalChannelTemplate = `# Claude Code channel — bridges this workspace's A2A traffic into your
+# Claude Code session. No tunnel/public URL needed (polling-based).
+#
+# 1. Save this token + workspace_id, then create ~/.claude/channels/molecule/.env:
+mkdir -p ~/.claude/channels/molecule
+cat > ~/.claude/channels/molecule/.env <<'EOF'
+MOLECULE_PLATFORM_URL={{PLATFORM_URL}}
+MOLECULE_WORKSPACE_IDS={{WORKSPACE_ID}}
+MOLECULE_WORKSPACE_TOKENS=<paste auth_token from create response>
+EOF
+chmod 600 ~/.claude/channels/molecule/.env
+
+# 2. Launch Claude Code with the channel enabled:
+claude --channels plugin:molecule@Molecule-AI/molecule-mcp-claude-channel
+
+# Inbound A2A messages now surface as conversation turns. Claude's
+# replies route back via the reply_to_workspace MCP tool — no extra
+# wiring on your side.
+#
+# Multi-workspace: comma-separate IDs and tokens (same order). See
+# https://github.com/Molecule-AI/molecule-mcp-claude-channel for
+# pairing flow, push-mode upgrade, and v0.2 roadmap.
+`
+
 // externalPythonTemplate uses molecule-sdk-python's RemoteAgentClient +
 // A2AServer (PR #13 in that repo). Until the SDK cuts a v0.y release
 // to PyPI the snippet pins git+main.

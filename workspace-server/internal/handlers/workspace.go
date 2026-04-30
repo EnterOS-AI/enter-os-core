@@ -370,6 +370,17 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 						"{{PLATFORM_URL}}", platformURL),
 					"{{WORKSPACE_ID}}", id,
 				),
+				// Claude Code channel plugin snippet. For operators
+				// whose external agent IS a Claude Code session —
+				// the snippet sets up ~/.claude/channels/molecule/.env
+				// and points at the canonical first-party plugin at
+				// github.com/Molecule-AI/molecule-mcp-claude-channel.
+				// Polling-based; no tunnel needed.
+				"claude_code_channel_snippet": strings.ReplaceAll(
+					strings.ReplaceAll(externalChannelTemplate,
+						"{{PLATFORM_URL}}", platformURL),
+					"{{WORKSPACE_ID}}", id,
+				),
 			}
 		}
 		c.JSON(http.StatusCreated, resp)

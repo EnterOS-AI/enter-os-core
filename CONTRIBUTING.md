@@ -175,6 +175,17 @@ and run CI manually.
 - Type hints on public functions
 - pytest for all tests
 
+## External integrations
+
+Code in this repo lands in molecule-core. Some related runtime artifacts
+live in their own repos:
+
+- [`Molecule-AI/molecule-ai-workspace-runtime`](https://github.com/Molecule-AI/molecule-ai-workspace-runtime) — Python adapter SDK (`molecule_runtime`) that runs inside containerized Molecule workspaces. Bridges Claude Code SDK / hermes / langgraph / etc. → A2A queue.
+- [`Molecule-AI/molecule-sdk-python`](https://github.com/Molecule-AI/molecule-sdk-python) — `A2AServer` + `RemoteAgentClient` for external agents that register over the public `/registry/register` flow.
+- [`Molecule-AI/molecule-mcp-claude-channel`](https://github.com/Molecule-AI/molecule-mcp-claude-channel) — Claude Code channel plugin. Bridges A2A traffic into a running Claude Code session via MCP `notifications/claude/channel`. Polling-based (no tunnel required); install with `claude --channels plugin:molecule@Molecule-AI/molecule-mcp-claude-channel`.
+
+When extending the **A2A surface** in molecule-core (`workspace-server/internal/handlers/a2a_proxy.go` etc.), consider whether the change has a downstream impact on the runtime SDK or the channel plugin — they're versioned independently but share the wire shape.
+
 ## Architecture Overview
 
 See `CLAUDE.md` for detailed architecture documentation, including:
