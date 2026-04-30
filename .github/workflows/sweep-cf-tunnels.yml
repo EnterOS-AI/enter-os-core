@@ -1,0 +1,112 @@
+name: Sweep stale Cloudflare Tunnels
+
+# Janitor for Cloudflare Tunnels whose backing tenant no longer
+# exists. Parallel-shape to sweep-cf-orphans.yml (which sweeps DNS
+# records); same justification, different CF resource.
+#
+# Why this exists separately from sweep-cf-orphans:
+#   - DNS records live on the zone (`/zones/<id>/dns_records`).
+#   - Tunnels live on the account (`/accounts/<id>/cfd_tunnel`).
+#   - Different CF API surface, different scopes; the existing CF
+#     token might not have `account:cloudflare_tunnel:edit`. Splitting
+#     the workflows keeps each one's secret-presence gate independent
+#     so neither silent-skips when the other's secret is missing.
+#   - Cleaner blast radius — operators can disable one without the
+#     other if a regression surfaces.
+#
+# Safety: the script's MAX_DELETE_PCT gate (default 90% — higher than
+# the DNS sweep's 50% because tenant-shaped tunnels are mostly
+# orphans by design) refuses to nuke past the threshold.
+
+on:
+  schedule:
+    # Hourly at :45 — offset from sweep-cf-orphans (:15) so the two
+    # janitors don't issue parallel CF API bursts at the same minute.
+    - cron: '45 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run only — list what would be deleted, no deletion"
+        required: false
+        type: boolean
+        default: true
+      max_delete_pct:
+        description: "Override safety gate (default 90, set higher only for major cleanup)"
+        required: false
+        default: "90"
+
+# Don't let two sweeps race the same account.
+concurrency:
+  group: sweep-cf-tunnels
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    name: Sweep CF tunnels
+    runs-on: ubuntu-latest
+    # 5 min surfaces hangs (CF API stall, slow pagination on busy
+    # accounts). Realistic worst case is ~3 min: 2 CP curls + N CF
+    # list pages + N×CF-DELETE, each capped at 10-15s by curl -m.
+    timeout-minutes: 5
+    env:
+      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+      CP_PROD_ADMIN_TOKEN: ${{ secrets.CP_PROD_ADMIN_TOKEN }}
+      CP_STAGING_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_TOKEN }}
+      MAX_DELETE_PCT: ${{ github.event.inputs.max_delete_pct || '90' }}
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Verify required secrets present
+        id: verify
+        # Schedule-vs-dispatch behaviour split mirrors sweep-cf-orphans
+        # (hardened 2026-04-28 after the silent-no-op incident: the
+        # janitor reported green while doing nothing because secrets
+        # were unset, masking a 152/200 zone-record leak). Same
+        # principle applies here:
+        #   - schedule → exit 1 on missing secrets (red CI surfaces it)
+        #   - workflow_dispatch → exit 0 with warning (operator-driven,
+        #     they already accepted the repo state)
+        run: |
+          missing=()
+          for var in CF_API_TOKEN CF_ACCOUNT_ID CP_PROD_ADMIN_TOKEN CP_STAGING_ADMIN_TOKEN; do
+            if [ -z "${!var:-}" ]; then
+              missing+=("$var")
+            fi
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "::warning::skipping sweep — secrets not configured: ${missing[*]}"
+              echo "::warning::set them at Settings → Secrets and Variables → Actions, then rerun."
+              echo "::warning::CF_API_TOKEN must include account:cloudflare_tunnel:edit scope (separate from the zone:dns:edit scope used by sweep-cf-orphans)."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::sweep cannot run — required secrets missing: ${missing[*]}"
+            echo "::error::set them at Settings → Secrets and Variables → Actions, or disable this workflow."
+            echo "::error::CF_API_TOKEN must include account:cloudflare_tunnel:edit scope."
+            exit 1
+          fi
+          echo "All required secrets present ✓"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Run sweep
+        if: steps.verify.outputs.skip != 'true'
+        # Schedule-vs-dispatch dry-run asymmetry mirrors sweep-cf-orphans:
+        #   - Scheduled: input empty → "false" → --execute (the whole
+        #     point of an hourly janitor).
+        #   - Manual workflow_dispatch: input default true → dry-run;
+        #     operator must flip it to actually delete.
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event.inputs.dry_run || 'false' }}" = "true" ]; then
+            echo "Running in dry-run mode — no deletions"
+            bash scripts/ops/sweep-cf-tunnels.sh
+          else
+            echo "Running with --execute — will delete identified orphans"
+            bash scripts/ops/sweep-cf-tunnels.sh --execute
+          fi
