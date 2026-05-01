@@ -33,7 +33,7 @@ def _real_a2a_sdk_available() -> bool:
         from a2a.server.context import ServerCallContext  # noqa: F401
         from a2a.types import SendMessageRequest  # noqa: F401
         return True
-    except (ImportError, AttributeError):
+    except ImportError:
         return False
 
 
@@ -55,6 +55,27 @@ def test_is_smoke_mode_falsy_values(env_value: str, monkeypatch: pytest.MonkeyPa
 def test_is_smoke_mode_unset(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("MOLECULE_SMOKE_MODE", raising=False)
     assert smoke_mode.is_smoke_mode() is False
+
+
+# ─── _SMOKE_TIMEOUT_SECS bad-env-var resilience ────────────────────────
+
+
+def test_smoke_timeout_falls_back_when_env_value_is_malformed(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A typo'd MOLECULE_SMOKE_TIMEOUT_SECS must not crash production
+    boot. main.py imports smoke_mode unconditionally — before the
+    is_smoke_mode() check — so float()-at-module-load would SystemExit
+    every workspace if the env value were bad."""
+    import importlib
+    monkeypatch.setenv("MOLECULE_SMOKE_TIMEOUT_SECS", "not-a-float")
+    reloaded = importlib.reload(smoke_mode)
+    try:
+        assert reloaded._SMOKE_TIMEOUT_SECS == 5.0
+    finally:
+        # Restore module to clean default for other tests.
+        monkeypatch.delenv("MOLECULE_SMOKE_TIMEOUT_SECS", raising=False)
+        importlib.reload(smoke_mode)
 
 
 # ─── _build_stub_context (real-SDK-only) ───────────────────────────────

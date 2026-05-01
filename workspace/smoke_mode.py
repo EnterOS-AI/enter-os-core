@@ -36,7 +36,13 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-_SMOKE_TIMEOUT_SECS = float(os.environ.get("MOLECULE_SMOKE_TIMEOUT_SECS", "5.0"))
+# Don't crash production boot if MOLECULE_SMOKE_TIMEOUT_SECS is malformed —
+# main.py imports smoke_mode unconditionally (before the is_smoke_mode()
+# check), so a typo'd value would otherwise SystemExit every workspace.
+try:
+    _SMOKE_TIMEOUT_SECS = float(os.environ.get("MOLECULE_SMOKE_TIMEOUT_SECS", "5.0"))
+except ValueError:
+    _SMOKE_TIMEOUT_SECS = 5.0
 
 
 def is_smoke_mode() -> bool:
