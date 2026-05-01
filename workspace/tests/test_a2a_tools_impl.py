@@ -230,13 +230,44 @@ class TestToolDelegateTask:
             result = await a2a_tools.tool_delegate_task("ws-missing", "task")
         assert "not found" in result or "Error" in result
 
-    async def test_peer_has_no_url_returns_error(self):
+    async def test_offline_peer_returns_error(self):
+        """A peer with status=offline short-circuits before we hit the proxy."""
         import a2a_tools
-        with patch("a2a_tools.discover_peer", return_value={"id": "ws-1", "url": ""}):
+        with patch("a2a_tools.discover_peer", return_value={"id": "ws-1", "status": "offline"}):
             mc = _make_http_mock()
             with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
                 result = await a2a_tools.tool_delegate_task("ws-1", "task")
-        assert "no URL" in result or "Error" in result
+        assert "offline" in result.lower()
+
+    async def test_routes_through_platform_proxy_not_peer_url(self):
+        """tool_delegate_task must POST to ${PLATFORM_URL}/workspaces/:peer-id/a2a,
+        NOT to peer["url"]. The peer's URL is a Docker-internal hostname for
+        in-container peers; external molecule-mcp callers cannot resolve it.
+        Routing through the platform proxy works for both."""
+        import a2a_tools
+        from a2a_client import PLATFORM_URL
+
+        peer = {
+            "id": "ws-target",
+            # Internal-only URL — must NOT be used.
+            "url": "http://ws-target-internal:8000",
+            "name": "Worker",
+            "status": "online",
+        }
+        captured = {}
+        async def fake_send(target_url, message):
+            captured["target_url"] = target_url
+            captured["message"] = message
+            return "ok"
+
+        with patch("a2a_tools.discover_peer", return_value=peer), \
+             patch("a2a_tools.send_a2a_message", side_effect=fake_send), \
+             patch("a2a_tools.report_activity", new=AsyncMock()):
+            await a2a_tools.tool_delegate_task("ws-target", "do thing")
+
+        assert captured["target_url"] == f"{PLATFORM_URL}/workspaces/ws-target/a2a"
+        # Sanity: definitely NOT the peer's reported URL
+        assert captured["target_url"] != peer["url"]
 
     async def test_success_returns_result_text(self):
         """Happy path: peer found with URL, A2A returns a result."""
