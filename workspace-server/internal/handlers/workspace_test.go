@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
@@ -90,6 +91,125 @@ func TestWorkspaceGet_NotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected status 404, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// #2429: GET /workspaces/:id returns 410 Gone when status='removed'.
+// Defense-in-depth at the endpoint level — without this, callers
+// holding stale workspace_id + token tuples (channel bridge .env,
+// captured curl scripts, etc.) get 200 + status:"removed" and have
+// no idea their tokens are revoked until the heartbeat fails 60s
+// later. 410 makes startup fail loud instead.
+func TestWorkspaceGet_RemovedReturns410(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+
+	id := "cccccccc-0010-0000-0000-000000000000"
+	removedAt := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+
+	columns := []string{
+		"id", "name", "role", "tier", "status", "agent_card", "url",
+		"parent_id", "active_tasks", "max_concurrent_tasks", "last_error_rate", "last_sample_error",
+		"uptime_seconds", "current_task", "runtime", "workspace_dir", "x", "y", "collapsed",
+		"budget_limit", "monthly_spend",
+	}
+	mock.ExpectQuery("SELECT w.id, w.name").
+		WithArgs(id).
+		WillReturnRows(sqlmock.NewRows(columns).
+			AddRow(id, "Old Agent", "worker", 1, string(models.StatusRemoved), []byte(`null`),
+				"", nil, 0, 1, 0.0, "", 0, "", "langgraph",
+				"", 0.0, 0.0, false,
+				nil, 0))
+	mock.ExpectQuery(`SELECT updated_at FROM workspaces`).
+		WithArgs(id).
+		WillReturnRows(sqlmock.NewRows([]string{"updated_at"}).AddRow(removedAt))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: id}}
+	c.Request = httptest.NewRequest("GET", "/workspaces/"+id, nil)
+
+	handler.Get(c)
+
+	if w.Code != http.StatusGone {
+		t.Fatalf("expected 410 Gone, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse 410 body: %v", err)
+	}
+	if resp["error"] != "workspace removed" {
+		t.Errorf("expected error 'workspace removed', got %v", resp["error"])
+	}
+	if resp["id"] != id {
+		t.Errorf("expected id %q, got %v", id, resp["id"])
+	}
+	if _, ok := resp["removed_at"]; !ok {
+		t.Errorf("expected removed_at in 410 body, got: %v", resp)
+	}
+	if _, ok := resp["hint"]; !ok {
+		t.Errorf("expected hint in 410 body, got: %v", resp)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// Audit-trail consumers (admin views, "show me deleted workspaces"
+// tooling) opt into the legacy 200 + body shape via
+// ?include_removed=true. Without this opt-in path the audit trail
+// becomes invisible at the API layer.
+func TestWorkspaceGet_RemovedWithIncludeQueryReturns200(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+
+	id := "cccccccc-0011-0000-0000-000000000000"
+
+	columns := []string{
+		"id", "name", "role", "tier", "status", "agent_card", "url",
+		"parent_id", "active_tasks", "max_concurrent_tasks", "last_error_rate", "last_sample_error",
+		"uptime_seconds", "current_task", "runtime", "workspace_dir", "x", "y", "collapsed",
+		"budget_limit", "monthly_spend",
+	}
+	mock.ExpectQuery("SELECT w.id, w.name").
+		WithArgs(id).
+		WillReturnRows(sqlmock.NewRows(columns).
+			AddRow(id, "Audit Agent", "worker", 1, string(models.StatusRemoved), []byte(`null`),
+				"", nil, 0, 1, 0.0, "", 0, "", "langgraph",
+				"", 0.0, 0.0, false,
+				nil, 0))
+	// last_outbound_at follow-up query (existing path)
+	mock.ExpectQuery(`SELECT last_outbound_at FROM workspaces`).
+		WithArgs(id).
+		WillReturnRows(sqlmock.NewRows([]string{"last_outbound_at"}).AddRow(nil))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: id}}
+	c.Request = httptest.NewRequest("GET", "/workspaces/"+id+"?include_removed=true", nil)
+
+	handler.Get(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK with ?include_removed=true, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if resp["status"] != string(models.StatusRemoved) {
+		t.Errorf("expected status 'removed' in body, got %v", resp["status"])
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
