@@ -138,3 +138,102 @@ def test_attachments_param_description_emphasizes_REQUIRED():
         assert forbidden in desc, (
             f"`attachments` description must call out {forbidden!r} as a wrong alternative"
         )
+
+
+# ============== Inbox → MCP notification bridge (2026-05-01) ==============
+# Notification-capable hosts (Claude Code) get push UX when a new inbound
+# message lands; pollers (wait_for_message/inbox_peek) keep working.
+# `_build_channel_notification` is the pure shape transformer — wire-up
+# in main() composes it with asyncio.run_coroutine_threadsafe.
+
+
+def test_build_channel_notification_method_matches_claude_contract():
+    """Method MUST be `notifications/claude/channel` exactly — that's
+    what Claude Code's MCP runtime listens for as a conversation
+    interrupt. Same string as the bun channel bridge sends
+    (server.ts:509) so this is a drop-in replacement."""
+    from a2a_mcp_server import _build_channel_notification
+
+    payload = _build_channel_notification({
+        "activity_id": "act-1",
+        "text": "hello",
+        "peer_id": "",
+        "kind": "canvas_user",
+        "method": "message/send",
+        "created_at": "2026-05-01T00:00:00Z",
+    })
+
+    assert payload["method"] == "notifications/claude/channel"
+    assert payload["jsonrpc"] == "2.0"
+
+
+def test_build_channel_notification_content_is_message_text():
+    """`content` is what becomes the agent conversation turn —
+    pulled directly from the inbox message text."""
+    from a2a_mcp_server import _build_channel_notification
+
+    payload = _build_channel_notification({
+        "activity_id": "act-1",
+        "text": "hello from canvas",
+        "peer_id": "",
+        "kind": "canvas_user",
+        "method": "message/send",
+        "created_at": "2026-05-01T00:00:00Z",
+    })
+
+    assert payload["params"]["content"] == "hello from canvas"
+
+
+def test_build_channel_notification_meta_carries_routing_fields():
+    """Meta must include kind, peer_id, method, activity_id, ts —
+    fields the agent or downstream tooling needs to route a reply
+    (canvas_user → /notify, peer_agent → /a2a) and to acknowledge
+    via inbox_pop."""
+    from a2a_mcp_server import _build_channel_notification
+
+    payload = _build_channel_notification({
+        "activity_id": "act-7",
+        "text": "ping",
+        "peer_id": "ws-peer-uuid",
+        "kind": "peer_agent",
+        "method": "message/send",
+        "created_at": "2026-05-01T01:23:45Z",
+    })
+    meta = payload["params"]["meta"]
+
+    assert meta["source"] == "molecule"
+    assert meta["kind"] == "peer_agent"
+    assert meta["peer_id"] == "ws-peer-uuid"
+    assert meta["method"] == "message/send"
+    assert meta["activity_id"] == "act-7"
+    assert meta["ts"] == "2026-05-01T01:23:45Z"
+
+
+def test_build_channel_notification_no_id_field():
+    """Notifications MUST NOT carry a JSON-RPC `id` field — that's
+    what distinguishes them from requests. A notification with `id`
+    would be mis-interpreted as a request and clients would wait
+    for a response that never comes."""
+    from a2a_mcp_server import _build_channel_notification
+
+    payload = _build_channel_notification({"text": "x"})
+
+    assert "id" not in payload, (
+        "notifications must omit `id` per JSON-RPC 2.0 spec — "
+        "presence would make MCP clients await a phantom response"
+    )
+
+
+def test_build_channel_notification_handles_missing_fields_gracefully():
+    """Some fields may be absent on edge-case messages (e.g. cursor
+    bootstrapping with no created_at yet). Default to empty strings
+    so the wire shape stays valid JSON instead of crashing."""
+    from a2a_mcp_server import _build_channel_notification
+
+    payload = _build_channel_notification({})
+
+    assert payload["params"]["content"] == ""
+    meta = payload["params"]["meta"]
+    assert meta["activity_id"] == ""
+    assert meta["peer_id"] == ""
+    assert meta["kind"] == ""

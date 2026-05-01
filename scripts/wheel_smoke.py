@@ -52,11 +52,13 @@ def smoke_imports_and_invariants() -> None:
         InboxState,
         activate as inbox_activate,
         get_state as inbox_get_state,
+        set_notification_callback as inbox_set_notification_callback,
         start_poller_thread as inbox_start_poller_thread,
     )
     assert callable(inbox_activate), "inbox.activate must be callable"
     assert callable(inbox_get_state), "inbox.get_state must be callable"
     assert callable(inbox_start_poller_thread), "inbox.start_poller_thread must be callable"
+    assert callable(inbox_set_notification_callback), "inbox.set_notification_callback must be callable"
 
     assert a2a_client._A2A_ERROR_PREFIX, "a2a_client missing error sentinel"
     assert callable(get_adapter), "adapters.get_adapter must be callable"

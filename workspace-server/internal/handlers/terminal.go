@@ -277,12 +277,26 @@ var openTunnelCmd = func(o eicSSHOptions) *exec.Cmd {
 // to 22; with CP provisioning today the workspace runs as a native
 // process under the ubuntu user, so landing at ubuntu's shell IS the
 // terminal experience.
+//
+// ConnectTimeout=10 is the user-experience guard — without it, ssh waits
+// indefinitely for the remote sshd's banner. When the workspace EC2's
+// sshd is unresponsive (mid-restart, SG drop, AMI without ec2-instance-
+// connect installed) the canvas's xterm shows the user's typed bytes
+// echoed back by the workspace-server's *local* PTY (cooked + echo mode
+// before ssh finishes its handshake) and then closes silently when CF's
+// idle WebSocket timer fires, with no "Connection refused" or "Permission
+// denied" output ever reaching the user. Capping at 10s makes the failure
+// surface as a real ssh error message in the terminal — caught 2026-04-30
+// when hongmingwang's hermes shell hung after the heartbeat-fix redeploy
+// and a probe at /workspaces/<id>/terminal sat for 60s with the only
+// frame being the local-PTY echo of a single 'X' typed mid-handshake.
 var sshCommandCmd = func(o eicSSHOptions) *exec.Cmd {
 	return exec.Command(
 		"ssh",
 		"-i", o.PrivateKeyPath,
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "ConnectTimeout=10",
 		"-o", "ServerAliveInterval=30",
 		"-o", "ServerAliveCountMax=3",
 		"-p", fmt.Sprintf("%d", o.LocalPort),

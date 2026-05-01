@@ -320,6 +320,7 @@ func TestSSHCommandCmd_BuildsArgv(t *testing.T) {
 		"-i", "/tmp/k",
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "ConnectTimeout=10",
 		"-o", "ServerAliveInterval=30",
 		"-o", "ServerAliveCountMax=3",
 		"-p", "2222",
@@ -487,6 +488,60 @@ func TestKI005_OrgToken_SkipsValidateToken(t *testing.T) {
 	// falls through to Docker path → 503 nil-docker (no Docker client).
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("org-token A2A: got %d, want 503 nil-docker (%s)", w.Code, w.Body.String())
+	}
+}
+
+// TestSSHCommandCmd_ConnectTimeoutPresent pins the user-experience guard
+// against ssh-handshake-hang. Without ConnectTimeout, ssh waits forever
+// for the remote sshd's banner — which masquerades as a "silently dead"
+// shell to the user, because the workspace-server's local PTY is in
+// cooked + echo mode before ssh finishes its handshake, so the canvas
+// echoes the user's keystrokes back without ever reaching remote bash,
+// and Cloudflare eventually closes the WebSocket on idle (~100s) with
+// no error frame to surface what went wrong.
+//
+// Repro 2026-04-30: a 60s probe at hongmingwang's hermes /terminal
+// endpoint after the heartbeat-fix redeploy showed only the local-PTY
+// echo of a single 'X' typed mid-handshake. Workspace EC2 was up and
+// heartbeating but its sshd was unresponsive; ssh hung indefinitely.
+//
+// Behavior-based: matches the literal `-o ConnectTimeout=N` arg pair so
+// this stays pinned even if the rest of the args reorder. Does not pin
+// the exact value — operators may tune it — but does pin presence.
+func TestSSHCommandCmd_ConnectTimeoutPresent(t *testing.T) {
+	t.Parallel()
+
+	cmd := sshCommandCmd(eicSSHOptions{
+		InstanceID:     "i-test",
+		OSUser:         "ubuntu",
+		Region:         "us-east-2",
+		LocalPort:      2222,
+		PrivateKeyPath: "/tmp/test-key",
+	})
+
+	args := cmd.Args
+	found := false
+	for i, a := range args {
+		if a != "-o" {
+			continue
+		}
+		if i+1 >= len(args) {
+			continue
+		}
+		val := args[i+1]
+		if len(val) >= len("ConnectTimeout=") &&
+			val[:len("ConnectTimeout=")] == "ConnectTimeout=" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("sshCommandCmd is missing `-o ConnectTimeout=N` — without it, "+
+			"ssh hangs forever when the workspace EC2's sshd is unresponsive "+
+			"and the canvas terminal silently dies on Cloudflare's idle WS "+
+			"timeout with no error message reaching the user. See terminal.go "+
+			"sshCommandCmd comment (2026-04-30 hongmingwang hermes). args=%v",
+			args)
 	}
 }
 

@@ -442,3 +442,113 @@ def test_default_cursor_path_uses_configs_dir(monkeypatch, tmp_path: Path):
 def test_default_cursor_path_falls_back_to_default(monkeypatch):
     monkeypatch.delenv("CONFIGS_DIR", raising=False)
     assert inbox.default_cursor_path() == Path("/configs") / ".mcp_inbox_cursor"
+
+
+# ---------------------------------------------------------------------------
+# Notification callback bridge — push UX for notification-capable hosts
+# ---------------------------------------------------------------------------
+#
+# `record()` is called from the poller daemon thread when a new activity
+# row arrives. Notification-capable MCP hosts (Claude Code) want to be
+# pushed a notification — the universal wheel registers a callback via
+# `set_notification_callback()` that fires the MCP notification. Pollers
+# (`wait_for_message`/`inbox_peek`) keep working unchanged.
+
+
+@pytest.fixture(autouse=True)
+def _reset_notification_callback():
+    """Each test starts with no callback registered. Notification
+    state must not leak across tests — same pattern as _reset_singleton."""
+    inbox.set_notification_callback(None)
+    yield
+    inbox.set_notification_callback(None)
+
+
+def test_record_fires_notification_callback_with_message_dict(state: inbox.InboxState):
+    """When a callback is registered, record() invokes it with the
+    canonical to_dict() shape — same shape inbox_peek returns to the
+    agent. Callers can build MCP notification payloads from this
+    without re-deriving fields."""
+    received: list[dict] = []
+    inbox.set_notification_callback(received.append)
+
+    state.record(_msg("act-1", peer_id="ws-peer", text="hello"))
+
+    assert len(received) == 1
+    payload = received[0]
+    assert payload["activity_id"] == "act-1"
+    assert payload["text"] == "hello"
+    assert payload["peer_id"] == "ws-peer"
+    assert payload["kind"] == "peer_agent"  # to_dict derives this
+    assert payload["method"] == "message/send"
+
+
+def test_record_dedupe_does_not_refire_callback(state: inbox.InboxState):
+    """The activity_id dedupe path must short-circuit BEFORE invoking
+    the callback — otherwise a notification-capable host would see
+    duplicate push events on poller backlog overlap."""
+    received: list[dict] = []
+    inbox.set_notification_callback(received.append)
+
+    state.record(_msg("act-1"))
+    state.record(_msg("act-1"))  # dedupe — same id
+
+    assert len(received) == 1, (
+        f"expected 1 callback (dedupe), got {len(received)} — "
+        f"would cause duplicate Claude conversation interrupts"
+    )
+
+
+def test_record_callback_exception_does_not_break_inbox(state: inbox.InboxState):
+    """A raising callback (e.g. asyncio loop closed mid-shutdown,
+    serialization error on an exotic message) must NOT prevent the
+    message from landing in the queue. Notification delivery is
+    best-effort; inbox correctness is not negotiable."""
+
+    def boom(_payload):
+        raise RuntimeError("simulated callback failure")
+
+    inbox.set_notification_callback(boom)
+
+    # Must not raise, must still queue the message.
+    state.record(_msg("act-1"))
+
+    queued = state.peek(10)
+    assert len(queued) == 1
+    assert queued[0].activity_id == "act-1"
+
+
+def test_record_no_callback_registered_is_no_op(state: inbox.InboxState):
+    """When no callback is set (in-container path, or before
+    activation), record() proceeds normally — no None-call crash."""
+    # No set_notification_callback() in this test — autouse fixture
+    # cleared any previous registration.
+    state.record(_msg("act-1"))
+    assert len(state.peek(10)) == 1
+
+
+def test_set_notification_callback_replaces_previous(state: inbox.InboxState):
+    """Re-registering the callback replaces the previous — only the
+    latest callback fires. Test ensures the universal wheel can update
+    the bridge if its asyncio loop is replaced (e.g. graceful restart)."""
+    first: list[dict] = []
+    second: list[dict] = []
+    inbox.set_notification_callback(first.append)
+    inbox.set_notification_callback(second.append)
+
+    state.record(_msg("act-1"))
+
+    assert len(first) == 0, "first callback should be unregistered"
+    assert len(second) == 1, "second callback should receive the event"
+
+
+def test_set_notification_callback_none_clears(state: inbox.InboxState):
+    """Setting None clears the callback — used by tests + the wheel's
+    shutdown path."""
+    received: list[dict] = []
+    inbox.set_notification_callback(received.append)
+    inbox.set_notification_callback(None)
+
+    state.record(_msg("act-1"))
+
+    assert received == []

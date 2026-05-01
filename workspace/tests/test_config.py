@@ -81,6 +81,89 @@ def test_load_config_model_no_env(tmp_path, monkeypatch):
     assert cfg.model == "openai:gpt-4o"
 
 
+def test_runtime_config_model_falls_back_to_top_level(tmp_path, monkeypatch):
+    """When YAML omits runtime_config.model, fall back to the top-level
+    resolved model.
+
+    Without this fallback, SaaS workspaces silently boot with the
+    adapter's hard-coded default — claude-code-default reads
+    ``runtime_config.model or "sonnet"``, so even a user who picks Opus
+    in the canvas Config tab gets Sonnet on the next restart. Root
+    cause: the CP user-data script regenerates /configs/config.yaml
+    at every boot with only ``name``, ``runtime``, ``a2a`` keys
+    (intentionally minimal so it doesn't carry stale state), losing
+    runtime_config.model. MODEL_PROVIDER is plumbed as an env var, so
+    picking it up via the top-level resolved ``model`` keeps the
+    selection sticky across restarts.
+    """
+    monkeypatch.delenv("MODEL_PROVIDER", raising=False)
+    config_yaml = tmp_path / "config.yaml"
+    # Top-level model set, runtime_config.model NOT set — exactly the
+    # shape the CP user-data writes after restart.
+    config_yaml.write_text(yaml.dump({"model": "anthropic:claude-opus-4-7"}))
+
+    cfg = load_config(str(tmp_path))
+    assert cfg.runtime_config.model == "anthropic:claude-opus-4-7"
+
+
+def test_runtime_config_model_yaml_wins_over_top_level(tmp_path, monkeypatch):
+    """When YAML explicitly sets runtime_config.model, it takes precedence
+    over the top-level model. Tests the fallback is only a fallback —
+    not a clobber that would break workspaces with intentionally
+    different runtime_config.model vs top-level model values.
+    """
+    monkeypatch.delenv("MODEL_PROVIDER", raising=False)
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(
+        yaml.dump(
+            {
+                "model": "anthropic:claude-opus-4-7",
+                "runtime_config": {"model": "openai:gpt-4o"},
+            }
+        )
+    )
+
+    cfg = load_config(str(tmp_path))
+    # Top-level still resolves to its own value.
+    assert cfg.model == "anthropic:claude-opus-4-7"
+    # runtime_config.model wins — fallback only fires when YAML is empty.
+    assert cfg.runtime_config.model == "openai:gpt-4o"
+
+
+def test_runtime_config_model_picks_up_env_via_top_level(tmp_path, monkeypatch):
+    """End-to-end path the canvas Save+Restart relies on: user picks
+    a model → workspace_secrets.MODEL_PROVIDER updated → CP user-data
+    re-renders /configs/config.yaml WITHOUT runtime_config.model →
+    workspace boots with MODEL_PROVIDER env var. The top-level model
+    resolves from MODEL_PROVIDER (line 277), then runtime_config.model
+    falls back to that. Adapter sees the user's selection.
+
+    This is the regression test for the canvas-side feedback
+    "Provisioner doesn't read model from config.yaml and doesn't set
+    MODEL env var. Without MODEL, the adapter defaults to sonnet and
+    bypasses the mimo routing." (2026-04-30).
+    """
+    monkeypatch.setenv("MODEL_PROVIDER", "minimax/abab7-chat-preview")
+    config_yaml = tmp_path / "config.yaml"
+    # CP-shaped minimal config.yaml: only name + runtime + a2a, NO
+    # top-level model, NO runtime_config.model.
+    config_yaml.write_text(
+        yaml.dump(
+            {
+                "name": "Test Agent",
+                "runtime": "claude-code",
+                "a2a": {"port": 8000, "streaming": True},
+            }
+        )
+    )
+
+    cfg = load_config(str(tmp_path))
+    assert cfg.model == "minimax/abab7-chat-preview"
+    # The adapter (claude-code-default reads runtime_config.model or "sonnet")
+    # now sees the user's selected model instead of "sonnet".
+    assert cfg.runtime_config.model == "minimax/abab7-chat-preview"
+
+
 def test_delegation_config_defaults(tmp_path):
     """DelegationConfig nested defaults are applied."""
     config_yaml = tmp_path / "config.yaml"
