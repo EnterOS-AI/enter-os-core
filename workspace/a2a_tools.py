@@ -188,14 +188,34 @@ async def tool_delegate_task(workspace_id: str, task: str) -> str:
     if not workspace_id or not task:
         return "Error: workspace_id and task are required"
 
-    # Discover the target
+    # Discover the target. We still call discover_peer because it
+    # enforces access control + tells us whether the peer is online,
+    # but we DO NOT use the peer's reported URL for routing — see below.
     peer = await discover_peer(workspace_id)
     if not peer:
         return f"Error: workspace {workspace_id} not found or not accessible (check access control)"
 
-    target_url = peer.get("url", "")
-    if not target_url:
-        return f"Error: workspace {workspace_id} has no URL (may be offline)"
+    if (peer.get("status") or "").lower() == "offline":
+        return f"Error: workspace {workspace_id} is offline"
+
+    # Route through the platform's A2A proxy instead of POSTing
+    # directly to peer["url"]. The peer's URL is whatever it last
+    # registered — for in-container peers that's a Docker-internal
+    # hostname like ``http://ws-X-Y:8000`` which only resolves inside
+    # the platform's container DNS. External callers (the standalone
+    # molecule-mcp wrapper running on an operator's laptop) hit
+    # `[Errno 8] nodename nor servname` every time they try to reach
+    # an in-container peer that way. The platform's
+    # ``/workspaces/:peer-id/a2a`` proxy works for BOTH paths: it
+    # forwards over the Docker network for in-container peers and is
+    # the only path external runtimes can use, so unifying on it
+    # makes the universal-MCP path actually universal. In-container
+    # callers pay one extra HTTP hop on the same bridge — microseconds
+    # — in exchange for one consistent code path. Verified live on
+    # 2026-04-30 against workspace 8dad3e29 → 97ac32e9 (Claude Code
+    # Agent) which replied correctly through the proxy after failing
+    # via direct connect.
+    target_url = f"{PLATFORM_URL}/workspaces/{workspace_id}/a2a"
 
     # Report delegation start — include the task text for traceability
     peer_name = peer.get("name") or _peer_names.get(workspace_id) or workspace_id[:8]
