@@ -8,6 +8,7 @@ import asyncio
 import logging
 import os
 import random
+import re
 import time
 import uuid
 
@@ -33,13 +34,54 @@ _peer_names: dict[str, str] = {}
 # Used by delegate_task to distinguish real errors from normal response text.
 _A2A_ERROR_PREFIX = "[A2A_ERROR] "
 
+# Workspace IDs are UUIDs everywhere we generate them (platform's
+# workspaces.id column, /registry/discover/:id route param, etc.) but
+# the agent-facing tool surface receives them as free-form strings via
+# tool args. ``_validate_peer_id`` enforces UUID-shape at the
+# trust boundary so we never interpolate `..` or `/` into a URL path,
+# never silently coerce malformed input into a 404, and surface a
+# clear error to the agent rather than letting an HTTP 4xx bubble up
+# from the platform with a generic error message.
+#
+# Lenient on case + whitespace because real-world peer-id strings
+# come from list_peers/discover_peer responses (canonical lowercase)
+# or hand-typed agent input (mixed-case acceptable). Strict on
+# everything else.
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def _validate_peer_id(peer_id: str) -> str | None:
+    """Return the canonicalised peer_id if valid, else None.
+
+    Returning None instead of raising so callers in tool surfaces can
+    convert to a friendly agent-facing string ("workspace_id is not a
+    valid UUID") rather than crashing with a stack trace.
+    """
+    if not isinstance(peer_id, str):
+        return None
+    pid = peer_id.strip()
+    if not _UUID_RE.match(pid):
+        return None
+    return pid.lower()
+
 
 async def discover_peer(target_id: str) -> dict | None:
-    """Discover a peer workspace's URL via the platform registry."""
+    """Discover a peer workspace's URL via the platform registry.
+
+    Validates ``target_id`` is a UUID before constructing the URL — a
+    malformed id can't reach the platform handler now, which both
+    short-circuits an avoidable round-trip AND ensures we never
+    interpolate path-traversal characters into the URL.
+    """
+    safe_id = _validate_peer_id(target_id)
+    if safe_id is None:
+        return None
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             resp = await client.get(
-                f"{PLATFORM_URL}/registry/discover/{target_id}",
+                f"{PLATFORM_URL}/registry/discover/{safe_id}",
                 headers={"X-Workspace-ID": WORKSPACE_ID, **auth_headers()},
             )
             if resp.status_code == 200:
@@ -134,8 +176,14 @@ def _format_a2a_error(exc: BaseException, target_url: str) -> str:
     return f"{_A2A_ERROR_PREFIX}{detail} [target={target_url}]"
 
 
-async def send_a2a_message(target_url: str, message: str) -> str:
-    """Send an A2A message/send to a target workspace.
+async def send_a2a_message(peer_id: str, message: str) -> str:
+    """Send an A2A ``message/send`` to a peer workspace via the platform proxy.
+
+    The target URL is constructed internally as
+    ``${PLATFORM_URL}/workspaces/{peer_id}/a2a``. Going through the
+    platform's A2A proxy is the only path that works for both
+    in-container and external runtimes — see
+    a2a_tools.tool_delegate_task for the rationale.
 
     Auto-retries up to _DELEGATE_MAX_ATTEMPTS times on transient
     transport-layer errors (RemoteProtocolError, ConnectError,
@@ -144,6 +192,11 @@ async def send_a2a_message(target_url: str, message: str) -> str:
     JSON-RPC error response, malformed JSON) are NOT retried — they
     indicate a deterministic problem retry won't fix.
     """
+    safe_id = _validate_peer_id(peer_id)
+    if safe_id is None:
+        return f"{_A2A_ERROR_PREFIX}invalid peer_id (expected UUID): {peer_id!r}"
+    target_url = f"{PLATFORM_URL}/workspaces/{safe_id}/a2a"
+
     # Fix F (Cycle 5 / H2 — flagged 5 consecutive audits): timeout=None allowed
     # a hung upstream to block the agent indefinitely. Use a generous but bounded
     # timeout: 30s connect + 300s read (long enough for slow LLM responses).

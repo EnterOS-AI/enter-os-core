@@ -42,6 +42,12 @@ def _make_response(status_code, json_data):
     return resp
 
 
+# Canonical UUID used wherever a test needs a peer_id. send_a2a_message and
+# discover_peer reject non-UUID strings at the trust boundary (see
+# a2a_client._validate_peer_id), so test inputs must be valid UUIDs.
+_TEST_PEER_ID = "11111111-1111-1111-1111-111111111111"
+
+
 # ---------------------------------------------------------------------------
 # Module-level constants (just ensure they exist and have sensible types)
 # ---------------------------------------------------------------------------
@@ -64,12 +70,12 @@ class TestDiscoverPeer:
         """200 response → returns the JSON body."""
         import a2a_client
 
-        peer_data = {"id": "ws-abc", "url": "http://ws-abc.svc", "name": "Alpha"}
+        peer_data = {"id": _TEST_PEER_ID, "url": "http://ws-abc.svc", "name": "Alpha"}
         resp = _make_response(200, peer_data)
         mock_client = _make_mock_client(get_resp=resp)
 
         with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
-            result = await a2a_client.discover_peer("ws-abc")
+            result = await a2a_client.discover_peer(_TEST_PEER_ID)
 
         assert result == peer_data
 
@@ -81,7 +87,7 @@ class TestDiscoverPeer:
         mock_client = _make_mock_client(get_resp=resp)
 
         with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
-            result = await a2a_client.discover_peer("ws-missing")
+            result = await a2a_client.discover_peer(_TEST_PEER_ID)
 
         assert result is None
 
@@ -93,7 +99,7 @@ class TestDiscoverPeer:
         mock_client = _make_mock_client(get_resp=resp)
 
         with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
-            result = await a2a_client.discover_peer("ws-forbidden")
+            result = await a2a_client.discover_peer(_TEST_PEER_ID)
 
         assert result is None
 
@@ -104,9 +110,25 @@ class TestDiscoverPeer:
         mock_client = _make_mock_client(get_exc=ConnectionError("host unreachable"))
 
         with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
-            result = await a2a_client.discover_peer("ws-down")
+            result = await a2a_client.discover_peer(_TEST_PEER_ID)
 
         assert result is None
+
+    async def test_invalid_peer_id_returns_none_without_http(self):
+        """Malformed peer_id is rejected at the trust boundary — no HTTP call.
+
+        Path-traversal-shaped input ("../admin"), free-form labels
+        ("ws-abc"), and empty strings all return None and don't reach
+        the platform. Closes the URL-interpolation class of bug.
+        """
+        import a2a_client
+
+        mock_client = _make_mock_client(get_resp=_make_response(200, {}))
+        with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
+            for bad in ("", "ws-abc", "../admin", "not-a-uuid", "8dad3e29"):
+                assert await a2a_client.discover_peer(bad) is None
+        # No GET should have been issued for any of those.
+        mock_client.get.assert_not_called()
 
     async def test_request_uses_correct_url_and_header(self):
         """GET is called with the right URL and X-Workspace-ID header."""
@@ -116,11 +138,11 @@ class TestDiscoverPeer:
         mock_client = _make_mock_client(get_resp=resp)
 
         with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
-            await a2a_client.discover_peer("ws-xyz")
+            await a2a_client.discover_peer(_TEST_PEER_ID)
 
         mock_client.get.assert_called_once()
         positional_url = mock_client.get.call_args.args[0]
-        assert "ws-xyz" in positional_url
+        assert _TEST_PEER_ID in positional_url
         # X-Workspace-ID must be present; bearer token also merged in when available
         headers_sent = mock_client.get.call_args.kwargs.get("headers", {})
         assert headers_sent.get("X-Workspace-ID") == a2a_client.WORKSPACE_ID
@@ -142,7 +164,7 @@ class TestSendA2AMessage:
         mock_client = _make_mock_client(post_resp=resp)
 
         with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
-            result = await a2a_client.send_a2a_message("http://target/a2a", "ping")
+            result = await a2a_client.send_a2a_message(_TEST_PEER_ID, "ping")
 
         assert result == "Hello!"
 
@@ -154,7 +176,7 @@ class TestSendA2AMessage:
         mock_client = _make_mock_client(post_resp=resp)
 
         with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
-            result = await a2a_client.send_a2a_message("http://target/a2a", "ping")
+            result = await a2a_client.send_a2a_message(_TEST_PEER_ID, "ping")
 
         assert result == "(no response)"
 
@@ -168,7 +190,7 @@ class TestSendA2AMessage:
         mock_client = _make_mock_client(post_resp=resp)
 
         with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
-            result = await a2a_client.send_a2a_message("http://target/a2a", "task")
+            result = await a2a_client.send_a2a_message(_TEST_PEER_ID, "task")
 
         assert result.startswith(a2a_client._A2A_ERROR_PREFIX)
         assert "Agent error: something bad" in result
@@ -183,7 +205,7 @@ class TestSendA2AMessage:
         mock_client = _make_mock_client(post_resp=resp)
 
         with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
-            result = await a2a_client.send_a2a_message("http://target/a2a", "task")
+            result = await a2a_client.send_a2a_message(_TEST_PEER_ID, "task")
 
         assert result.startswith(a2a_client._A2A_ERROR_PREFIX)
         assert "Internal error occurred" in result
@@ -196,7 +218,7 @@ class TestSendA2AMessage:
         mock_client = _make_mock_client(post_resp=resp)
 
         with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
-            result = await a2a_client.send_a2a_message("http://target/a2a", "task")
+            result = await a2a_client.send_a2a_message(_TEST_PEER_ID, "task")
 
         assert result.startswith(a2a_client._A2A_ERROR_PREFIX)
         # The error includes the JSON-RPC code so the operator can look it
@@ -205,7 +227,10 @@ class TestSendA2AMessage:
         assert "code=-32600" in result
         assert "no message" in result.lower()
         # Target URL is included so chained delegations are traceable.
-        assert "target=http://target/a2a" in result
+        # Target URL now constructed internally — assert it contains the peer_id
+        # and the proxy path, not the old hand-passed URL.
+        assert _TEST_PEER_ID in result
+        assert "/workspaces/" in result and "/a2a" in result
 
     async def test_jsonrpc_error_with_code_zero_includes_code_in_detail(self):
         """JSON-RPC error code=0 is technically not valid in the spec,
@@ -219,7 +244,7 @@ class TestSendA2AMessage:
         mock_client = _make_mock_client(post_resp=resp)
 
         with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
-            result = await a2a_client.send_a2a_message("http://target/a2a", "task")
+            result = await a2a_client.send_a2a_message(_TEST_PEER_ID, "task")
 
         assert result.startswith(a2a_client._A2A_ERROR_PREFIX)
         assert "code=0" in result
@@ -234,7 +259,7 @@ class TestSendA2AMessage:
         mock_client = _make_mock_client(post_resp=resp)
 
         with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
-            result = await a2a_client.send_a2a_message("http://target/a2a", "task")
+            result = await a2a_client.send_a2a_message(_TEST_PEER_ID, "task")
 
         # Pre-fix this returned bare str(payload) which the canvas
         # rendered as a confusing "looks like a successful response"
@@ -243,7 +268,10 @@ class TestSendA2AMessage:
         assert result.startswith(a2a_client._A2A_ERROR_PREFIX)
         assert "unexpected response shape" in result
         assert "abc123" in result  # snippet of payload included for context
-        assert "target=http://target/a2a" in result
+        # Target URL now constructed internally — assert it contains the peer_id
+        # and the proxy path, not the old hand-passed URL.
+        assert _TEST_PEER_ID in result
+        assert "/workspaces/" in result and "/a2a" in result
 
     async def test_exception_returns_error_prefix_and_message(self):
         """Network exception → returns _A2A_ERROR_PREFIX + exception text."""
@@ -252,7 +280,7 @@ class TestSendA2AMessage:
         mock_client = _make_mock_client(post_exc=ConnectionError("connection refused"))
 
         with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
-            result = await a2a_client.send_a2a_message("http://target/a2a", "task")
+            result = await a2a_client.send_a2a_message(_TEST_PEER_ID, "task")
 
         assert result.startswith(a2a_client._A2A_ERROR_PREFIX)
         assert "connection refused" in result
@@ -260,7 +288,10 @@ class TestSendA2AMessage:
         # already include it — gives the operator a typed handle to
         # search for in container logs.
         assert "ConnectionError" in result
-        assert "target=http://target/a2a" in result
+        # Target URL now constructed internally — assert it contains the peer_id
+        # and the proxy path, not the old hand-passed URL.
+        assert _TEST_PEER_ID in result
+        assert "/workspaces/" in result and "/a2a" in result
 
     async def test_empty_stringifying_exception_falls_back_to_class_name(self):
         """The user's reported bug: httpx.RemoteProtocolError and similar
@@ -280,7 +311,7 @@ class TestSendA2AMessage:
         mock_client = _make_mock_client(post_exc=_SilentRemoteProtocolError())
 
         with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
-            result = await a2a_client.send_a2a_message("http://target/a2a", "task")
+            result = await a2a_client.send_a2a_message(_TEST_PEER_ID, "task")
 
         # Must NOT be just the bare prefix — that's the regression.
         assert result != a2a_client._A2A_ERROR_PREFIX.strip()
@@ -288,7 +319,10 @@ class TestSendA2AMessage:
         # Must include the class name + something explanatory.
         assert "_SilentRemoteProtocolError" in result
         assert "no message" in result.lower()
-        assert "target=http://target/a2a" in result
+        # Target URL now constructed internally — assert it contains the peer_id
+        # and the proxy path, not the old hand-passed URL.
+        assert _TEST_PEER_ID in result
+        assert "/workspaces/" in result and "/a2a" in result
 
     async def test_result_text_part_missing_text_key_returns_empty(self):
         """Part dict without 'text' key → falls back to '' (empty string returned)."""
@@ -300,10 +334,29 @@ class TestSendA2AMessage:
         mock_client = _make_mock_client(post_resp=resp)
 
         with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
-            result = await a2a_client.send_a2a_message("http://target/a2a", "task")
+            result = await a2a_client.send_a2a_message(_TEST_PEER_ID, "task")
 
         # Returns "" (empty string — does not start with _A2A_ERROR_PREFIX)
         assert result == ""
+
+    async def test_invalid_peer_id_short_circuits_without_http(self):
+        """Malformed peer_id is rejected at the trust boundary — no POST.
+
+        Symmetric coverage with discover_peer's validation gate. Path-traversal
+        ("../admin"), free-form labels ("ws-abc"), and empty strings all
+        return an _A2A_ERROR_PREFIX message identifying the bad input and
+        never reach the platform.
+        """
+        import a2a_client
+
+        mock_client = _make_mock_client(post_resp=_make_response(200, {}))
+        with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
+            for bad in ("", "ws-abc", "../admin", "not-a-uuid", "8dad3e29"):
+                result = await a2a_client.send_a2a_message(bad, "ping")
+                assert result.startswith(a2a_client._A2A_ERROR_PREFIX)
+                assert "invalid peer_id" in result
+        # No POST should have been issued for any of those.
+        mock_client.post.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -354,7 +407,7 @@ class TestSendA2AMessageRetry:
 
         with patch("a2a_client.httpx.AsyncClient", return_value=mock_client), \
              patch("a2a_client.asyncio.sleep", new=AsyncMock()):
-            result = await a2a_client.send_a2a_message("http://target/a2a", "ping")
+            result = await a2a_client.send_a2a_message(_TEST_PEER_ID, "ping")
 
         assert result == "OK"
         assert mock_client.post.await_count == 3
@@ -373,7 +426,7 @@ class TestSendA2AMessageRetry:
 
         with patch("a2a_client.httpx.AsyncClient", return_value=mock_client), \
              patch("a2a_client.asyncio.sleep", new=AsyncMock()):
-            result = await a2a_client.send_a2a_message("http://target/a2a", "ping")
+            result = await a2a_client.send_a2a_message(_TEST_PEER_ID, "ping")
 
         assert result == "OK"
         assert mock_client.post.await_count == 2
@@ -388,12 +441,15 @@ class TestSendA2AMessageRetry:
 
         with patch("a2a_client.httpx.AsyncClient", return_value=mock_client), \
              patch("a2a_client.asyncio.sleep", new=AsyncMock()):
-            result = await a2a_client.send_a2a_message("http://target/a2a", "ping")
+            result = await a2a_client.send_a2a_message(_TEST_PEER_ID, "ping")
 
         assert mock_client.post.await_count == 5  # _DELEGATE_MAX_ATTEMPTS
         assert result.startswith(a2a_client._A2A_ERROR_PREFIX)
         assert "RemoteProtocolError" in result
-        assert "target=http://target/a2a" in result
+        # Target URL now constructed internally — assert it contains the peer_id
+        # and the proxy path, not the old hand-passed URL.
+        assert _TEST_PEER_ID in result
+        assert "/workspaces/" in result and "/a2a" in result
 
     async def test_caps_at_max_attempts(self):
         """If transient errors keep coming, we MUST stop at _DELEGATE_MAX_ATTEMPTS,
@@ -407,7 +463,7 @@ class TestSendA2AMessageRetry:
 
         with patch("a2a_client.httpx.AsyncClient", return_value=mock_client), \
              patch("a2a_client.asyncio.sleep", new=AsyncMock()):
-            result = await a2a_client.send_a2a_message("http://target/a2a", "ping")
+            result = await a2a_client.send_a2a_message(_TEST_PEER_ID, "ping")
 
         assert mock_client.post.await_count == a2a_client._DELEGATE_MAX_ATTEMPTS
         assert mock_client.post.await_count == 5
@@ -425,7 +481,7 @@ class TestSendA2AMessageRetry:
 
         with patch("a2a_client.httpx.AsyncClient", return_value=mock_client), \
              patch("a2a_client.asyncio.sleep", new=AsyncMock()):
-            result = await a2a_client.send_a2a_message("http://target/a2a", "ping")
+            result = await a2a_client.send_a2a_message(_TEST_PEER_ID, "ping")
 
         assert mock_client.post.await_count == 1  # NO retry
         assert "Internal error" in result
@@ -441,7 +497,7 @@ class TestSendA2AMessageRetry:
 
         with patch("a2a_client.httpx.AsyncClient", return_value=mock_client), \
              patch("a2a_client.asyncio.sleep", new=AsyncMock()):
-            result = await a2a_client.send_a2a_message("http://target/a2a", "ping")
+            result = await a2a_client.send_a2a_message(_TEST_PEER_ID, "ping")
 
         assert mock_client.post.await_count == 1  # NO retry
         assert result.startswith(a2a_client._A2A_ERROR_PREFIX)
@@ -475,7 +531,7 @@ class TestSendA2AMessageRetry:
 
         with patch("a2a_client.httpx.AsyncClient", return_value=mock_client), \
              patch("a2a_client.asyncio.sleep", new=AsyncMock()):
-            result = await a2a_client.send_a2a_message("http://target/a2a", "ping")
+            result = await a2a_client.send_a2a_message(_TEST_PEER_ID, "ping")
 
         # Stopped before exhausting all 5 attempts.
         assert mock_client.post.await_count < 5

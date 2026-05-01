@@ -188,9 +188,10 @@ async def tool_delegate_task(workspace_id: str, task: str) -> str:
     if not workspace_id or not task:
         return "Error: workspace_id and task are required"
 
-    # Discover the target. We still call discover_peer because it
-    # enforces access control + tells us whether the peer is online,
-    # but we DO NOT use the peer's reported URL for routing — see below.
+    # Discover the target. discover_peer is the access-control gate +
+    # name/status lookup. The peer's reported ``url`` field is NOT used
+    # for routing — see send_a2a_message, which constructs the URL via
+    # the platform's A2A proxy.
     peer = await discover_peer(workspace_id)
     if not peer:
         return f"Error: workspace {workspace_id} not found or not accessible (check access control)"
@@ -198,33 +199,16 @@ async def tool_delegate_task(workspace_id: str, task: str) -> str:
     if (peer.get("status") or "").lower() == "offline":
         return f"Error: workspace {workspace_id} is offline"
 
-    # Route through the platform's A2A proxy instead of POSTing
-    # directly to peer["url"]. The peer's URL is whatever it last
-    # registered — for in-container peers that's a Docker-internal
-    # hostname like ``http://ws-X-Y:8000`` which only resolves inside
-    # the platform's container DNS. External callers (the standalone
-    # molecule-mcp wrapper running on an operator's laptop) hit
-    # `[Errno 8] nodename nor servname` every time they try to reach
-    # an in-container peer that way. The platform's
-    # ``/workspaces/:peer-id/a2a`` proxy works for BOTH paths: it
-    # forwards over the Docker network for in-container peers and is
-    # the only path external runtimes can use, so unifying on it
-    # makes the universal-MCP path actually universal. In-container
-    # callers pay one extra HTTP hop on the same bridge — microseconds
-    # — in exchange for one consistent code path. Verified live on
-    # 2026-04-30 against workspace 8dad3e29 → 97ac32e9 (Claude Code
-    # Agent) which replied correctly through the proxy after failing
-    # via direct connect.
-    target_url = f"{PLATFORM_URL}/workspaces/{workspace_id}/a2a"
-
     # Report delegation start — include the task text for traceability
     peer_name = peer.get("name") or _peer_names.get(workspace_id) or workspace_id[:8]
     _peer_names[workspace_id] = peer_name  # cache for future use
     # Brief summary for canvas display — just the delegation target
     await report_activity("a2a_send", workspace_id, f"Delegating to {peer_name}", task_text=task)
 
-    # Send A2A message and log the full round-trip
-    result = await send_a2a_message(target_url, task)
+    # send_a2a_message routes through ${PLATFORM_URL}/workspaces/{id}/a2a
+    # (the platform proxy) so the same code works for in-container and
+    # external (standalone molecule-mcp) callers.
+    result = await send_a2a_message(workspace_id, task)
 
     # Detect delegation failures — wrap them clearly so the calling agent
     # can decide to retry, use another peer, or handle the task itself.
