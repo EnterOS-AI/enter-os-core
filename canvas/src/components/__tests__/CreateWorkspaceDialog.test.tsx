@@ -190,6 +190,91 @@ describe("CreateWorkspaceDialog — Hermes provider picker", () => {
     expect(ids).toContain("hermes");
   });
 
+  // Pins the dynamic-providers behavior: when the matched template's
+  // /templates row declares `providers`, the dropdown filters to that
+  // subset instead of showing the full HERMES_PROVIDERS catalog. Same
+  // data source ConfigTab uses (PR #2454) — keeps the modal and the
+  // settings tab honest about which providers a template supports.
+  it("hermes provider dropdown filters to template-declared providers when /templates ships them", async () => {
+    // Per-URL mock: /workspaces returns the existing fixture, /templates
+    // returns a hermes row that only allows anthropic + minimax + openai.
+    mockGet.mockImplementation(async (url: string) => {
+      if (url === "/templates") {
+        return [
+          { id: "hermes", name: "Hermes", runtime: "hermes", providers: ["anthropic", "minimax", "openai"] },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ] as any;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return SAMPLE_WORKSPACES as any;
+    });
+
+    await openDialog();
+    await setTemplate("hermes");
+    await waitFor(() =>
+      expect(document.querySelector("[data-testid='hermes-provider-section']")).toBeTruthy()
+    );
+    const providerSelect = document.getElementById("hermes-provider-select") as HTMLSelectElement;
+    // Filtered list arrives async after /templates fetch resolves —
+    // keep waiting until the dropdown shrinks below the full catalog.
+    await waitFor(() => expect(providerSelect.options.length).toBe(3));
+    const ids = Array.from(providerSelect.options).map((o) => o.value);
+    expect(ids).toEqual(expect.arrayContaining(["anthropic", "minimax", "openai"]));
+    expect(ids).not.toContain("gemini");
+    expect(ids).not.toContain("deepseek");
+  });
+
+  // Back-compat: a template that hasn't migrated to runtime_config.providers
+  // (older templates, self-hosted setups without /templates server) keeps
+  // showing the full provider catalog. Operators picking from those
+  // templates can't be locked out of providers we know hermes supports.
+  it("hermes provider dropdown falls back to all providers when template declares no providers list", async () => {
+    mockGet.mockImplementation(async (url: string) => {
+      if (url === "/templates") {
+        // No `providers` field — empty/missing → fall back to full catalog.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return [{ id: "hermes", name: "Hermes", runtime: "hermes" }] as any;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return SAMPLE_WORKSPACES as any;
+    });
+
+    await openDialog();
+    await setTemplate("hermes");
+    await waitFor(() =>
+      expect(document.querySelector("[data-testid='hermes-provider-section']")).toBeTruthy()
+    );
+    const providerSelect = document.getElementById("hermes-provider-select") as HTMLSelectElement;
+    expect(providerSelect.options.length).toBe(HERMES_PROVIDERS.length);
+  });
+
+  // Defensive: a template's declared list with NO matches against our
+  // static catalog (e.g. a brand-new provider id we don't have label/
+  // envVar metadata for yet) must not render an empty <select> — the
+  // operator can't pick a provider, the form locks. Component falls
+  // back to the full catalog so the user can still proceed.
+  it("hermes provider dropdown falls back to all providers when template declares only unknown providers", async () => {
+    mockGet.mockImplementation(async (url: string) => {
+      if (url === "/templates") {
+        return [
+          { id: "hermes", name: "Hermes", runtime: "hermes", providers: ["totally-new-provider-2030"] },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ] as any;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return SAMPLE_WORKSPACES as any;
+    });
+
+    await openDialog();
+    await setTemplate("hermes");
+    await waitFor(() =>
+      expect(document.querySelector("[data-testid='hermes-provider-section']")).toBeTruthy()
+    );
+    const providerSelect = document.getElementById("hermes-provider-select") as HTMLSelectElement;
+    // Stays at full catalog length — no flapping to 0 then back.
+    expect(providerSelect.options.length).toBe(HERMES_PROVIDERS.length);
+  });
+
   it("hermes API key field is a password input (masked)", async () => {
     await openDialog();
     await setTemplate("hermes");
