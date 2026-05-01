@@ -59,6 +59,7 @@ TOP_LEVEL_MODULES = {
     "agent",
     "agents_md",
     "config",
+    "configs_dir",
     "consolidation",
     "coordinator",
     "events",

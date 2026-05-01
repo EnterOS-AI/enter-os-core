@@ -55,7 +55,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-import configs_dir as _configs_dir
+import configs_dir
 
 logger = logging.getLogger(__name__)
 
@@ -524,4 +524,4 @@ def default_cursor_path() -> Path:
     + .platform_inbound_secret regardless of whether the runtime is
     in-container (/configs) or external (~/.molecule-workspace).
     """
-    return _configs_dir.resolve() / ".mcp_inbox_cursor"
+    return configs_dir.resolve() / ".mcp_inbox_cursor"

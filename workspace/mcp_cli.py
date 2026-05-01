@@ -41,7 +41,7 @@ import threading
 import time
 from pathlib import Path
 
-import configs_dir as _configs_dir
+import configs_dir
 
 logger = logging.getLogger(__name__)
 
@@ -380,7 +380,7 @@ def main() -> None:
     # env-fallback). configs_dir.resolve() handles in-container vs
     # external-runtime fallback so we don't probe a non-existent
     # /configs on a laptop and falsely report no-token-file.
-    has_token_file = (_configs_dir.resolve() / ".auth_token").is_file()
+    has_token_file = (configs_dir.resolve() / ".auth_token").is_file()
     has_token_env = bool(os.environ.get("MOLECULE_WORKSPACE_TOKEN", "").strip())
     if not has_token_file and not has_token_env:
         missing.append("MOLECULE_WORKSPACE_TOKEN (or CONFIGS_DIR/.auth_token)")
@@ -473,7 +473,7 @@ def _read_token_file() -> str:
     to inline a 4-line file read than pull in the whole stack just for
     the path).
     """
-    path = _configs_dir.resolve() / ".auth_token"
+    path = configs_dir.resolve() / ".auth_token"
     if not path.is_file():
         return ""
     try:
