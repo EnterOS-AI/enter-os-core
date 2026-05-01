@@ -456,6 +456,8 @@ async def test_inbox_bridge_emits_channel_notification_to_writer():
         try:
             os.close(read_fd)
         except OSError:
+            # read_fd may already be closed if writer.close() tore down the pair
+            # during teardown — best-effort cleanup, no signal worth surfacing.
             pass
 
 
