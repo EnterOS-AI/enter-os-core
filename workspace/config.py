@@ -96,6 +96,10 @@ class RuntimeConfig:
     required_env: list[str] = field(default_factory=list)  # env vars required to run (e.g. ["CLAUDE_CODE_OAUTH_TOKEN"])
     timeout: int = 0           # seconds (0 = no timeout — agents wait until done)
     model: str = ""            # model override for the CLI
+    provider: str = ""         # explicit LLM provider (e.g., "anthropic", "openai",
+                               # "minimax"). Falls back to the top-level resolved
+                               # provider when empty. Adapters (hermes, claude-code,
+                               # codex) prefer this over slug-parsing the model name.
     # Deprecated — use required_env + secrets API instead. Kept for backward compat.
     auth_token_env: str = ""
     auth_token_file: str = ""
@@ -221,6 +225,16 @@ class WorkspaceConfig:
     version: str = "1.0.0"
     tier: int = 1
     model: str = "anthropic:claude-opus-4-7"
+    provider: str = ""
+    """Explicit LLM provider slug (e.g., ``anthropic``, ``openai``, ``minimax``).
+
+    When empty, ``load_config`` derives it from the ``model`` slug prefix
+    (``anthropic:claude-opus-4-7`` → ``anthropic``; ``minimax/abab7-chat`` →
+    ``minimax``; bare model names → ``""``). Set explicitly via the canvas
+    Provider dropdown or the ``LLM_PROVIDER`` env var when the model name
+    is provider-ambiguous (e.g., a custom alias) or when an adapter needs
+    a specific gateway distinct from the model namespace.
+    """
     runtime: str = "langgraph"  # langgraph | claude-code | codex | ollama | custom
     runtime_config: RuntimeConfig = field(default_factory=RuntimeConfig)
     initial_prompt: str = ""
@@ -261,6 +275,20 @@ class WorkspaceConfig:
     automatically adds the ``task-budgets-2026-03-13`` beta header."""
 
 
+def _derive_provider_from_model(model: str) -> str:
+    """Extract the provider slug prefix from a model identifier.
+
+    Recognizes both ``provider:model`` (Anthropic / OpenAI / Google convention)
+    and ``provider/model`` (HuggingFace / Minimax convention). Returns ``""``
+    when the model has no recognizable separator — callers must treat empty
+    as "use adapter default routing", not as a hard failure.
+    """
+    for sep in (":", "/"):
+        if sep in model:
+            return model.partition(sep)[0]
+    return ""
+
+
 def load_config(config_path: Optional[str] = None) -> WorkspaceConfig:
     """Load config from WORKSPACE_CONFIG_PATH or the given path."""
     if config_path is None:
@@ -275,6 +303,25 @@ def load_config(config_path: Optional[str] = None) -> WorkspaceConfig:
 
     # Override model from env if provided
     model = os.environ.get("MODEL_PROVIDER", raw.get("model", "anthropic:claude-opus-4-7"))
+
+    # Resolve top-level provider with this priority chain:
+    #   1. ``LLM_PROVIDER`` env var (canvas Save+Restart sets this so the
+    #      operator's choice survives a CP-driven restart even though the
+    #      regenerated /configs/config.yaml drops most user fields).
+    #   2. Explicit YAML ``provider:`` (an operator pinned it in the file).
+    #   3. Derive from the model slug prefix for backward compat:
+    #        ``anthropic:claude-opus-4-7`` → ``anthropic``
+    #        ``minimax/abab7-chat-preview`` → ``minimax``
+    #        bare model names → ``""``  (signals "use adapter default")
+    # Empty after all three is fine — adapters that don't need an explicit
+    # provider (langgraph, claude-code-default, codex) keep their existing
+    # routing; adapters that do (hermes via derive-provider.sh) prefer this
+    # over slug-parsing the model name.
+    provider = (
+        os.environ.get("LLM_PROVIDER")
+        or raw.get("provider")
+        or _derive_provider_from_model(model)
+    )
 
     runtime = raw.get("runtime", "langgraph")
     runtime_raw = raw.get("runtime_config", {})
@@ -314,6 +361,7 @@ def load_config(config_path: Optional[str] = None) -> WorkspaceConfig:
         version=raw.get("version", "1.0.0"),
         tier=int(raw.get("tier", 1)) if str(raw.get("tier", 1)).isdigit() else 1,
         model=model,
+        provider=provider,
         runtime=runtime,
         initial_prompt=initial_prompt,
         idle_prompt=idle_prompt,
@@ -336,6 +384,12 @@ def load_config(config_path: Optional[str] = None) -> WorkspaceConfig:
             # MODEL_PROVIDER is plumbed as an env var, so picking it up via
             # the top-level resolved model keeps the selection sticky.
             model=runtime_raw.get("model") or model,
+            # Same fallback shape as ``model`` above: an explicit
+            # ``runtime_config.provider`` wins; otherwise inherit the
+            # top-level resolved provider so adapters see a single
+            # consistent choice without each one re-implementing
+            # env/YAML/slug-prefix resolution.
+            provider=runtime_raw.get("provider") or provider,
             # Deprecated fields — kept for backward compat
             auth_token_env=runtime_raw.get("auth_token_env", ""),
             auth_token_file=runtime_raw.get("auth_token_file", ""),
