@@ -239,35 +239,34 @@ class TestToolDelegateTask:
                 result = await a2a_tools.tool_delegate_task("ws-1", "task")
         assert "offline" in result.lower()
 
-    async def test_routes_through_platform_proxy_not_peer_url(self):
-        """tool_delegate_task must POST to ${PLATFORM_URL}/workspaces/:peer-id/a2a,
-        NOT to peer["url"]. The peer's URL is a Docker-internal hostname for
-        in-container peers; external molecule-mcp callers cannot resolve it.
-        Routing through the platform proxy works for both."""
+    async def test_passes_peer_id_to_send_a2a_message(self):
+        """tool_delegate_task forwards the workspace_id directly to
+        send_a2a_message, which owns URL construction (proxy path).
+        Verifies the contract: tool_delegate_task does NOT build URLs
+        from peer["url"], it just hands the id off."""
         import a2a_tools
-        from a2a_client import PLATFORM_URL
 
+        peer_id = "11111111-1111-1111-1111-111111111111"
         peer = {
-            "id": "ws-target",
-            # Internal-only URL — must NOT be used.
+            "id": peer_id,
+            # Internal-only URL — must NOT be used as the routing target.
             "url": "http://ws-target-internal:8000",
             "name": "Worker",
             "status": "online",
         }
         captured = {}
-        async def fake_send(target_url, message):
-            captured["target_url"] = target_url
+        async def fake_send(passed_peer_id, message):
+            captured["peer_id"] = passed_peer_id
             captured["message"] = message
             return "ok"
 
         with patch("a2a_tools.discover_peer", return_value=peer), \
              patch("a2a_tools.send_a2a_message", side_effect=fake_send), \
              patch("a2a_tools.report_activity", new=AsyncMock()):
-            await a2a_tools.tool_delegate_task("ws-target", "do thing")
+            await a2a_tools.tool_delegate_task(peer_id, "do thing")
 
-        assert captured["target_url"] == f"{PLATFORM_URL}/workspaces/ws-target/a2a"
-        # Sanity: definitely NOT the peer's reported URL
-        assert captured["target_url"] != peer["url"]
+        assert captured["peer_id"] == peer_id
+        assert captured["message"] == "do thing"
 
     async def test_success_returns_result_text(self):
         """Happy path: peer found with URL, A2A returns a result."""
