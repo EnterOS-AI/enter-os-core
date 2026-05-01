@@ -301,15 +301,34 @@ export function ConfigTab({ workspaceId }: Props) {
       // partial-save state — we report it as a user-visible warning
       // rather than lying "Saved" and letting the user discover the
       // revert on next reload.
-      const oldModel = (oldParsed.model as string) || "";
+      //
+      // Read from runtime_config.model first, then fall back to top-level
+      // model. The dropdown's onChange (above, ~line 475) writes to
+      // runtime_config.model whenever a runtime is selected (hermes,
+      // claude-code, etc.) and only falls back to top-level model when
+      // there's no runtime. handleSave used to diff against top-level
+      // model only, so for any runtime-bearing workspace the user's
+      // model selection never persisted — they'd Save & Restart, the
+      // EC2 would boot with HERMES_DEFAULT_MODEL empty, and hermes
+      // would fall back to nousresearch/hermes-4-70b → "No LLM provider
+      // configured" error in the chat. Caught 2026-04-30 on hongmingwang
+      // hermes workspace 32993ee7-…cb9d75d112a5.
+      const nextModelRaw = (nextSource.runtime_config as Record<string, unknown> | undefined)?.model;
+      const oldModelRaw = (oldParsed.runtime_config as Record<string, unknown> | undefined)?.model;
+      const nextModel =
+        typeof nextModelRaw === "string" && nextModelRaw
+          ? nextModelRaw
+          : typeof nextSource.model === "string"
+            ? nextSource.model
+            : "";
+      const oldModel =
+        typeof oldModelRaw === "string" && oldModelRaw
+          ? oldModelRaw
+          : (oldParsed.model as string) || "";
       let modelSaveError: string | null = null;
-      if (
-        typeof nextSource.model === "string" &&
-        nextSource.model &&
-        nextSource.model !== oldModel
-      ) {
+      if (nextModel && nextModel !== oldModel) {
         try {
-          await api.put(`/workspaces/${workspaceId}/model`, { model: nextSource.model });
+          await api.put(`/workspaces/${workspaceId}/model`, { model: nextModel });
         } catch (e) {
           modelSaveError = e instanceof Error ? e.message : "Model update was rejected";
         }

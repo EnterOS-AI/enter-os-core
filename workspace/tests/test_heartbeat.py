@@ -355,3 +355,149 @@ def test_on_done_restarts_loop():
     mock_create.assert_called_once()
     # New task should have done callback
     mock_new_task.add_done_callback.assert_called_once()
+
+
+# ============== In-container heartbeat persists platform_inbound_secret (2026-04-30) ==============
+# Pairs with workspace-server PR #2421's heartbeat-delivers-secret change.
+# The standalone wrapper (mcp_cli.py) got persistence in #2421; the
+# in-container heartbeat (heartbeat.py) was missed and the symptom
+# returned: hongmingwang Claude Code agent stayed 401-forever on chat
+# upload because the workspace's runtime never picked up the lazy-healed
+# secret without a restart.
+
+import heartbeat as heartbeat_mod  # noqa: E402
+
+
+def test_persist_inbound_secret_happy_path(monkeypatch):
+    """200 with platform_inbound_secret in body → save_inbound_secret called."""
+
+    class FakeResp:
+        def json(self):
+            return {"status": "ok", "platform_inbound_secret": "fresh-secret"}
+
+    saved: list[str] = []
+    import platform_inbound_auth
+
+    monkeypatch.setattr(platform_inbound_auth, "save_inbound_secret", saved.append)
+
+    heartbeat_mod._persist_inbound_secret_from_heartbeat(FakeResp())
+
+    assert saved == ["fresh-secret"]
+
+
+def test_persist_inbound_secret_skips_when_absent(monkeypatch):
+    class FakeResp:
+        def json(self):
+            return {"status": "ok"}
+
+    saved: list[str] = []
+    import platform_inbound_auth
+
+    monkeypatch.setattr(platform_inbound_auth, "save_inbound_secret", saved.append)
+
+    heartbeat_mod._persist_inbound_secret_from_heartbeat(FakeResp())
+    assert saved == []
+
+
+def test_persist_inbound_secret_skips_on_empty(monkeypatch):
+    class FakeResp:
+        def json(self):
+            return {"status": "ok", "platform_inbound_secret": ""}
+
+    saved: list[str] = []
+    import platform_inbound_auth
+
+    monkeypatch.setattr(platform_inbound_auth, "save_inbound_secret", saved.append)
+
+    heartbeat_mod._persist_inbound_secret_from_heartbeat(FakeResp())
+    assert saved == []
+
+
+def test_persist_inbound_secret_swallows_non_json(monkeypatch):
+    class FakeResp:
+        def json(self):
+            raise ValueError("not json")
+
+    saved: list[str] = []
+    import platform_inbound_auth
+
+    monkeypatch.setattr(platform_inbound_auth, "save_inbound_secret", saved.append)
+
+    # Must not raise
+    heartbeat_mod._persist_inbound_secret_from_heartbeat(FakeResp())
+    assert saved == []
+
+
+def test_persist_inbound_secret_handles_non_dict(monkeypatch):
+    class FakeResp:
+        def json(self):
+            return ["unexpected", "list"]
+
+    saved: list[str] = []
+    import platform_inbound_auth
+
+    monkeypatch.setattr(platform_inbound_auth, "save_inbound_secret", saved.append)
+
+    heartbeat_mod._persist_inbound_secret_from_heartbeat(FakeResp())
+    assert saved == []
+
+
+def test_persist_inbound_secret_swallows_save_oserror(monkeypatch):
+    class FakeResp:
+        def json(self):
+            return {"platform_inbound_secret": "x"}
+
+    def boom(_secret):
+        raise OSError("disk full")
+
+    import platform_inbound_auth
+
+    monkeypatch.setattr(platform_inbound_auth, "save_inbound_secret", boom)
+
+    # Heartbeat liveness > secret persistence — must not raise.
+    heartbeat_mod._persist_inbound_secret_from_heartbeat(FakeResp())
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_loop_persists_secret_from_response(monkeypatch):
+    """End-to-end: in-container _loop persists secret when the heartbeat
+    response carries platform_inbound_secret."""
+    saved: list[str] = []
+
+    def fake_persist(resp):
+        try:
+            body = resp.json()
+        except Exception:
+            return
+        if isinstance(body, dict) and body.get("platform_inbound_secret"):
+            saved.append(body["platform_inbound_secret"])
+
+    monkeypatch.setattr(
+        heartbeat_mod,
+        "_persist_inbound_secret_from_heartbeat",
+        fake_persist,
+    )
+
+    hb = HeartbeatLoop("http://platform:8080", "ws-abc")
+
+    mock_response = MagicMock()
+    mock_response.json = MagicMock(
+        return_value={"status": "ok", "platform_inbound_secret": "from-heartbeat"}
+    )
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=mock_response)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("heartbeat.httpx.AsyncClient", return_value=mock_client):
+        task = asyncio.create_task(hb._loop())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    assert saved == ["from-heartbeat"], (
+        "in-container heartbeat must persist platform_inbound_secret from 200 response"
+    )
