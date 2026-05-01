@@ -12,6 +12,19 @@ interface WorkspaceOption {
   tier: number;
 }
 
+// Subset of the /templates row used here. Mirrors the shape ConfigTab
+// reads. `providers` is the per-template declarative list of supported
+// LLM providers — sourced from the template's
+// runtime_config.providers (config.yaml). When present, it filters
+// the modal's provider <select> so an operator can only pick a
+// provider the template actually supports.
+interface TemplateSpec {
+  id: string;
+  name?: string;
+  runtime?: string;
+  providers?: string[];
+}
+
 interface HermesProvider {
   id: string;
   label: string;
@@ -55,6 +68,13 @@ export function CreateWorkspaceButton() {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [workspaces, setWorkspaces] = useState<WorkspaceOption[]>([]);
+  // Templates fetched from /api/templates — drives the dynamic provider
+  // filter below. Same data source ConfigTab uses (PR #2454). When the
+  // selected template declares `runtime_config.providers` in its
+  // config.yaml, the modal surfaces only those providers in the
+  // <select>. Empty/missing list falls back to the full HERMES_PROVIDERS
+  // catalog so older templates without the field keep working.
+  const [templateSpecs, setTemplateSpecs] = useState<TemplateSpec[]>([]);
   // External-runtime path: skip docker provision, mint a workspace_auth_token,
   // and surface the connection snippet in a modal after create. When
   // isExternal is true the template / model / hermes-provider fields are
@@ -130,6 +150,52 @@ export function CreateWorkspaceButton() {
 
   const isHermes = template.trim().toLowerCase() === "hermes";
 
+  // Resolve the selected template's spec from the /templates response.
+  // The `template` input is free-text; templates can be matched by id,
+  // name, or runtime so any of those work. Lower-cased compare keeps
+  // "Hermes" / "hermes" / "HERMES" interchangeable.
+  const selectedTemplateSpec = useMemo<TemplateSpec | null>(() => {
+    const t = template.trim().toLowerCase();
+    if (!t) return null;
+    return (
+      templateSpecs.find(
+        (s) =>
+          (s.id || "").toLowerCase() === t ||
+          (s.name || "").toLowerCase() === t ||
+          (s.runtime || "").toLowerCase() === t,
+      ) ?? null
+    );
+  }, [template, templateSpecs]);
+
+  // Filter HERMES_PROVIDERS by what the template declares it supports.
+  // Empty/missing declared list → fall back to the full catalog so
+  // templates that haven't migrated to the explicit `providers:` field
+  // (and self-hosted setups without /templates) keep working unchanged.
+  const availableProviders = useMemo<HermesProvider[]>(() => {
+    const declared = selectedTemplateSpec?.providers;
+    if (!declared || declared.length === 0) return HERMES_PROVIDERS;
+    const allowed = new Set(declared.map((p) => p.toLowerCase()));
+    const filtered = HERMES_PROVIDERS.filter((p) => allowed.has(p.id.toLowerCase()));
+    // Defensive: if the template's declared list doesn't match anything
+    // in our static catalog (e.g. brand-new provider id we don't have
+    // metadata for yet), fall back to the full list rather than render
+    // an empty <select>. Better to over-show than to lock the user out.
+    return filtered.length > 0 ? filtered : HERMES_PROVIDERS;
+  }, [selectedTemplateSpec]);
+
+  // If the currently-selected provider is filtered out by a template
+  // change, snap back to the first available. Without this, the
+  // hermesProvider state could refer to a provider not in the dropdown
+  // — confusing UI + the API key field's envVar would be wrong.
+  useEffect(() => {
+    if (!isHermes) return;
+    if (availableProviders.length === 0) return;
+    if (!availableProviders.some((p) => p.id === hermesProvider)) {
+      setHermesProvider(availableProviders[0].id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableProviders, isHermes]);
+
   // Auto-fill hermesModel with the provider's defaultModel whenever the
   // provider changes, but only if the user hasn't already typed their own
   // slug. Prevents the empty-model → "auto" → Anthropic-default 401 trap.
@@ -163,6 +229,10 @@ export function CreateWorkspaceButton() {
       .get<WorkspaceOption[]>("/workspaces")
       .then((ws) => setWorkspaces(ws))
       .catch(() => {});
+    api
+      .get<TemplateSpec[]>("/templates")
+      .then((rows) => setTemplateSpecs(Array.isArray(rows) ? rows : []))
+      .catch(() => { /* keep empty — HERMES_PROVIDERS fallback below */ });
     // defaultTier is stable for the session (derived from window.location),
     // safe to omit from deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -405,7 +475,7 @@ export function CreateWorkspaceButton() {
                   aria-label="Hermes provider"
                   className="w-full bg-zinc-800/60 border border-zinc-700/50 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:outline-none focus:border-violet-500/60 focus:ring-1 focus:ring-violet-500/20 transition-colors"
                 >
-                  {HERMES_PROVIDERS.map((p) => (
+                  {availableProviders.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.label}
                     </option>
