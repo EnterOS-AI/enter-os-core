@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import sys
+from typing import Callable
 
 # Top-level (not inside main()) so the wheel rewriter expands this to
 # `import molecule_runtime.inbox as inbox`. A local `import inbox as _x`
@@ -213,6 +214,54 @@ def _build_initialize_result() -> dict:
     }
 
 
+def _setup_inbox_bridge(
+    writer: asyncio.StreamWriter,
+    loop: asyncio.AbstractEventLoop,
+) -> Callable[[dict], None]:
+    """Build the inbox → MCP notification bridge callback.
+
+    The inbox poller fires this from a daemon thread when a new
+    activity row lands. It must NOT block the poller, so we schedule
+    the actual write onto the asyncio loop via
+    ``run_coroutine_threadsafe`` and return immediately.
+
+    Pulled out of ``main()`` so the threading + asyncio + stdout
+    chain is exercisable in tests without spinning up the full
+    JSON-RPC stdio loop. Lets us pin the three failure modes
+    anticipated in #2444 §2:
+
+      - ``writer.drain()`` raising on a closed pipe and being
+        swallowed silently (host disconnected mid-emission).
+      - ``run_coroutine_threadsafe`` raising ``RuntimeError`` when
+        the loop is closed during shutdown — must not crash the
+        poller thread.
+      - The notification wire shape drifting from
+        ``_build_channel_notification``'s contract.
+    """
+
+    async def _emit(payload: dict) -> None:
+        data = json.dumps(payload) + "\n"
+        writer.write(data.encode())
+        try:
+            await writer.drain()
+        except Exception:  # noqa: BLE001
+            # Closed pipe (host disconnected) shouldn't crash the
+            # inbox poller; let it sit until the host reconnects.
+            pass
+
+    def _on_inbox_message(msg: dict) -> None:
+        try:
+            asyncio.run_coroutine_threadsafe(
+                _emit(_build_channel_notification(msg)),
+                loop,
+            )
+        except RuntimeError:
+            # Loop closed during shutdown — best-effort, swallow.
+            pass
+
+    return _on_inbox_message
+
+
 def _build_channel_notification(msg: dict) -> dict:
     """Transform an ``InboxMessage.to_dict()`` into the MCP notification
     envelope expected by Claude Code's channel-bridge contract.
@@ -256,33 +305,13 @@ async def main():  # pragma: no cover
         writer.write(data.encode())
         await writer.drain()
 
-    # Wire the inbox → MCP notification bridge. Inbox poller (daemon
-    # thread) calls into here when a new activity row lands; we
-    # schedule the notification onto the asyncio loop and best-effort
-    # fire it on the same stdout the responses go to.
-    loop = asyncio.get_running_loop()
-
-    async def _emit_notification(payload: dict) -> None:
-        data = json.dumps(payload) + "\n"
-        writer.write(data.encode())
-        try:
-            await writer.drain()
-        except Exception:  # noqa: BLE001
-            # Closed pipe (host disconnected) shouldn't crash the
-            # inbox poller; let it sit until the host reconnects.
-            pass
-
-    def _on_inbox_message(msg: dict) -> None:
-        try:
-            asyncio.run_coroutine_threadsafe(
-                _emit_notification(_build_channel_notification(msg)),
-                loop,
-            )
-        except RuntimeError:
-            # Loop closed during shutdown — best-effort, swallow.
-            pass
-
-    inbox.set_notification_callback(_on_inbox_message)
+    # Wire the inbox → MCP notification bridge. The bridge body lives
+    # in `_setup_inbox_bridge` so the threading + asyncio + stdout
+    # chain is pinned by tests without spinning up the full stdio
+    # JSON-RPC loop here.
+    inbox.set_notification_callback(
+        _setup_inbox_bridge(writer, asyncio.get_running_loop())
+    )
 
     buffer = ""
     while True:
