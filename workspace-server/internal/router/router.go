@@ -470,6 +470,7 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 	}
 	th := handlers.NewTerminalHandler(dockerCli)
 	wsAuth.GET("/terminal", th.HandleConnect)
+	wsAuth.GET("/terminal/diagnose", th.HandleDiagnose)
 
 	// Canvas Viewport — #166 + #168: GET stays fully open for bootstrap.
 	// PUT uses CanvasOrBearer (accepts Origin-match OR bearer token) so the
