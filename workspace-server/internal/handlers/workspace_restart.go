@@ -143,18 +143,6 @@ func (h *WorkspaceHandler) Restart(c *gin.Context) {
 		}
 	}
 
-	// Stop existing container / terminate existing EC2. Pick the matching
-	// stop path. CPProvisioner.Stop calls DELETE /cp/workspaces/:id to
-	// terminate the workspace EC2; the subsequent provision call launches
-	// a fresh one with the latest secrets + config.
-	if h.provisioner != nil {
-		h.provisioner.Stop(ctx, id)
-	} else if h.cpProv != nil {
-		if err := h.cpProv.Stop(ctx, id); err != nil {
-			log.Printf("Restart: cpProv.Stop(%s) failed: %v (continuing to reprovision)", id, err)
-		}
-	}
-
 	// Reset to provisioning
 	db.DB.ExecContext(ctx,
 		`UPDATE workspaces SET status = $1, url = '', updated_at = now() WHERE id = $2`, models.StatusProvisioning, id)
@@ -214,11 +202,33 @@ func (h *WorkspaceHandler) Restart(c *gin.Context) {
 	// Dispatch to the correct provisioner. provisionWorkspaceOpts is the
 	// Docker path; provisionWorkspaceCP is the SaaS path. The Create
 	// handler already branches this way; Restart now mirrors it.
-	if h.cpProv != nil {
-		go h.provisionWorkspaceCP(id, templatePath, configFiles, payload)
-	} else {
-		go h.provisionWorkspaceOpts(id, templatePath, configFiles, payload, resetClaudeSession)
-	}
+	//
+	// Stop runs inside this goroutine — NOT before the response — because
+	// CPProvisioner.Stop is synchronous DELETE /cp/workspaces/:id →
+	// CP → AWS EC2 terminate, which can exceed the canvas's 15s default
+	// HTTP timeout when the platform has just redeployed (every tenant's
+	// CP request queues at once). Pre-fix the user saw a misleading
+	// "signal timed out" error on the canvas even though the restart
+	// actually succeeded — caught 2026-04-30 on hongmingwang hermes
+	// workspace 32993ee7-…cb9d75d112a5 right after the heartbeat-fix
+	// platform redeploy. Use context.Background() to detach from the
+	// request lifecycle so an aborted client connection doesn't cancel
+	// the in-flight Stop/provision pair.
+	go func() {
+		bgCtx := context.Background()
+		if h.provisioner != nil {
+			h.provisioner.Stop(bgCtx, id)
+		} else if h.cpProv != nil {
+			if err := h.cpProv.Stop(bgCtx, id); err != nil {
+				log.Printf("Restart: cpProv.Stop(%s) failed: %v (continuing to reprovision)", id, err)
+			}
+		}
+		if h.cpProv != nil {
+			h.provisionWorkspaceCP(id, templatePath, configFiles, payload)
+		} else {
+			h.provisionWorkspaceOpts(id, templatePath, configFiles, payload, resetClaudeSession)
+		}
+	}()
 	go h.sendRestartContext(id, restartData)
 
 	c.JSON(http.StatusOK, gin.H{"status": "provisioning", "config_dir": configLabel, "reset_session": resetClaudeSession})
