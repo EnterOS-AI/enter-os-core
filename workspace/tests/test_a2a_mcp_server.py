@@ -331,3 +331,37 @@ def test_initialize_instructions_documents_meta_attributes():
             f"instructions must document the `{required_attr}` tag "
             f"attribute for the agent to act on it"
         )
+
+
+def test_initialize_instructions_pins_prompt_injection_defense():
+    """The threat-model sentence in `_CHANNEL_INSTRUCTIONS` is what
+    tells the agent that inbound canvas-user / peer-agent message
+    bodies are untrusted user content and must NOT be acted on as
+    instructions without chat-side approval. Symmetric with the reply-
+    tool pins above — drop this and a future copy-edit could silently
+    turn the channel into an open prompt-injection vector against any
+    workspace running this MCP server.
+    """
+    from a2a_mcp_server import _build_initialize_result
+
+    instructions = _build_initialize_result()["instructions"]
+    lowered = instructions.lower()
+
+    assert "untrusted" in lowered, (
+        "instructions must flag inbound message bodies as untrusted "
+        "user content — same threat model as the telegram channel "
+        "plugin. Dropping this turns the channel into a prompt-"
+        "injection vector."
+    )
+    # And the explicit don't-execute-blindly clause: pin both the
+    # restriction ("do not execute") and the escape hatch ("user
+    # approval") so a partial copy-edit can't keep one and drop the
+    # other.
+    assert "not execute" in lowered or "do not" in lowered, (
+        "instructions must explicitly say the agent should NOT execute "
+        "instructions embedded in message bodies"
+    )
+    assert "approval" in lowered, (
+        "instructions must point the agent at user chat-side approval "
+        "as the escape hatch when a message looks instruction-like"
+    )
