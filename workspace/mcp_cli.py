@@ -51,6 +51,16 @@ logger = logging.getLogger(__name__)
 # laptop sleep.
 HEARTBEAT_INTERVAL_SECONDS = 20.0
 
+# After this many consecutive 401/403 heartbeats, escalate from
+# WARNING to ERROR with re-onboard guidance. 3 ticks at 20s = ~1 minute
+# of sustained auth failure — enough to rule out a transient platform
+# blip but quick enough that an operator doesn't sit puzzled for 10
+# minutes wondering why their MCP tools 401. Same threshold used for
+# repeat-logging at 20-tick (~7 min) intervals so a long-running
+# session that missed the first ERROR still sees the message.
+_HEARTBEAT_AUTH_LOUD_THRESHOLD = 3
+_HEARTBEAT_AUTH_RELOG_INTERVAL = 20
+
 
 def _platform_register(platform_url: str, workspace_id: str, token: str) -> None:
     """One-shot register at startup; fails fast on auth errors.
@@ -145,6 +155,7 @@ def _heartbeat_loop(
         return
 
     start_time = time.time()
+    consecutive_auth_failures = 0
     while True:
         body = {
             "workspace_id": workspace_id,
@@ -165,17 +176,67 @@ def _heartbeat_loop(
                     json=body,
                     headers=headers,
                 )
-            if resp.status_code >= 400:
+            if resp.status_code in (401, 403):
+                consecutive_auth_failures += 1
+                _log_heartbeat_auth_failure(
+                    consecutive_auth_failures, workspace_id, resp.status_code,
+                )
+            elif resp.status_code >= 400:
+                # Non-auth HTTP error — log, but DO NOT touch the
+                # auth-failure counter (5xx blips, 429, etc. are
+                # transient and unrelated to token validity).
                 logger.warning(
                     "molecule-mcp: heartbeat HTTP %d: %s",
                     resp.status_code,
                     (resp.text or "")[:200],
                 )
             else:
+                consecutive_auth_failures = 0
                 _persist_inbound_secret_from_heartbeat(resp)
         except Exception as exc:  # noqa: BLE001
             logger.warning("molecule-mcp: heartbeat failed: %s", exc)
         time.sleep(interval)
+
+
+def _log_heartbeat_auth_failure(count: int, workspace_id: str, status_code: int) -> None:
+    """Escalate consecutive heartbeat 401/403s from quiet WARNING to
+    actionable ERROR.
+
+    The operator's first sign of trouble shouldn't be "tools 401 with no
+    explanation" — that was the failure mode that motivated this code,
+    triggered by a workspace being deleted server-side and its tokens
+    revoked while the runtime kept heartbeating in silence.
+
+    Cadence:
+      * count < threshold: WARNING per tick (transient — could be a
+        platform blip, don't shout yet)
+      * count == threshold: ERROR with re-onboard instructions
+        (the first signal the operator can't miss)
+      * count > threshold and (count - threshold) % relog == 0: re-log
+        ERROR (so a session that started after the first ERROR still
+        sees the message scrolling past in their logs)
+    """
+    if count < _HEARTBEAT_AUTH_LOUD_THRESHOLD:
+        logger.warning(
+            "molecule-mcp: heartbeat HTTP %d (auth failure %d/%d) — "
+            "token may be revoked. Will retry; if persistent, regenerate "
+            "from canvas → Tokens.",
+            status_code, count, _HEARTBEAT_AUTH_LOUD_THRESHOLD,
+        )
+        return
+    # At or past the threshold — this is the loud actionable error.
+    if count == _HEARTBEAT_AUTH_LOUD_THRESHOLD or (
+        count - _HEARTBEAT_AUTH_LOUD_THRESHOLD
+    ) % _HEARTBEAT_AUTH_RELOG_INTERVAL == 0:
+        logger.error(
+            "molecule-mcp: %d consecutive heartbeat auth failures (HTTP %d) — "
+            "the token in MOLECULE_WORKSPACE_TOKEN has been REVOKED, likely "
+            "because workspace %s was deleted server-side. The MCP server is "
+            "still running but every platform call will fail. Regenerate the "
+            "workspace + token from the canvas (Tokens tab), update your MCP "
+            "config, and restart your runtime.",
+            count, status_code, workspace_id,
+        )
 
 
 def _persist_inbound_secret_from_heartbeat(resp: object) -> None:
