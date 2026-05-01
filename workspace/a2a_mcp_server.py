@@ -130,6 +130,44 @@ async def handle_tool_call(name: str, arguments: dict) -> str:
     return f"Unknown tool: {name}"
 
 
+# --- MCP Notification bridge ---
+
+# `notifications/claude/channel` matches the contract used by the
+# molecule-mcp-claude-channel bun bridge (server.ts:509). Claude Code's
+# MCP runtime treats this method as a conversation interrupt — `content`
+# becomes the agent turn, `meta` is structured metadata. Notification-
+# capable hosts (Claude Code today; any compliant client tomorrow)
+# get push UX automatically; pollers (`wait_for_message` / `inbox_peek`)
+# still work unchanged. See task #46 + the deprecation path documented
+# in workspace/inbox.py:set_notification_callback.
+_CHANNEL_NOTIFICATION_METHOD = "notifications/claude/channel"
+
+
+def _build_channel_notification(msg: dict) -> dict:
+    """Transform an ``InboxMessage.to_dict()`` into the MCP notification
+    envelope expected by Claude Code's channel-bridge contract.
+
+    Pure function so the wire shape is unit-testable without spinning
+    up an asyncio loop. The wire-up in ``main()`` just composes this
+    with ``asyncio.run_coroutine_threadsafe``.
+    """
+    return {
+        "jsonrpc": "2.0",
+        "method": _CHANNEL_NOTIFICATION_METHOD,
+        "params": {
+            "content": msg.get("text", ""),
+            "meta": {
+                "source": "molecule",
+                "kind": msg.get("kind", ""),
+                "peer_id": msg.get("peer_id", ""),
+                "method": msg.get("method", ""),
+                "activity_id": msg.get("activity_id", ""),
+                "ts": msg.get("created_at", ""),
+            },
+        },
+    }
+
+
 # --- MCP Server (JSON-RPC over stdio) ---
 
 async def main():  # pragma: no cover
@@ -147,6 +185,35 @@ async def main():  # pragma: no cover
         data = json.dumps(response) + "\n"
         writer.write(data.encode())
         await writer.drain()
+
+    # Wire the inbox → MCP notification bridge. Inbox poller (daemon
+    # thread) calls into here when a new activity row lands; we
+    # schedule the notification onto the asyncio loop and best-effort
+    # fire it on the same stdout the responses go to.
+    loop = asyncio.get_running_loop()
+
+    async def _emit_notification(payload: dict) -> None:
+        data = json.dumps(payload) + "\n"
+        writer.write(data.encode())
+        try:
+            await writer.drain()
+        except Exception:  # noqa: BLE001
+            # Closed pipe (host disconnected) shouldn't crash the
+            # inbox poller; let it sit until the host reconnects.
+            pass
+
+    def _on_inbox_message(msg: dict) -> None:
+        try:
+            asyncio.run_coroutine_threadsafe(
+                _emit_notification(_build_channel_notification(msg)),
+                loop,
+            )
+        except RuntimeError:
+            # Loop closed during shutdown — best-effort, swallow.
+            pass
+
+    import inbox as _inbox_module
+    _inbox_module.set_notification_callback(_on_inbox_message)
 
     buffer = ""
     while True:

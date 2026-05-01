@@ -53,7 +53,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -173,10 +173,14 @@ class InboxState:
             logger.warning("inbox: failed to delete cursor %s: %s", self.cursor_path, exc)
 
     def record(self, message: InboxMessage) -> None:
-        """Append a message and wake any waiter.
+        """Append a message, wake any waiter, and fire the notification
+        callback (if registered) for push-UX-capable hosts.
 
         Skips a row whose activity_id we've already queued — defensive
-        against the poller racing with the consumer + cursor save.
+        against the poller racing with the consumer + cursor save. The
+        dedupe short-circuits BEFORE the notification fires, so a
+        notification-capable host doesn't see duplicate push events on
+        backlog overlap.
         """
         with self._lock:
             for existing in self._queue:
@@ -184,6 +188,19 @@ class InboxState:
                     return
             self._queue.append(message)
             self._arrival.set()
+        # Fire notification AFTER releasing the lock so the callback
+        # is free to do anything (including calling back into inbox)
+        # without deadlock. Best-effort: a raising callback must not
+        # prevent the message from landing in the queue — observability
+        # is more important than push delivery.
+        cb = _NOTIFICATION_CALLBACK
+        if cb is not None:
+            try:
+                cb(message.to_dict())
+            except Exception:
+                logger.warning(
+                    "inbox: notification callback raised", exc_info=True
+                )
 
     def peek(self, limit: int = 10) -> list[InboxMessage]:
         """Return up to ``limit`` pending messages without removing them."""
@@ -238,6 +255,35 @@ class InboxState:
 # breaking the dispatch path.
 
 _STATE: InboxState | None = None
+
+
+# Notification bridge — set by the universal MCP server (a2a_mcp_server.py)
+# at startup so that new inbox arrivals can be pushed to notification-
+# capable hosts (Claude Code) as MCP `notifications/claude/channel`
+# events. Kept module-level (rather than a method on InboxState) so the
+# inbox doesn't need to know about MCP — a thin pluggable seam.
+#
+# Defaults to None: in-container runtimes that don't activate the inbox
+# also don't push notifications, and tests start clean. The wheel's
+# wiring is exercised by tests/test_a2a_mcp_server.py + the bridge
+# tests below.
+_NOTIFICATION_CALLBACK: Callable[[dict], None] | None = None
+
+
+def set_notification_callback(cb: Callable[[dict], None] | None) -> None:
+    """Register (or clear) the per-message notification callback.
+
+    The callback receives ``InboxMessage.to_dict()`` for each new
+    arrival — same shape ``inbox_peek`` returns to the agent, so a
+    bridge can build its MCP notification payload without re-deriving
+    fields.
+
+    Best-effort: a raising callback does NOT prevent the message from
+    landing in the queue (see ``InboxState.record``). Pass ``None`` to
+    clear (used by tests + the wheel's shutdown path).
+    """
+    global _NOTIFICATION_CALLBACK
+    _NOTIFICATION_CALLBACK = cb
 
 
 def activate(state: InboxState) -> None:
