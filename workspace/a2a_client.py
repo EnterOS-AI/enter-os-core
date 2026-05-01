@@ -340,7 +340,14 @@ async def get_peers() -> list[dict]:
 
 
 async def get_workspace_info() -> dict:
-    """Get this workspace's info from the platform."""
+    """Get this workspace's info from the platform.
+
+    Distinguishes three failure shapes so callers can handle them
+    distinctly (#2429):
+      - 410 Gone        → workspace was deleted; re-onboard required
+      - 404 / other     → workspace never existed (or transient)
+      - exception       → network / auth failure
+    """
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             resp = await client.get(
@@ -349,6 +356,27 @@ async def get_workspace_info() -> dict:
             )
             if resp.status_code == 200:
                 return resp.json()
+            if resp.status_code == 410:
+                # #2429: platform returns 410 when status='removed'.
+                # Surface "removed" + the actionable hint so callers
+                # can prompt re-onboard instead of falling through to
+                # "not found" — which made the 2026-04-30 incident
+                # impossible to diagnose ("workspace not found" with
+                # a workspace_id we KNEW we'd just registered).
+                try:
+                    body = resp.json()
+                except Exception:
+                    body = {}
+                return {
+                    "error": "removed",
+                    "id": body.get("id", WORKSPACE_ID),
+                    "removed_at": body.get("removed_at"),
+                    "hint": body.get(
+                        "hint",
+                        "Workspace was deleted on the platform. "
+                        "Regenerate workspace + token from the canvas → Tokens tab.",
+                    ),
+                }
             return {"error": "not found"}
         except Exception as e:
             return {"error": str(e)}

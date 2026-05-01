@@ -819,6 +819,48 @@ class TestGetWorkspaceInfo:
 
         assert result == {"error": "not found"}
 
+    async def test_410_returns_removed_with_hint(self):
+        """410 Gone (#2429) → distinct error 'removed' so callers can
+        prompt re-onboard instead of falling through to 'not found'.
+        Body shape passes through removed_at + the platform hint."""
+        import a2a_client
+
+        body = {
+            "error": "workspace removed",
+            "id": "ws-deleted-uuid",
+            "removed_at": "2026-04-30T12:00:00Z",
+            "hint": "Regenerate workspace + token from the canvas → Tokens tab",
+        }
+        resp = _make_response(410, body)
+        mock_client = _make_mock_client(get_resp=resp)
+
+        with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
+            result = await a2a_client.get_workspace_info()
+
+        assert result["error"] == "removed"
+        assert result["id"] == "ws-deleted-uuid"
+        assert result["removed_at"] == "2026-04-30T12:00:00Z"
+        assert "Regenerate" in result["hint"]
+
+    async def test_410_with_unparseable_body_falls_back_to_default_hint(self):
+        """If the platform's 410 body isn't JSON for some reason, the
+        default hint still surfaces — the actionable signal must not
+        depend on body shape parity with the platform."""
+        import a2a_client
+
+        resp = MagicMock()
+        resp.status_code = 410
+        resp.json = MagicMock(side_effect=ValueError("not json"))
+        mock_client = _make_mock_client(get_resp=resp)
+
+        with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
+            result = await a2a_client.get_workspace_info()
+
+        assert result["error"] == "removed"
+        assert result["id"] == a2a_client.WORKSPACE_ID
+        assert result["removed_at"] is None
+        assert "Regenerate" in result["hint"]
+
     async def test_exception_returns_error_dict_with_message(self):
         """Network exception → returns {'error': '<exception message>'}."""
         import a2a_client
