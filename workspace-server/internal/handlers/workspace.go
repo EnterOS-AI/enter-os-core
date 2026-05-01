@@ -660,16 +660,28 @@ func (h *WorkspaceHandler) Get(c *gin.Context) {
 	// to content negotiation.
 	if status, _ := ws["status"].(string); status == string(models.StatusRemoved) {
 		if c.Query("include_removed") != "true" {
+			// Best-effort fetch of the removal timestamp. If the row was
+			// deleted (or some transient DB error fired) between the
+			// scanWorkspaceRow above and this follow-up SELECT,
+			// removedAt stays as Go's zero time. Emit `null` in that
+			// case rather than the misleading `0001-01-01T00:00:00Z`
+			// the client would otherwise see — the actionable signal
+			// is the 410 + hint, not the timestamp.
 			var removedAt time.Time
 			_ = db.DB.QueryRowContext(c.Request.Context(),
 				`SELECT updated_at FROM workspaces WHERE id = $1`, id,
 			).Scan(&removedAt)
-			c.JSON(http.StatusGone, gin.H{
-				"error":      "workspace removed",
-				"id":         id,
-				"removed_at": removedAt,
-				"hint":       "Regenerate workspace + token from the canvas → Tokens tab",
-			})
+			body := gin.H{
+				"error": "workspace removed",
+				"id":    id,
+				"hint":  "Regenerate workspace + token from the canvas → Tokens tab",
+			}
+			if removedAt.IsZero() {
+				body["removed_at"] = nil
+			} else {
+				body["removed_at"] = removedAt
+			}
+			c.JSON(http.StatusGone, body)
 			return
 		}
 	}

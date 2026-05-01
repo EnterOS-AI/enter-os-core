@@ -151,11 +151,74 @@ func TestWorkspaceGet_RemovedReturns410(t *testing.T) {
 	if resp["id"] != id {
 		t.Errorf("expected id %q, got %v", id, resp["id"])
 	}
-	if _, ok := resp["removed_at"]; !ok {
-		t.Errorf("expected removed_at in 410 body, got: %v", resp)
+	if v, ok := resp["removed_at"]; !ok || v == nil {
+		t.Errorf("expected removed_at to be a real timestamp on the happy path, got: %v", v)
 	}
 	if _, ok := resp["hint"]; !ok {
 		t.Errorf("expected hint in 410 body, got: %v", resp)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// If the follow-up `SELECT updated_at` query fails (workspace row
+// disappeared in the gap, transient DB error, etc.), removedAt stays
+// as Go's zero time. We emit JSON `null` for that case rather than
+// the misleading `"0001-01-01T00:00:00Z"` the client would otherwise
+// see — the actionable signal is the 410 + hint, not the timestamp.
+func TestWorkspaceGet_RemovedReturns410WithNullRemovedAtOnTimestampFetchFailure(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+
+	id := "cccccccc-0012-0000-0000-000000000000"
+
+	columns := []string{
+		"id", "name", "role", "tier", "status", "agent_card", "url",
+		"parent_id", "active_tasks", "max_concurrent_tasks", "last_error_rate", "last_sample_error",
+		"uptime_seconds", "current_task", "runtime", "workspace_dir", "x", "y", "collapsed",
+		"budget_limit", "monthly_spend",
+	}
+	mock.ExpectQuery("SELECT w.id, w.name").
+		WithArgs(id).
+		WillReturnRows(sqlmock.NewRows(columns).
+			AddRow(id, "Vanished", "worker", 1, string(models.StatusRemoved), []byte(`null`),
+				"", nil, 0, 1, 0.0, "", 0, "", "langgraph",
+				"", 0.0, 0.0, false,
+				nil, 0))
+	// Simulate the row vanishing between the two queries.
+	mock.ExpectQuery(`SELECT updated_at FROM workspaces`).
+		WithArgs(id).
+		WillReturnError(sql.ErrNoRows)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: id}}
+	c.Request = httptest.NewRequest("GET", "/workspaces/"+id, nil)
+
+	handler.Get(c)
+
+	if w.Code != http.StatusGone {
+		t.Fatalf("expected 410 Gone, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse 410 body: %v", err)
+	}
+	if resp["removed_at"] != nil {
+		t.Errorf(
+			"expected removed_at == null when timestamp fetch fails; got %v (type %T). "+
+				"Misleading 0001-01-01 timestamps in the JSON would confuse clients.",
+			resp["removed_at"], resp["removed_at"],
+		)
+	}
+	// Other fields must still be present.
+	if resp["error"] != "workspace removed" || resp["id"] != id || resp["hint"] == nil {
+		t.Errorf("expected error/id/hint to survive the timestamp fetch failure; got %v", resp)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
