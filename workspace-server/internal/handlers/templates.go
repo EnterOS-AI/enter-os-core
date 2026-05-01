@@ -59,6 +59,16 @@ type templateSummary struct {
 	// preflight uses this as the fallback provider when `models` is empty
 	// so provider picker stays data-driven instead of hardcoded in the UI.
 	RequiredEnv []string `json:"required_env,omitempty"`
+	// Providers is the runtime's own list of supported provider slugs,
+	// sourced from runtime_config.providers in the template's config.yaml.
+	// The canvas Config tab surfaces this as the Provider override
+	// dropdown (Option B PR-5). Data-driven so each runtime owns its own
+	// taxonomy — hermes-agent supports 20+ providers; claude-code only
+	// "anthropic"; gemini-cli only "gemini" — and a future runtime with
+	// a different vendor list doesn't need a canvas edit. Empty list →
+	// canvas falls back to deriving suggestions from `models[].id` slug
+	// prefixes (still adapter-driven, just inferred).
+	Providers   []string `json:"providers,omitempty"`
 	Skills      []string `json:"skills"`
 	SkillCount  int      `json:"skill_count"`
 	// ProvisionTimeoutSeconds lets a slow runtime declare its expected
@@ -100,6 +110,7 @@ func (h *TemplatesHandler) List(c *gin.Context) {
 				Model                   string      `yaml:"model"`
 				Models                  []modelSpec `yaml:"models"`
 				RequiredEnv             []string    `yaml:"required_env"`
+				Providers               []string    `yaml:"providers"`
 				ProvisionTimeoutSeconds int         `yaml:"provision_timeout_seconds"`
 			} `yaml:"runtime_config"`
 		}
@@ -122,6 +133,7 @@ func (h *TemplatesHandler) List(c *gin.Context) {
 			Model:                   model,
 			Models:                  raw.RuntimeConfig.Models,
 			RequiredEnv:             raw.RuntimeConfig.RequiredEnv,
+			Providers:               raw.RuntimeConfig.Providers,
 			Skills:                  raw.Skills,
 			SkillCount:              len(raw.Skills),
 			ProvisionTimeoutSeconds: raw.RuntimeConfig.ProvisionTimeoutSeconds,

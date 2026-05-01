@@ -100,6 +100,42 @@ interface RuntimeOption {
   value: string;
   label: string;
   models: ModelSpec[];
+  // providers is the declarative provider list each template ships in
+  // its config.yaml under runtime_config.providers. The /templates API
+  // surfaces it (workspace-server templates.go) so canvas stays
+  // adapter-driven: hermes ships ~20 slugs, claude-code ships
+  // ["anthropic"], gemini-cli ships ["gemini"], etc. Empty list →
+  // canvas falls back to deriving unique vendor prefixes from
+  // models[].id (still adapter-driven, just inferred).
+  providers: string[];
+}
+
+// deriveProvidersFromModels — when a template doesn't ship an explicit
+// providers list, infer suggestions from the vendor prefixes of its
+// model slugs. e.g. ["anthropic:claude-opus-4-7", "openai:gpt-4o",
+// "anthropic:claude-sonnet-4-5"] → ["anthropic", "openai"].
+//
+// This keeps the dropdown adapter-driven for older templates that
+// haven't migrated to the explicit `providers:` field yet, AND
+// continues to be a useful fallback for any future runtime whose
+// derive-provider semantics happen to match the slug prefix.
+function deriveProvidersFromModels(models: ModelSpec[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const m of models) {
+    if (!m.id) continue;
+    // Both ":" (anthropic:claude-opus-4-7) and "/" (nousresearch/hermes-4-70b)
+    // are valid vendor separators in our slug taxonomy. Take whichever
+    // appears first and split there.
+    const sep = m.id.match(/[:/]/)?.index ?? -1;
+    if (sep <= 0) continue;
+    const vendor = m.id.slice(0, sep);
+    if (!seen.has(vendor)) {
+      seen.add(vendor);
+      out.push(vendor);
+    }
+  }
+  return out;
 }
 
 // Fallback used when /templates can't be fetched (offline, older backend).
@@ -118,14 +154,14 @@ interface RuntimeOption {
 const RUNTIMES_WITH_OWN_CONFIG = new Set<string>(["external"]);
 
 const FALLBACK_RUNTIME_OPTIONS: RuntimeOption[] = [
-  { value: "", label: "LangGraph (default)", models: [] },
-  { value: "claude-code", label: "Claude Code", models: [] },
-  { value: "crewai", label: "CrewAI", models: [] },
-  { value: "autogen", label: "AutoGen", models: [] },
-  { value: "deepagents", label: "DeepAgents", models: [] },
-  { value: "openclaw", label: "OpenClaw", models: [] },
-  { value: "hermes", label: "Hermes", models: [] },
-  { value: "gemini-cli", label: "Gemini CLI", models: [] },
+  { value: "", label: "LangGraph (default)", models: [], providers: [] },
+  { value: "claude-code", label: "Claude Code", models: [], providers: [] },
+  { value: "crewai", label: "CrewAI", models: [], providers: [] },
+  { value: "autogen", label: "AutoGen", models: [], providers: [] },
+  { value: "deepagents", label: "DeepAgents", models: [], providers: [] },
+  { value: "openclaw", label: "OpenClaw", models: [], providers: [] },
+  { value: "hermes", label: "Hermes", models: [], providers: [] },
+  { value: "gemini-cli", label: "Gemini CLI", models: [], providers: [] },
 ];
 
 export function ConfigTab({ workspaceId }: Props) {
@@ -138,6 +174,17 @@ export function ConfigTab({ workspaceId }: Props) {
   const [rawMode, setRawMode] = useState(false);
   const [rawDraft, setRawDraft] = useState("");
   const [runtimeOptions, setRuntimeOptions] = useState<RuntimeOption[]>(FALLBACK_RUNTIME_OPTIONS);
+  // Provider override (Option B PR-5): stored separately from config.yaml
+  // because the value lives in workspace_secrets (encrypted), not in the
+  // platform-managed config.yaml. The two endpoints are GET/PUT
+  // /workspaces/:id/provider on workspace-server (handlers/secrets.go).
+  // Empty = "auto-derive from model slug prefix" — pre-Option-B behavior
+  // and what most users want. Setting to a non-empty value writes
+  // LLM_PROVIDER into workspace_secrets and triggers an auto-restart so
+  // the workspace boots with the new provider in env (and via CP user-
+  // data, written into /configs/config.yaml on next provision too).
+  const [provider, setProvider] = useState("");
+  const [originalProvider, setOriginalProvider] = useState("");
   const successTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
@@ -167,6 +214,22 @@ export function ConfigTab({ workspaceId }: Props) {
       const m = await api.get<{ model?: string }>(`/workspaces/${workspaceId}/model`);
       wsMetadataModel = (m.model || "").trim();
     } catch { /* non-fatal */ }
+
+    // Load explicit provider override (Option B PR-5). Endpoint returns
+    // {provider: "", source: "default"} when no override is set, so the
+    // empty string is the legitimate "auto-derive" signal — don't treat
+    // it as a load error. Non-fatal: an older workspace-server that
+    // predates PR-2 returns 404 here; the form falls back to "" and
+    // Save just won't PUT the provider field.
+    try {
+      const p = await api.get<{ provider?: string }>(`/workspaces/${workspaceId}/provider`);
+      const loadedProvider = (p.provider || "").trim();
+      setProvider(loadedProvider);
+      setOriginalProvider(loadedProvider);
+    } catch {
+      setProvider("");
+      setOriginalProvider("");
+    }
 
     try {
       const res = await api.get<{ content: string }>(`/workspaces/${workspaceId}/files/config.yaml`);
@@ -209,11 +272,11 @@ export function ConfigTab({ workspaceId }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    api.get<Array<{ id: string; name?: string; runtime?: string; models?: ModelSpec[] }>>("/templates")
+    api.get<Array<{ id: string; name?: string; runtime?: string; models?: ModelSpec[]; providers?: string[] }>>("/templates")
       .then((rows) => {
         if (cancelled || !Array.isArray(rows)) return;
         const byRuntime = new Map<string, RuntimeOption>();
-        byRuntime.set("", { value: "", label: "LangGraph (default)", models: [] });
+        byRuntime.set("", { value: "", label: "LangGraph (default)", models: [], providers: [] });
         for (const r of rows) {
           const v = (r.runtime || "").trim();
           if (!v || v === "langgraph") continue;
@@ -221,8 +284,9 @@ export function ConfigTab({ workspaceId }: Props) {
           // one with the richer models list is probably newer.
           const existing = byRuntime.get(v);
           const models = Array.isArray(r.models) ? r.models : [];
+          const providers = Array.isArray(r.providers) ? r.providers : [];
           if (!existing || models.length > existing.models.length) {
-            byRuntime.set(v, { value: v, label: r.name || v, models });
+            byRuntime.set(v, { value: v, label: r.name || v, models, providers });
           }
         }
         if (byRuntime.size > 1) setRuntimeOptions(Array.from(byRuntime.values()));
@@ -234,6 +298,16 @@ export function ConfigTab({ workspaceId }: Props) {
   // Models + env hints for the currently-selected runtime.
   const selectedRuntime = runtimeOptions.find((o) => o.value === (config.runtime || "")) ?? null;
   const availableModels: ModelSpec[] = selectedRuntime?.models ?? [];
+  // Provider suggestions: prefer the runtime's declarative providers
+  // list (sourced from its template config.yaml runtime_config.providers
+  // and surfaced via /templates), fall back to deriving from model slug
+  // prefixes when the template hasn't migrated to the explicit field
+  // yet. Either way the data flows from the adapter — no hardcoded
+  // canvas-side enum.
+  const providerSuggestions: string[] =
+    (selectedRuntime?.providers && selectedRuntime.providers.length > 0)
+      ? selectedRuntime.providers
+      : deriveProvidersFromModels(availableModels);
   const currentModelId = config.runtime_config?.model || config.model || "";
   const currentModelSpec = availableModels.find((m) => m.id === currentModelId) ?? null;
 
@@ -334,6 +408,24 @@ export function ConfigTab({ workspaceId }: Props) {
         }
       }
 
+      // Provider override save (Option B PR-5). PUT only when the user
+      // changed the dropdown — otherwise an unrelated Save (e.g. tier
+      // edit) would re-write the provider unchanged and the server-
+      // side auto-restart would fire on every Save, costing the user a
+      // ~30s reboot for a no-op change. Server endpoint accepts an
+      // empty string to clear the override (deletes the
+      // workspace_secrets row); we forward whatever the form holds.
+      let providerSaveError: string | null = null;
+      const providerChanged = provider !== originalProvider;
+      if (providerChanged) {
+        try {
+          await api.put(`/workspaces/${workspaceId}/provider`, { provider });
+          setOriginalProvider(provider);
+        } catch (e) {
+          providerSaveError = e instanceof Error ? e.message : "Provider update was rejected";
+        }
+      }
+
       setOriginalYaml(content);
       if (rawMode) {
         const parsed = parseYaml(content);
@@ -341,16 +433,30 @@ export function ConfigTab({ workspaceId }: Props) {
       } else {
         setRawDraft(content);
       }
-      if (restart) {
+      // SetProvider on the server already triggers an auto-restart for
+      // the workspace whenever the value actually changed (see
+      // workspace-server/internal/handlers/secrets.go:SetProvider). If
+      // the user also clicked Save+Restart we'd kick off a SECOND
+      // restart here and the two would race in the canvas store —
+      // suppress the redundant call and rely on the server-side one.
+      const providerWillAutoRestart = providerChanged && !providerSaveError;
+      if (restart && !providerWillAutoRestart) {
         await useCanvasStore.getState().restartWorkspace(workspaceId);
-      } else {
-        useCanvasStore.getState().updateNodeData(workspaceId, { needsRestart: true });
+      } else if (!restart) {
+        useCanvasStore.getState().updateNodeData(workspaceId, { needsRestart: !providerWillAutoRestart });
       }
-      if (modelSaveError) {
-        // Partial-save UX: surface the model rejection instead of
-        // showing "Saved" — the user would otherwise watch the model
-        // field revert on next reload with no explanation.
-        setError(`Other fields saved, but model update failed: ${modelSaveError}`);
+      // Aggregate partial-save errors. Both modelSaveError and
+      // providerSaveError describe rejected updates from independent
+      // endpoints — show whichever fired so the user knows which
+      // field reverts on next reload (otherwise they'd see "Saved" and
+      // be confused why Provider snapped back).
+      const partialError = providerSaveError
+        ? `Other fields saved, but provider update failed: ${providerSaveError}`
+        : modelSaveError
+          ? `Other fields saved, but model update failed: ${modelSaveError}`
+          : null;
+      if (partialError) {
+        setError(partialError);
       } else {
         setSuccess(true);
         clearTimeout(successTimerRef.current);
@@ -371,7 +477,8 @@ export function ConfigTab({ workspaceId }: Props) {
   const taskBudgetId = useId();
   const sandboxBackendId = useId();
 
-  const isDirty = rawMode ? rawDraft !== originalYaml : toYaml(config) !== originalYaml;
+  const providerDirty = provider !== originalProvider;
+  const isDirty = (rawMode ? rawDraft !== originalYaml : toYaml(config) !== originalYaml) || providerDirty;
 
   if (loading) {
     return <div className="p-4 text-xs text-zinc-500">Loading config...</div>;
@@ -517,6 +624,51 @@ export function ConfigTab({ workspaceId }: Props) {
                   </datalist>
                 )}
               </div>
+            </div>
+            {/* Provider override (Option B PR-5). Free-text combobox so
+                operators can use any of the 30+ slugs hermes-agent's
+                derive-provider.sh recognizes — the suggestion list is
+                a hint, not a constraint. Empty = "auto-derive from
+                model slug prefix" which is correct for the common case
+                (model "anthropic:claude-opus-4-7" → provider derived
+                as "anthropic"). The override is needed when the model
+                alias has no clean vendor prefix (e.g. hermes default
+                "nousresearch/hermes-4-70b" → derive returns empty →
+                hermes errors "No LLM provider configured"). */}
+            <div>
+              <label htmlFor={`${runtimeId}-provider`} className="text-[10px] text-zinc-500 block mb-1">
+                Provider
+                <span className="ml-1 text-zinc-600">
+                  (override — leave empty to auto-derive from model slug)
+                </span>
+              </label>
+              <input
+                id={`${runtimeId}-provider`}
+                type="text"
+                list={providerSuggestions.length > 0 ? `${runtimeId}-providers` : undefined}
+                value={provider}
+                onChange={(e) => setProvider(e.target.value.trim())}
+                placeholder={
+                  providerSuggestions.length > 0
+                    ? `e.g. ${providerSuggestions.slice(0, 3).join(", ")} (empty = auto-derive)`
+                    : "empty = auto-derive from model slug"
+                }
+                aria-label="LLM provider override"
+                data-testid="provider-input"
+                className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 font-mono focus:outline-none focus:border-blue-500"
+              />
+              {providerSuggestions.length > 0 && (
+                <datalist id={`${runtimeId}-providers`}>
+                  {providerSuggestions.map((p) => (
+                    <option key={p} value={p} />
+                  ))}
+                </datalist>
+              )}
+              {provider && provider !== originalProvider && (
+                <p className="text-[10px] text-amber-500 mt-1">
+                  Provider change → workspace will auto-restart on Save.
+                </p>
+              )}
             </div>
             <TagList
               label={

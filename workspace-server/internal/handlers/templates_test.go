@@ -197,6 +197,117 @@ skills: []
 	}
 }
 
+// TestTemplatesList_SurfacesProviders pins the Option B PR-5 wiring:
+// /templates must echo runtime_config.providers from the template's
+// config.yaml into the JSON response. Canvas reads this list to
+// populate the Provider override dropdown WITHOUT hardcoding any
+// provider taxonomy on the frontend — that's the "data-driven from
+// adapter" invariant.
+//
+// If a future yaml-tag rename or struct edit drops the field, every
+// runtime would silently fall back to model-prefix derivation. For
+// hermes specifically (default model has no clean prefix), that
+// degrades the dropdown to empty and reintroduces the "No LLM
+// provider configured" UX gap from 2026-05-01.
+func TestTemplatesList_SurfacesProviders(t *testing.T) {
+	setupTestDB(t)
+	setupTestRedis(t)
+
+	tmpDir := t.TempDir()
+	tmplDir := filepath.Join(tmpDir, "hermes-prov")
+	if err := os.MkdirAll(tmplDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	configYaml := `name: Hermes
+description: test
+tier: 2
+runtime: hermes
+runtime_config:
+  model: nousresearch/hermes-4-70b
+  providers:
+    - nous
+    - openrouter
+    - anthropic
+skills: []
+`
+	if err := os.WriteFile(filepath.Join(tmplDir, "config.yaml"), []byte(configYaml), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	handler := NewTemplatesHandler(tmpDir, nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/templates", nil)
+	handler.List(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp []templateSummary
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("expected 1 template, got %d", len(resp))
+	}
+	got := resp[0]
+	want := []string{"nous", "openrouter", "anthropic"}
+	if len(got.Providers) != len(want) {
+		t.Fatalf("Providers: want %v, got %v", want, got.Providers)
+	}
+	for i, p := range want {
+		if got.Providers[i] != p {
+			t.Errorf("Providers[%d]: want %q, got %q", i, p, got.Providers[i])
+		}
+	}
+
+	// Cross-check the JSON wire shape directly — canvas reads the field
+	// as `providers` (lowercase) and a struct-tag rename here would
+	// break consumers without surfacing in the typed assertions above.
+	if !strings.Contains(w.Body.String(), `"providers":["nous","openrouter","anthropic"]`) {
+		t.Errorf("response missing providers JSON field: %s", w.Body.String())
+	}
+}
+
+// TestTemplatesList_OmitsProvidersWhenAbsent pins the omitempty
+// behavior — older templates that haven't migrated to
+// runtime_config.providers yet must NOT emit `providers: null` (which
+// would break canvas's array-typed parser). A template that simply
+// omits the field stays absent in the response and canvas falls back
+// to deriving suggestions from model-slug prefixes.
+func TestTemplatesList_OmitsProvidersWhenAbsent(t *testing.T) {
+	setupTestDB(t)
+	setupTestRedis(t)
+
+	tmpDir := t.TempDir()
+	tmplDir := filepath.Join(tmpDir, "no-prov")
+	if err := os.MkdirAll(tmplDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	configYaml := `name: Legacy
+runtime: langgraph
+runtime_config:
+  model: anthropic:claude-opus-4-7
+skills: []
+`
+	if err := os.WriteFile(filepath.Join(tmplDir, "config.yaml"), []byte(configYaml), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	handler := NewTemplatesHandler(tmpDir, nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/templates", nil)
+	handler.List(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), `"providers":`) {
+		t.Errorf("response should omit providers when template has none, got: %s", w.Body.String())
+	}
+}
+
 func TestTemplatesList_LegacyTopLevelModel(t *testing.T) {
 	// Older templates (pre-runtime_config) declared `model:` at the top level.
 	// The /templates endpoint should keep surfacing those for backward compat.
