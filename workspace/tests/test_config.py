@@ -9,6 +9,7 @@ from config import (
     A2AConfig,
     ComplianceConfig,
     DelegationConfig,
+    ObservabilityConfig,
     SandboxConfig,
     WorkspaceConfig,
     load_config,
@@ -523,3 +524,119 @@ def test_compliance_default_via_load_config(tmp_path, yaml_payload, expected_mod
     # prompt_injection was never overridden in any payload — must stay at
     # the dataclass default regardless of the mode value.
     assert cfg.compliance.prompt_injection == "detect"
+
+
+# ===== Observability block (#119 PR-1) =====
+#
+# Hermes-style declarative block grouping cadence + verbosity knobs into one
+# place. Schema-only in this PR — wiring into heartbeat.py / main.py lands in
+# PR-3. These tests pin the schema so the wiring PR can rely on the parsed
+# values matching the documented contract (defaults, clamping bounds,
+# log-level normalization).
+
+
+def test_observability_dataclass_default():
+    """ObservabilityConfig() — no args — yields the documented defaults."""
+    cfg = ObservabilityConfig()
+    assert cfg.heartbeat_interval_seconds == 30
+    assert cfg.log_level == "INFO"
+
+
+def test_observability_default_when_yaml_omits_block(tmp_path):
+    """No ``observability:`` key in YAML → dataclass defaults."""
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(yaml.dump({}))
+
+    cfg = load_config(str(tmp_path))
+    assert cfg.observability.heartbeat_interval_seconds == 30
+    assert cfg.observability.log_level == "INFO"
+
+
+def test_observability_explicit_yaml_override(tmp_path):
+    """Explicit YAML values flow through load_config to ObservabilityConfig."""
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(
+        yaml.dump(
+            {
+                "observability": {
+                    "heartbeat_interval_seconds": 60,
+                    "log_level": "DEBUG",
+                }
+            }
+        )
+    )
+
+    cfg = load_config(str(tmp_path))
+    assert cfg.observability.heartbeat_interval_seconds == 60
+    assert cfg.observability.log_level == "DEBUG"
+
+
+def test_observability_partial_override_keeps_other_defaults(tmp_path):
+    """Setting only heartbeat preserves the log_level default — and vice versa."""
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(
+        yaml.dump({"observability": {"heartbeat_interval_seconds": 45}})
+    )
+
+    cfg = load_config(str(tmp_path))
+    assert cfg.observability.heartbeat_interval_seconds == 45
+    assert cfg.observability.log_level == "INFO"
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        # In-band values pass through unchanged.
+        (5, 5),
+        (30, 30),
+        (300, 300),
+        # Below floor → clamped up to 5s. Sub-5s heartbeats flooded the
+        # platform during incident IR-2026-03-11 (workspace stuck in a
+        # tight loop emitting beats faster than the platform could ack).
+        (1, 5),
+        (0, 5),
+        (-7, 5),
+        # Above ceiling → clamped down to 300s. >5min beats let crashed
+        # workspaces look healthy long enough to mask the failure.
+        (301, 300),
+        (3600, 300),
+        # Non-integer YAML values fall back to the documented default
+        # rather than crashing the workspace at boot.
+        ("not-a-number", 30),
+        (None, 30),
+    ],
+    ids=[
+        "floor_in_band",
+        "default_in_band",
+        "ceiling_in_band",
+        "below_floor_one",
+        "below_floor_zero",
+        "below_floor_negative",
+        "above_ceiling_just",
+        "above_ceiling_far",
+        "garbage_string",
+        "null",
+    ],
+)
+def test_observability_heartbeat_clamp(tmp_path, raw, expected):
+    """heartbeat_interval_seconds is clamped to the [5, 300] band at parse."""
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(
+        yaml.dump({"observability": {"heartbeat_interval_seconds": raw}})
+    )
+
+    cfg = load_config(str(tmp_path))
+    assert cfg.observability.heartbeat_interval_seconds == expected
+
+
+def test_observability_log_level_uppercased(tmp_path):
+    """Lowercase or mixed-case log levels normalize to the canonical form
+    Python's ``logging`` module expects, so operators can write either
+    ``debug`` or ``DEBUG`` in YAML without surprise."""
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(
+        yaml.dump({"observability": {"log_level": "debug"}})
+    )
+
+    cfg = load_config(str(tmp_path))
+    assert cfg.observability.log_level == "DEBUG"

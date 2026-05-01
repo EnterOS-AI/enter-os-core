@@ -167,6 +167,43 @@ class SecurityScanConfig:
 
 
 @dataclass
+class ObservabilityConfig:
+    """Observability settings — heartbeat cadence and log verbosity.
+
+    Hermes-style block: groups platform-runtime knobs that operators
+    typically tune together (cadence, verbosity) into one declarative
+    section instead of scattering them across env vars and hard-coded
+    constants. Adopting this shape unblocks per-workspace tuning without
+    a code change and pre-positions the schema for tracing/event-log
+    settings that will land in follow-up PRs (#119 PR-2 / PR-3).
+
+    Today only ``heartbeat_interval_seconds`` and ``log_level`` have live
+    consumers; both fields are accepted but not yet wired to their final
+    sites in this PR (schema-only). Wiring lands in PR-3 of the series.
+
+    Example config.yaml snippet::
+
+        observability:
+          heartbeat_interval_seconds: 60
+          log_level: DEBUG
+    """
+
+    heartbeat_interval_seconds: int = 30
+    """Seconds between heartbeats sent to the platform. Default 30 matches
+    ``workspace/heartbeat.py``'s long-standing constant. Lower values
+    reduce platform-side detection latency for crashed workspaces; higher
+    values reduce platform write load. Bounds: clamped to [5, 300] at
+    parse time — outside that range the workspace either floods the
+    platform or looks dead before the next beat."""
+
+    log_level: str = "INFO"
+    """Python ``logging`` level for the workspace runtime. Accepts the
+    standard names (DEBUG, INFO, WARNING, ERROR, CRITICAL). Today the
+    runtime reads ``LOG_LEVEL`` env; PR-3 of the #119 stack switches to
+    this field with env still honored as an override for ops debugging."""
+
+
+@dataclass
 class ComplianceConfig:
     """OWASP Top 10 for Agentic Applications compliance settings.
 
@@ -264,6 +301,7 @@ class WorkspaceConfig:
     governance: GovernanceConfig = field(default_factory=GovernanceConfig)
     security_scan: SecurityScanConfig = field(default_factory=SecurityScanConfig)
     compliance: ComplianceConfig = field(default_factory=ComplianceConfig)
+    observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     sub_workspaces: list[dict] = field(default_factory=list)
     effort: str = ""
     """Claude output effort level for the agentic loop: low | medium | high | xhigh | max.
@@ -287,6 +325,22 @@ def _derive_provider_from_model(model: str) -> str:
         if sep in model:
             return model.partition(sep)[0]
     return ""
+
+
+def _clamp_heartbeat(value: object) -> int:
+    """Coerce raw YAML/env input into the [5, 300]-second heartbeat band.
+
+    Outside that band the workspace either floods the platform with
+    sub-second beats or looks dead long before the next one — both
+    real failure modes seen on incidents, neither benign. Coerce here
+    so adapters and ``heartbeat.py`` can read the value without
+    re-validating.
+    """
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return 30
+    return max(5, min(300, n))
 
 
 def load_config(config_path: Optional[str] = None) -> WorkspaceConfig:
@@ -336,6 +390,7 @@ def load_config(config_path: Optional[str] = None) -> WorkspaceConfig:
     _ss_raw = raw.get("security_scan", {})
     security_scan_raw = _ss_raw if isinstance(_ss_raw, dict) else {"mode": str(_ss_raw)}
     compliance_raw = raw.get("compliance", {})
+    observability_raw = raw.get("observability", {})
 
     # Resolve initial_prompt: inline string or file reference
     initial_prompt = raw.get("initial_prompt", "")
@@ -444,6 +499,12 @@ def load_config(config_path: Optional[str] = None) -> WorkspaceConfig:
             prompt_injection=compliance_raw.get("prompt_injection", "detect"),
             max_tool_calls_per_task=int(compliance_raw.get("max_tool_calls_per_task", 50)),
             max_task_duration_seconds=int(compliance_raw.get("max_task_duration_seconds", 300)),
+        ),
+        observability=ObservabilityConfig(
+            heartbeat_interval_seconds=_clamp_heartbeat(
+                observability_raw.get("heartbeat_interval_seconds", 30)
+            ),
+            log_level=str(observability_raw.get("log_level", "INFO")).upper(),
         ),
         sub_workspaces=raw.get("sub_workspaces", []),
         effort=str(raw.get("effort", "")),
