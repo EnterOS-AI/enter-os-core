@@ -23,55 +23,88 @@ name: Runtime PR-Built Compatibility
 #
 # By building from the PR's source and smoke-importing THAT wheel, we
 # fail at PR-time instead of after publish.
+#
+# Required-check shape (2026-05-01): the workflow runs on EVERY push +
+# PR + merge_group event with no top-level `paths:` filter, then uses a
+# detect-changes job + per-step `if:` gates inside ONE always-running
+# job named `PR-built wheel + import smoke`. PRs that don't touch
+# wheel-relevant paths get a no-op SUCCESS check run, satisfying branch
+# protection without re-running the heavy build. Same pattern as
+# e2e-api.yml — see its comment for the full rationale + the 2026-04-29
+# PR #2264 incident that motivated the always-run-with-if-gates shape.
 
 on:
   push:
     branches: [main, staging]
-    paths:
-      # Broad filter: this workflow's verdict can change whenever any
-      # workspace/ source file changes (because the wheel we build is
-      # produced from those files), or when the build script itself
-      # changes (it controls the wheel layout).
-      - 'workspace/**'
-      - 'scripts/build_runtime_package.py'
-      - 'scripts/wheel_smoke.py'
-      - '.github/workflows/runtime-prbuild-compat.yml'
   pull_request:
     branches: [main, staging]
-    paths:
-      - 'workspace/**'
-      - 'scripts/build_runtime_package.py'
-      - 'scripts/wheel_smoke.py'
-      - '.github/workflows/runtime-prbuild-compat.yml'
   workflow_dispatch:
-  # Required-check support: when this becomes a branch-protection gate,
-  # merge_group runs let the queue green-check this in addition to PRs.
   merge_group:
     types: [checks_requested]
-  # No cron: the same pre-merge run already covered the commit, and
-  # re-running daily wouldn't surface anything new (workspace/ doesn't
-  # change between cron firings unless a PR already passed this gate).
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: true
 
 jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      wheel: ${{ steps.decide.outputs.wheel }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        id: filter
+        with:
+          filters: |
+            wheel:
+              - 'workspace/**'
+              - 'scripts/build_runtime_package.py'
+              - 'scripts/wheel_smoke.py'
+              - '.github/workflows/runtime-prbuild-compat.yml'
+      - id: decide
+        # Always run real work for manual dispatch + merge_group — no
+        # diff-against-base in those contexts, and the gate exists to
+        # validate the to-be-merged state regardless of which paths it
+        # touched (paths-filter would default to "no changes" which is
+        # the wrong answer when the queue is composing many PRs).
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.event_name }}" = "merge_group" ]; then
+            echo "wheel=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "wheel=${{ steps.filter.outputs.wheel }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ONE job (no job-level `if:`) that always runs and reports under the
+  # required-check name `PR-built wheel + import smoke`. Real work is
+  # gated per-step on `needs.detect-changes.outputs.wheel`. Same shape
+  # as e2e-api.yml's e2e-api job — see its comment block for the full
+  # rationale (SKIPPED check runs block branch protection even with
+  # SUCCESS siblings; collapsing to one always-run job emits exactly
+  # one SUCCESS check run).
   local-build-install:
-    # Builds the wheel from THIS PR's workspace/ + scripts/ and tests
-    # IT — the artifact that WOULD be published if this PR merges.
+    needs: detect-changes
     name: PR-built wheel + import smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - name: No-op pass (paths filter excluded this commit)
+        if: needs.detect-changes.outputs.wheel != 'true'
+        run: |
+          echo "No workspace/ / scripts/{build_runtime_package,wheel_smoke}.py / workflow changes — wheel gate satisfied without rebuilding."
+          echo "::notice::PR-built wheel + import smoke no-op pass (paths filter excluded this commit)."
+      - if: needs.detect-changes.outputs.wheel == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - if: needs.detect-changes.outputs.wheel == 'true'
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.11'
           cache: pip
           cache-dependency-path: workspace/requirements.txt
       - name: Install build tooling
+        if: needs.detect-changes.outputs.wheel == 'true'
         run: pip install build
       - name: Build wheel from PR source (mirrors publish-runtime.yml)
+        if: needs.detect-changes.outputs.wheel == 'true'
         # Use a fixed test version so the wheel filename is predictable.
         # Doesn't reach PyPI — this build is local-only for the smoke.
         # Use the SAME build script with the SAME args as
@@ -88,6 +121,7 @@ jobs:
             --out /tmp/runtime-build
           cd /tmp/runtime-build && python -m build
       - name: Install built wheel + workspace requirements
+        if: needs.detect-changes.outputs.wheel == 'true'
         run: |
           python -m venv /tmp/venv-built
           /tmp/venv-built/bin/pip install --upgrade pip
@@ -96,6 +130,7 @@ jobs:
           /tmp/venv-built/bin/pip show molecule-ai-workspace-runtime a2a-sdk \
             | grep -E '^(Name|Version):'
       - name: Smoke import the PR-built wheel
+        if: needs.detect-changes.outputs.wheel == 'true'
         # Same script publish-runtime.yml runs against the to-be-PyPI wheel.
         # Closes the PR-time vs publish-time gap: a PR adding a new SDK
         # call-shape no longer passes here (narrow `import main_sync`) only
