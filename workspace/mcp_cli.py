@@ -62,6 +62,50 @@ _HEARTBEAT_AUTH_LOUD_THRESHOLD = 3
 _HEARTBEAT_AUTH_RELOG_INTERVAL = 20
 
 
+def _build_agent_card(workspace_id: str) -> dict:
+    """Build the ``agent_card`` payload sent to /registry/register.
+
+    Three optional env vars override the defaults so an operator can
+    surface human-readable identity + capabilities to peers and the
+    canvas Skills tab without code changes:
+
+      * ``MOLECULE_AGENT_NAME`` — display name (defaults to
+        ``molecule-mcp-{id[:8]}``). Surfaced in canvas workspace cards
+        and ``list_peers`` output.
+      * ``MOLECULE_AGENT_DESCRIPTION`` — one-liner about the agent's
+        purpose. Rendered in canvas Details + Skills tabs.
+      * ``MOLECULE_AGENT_SKILLS`` — comma-separated skill names
+        (e.g. ``research,code-review,memory-curation``). Each name is
+        expanded to a ``{"name": ...}`` skill object — the minimum
+        shape that satisfies both ``shared_runtime.summarize_peers``
+        (uses ``s["name"]``) and the canvas SkillsTab.tsx schema
+        (id falls back to name when omitted). Empty / whitespace
+        entries are dropped.
+
+    Defaults match the previous hardcoded behaviour exactly so this
+    is a strict superset — an operator who sets none of the env vars
+    sees no change.
+    """
+    name = (os.environ.get("MOLECULE_AGENT_NAME") or "").strip()
+    if not name:
+        name = f"molecule-mcp-{workspace_id[:8]}"
+
+    description = (os.environ.get("MOLECULE_AGENT_DESCRIPTION") or "").strip()
+
+    skills_raw = (os.environ.get("MOLECULE_AGENT_SKILLS") or "").strip()
+    skills: list[dict] = []
+    if skills_raw:
+        for s in skills_raw.split(","):
+            label = s.strip()
+            if label:
+                skills.append({"name": label})
+
+    card: dict = {"name": name, "skills": skills}
+    if description:
+        card["description"] = description
+    return card
+
+
 def _platform_register(platform_url: str, workspace_id: str, token: str) -> None:
     """One-shot register at startup; fails fast on auth errors.
 
@@ -96,7 +140,7 @@ def _platform_register(platform_url: str, workspace_id: str, token: str) -> None
     payload = {
         "id": workspace_id,
         "url": "",
-        "agent_card": {"name": f"molecule-mcp-{workspace_id[:8]}", "skills": []},
+        "agent_card": _build_agent_card(workspace_id),
         "delivery_mode": "poll",
     }
     headers = {
