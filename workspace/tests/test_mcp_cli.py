@@ -444,6 +444,131 @@ def test_register_payload_shape(monkeypatch):
     assert headers["Origin"] == "https://test.moleculesai.app"
 
 
+# ============== Agent card env vars (capability discovery) ==============
+# External runtimes register with hardcoded agent_card.name and skills=[].
+# Both the canvas SkillsTab and the list_peers tool surface skills to
+# users + peer agents for routing — empty skills means peers route blind.
+# MOLECULE_AGENT_NAME / DESCRIPTION / SKILLS env vars let the operator
+# declare identity + capabilities without code changes. Defaults are
+# strict-superset: unset env vars = previous hardcoded behaviour.
+
+
+def test_build_agent_card_defaults_match_previous_behavior(monkeypatch):
+    """Strict-superset: when no env vars are set, the agent_card shape
+    matches the previous hardcoded value exactly. No silent regression
+    for operators who haven't set the new vars."""
+    for var in ("MOLECULE_AGENT_NAME", "MOLECULE_AGENT_DESCRIPTION", "MOLECULE_AGENT_SKILLS"):
+        monkeypatch.delenv(var, raising=False)
+
+    card = mcp_cli._build_agent_card("8dad3e29-c32a-4ec7-9ea7-94fe2d2d98ec")
+
+    assert card == {"name": "molecule-mcp-8dad3e29", "skills": []}
+
+
+def test_build_agent_card_name_from_env(monkeypatch):
+    """MOLECULE_AGENT_NAME overrides the auto-generated default so
+    operators can give the canvas card a human-readable label."""
+    monkeypatch.setenv("MOLECULE_AGENT_NAME", "Research Assistant")
+    monkeypatch.delenv("MOLECULE_AGENT_DESCRIPTION", raising=False)
+    monkeypatch.delenv("MOLECULE_AGENT_SKILLS", raising=False)
+
+    card = mcp_cli._build_agent_card("8dad3e29-c32a-4ec7-9ea7-94fe2d2d98ec")
+
+    assert card["name"] == "Research Assistant"
+
+
+def test_build_agent_card_skills_csv_to_objects(monkeypatch):
+    """MOLECULE_AGENT_SKILLS is comma-separated names; each gets
+    expanded to {'name': ...} — the minimum shape that satisfies both
+    shared_runtime.summarize_peers (s['name']) AND canvas SkillsTab
+    (id falls back to name)."""
+    monkeypatch.delenv("MOLECULE_AGENT_NAME", raising=False)
+    monkeypatch.setenv("MOLECULE_AGENT_SKILLS", "research,code-review,memory-curation")
+
+    card = mcp_cli._build_agent_card("ws-1")
+
+    assert card["skills"] == [
+        {"name": "research"},
+        {"name": "code-review"},
+        {"name": "memory-curation"},
+    ]
+
+
+def test_build_agent_card_skills_strips_whitespace_and_empty(monkeypatch):
+    """Real-world env vars often have stray whitespace from copy-paste
+    or shell quoting. Strip each entry; drop empty ones."""
+    monkeypatch.setenv(
+        "MOLECULE_AGENT_SKILLS", " research , , code-review ,, "
+    )
+
+    card = mcp_cli._build_agent_card("ws-1")
+
+    assert card["skills"] == [{"name": "research"}, {"name": "code-review"}]
+
+
+def test_build_agent_card_description_only_set_when_present(monkeypatch):
+    """description is omitted from the card when env var is unset —
+    keeps the wire payload minimal and matches the platform's
+    'absent field = use default' contract."""
+    monkeypatch.delenv("MOLECULE_AGENT_DESCRIPTION", raising=False)
+
+    card = mcp_cli._build_agent_card("ws-1")
+
+    assert "description" not in card
+
+    monkeypatch.setenv("MOLECULE_AGENT_DESCRIPTION", "Researches things")
+    card2 = mcp_cli._build_agent_card("ws-1")
+    assert card2["description"] == "Researches things"
+
+
+def test_build_agent_card_whitespace_only_name_falls_back_to_default(monkeypatch):
+    """An accidentally-empty MOLECULE_AGENT_NAME (e.g. operator set
+    the var but forgot to fill the value) falls back to the auto-
+    generated default, matching the WORKSPACE_ID whitespace handling
+    in main()."""
+    monkeypatch.setenv("MOLECULE_AGENT_NAME", "   ")
+
+    card = mcp_cli._build_agent_card("8dad3e29-c32a-4ec7-9ea7-94fe2d2d98ec")
+
+    assert card["name"] == "molecule-mcp-8dad3e29"
+
+
+def test_register_payload_uses_built_agent_card(monkeypatch):
+    """End-to-end: env vars flow through _platform_register's payload
+    so the platform sees the operator's declared identity, not the
+    hardcoded default."""
+    monkeypatch.setenv("MOLECULE_AGENT_NAME", "Research Bot")
+    monkeypatch.setenv("MOLECULE_AGENT_SKILLS", "research,analysis")
+
+    captured: dict[str, object] = {}
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+
+    class FakeClient:
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_a): return False
+        def post(self, url, json=None, headers=None):
+            captured["json"] = json
+            return FakeResp()
+
+    import types
+    fake_httpx = types.ModuleType("httpx")
+    fake_httpx.Client = FakeClient
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    mcp_cli._platform_register("https://test.moleculesai.app", "ws-1", "tok")
+
+    body = captured["json"]
+    assert body["agent_card"]["name"] == "Research Bot"
+    assert body["agent_card"]["skills"] == [
+        {"name": "research"},
+        {"name": "analysis"},
+    ]
+
+
 def test_heartbeat_loop_posts_to_correct_endpoint(monkeypatch):
     """Heartbeat thread must POST to /registry/heartbeat with the
     workspace_id + Origin/Authorization headers."""
