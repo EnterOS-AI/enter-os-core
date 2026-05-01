@@ -91,6 +91,46 @@ def _runtime_metadata_payload() -> dict:
 
 logger = logging.getLogger(__name__)
 
+
+def _persist_inbound_secret_from_heartbeat(resp) -> None:
+    """Persist ``platform_inbound_secret`` from a heartbeat response, if any.
+
+    The platform's heartbeat handler (workspace-server PR #2421) returns
+    the secret on every beat — mirrors /registry/register so a workspace
+    whose secret was lazy-healed on the platform side picks it up within
+    one heartbeat tick instead of requiring a runtime restart.
+
+    Without this delivery path the chat-upload code path's "secret was
+    just minted, will pick up on next heartbeat" 503 message is a lie
+    and the workspace stays 401-forever until the operator restarts the
+    runtime. Caught 2026-04-30 on the hongmingwang tenant — the
+    standalone wrapper (mcp_cli.py) got the same change in #2421 but
+    the in-container heartbeat (this file) was missed in the first
+    pass.
+
+    Failure is non-fatal: if the body isn't JSON, doesn't carry the
+    field, or the disk write fails, the next heartbeat retries. This
+    matches the cold-start register flow in main.py:319-323.
+    """
+    try:
+        body = resp.json()
+    except Exception:
+        return
+    if not isinstance(body, dict):
+        return
+    secret = body.get("platform_inbound_secret")
+    if not secret:
+        return
+    try:
+        from platform_inbound_auth import save_inbound_secret
+
+        save_inbound_secret(secret)
+    except Exception as exc:
+        logger.warning(
+            "heartbeat: persist inbound secret failed: %s", exc
+        )
+
+
 HEARTBEAT_INTERVAL = 30  # seconds
 MAX_CONSECUTIVE_FAILURES = 10
 MAX_SEEN_DELEGATION_IDS = 200
@@ -172,7 +212,7 @@ class HeartbeatLoop:
                         # runtime_state to flip status → degraded.
                         body.update(_runtime_state_payload())
                         body.update(_runtime_metadata_payload())
-                        await client.post(
+                        resp = await client.post(
                             f"{self.platform_url}/registry/heartbeat",
                             json=body,
                             headers=auth_headers(),
@@ -180,6 +220,16 @@ class HeartbeatLoop:
                         self.error_count = 0
                         self.request_count = 0
                         self._consecutive_failures = 0
+                        # 2026-04-30: persist the platform_inbound_secret
+                        # if the heartbeat response carries one. Mirrors
+                        # the cold-start register flow in main.py:319-323
+                        # and closes the recovery path for workspaces
+                        # whose secret was lazy-healed on the platform
+                        # side after register-time. Without this, the
+                        # workspace stays 401-forever on chat upload
+                        # until restart. See workspace-server PR #2421
+                        # for the server-side delivery change.
+                        _persist_inbound_secret_from_heartbeat(resp)
                     except Exception as e:
                         self._consecutive_failures += 1
                         # Issue #1877: if heartbeat 401'd, re-read the token from disk
@@ -202,13 +252,14 @@ class HeartbeatLoop:
                                     "uptime_seconds": int(time.time() - self.start_time),
                                 }
                                 retry_body.update(_runtime_state_payload())
-                                await client.post(
+                                retry_resp = await client.post(
                                     f"{self.platform_url}/registry/heartbeat",
                                     json=retry_body,
                                     headers=auth_headers(),
                                 )
                                 self._consecutive_failures = 0
                                 self.request_count += 1
+                                _persist_inbound_secret_from_heartbeat(retry_resp)
                             except Exception:
                                 # Retry also failed — fall through to the normal
                                 # failure tracking below.
