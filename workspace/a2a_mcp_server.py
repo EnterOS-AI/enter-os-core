@@ -17,6 +17,10 @@ import json
 import logging
 import sys
 
+import inbox  # noqa: F401  — bridge wiring lives in main(); the rewriter
+#                              produces `import molecule_runtime.inbox as inbox`
+#                              which preserves this binding for set_notification_callback.
+
 from a2a_tools import (
     tool_check_task_status,
     tool_commit_memory,
@@ -212,8 +216,7 @@ async def main():  # pragma: no cover
             # Loop closed during shutdown — best-effort, swallow.
             pass
 
-    import inbox as _inbox_module
-    _inbox_module.set_notification_callback(_on_inbox_message)
+    inbox.set_notification_callback(_on_inbox_message)
 
     buffer = ""
     while True:

@@ -150,6 +150,13 @@ def rewrite_imports(text: str, regex: re.Pattern) -> str:
     `import X`           → `import molecule_runtime.X as X`  (preserve binding)
     `from X import Y`    → `from molecule_runtime.X import Y`
     `from X.sub import Y` → `from molecule_runtime.X.sub import Y`
+
+    Rejects `import X as Y` because the rewrite would produce
+    `import molecule_runtime.X as X as Y`, a syntax error. The PR #2433
+    incident shipped this exact pattern past `Python Lint & Test` (which
+    runs against pre-rewrite source) but blew up the wheel-smoke gate.
+    Detecting it here turns the silent build failure into a build-time
+    error with a clear path: use `from X import …` or plain `import X`.
     """
     def repl(m: re.Match) -> str:
         indent, kw, mod, rest = m.group("indent"), m.group("kw"), m.group("mod"), m.group("rest")
@@ -163,6 +170,26 @@ def rewrite_imports(text: str, regex: re.Pattern) -> str:
             # `import X.sub` — rewrite as `import molecule_runtime.X.sub` and
             # leave the trailing dot pattern intact for the rest of the line.
             return f"{indent}import molecule_runtime.{mod}{rest}"
+        # Detect `import X as Y` — the regex's `rest` group captures only
+        # the immediate following char (whitespace, comma, or EOL), so we
+        # have to peek at the surrounding line context. The match start is
+        # at the line's `import` keyword; everything after the matched
+        # name on the same line is what the source author wrote.
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        line_end = text.find("\n", m.end())
+        if line_end == -1:
+            line_end = len(text)
+        line_after = text[m.end() - len(rest):line_end]
+        # Strip comments from consideration so `import X  # noqa` doesn't trip.
+        line_after_no_comment = line_after.split("#", 1)[0]
+        if re.search(r"^\s*as\s+\w+", line_after_no_comment):
+            raise ValueError(
+                f"rewrite_imports: cannot rewrite 'import {mod} as <alias>' on a "
+                f"workspace module — the regex would produce "
+                f"'import molecule_runtime.{mod} as {mod} as <alias>', invalid syntax. "
+                f"Use 'from {mod} import …' or plain 'import {mod}' instead. "
+                f"Offending line: {text[line_start:line_end]!r}"
+            )
         # Plain `import X` — alias preserves the local name.
         return f"{indent}import molecule_runtime.{mod} as {mod}{rest}"
     return regex.sub(repl, text)
