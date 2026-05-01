@@ -17,9 +17,11 @@ import json
 import logging
 import sys
 
-import inbox  # noqa: F401  — bridge wiring lives in main(); the rewriter
-#                              produces `import molecule_runtime.inbox as inbox`
-#                              which preserves this binding for set_notification_callback.
+# Top-level (not inside main()) so the wheel rewriter expands this to
+# `import molecule_runtime.inbox as inbox`. A local `import inbox as _x`
+# would expand to `import molecule_runtime.inbox as inbox as _x`,
+# which is invalid — see scripts/build_runtime_package.py:rewrite_imports.
+import inbox
 
 from a2a_tools import (
     tool_check_task_status,

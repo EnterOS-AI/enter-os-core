@@ -1,19 +1,25 @@
 name: Ops Scripts Tests
 
-# Runs the unittest suite for scripts/ops/ on every PR + push that touches
-# the directory. Kept separate from the main CI so a script-only change
-# doesn't trigger the heavier Go/Canvas/Python pipelines.
+# Runs the unittest suite for scripts/ on every PR + push that touches
+# anything under scripts/. Kept separate from the main CI so a script-only
+# change doesn't trigger the heavier Go/Canvas/Python pipelines.
+#
+# Discovery: `unittest discover` from the scripts/ root walks recursively,
+# so both `scripts/test_*.py` and `scripts/ops/test_*.py` are picked up.
+# Tests should sit alongside the code they test (see
+# scripts/ops/test_sweep_cf_decide.py for the pattern; scripts/
+# test_build_runtime_package.py for the rewriter coverage).
 
 on:
   push:
     branches: [main, staging]
     paths:
-      - 'scripts/ops/**'
+      - 'scripts/**'
       - '.github/workflows/test-ops-scripts.yml'
   pull_request:
     branches: [main, staging]
     paths:
-      - 'scripts/ops/**'
+      - 'scripts/**'
       - '.github/workflows/test-ops-scripts.yml'
   merge_group:
     types: [checks_requested]
@@ -31,6 +37,14 @@ jobs:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.11'
-      - name: Run unittest
+      - name: Run scripts/ unittests (build_runtime_package, …)
+        # Top-level scripts/ tests live alongside their target file
+        # (e.g. scripts/test_build_runtime_package.py exercises
+        # scripts/build_runtime_package.py). discover from scripts/
+        # picks up only top-level test_*.py because scripts/ops/ has
+        # no __init__.py — that's intentional, so we run two passes.
+        working-directory: scripts
+        run: python -m unittest discover -t . -p 'test_*.py' -v
+      - name: Run scripts/ops/ unittests (sweep_cf_decide, …)
         working-directory: scripts/ops
         run: python -m unittest discover -p 'test_*.py' -v
