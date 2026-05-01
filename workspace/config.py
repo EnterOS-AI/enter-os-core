@@ -323,7 +323,19 @@ def load_config(config_path: Optional[str] = None) -> WorkspaceConfig:
             args=runtime_raw.get("args", []),
             required_env=runtime_raw.get("required_env", []),
             timeout=runtime_raw.get("timeout", 0),
-            model=runtime_raw.get("model", ""),
+            # Fall back to top-level resolved `model` (which already honors
+            # MODEL_PROVIDER env override, line 277) when YAML doesn't carry
+            # runtime_config.model.  Without this fallback, SaaS workspaces
+            # silently boot with the adapter's hard-coded default —
+            # claude-code-default reads `runtime_config.model or "sonnet"`,
+            # so a user who picks Opus in the canvas Config tab gets Sonnet
+            # on the next CP-driven restart. Root cause: the CP user-data
+            # script regenerates /configs/config.yaml at every boot with
+            # only `name`, `runtime`, `a2a` keys (intentionally minimal so
+            # it doesn't carry stale state), losing runtime_config.model.
+            # MODEL_PROVIDER is plumbed as an env var, so picking it up via
+            # the top-level resolved model keeps the selection sticky.
+            model=runtime_raw.get("model") or model,
             # Deprecated fields — kept for backward compat
             auth_token_env=runtime_raw.get("auth_token_env", ""),
             auth_token_file=runtime_raw.get("auth_token_file", ""),
