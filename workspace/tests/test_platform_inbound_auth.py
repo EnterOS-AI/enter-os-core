@@ -103,10 +103,19 @@ def test_get_secret_caches(configs_dir: Path):
 
 
 def test_get_secret_default_dir_when_env_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """Default falls back to /configs. We can't write to /configs in the
-    test sandbox; instead verify the path computation hits the default."""
+    """When CONFIGS_DIR is unset, the secret file path resolves through
+    configs_dir.resolve() — /configs in-container, ~/.molecule-workspace
+    on a non-container host. Issue #2458."""
+    import os
     monkeypatch.delenv("CONFIGS_DIR", raising=False)
-    assert platform_inbound_auth._secret_file() == Path("/configs/.platform_inbound_secret")
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    path = platform_inbound_auth._secret_file()
+    if Path("/configs").exists() and os.access("/configs", os.W_OK):
+        assert path == Path("/configs") / ".platform_inbound_secret"
+    else:
+        assert path == fake_home / ".molecule-workspace" / ".platform_inbound_secret"
 
 
 # ───────────── end-to-end: file → authorized ─────────────

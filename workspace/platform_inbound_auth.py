@@ -26,6 +26,8 @@ import logging
 import os
 from pathlib import Path
 
+import configs_dir
+
 logger = logging.getLogger(__name__)
 
 # In-process cache so we don't hit disk on every forward call. Same
@@ -35,9 +37,10 @@ _cached_secret: str | None = None
 
 
 def _secret_file() -> Path:
-    """Path to the on-disk inbound-secret file. Respects CONFIGS_DIR,
-    falls back to /configs for the default container layout."""
-    return Path(os.environ.get("CONFIGS_DIR", "/configs")) / ".platform_inbound_secret"
+    """Path to the on-disk inbound-secret file. Resolved via configs_dir
+    — /configs in-container, ~/.molecule-workspace for external-runtime
+    operators. Explicit CONFIGS_DIR env var wins."""
+    return configs_dir.resolve() / ".platform_inbound_secret"
 
 
 def get_inbound_secret() -> str | None:

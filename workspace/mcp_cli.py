@@ -41,6 +41,8 @@ import threading
 import time
 from pathlib import Path
 
+import configs_dir
+
 logger = logging.getLogger(__name__)
 
 # Heartbeat cadence. Must be tighter than healthsweep's stale window
@@ -375,9 +377,10 @@ def main() -> None:
         missing.append("PLATFORM_URL")
     # Token can come from env OR file — only flag when both are absent.
     # Mirrors platform_auth.get_token's resolution order (file-first,
-    # env-fallback).
-    configs_dir = Path(os.environ.get("CONFIGS_DIR", "/configs"))
-    has_token_file = (configs_dir / ".auth_token").is_file()
+    # env-fallback). configs_dir.resolve() handles in-container vs
+    # external-runtime fallback so we don't probe a non-existent
+    # /configs on a laptop and falsely report no-token-file.
+    has_token_file = (configs_dir.resolve() / ".auth_token").is_file()
     has_token_env = bool(os.environ.get("MOLECULE_WORKSPACE_TOKEN", "").strip())
     if not has_token_file and not has_token_env:
         missing.append("MOLECULE_WORKSPACE_TOKEN (or CONFIGS_DIR/.auth_token)")
@@ -461,15 +464,16 @@ def _start_inbox_poller(platform_url: str, workspace_id: str) -> None:
 
 
 def _read_token_file() -> str:
-    """Read the token from ${CONFIGS_DIR}/.auth_token if present.
+    """Read the token from the resolved configs dir's ``.auth_token`` if
+    present.
 
-    Mirrors platform_auth._token_file but without importing the heavy
-    module here (that import triggers a2a_client's WORKSPACE_ID guard
-    which is fine after env validation, but cheaper to inline a 4-line
-    file read than pull in the whole stack just for the path).
+    Mirrors platform_auth._token_file's location resolution but without
+    importing the heavy module here (that import triggers a2a_client's
+    WORKSPACE_ID guard which is fine after env validation, but cheaper
+    to inline a 4-line file read than pull in the whole stack just for
+    the path).
     """
-    configs_dir = Path(os.environ.get("CONFIGS_DIR", "/configs"))
-    path = configs_dir / ".auth_token"
+    path = configs_dir.resolve() / ".auth_token"
     if not path.is_file():
         return ""
     try:

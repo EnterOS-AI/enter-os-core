@@ -133,13 +133,22 @@ def test_configs_dir_respected(tmp_path, monkeypatch):
 
 
 def test_default_configs_dir_fallback(tmp_path, monkeypatch):
+    """When CONFIGS_DIR is unset, the token file path must resolve to a
+    writable location — either /configs (in-container) or
+    ~/.molecule-workspace (external-runtime fallback). Issue #2458 fixed
+    the silent failure where the previous unconditional /configs default
+    crashed the heartbeat thread on non-container hosts."""
     monkeypatch.delenv("CONFIGS_DIR", raising=False)
-    # Can't actually write to /configs on a dev laptop, so just verify the
-    # path resolution points there. Save will fail gracefully via mkdir+exist_ok.
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
     platform_auth.clear_cache()
-    # We expect _token_file() to resolve under /configs when env is unset.
     path = platform_auth._token_file()
-    assert str(path).startswith("/configs")
+    if Path("/configs").exists() and os.access("/configs", os.W_OK):
+        assert str(path).startswith("/configs")
+    else:
+        assert path == fake_home / ".molecule-workspace" / ".auth_token"
+    assert os.access(str(path.parent), os.W_OK)
 
 
 # ==================== MOLECULE_WORKSPACE_TOKEN env-var fallback ====================

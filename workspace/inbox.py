@@ -55,6 +55,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+import configs_dir
+
 logger = logging.getLogger(__name__)
 
 # Poll cadence. 5s mirrors the molecule-mcp-claude-channel plugin's
@@ -516,11 +518,10 @@ def start_poller_thread(
 
 
 def default_cursor_path() -> Path:
-    """Standard cursor location: ``${CONFIGS_DIR}/.mcp_inbox_cursor``.
+    """Standard cursor location: ``<resolved configs dir>/.mcp_inbox_cursor``.
 
-    Mirrors mcp_cli's CONFIGS_DIR resolution so a single
-    operator-facing env var controls every persisted state file
-    (.auth_token + .mcp_inbox_cursor).
+    Resolved via configs_dir so the cursor lives next to .auth_token
+    + .platform_inbound_secret regardless of whether the runtime is
+    in-container (/configs) or external (~/.molecule-workspace).
     """
-    configs_dir = Path(os.environ.get("CONFIGS_DIR", "/configs"))
-    return configs_dir / ".mcp_inbox_cursor"
+    return configs_dir.resolve() / ".mcp_inbox_cursor"

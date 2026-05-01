@@ -24,6 +24,8 @@ import logging
 import os
 from pathlib import Path
 
+import configs_dir
+
 logger = logging.getLogger(__name__)
 
 # In-process cache so we don't hit disk on every heartbeat. The heartbeat
@@ -33,9 +35,11 @@ _cached_token: str | None = None
 
 
 def _token_file() -> Path:
-    """Path to the on-disk token file. Respects CONFIGS_DIR, falls back
-    to /configs for the default container layout."""
-    return Path(os.environ.get("CONFIGS_DIR", "/configs")) / ".auth_token"
+    """Path to the on-disk token file. Resolved via configs_dir so
+    in-container (/configs) and external-runtime (~/.molecule-workspace)
+    operators land on a writable location automatically. Explicit
+    CONFIGS_DIR env var still wins."""
+    return configs_dir.resolve() / ".auth_token"
 
 
 def get_token() -> str | None:

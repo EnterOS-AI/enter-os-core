@@ -439,9 +439,20 @@ def test_default_cursor_path_uses_configs_dir(monkeypatch, tmp_path: Path):
     assert inbox.default_cursor_path() == tmp_path / ".mcp_inbox_cursor"
 
 
-def test_default_cursor_path_falls_back_to_default(monkeypatch):
+def test_default_cursor_path_falls_back_to_default(tmp_path, monkeypatch):
+    """When CONFIGS_DIR is unset, the cursor path resolves through
+    configs_dir.resolve() — /configs in-container, ~/.molecule-workspace
+    on a non-container host. Issue #2458."""
+    import os
     monkeypatch.delenv("CONFIGS_DIR", raising=False)
-    assert inbox.default_cursor_path() == Path("/configs") / ".mcp_inbox_cursor"
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    path = inbox.default_cursor_path()
+    if Path("/configs").exists() and os.access("/configs", os.W_OK):
+        assert path == Path("/configs") / ".mcp_inbox_cursor"
+    else:
+        assert path == fake_home / ".molecule-workspace" / ".mcp_inbox_cursor"
 
 
 # ---------------------------------------------------------------------------
