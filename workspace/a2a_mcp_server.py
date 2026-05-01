@@ -152,16 +152,28 @@ _CHANNEL_NOTIFICATION_METHOD = "notifications/claude/channel"
 def _build_initialize_result() -> dict:
     """MCP initialize handshake result.
 
-    The ``experimental.claude/channel`` capability declaration is what
-    tells Claude Code's MCP client to route our
-    ``notifications/claude/channel`` emissions as conversation
-    interrupts (push UX). Without it the notification arrives over the
-    wire but is silently dropped instead of becoming a ``<channel>``
-    tag in the next agent turn — matching the
-    "Notification arrives but Claude Code doesn't surface it" failure
-    mode anticipated in molecule-core#2444. Mirrors the contract
-    declared by the molecule-mcp-claude-channel bun bridge
-    (server.ts:374).
+    Declares ``experimental.claude/channel`` as a *hypothesized*
+    contract for routing ``notifications/claude/channel`` emissions
+    into Claude Code as conversation interrupts (push UX). The
+    failure mode from molecule-core#2444 §2 — "notification arrives
+    over the wire but is silently dropped instead of becoming a
+    ``<channel>`` tag" — motivated this declaration.
+
+    UNVERIFIED: end-to-end push delivery has not been confirmed since
+    this capability was added. Counter-evidence: the
+    molecule-mcp-claude-channel bun bridge declares only
+    ``{ capabilities: { tools: {} } }`` (server.ts:475 — NOT line 374
+    as the original commit message claimed; line 374 is unrelated
+    poll-init code) and is reported to deliver
+    ``notifications/claude/channel`` successfully in Claude Code.
+    The MCP SDK's ``assertNotificationCapability`` also does not gate
+    custom (non-spec) notification methods on a declared capability,
+    so server-side this declaration is likely a no-op. If push UX is
+    still missing after this ships, the real fault probably lives
+    in writer.drain swallowing on closed pipes, the inbox-thread →
+    asyncio loop bridge, or initialize-ordering between the inbox
+    callback and the MCP transport — not in this handshake. Treat
+    this as belt-and-braces until verified.
     """
     return {
         "protocolVersion": "2024-11-05",
