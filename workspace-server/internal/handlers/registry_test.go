@@ -1780,3 +1780,176 @@ func TestRegister_NonExternalRuntime_StillDefaultsToPush(t *testing.T) {
 		t.Errorf("unmet expectations: %v", err)
 	}
 }
+
+// ==================== Heartbeat — platform_inbound_secret delivery (2026-04-30) ====================
+// Heartbeat must echo the workspace's platform_inbound_secret on every
+// beat, mirroring /registry/register. Without this delivery path, a
+// workspace whose secret was lazy-healed on the platform side (e.g. via
+// chat_files Upload's "secret was just minted, retry in 30s" branch)
+// could only pick up the freshly-minted value via a runtime restart —
+// the chat_files retry would 401-forever. Caught 2026-04-30 on the
+// hongmingwang tenant: 503 → 401 chain on chat upload.
+
+func TestHeartbeatHandler_DeliversPlatformInboundSecret(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewRegistryHandler(broadcaster)
+
+	const inboundSecret = "the-already-minted-secret"
+
+	mock.ExpectQuery("SELECT COALESCE\\(current_task").
+		WithArgs("ws-with-secret").
+		WillReturnRows(sqlmock.NewRows([]string{"current_task"}).AddRow(""))
+
+	mock.ExpectExec("UPDATE workspaces SET").
+		WithArgs("ws-with-secret", 0.0, "", 0, 100, "").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	mock.ExpectQuery("SELECT status FROM workspaces WHERE id =").
+		WithArgs("ws-with-secret").
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("online"))
+
+	// readOrLazyHealInboundSecret — short-circuit: secret already on file.
+	mock.ExpectQuery(`SELECT platform_inbound_secret FROM workspaces WHERE id = \$1`).
+		WithArgs("ws-with-secret").
+		WillReturnRows(sqlmock.NewRows([]string{"platform_inbound_secret"}).AddRow(inboundSecret))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	body := `{"workspace_id":"ws-with-secret","error_rate":0.0,"sample_error":"","active_tasks":0,"uptime_seconds":100}`
+	c.Request = httptest.NewRequest("POST", "/registry/heartbeat", bytes.NewBufferString(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.Heartbeat(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	got, ok := resp["platform_inbound_secret"].(string)
+	if !ok {
+		t.Fatalf("expected platform_inbound_secret in heartbeat response, got: %v", resp)
+	}
+	if got != inboundSecret {
+		t.Errorf("secret mismatch: got %q, want %q", got, inboundSecret)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestHeartbeatHandler_LazyHealsPlatformInboundSecret pins the
+// recovery branch: a workspace with a NULL platform_inbound_secret
+// (legacy / partially-bootstrapped row) gets the column minted inline
+// AND receives the freshly-minted value in the response, so the next
+// chat-upload tick makes the workspace work without a restart.
+func TestHeartbeatHandler_LazyHealsPlatformInboundSecret(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewRegistryHandler(broadcaster)
+
+	mock.ExpectQuery("SELECT COALESCE\\(current_task").
+		WithArgs("ws-needs-heal").
+		WillReturnRows(sqlmock.NewRows([]string{"current_task"}).AddRow(""))
+
+	mock.ExpectExec("UPDATE workspaces SET").
+		WithArgs("ws-needs-heal", 0.0, "", 0, 100, "").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	mock.ExpectQuery("SELECT status FROM workspaces WHERE id =").
+		WithArgs("ws-needs-heal").
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("online"))
+
+	// readOrLazyHealInboundSecret — NULL column triggers mint.
+	mock.ExpectQuery(`SELECT platform_inbound_secret FROM workspaces WHERE id = \$1`).
+		WithArgs("ws-needs-heal").
+		WillReturnRows(sqlmock.NewRows([]string{"platform_inbound_secret"}).AddRow(nil))
+	// Inline mint UPDATE — must land or legacy workspaces stay 401-forever.
+	mock.ExpectExec(`UPDATE workspaces SET platform_inbound_secret = \$1 WHERE id = \$2`).
+		WithArgs(sqlmock.AnyArg(), "ws-needs-heal").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	body := `{"workspace_id":"ws-needs-heal","error_rate":0.0,"sample_error":"","active_tasks":0,"uptime_seconds":100}`
+	c.Request = httptest.NewRequest("POST", "/registry/heartbeat", bytes.NewBufferString(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.Heartbeat(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	secret, present := resp["platform_inbound_secret"]
+	if !present {
+		t.Fatalf("expected platform_inbound_secret PRESENT after lazy-heal, got: %v", resp)
+	}
+	if s, ok := secret.(string); !ok || s == "" {
+		t.Errorf("expected non-empty string secret, got %T %v", secret, secret)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations — heartbeat-time lazy-heal mint did NOT run: %v", err)
+	}
+}
+
+// TestHeartbeatHandler_OmitsSecretOnHealFailure pins the defensive
+// branch: when both the read AND the mint fail, heartbeat MUST still
+// respond 200 (liveness is the primary contract) but omit the field.
+// The next tick retries.
+func TestHeartbeatHandler_OmitsSecretOnHealFailure(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewRegistryHandler(broadcaster)
+
+	mock.ExpectQuery("SELECT COALESCE\\(current_task").
+		WithArgs("ws-heal-fails").
+		WillReturnRows(sqlmock.NewRows([]string{"current_task"}).AddRow(""))
+
+	mock.ExpectExec("UPDATE workspaces SET").
+		WithArgs("ws-heal-fails", 0.0, "", 0, 100, "").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	mock.ExpectQuery("SELECT status FROM workspaces WHERE id =").
+		WithArgs("ws-heal-fails").
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("online"))
+
+	// Read returns NULL → mint is attempted...
+	mock.ExpectQuery(`SELECT platform_inbound_secret FROM workspaces WHERE id = \$1`).
+		WithArgs("ws-heal-fails").
+		WillReturnRows(sqlmock.NewRows([]string{"platform_inbound_secret"}).AddRow(nil))
+	// ...but the mint UPDATE fails (DB hiccup).
+	mock.ExpectExec(`UPDATE workspaces SET platform_inbound_secret = \$1 WHERE id = \$2`).
+		WithArgs(sqlmock.AnyArg(), "ws-heal-fails").
+		WillReturnError(sql.ErrConnDone)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	body := `{"workspace_id":"ws-heal-fails","error_rate":0.0,"sample_error":"","active_tasks":0,"uptime_seconds":100}`
+	c.Request = httptest.NewRequest("POST", "/registry/heartbeat", bytes.NewBufferString(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.Heartbeat(c)
+
+	// Liveness contract — heartbeat MUST stay 200 even when the
+	// secret-delivery side-channel fails. chat_files retries lazy-heal
+	// on the next request anyway.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (liveness primary), got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if _, present := resp["platform_inbound_secret"]; present {
+		t.Errorf("expected platform_inbound_secret OMITTED on heal failure, got: %v", resp)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}

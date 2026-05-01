@@ -620,7 +620,35 @@ func (h *RegistryHandler) Heartbeat(c *gin.Context) {
 		runtimeOverrides.SetCapabilities(payload.WorkspaceID, nil) // clear
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	resp := gin.H{"status": "ok"}
+
+	// Deliver the platform_inbound_secret on every heartbeat. Mirrors
+	// the same field on /registry/register, but heartbeats are the
+	// only periodic platform↔workspace channel — register fires once
+	// at workspace startup, so without this delivery path a lazy-heal
+	// (chat_files.go's "secret was just minted, retry in 30s" branch)
+	// could ONLY recover via a workspace restart.
+	//
+	// Symptom this fixes: 2026-04-30 user report on hongmingwang —
+	// chat upload returned 503 "workspace will pick it up on its
+	// next heartbeat", then 401 on retry. The 503 message was
+	// misleading because heartbeat used to discard the
+	// platform_inbound_secret entirely; only register delivered it.
+	//
+	// Lazy-heal here instead of a column read because:
+	//   - register-time heal already covers cold-start workspaces
+	//   - heartbeat-time heal covers the rotate / mid-life recover case
+	//   - the helper short-circuits to the existing column read when
+	//     the secret is already present (cheap, idempotent)
+	//
+	// Errors are non-fatal: heartbeat's primary job is liveness, and
+	// the chat-upload path will lazy-heal again if needed. Logging
+	// happens inside the helper.
+	if secret, _, healErr := readOrLazyHealInboundSecret(ctx, payload.WorkspaceID, "Heartbeat"); healErr == nil && secret != "" {
+		resp["platform_inbound_secret"] = secret
+	}
+
+	c.JSON(http.StatusOK, resp)
 }
 
 func (h *RegistryHandler) evaluateStatus(c *gin.Context, payload models.HeartbeatPayload) {

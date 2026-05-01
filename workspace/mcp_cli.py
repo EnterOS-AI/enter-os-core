@@ -171,9 +171,49 @@ def _heartbeat_loop(
                     resp.status_code,
                     (resp.text or "")[:200],
                 )
+            else:
+                _persist_inbound_secret_from_heartbeat(resp)
         except Exception as exc:  # noqa: BLE001
             logger.warning("molecule-mcp: heartbeat failed: %s", exc)
         time.sleep(interval)
+
+
+def _persist_inbound_secret_from_heartbeat(resp: object) -> None:
+    """Persist ``platform_inbound_secret`` from a heartbeat response, if any.
+
+    The platform's heartbeat handler returns the secret on every beat
+    (mirroring /registry/register) so a workspace that lazy-healed the
+    secret on the platform side — typical recovery path for a workspace
+    whose row had a NULL ``platform_inbound_secret`` after a partial
+    bootstrap — picks it up within one heartbeat tick instead of
+    requiring a runtime restart.
+
+    Without this delivery path the chat-upload code path's "secret was
+    just minted, will pick up on next heartbeat" 503 message is a lie
+    and the workspace stays 401-forever until the operator restarts
+    the runtime. Caught 2026-04-30 on hongmingwang tenant.
+
+    Failure is non-fatal: if the body isn't JSON, doesn't carry the
+    field, or the disk write fails, the next heartbeat retries. This
+    matches the cold-start register flow in main.py:319-323.
+    """
+    try:
+        body = resp.json()
+    except Exception:  # noqa: BLE001
+        return
+    if not isinstance(body, dict):
+        return
+    secret = body.get("platform_inbound_secret")
+    if not secret:
+        return
+    try:
+        from platform_inbound_auth import save_inbound_secret
+
+        save_inbound_secret(secret)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "molecule-mcp: persist inbound secret from heartbeat failed: %s", exc
+        )
 
 
 def _start_heartbeat_thread(
