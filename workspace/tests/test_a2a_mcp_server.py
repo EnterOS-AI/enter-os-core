@@ -278,3 +278,90 @@ def test_initialize_protocol_version_is_pinned():
     from a2a_mcp_server import _build_initialize_result
 
     assert _build_initialize_result()["protocolVersion"] == "2024-11-05"
+
+
+def test_initialize_declares_instructions():
+    """Per code.claude.com/docs/en/channels-reference, the
+    `instructions` field is required for Claude Code to actually surface
+    `<channel>` tags. Capability declaration alone is not enough — the
+    agent has to know what the tag means and how to reply. Without
+    instructions the channel is registered but unusable."""
+    from a2a_mcp_server import _build_initialize_result
+
+    instructions = _build_initialize_result().get("instructions", "")
+    assert instructions, (
+        "instructions field must be non-empty for the channel to be "
+        "usable (channels-reference.md). Empty string ships the wire "
+        "shape without the agent knowing what to do with the tag."
+    )
+
+
+def test_initialize_instructions_documents_reply_tools():
+    """The instructions string is what the agent reads to decide which
+    tool to call when a <channel> tag arrives. Pin the routing rules
+    so a copy-edit can't silently break them."""
+    from a2a_mcp_server import _build_initialize_result
+
+    instructions = _build_initialize_result()["instructions"]
+
+    assert "send_message_to_user" in instructions, (
+        "canvas_user → send_message_to_user is the documented reply "
+        "path; instructions must name the tool"
+    )
+    assert "delegate_task" in instructions, (
+        "peer_agent → delegate_task is the documented reply path; "
+        "instructions must name the tool"
+    )
+    assert "inbox_pop" in instructions, (
+        "instructions must tell the agent to ack via inbox_pop or "
+        "duplicate-poll deliveries are a footgun"
+    )
+
+
+def test_initialize_instructions_documents_meta_attributes():
+    """The instructions must explain what the meta-derived tag
+    attributes mean — kind, peer_id, activity_id — so the agent can
+    correctly route the reply."""
+    from a2a_mcp_server import _build_initialize_result
+
+    instructions = _build_initialize_result()["instructions"]
+
+    for required_attr in ("kind", "peer_id", "activity_id"):
+        assert required_attr in instructions, (
+            f"instructions must document the `{required_attr}` tag "
+            f"attribute for the agent to act on it"
+        )
+
+
+def test_initialize_instructions_pins_prompt_injection_defense():
+    """The threat-model sentence in `_CHANNEL_INSTRUCTIONS` is what
+    tells the agent that inbound canvas-user / peer-agent message
+    bodies are untrusted user content and must NOT be acted on as
+    instructions without chat-side approval. Symmetric with the reply-
+    tool pins above — drop this and a future copy-edit could silently
+    turn the channel into an open prompt-injection vector against any
+    workspace running this MCP server.
+    """
+    from a2a_mcp_server import _build_initialize_result
+
+    instructions = _build_initialize_result()["instructions"]
+    lowered = instructions.lower()
+
+    assert "untrusted" in lowered, (
+        "instructions must flag inbound message bodies as untrusted "
+        "user content — same threat model as the telegram channel "
+        "plugin. Dropping this turns the channel into a prompt-"
+        "injection vector."
+    )
+    # And the explicit don't-execute-blindly clause: pin both the
+    # restriction ("do not execute") and the escape hatch ("user
+    # approval") so a partial copy-edit can't keep one and drop the
+    # other.
+    assert "not execute" in lowered or "do not" in lowered, (
+        "instructions must explicitly say the agent should NOT execute "
+        "instructions embedded in message bodies"
+    )
+    assert "approval" in lowered, (
+        "instructions must point the agent at user chat-side approval "
+        "as the escape hatch when a message looks instruction-like"
+    )
