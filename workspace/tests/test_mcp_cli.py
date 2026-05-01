@@ -490,3 +490,216 @@ def test_heartbeat_loop_posts_to_correct_endpoint(monkeypatch):
     assert captured["headers"]["Authorization"] == "Bearer tok"
     assert captured["headers"]["Origin"] == "https://test.moleculesai.app"
     assert sleep_calls == [20.0], "heartbeat must sleep the configured interval"
+
+
+# ============== Heartbeat persists platform_inbound_secret (2026-04-30) ==============
+# Heartbeat loop must persist the platform_inbound_secret returned by
+# the platform. Without this, a workspace that lazy-healed the secret
+# on the platform side recovers only on a runtime restart — chat upload
+# 401-forever. Pairs with the server-side
+# TestHeartbeatHandler_DeliversPlatformInboundSecret pin.
+
+
+def test_heartbeat_persists_inbound_secret_from_response(monkeypatch, tmp_path):
+    """Heartbeat 200 with platform_inbound_secret in body → save_inbound_secret called."""
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"status": "ok", "platform_inbound_secret": "fresh-secret"}
+
+    saved: list[str] = []
+    import platform_inbound_auth
+
+    monkeypatch.setattr(platform_inbound_auth, "save_inbound_secret", saved.append)
+
+    mcp_cli._persist_inbound_secret_from_heartbeat(FakeResp())
+
+    assert saved == ["fresh-secret"], (
+        "expected save_inbound_secret called once with the platform's secret"
+    )
+
+
+def test_heartbeat_persist_skips_when_secret_absent(monkeypatch):
+    """Heartbeat 200 without platform_inbound_secret → no persist call."""
+
+    class FakeResp:
+        def json(self):
+            return {"status": "ok"}
+
+    saved: list[str] = []
+    import platform_inbound_auth
+
+    monkeypatch.setattr(platform_inbound_auth, "save_inbound_secret", saved.append)
+
+    mcp_cli._persist_inbound_secret_from_heartbeat(FakeResp())
+
+    assert saved == [], "no secret in body → must NOT call save_inbound_secret"
+
+
+def test_heartbeat_persist_skips_on_empty_secret(monkeypatch):
+    """Heartbeat 200 with empty-string platform_inbound_secret → no persist."""
+
+    class FakeResp:
+        def json(self):
+            return {"status": "ok", "platform_inbound_secret": ""}
+
+    saved: list[str] = []
+    import platform_inbound_auth
+
+    monkeypatch.setattr(platform_inbound_auth, "save_inbound_secret", saved.append)
+
+    mcp_cli._persist_inbound_secret_from_heartbeat(FakeResp())
+
+    assert saved == [], "empty secret string → must NOT call save_inbound_secret"
+
+
+def test_heartbeat_persist_swallows_non_json_body(monkeypatch):
+    """Heartbeat with unparseable body must not raise — logs + returns."""
+
+    class FakeResp:
+        def json(self):
+            raise ValueError("not json")
+
+    saved: list[str] = []
+    import platform_inbound_auth
+
+    monkeypatch.setattr(platform_inbound_auth, "save_inbound_secret", saved.append)
+
+    # Must not raise; non-JSON body is treated as "no secret to deliver".
+    mcp_cli._persist_inbound_secret_from_heartbeat(FakeResp())
+    assert saved == []
+
+
+def test_heartbeat_persist_handles_non_dict_body(monkeypatch):
+    """Heartbeat returning a list (not a dict) is silently ignored."""
+
+    class FakeResp:
+        def json(self):
+            return ["unexpected", "list"]
+
+    saved: list[str] = []
+    import platform_inbound_auth
+
+    monkeypatch.setattr(platform_inbound_auth, "save_inbound_secret", saved.append)
+
+    mcp_cli._persist_inbound_secret_from_heartbeat(FakeResp())
+    assert saved == []
+
+
+def test_heartbeat_persist_swallows_save_exceptions(monkeypatch, caplog):
+    """save_inbound_secret raising must not crash the heartbeat loop."""
+
+    class FakeResp:
+        def json(self):
+            return {"platform_inbound_secret": "x"}
+
+    def boom(_secret):
+        raise OSError("disk full")
+
+    import platform_inbound_auth
+
+    monkeypatch.setattr(platform_inbound_auth, "save_inbound_secret", boom)
+
+    # Must not raise — heartbeat liveness > secret persistence.
+    mcp_cli._persist_inbound_secret_from_heartbeat(FakeResp())
+
+
+def test_heartbeat_loop_calls_persist_on_success(monkeypatch):
+    """End-to-end: heartbeat loop on 200 invokes the persist helper."""
+    saw: list[object] = []
+
+    def fake_persist(resp):
+        saw.append(resp)
+
+    monkeypatch.setattr(
+        mcp_cli, "_persist_inbound_secret_from_heartbeat", fake_persist
+    )
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def post(self, *_a, **_k):
+            return FakeResp()
+
+    import types
+
+    fake_httpx = types.ModuleType("httpx")
+    fake_httpx.Client = FakeClient
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    def fake_sleep(_):
+        raise SystemExit
+
+    monkeypatch.setattr("time.sleep", fake_sleep)
+
+    with pytest.raises(SystemExit):
+        mcp_cli._heartbeat_loop(
+            "https://test.moleculesai.app",
+            "ws-abc",
+            "tok",
+            interval=20.0,
+        )
+
+    assert len(saw) == 1, "persist helper must be called once per successful heartbeat"
+
+
+def test_heartbeat_loop_skips_persist_on_4xx(monkeypatch):
+    """Heartbeat 4xx error path must NOT invoke persist (no body to trust)."""
+    saw: list[object] = []
+    monkeypatch.setattr(
+        mcp_cli,
+        "_persist_inbound_secret_from_heartbeat",
+        lambda r: saw.append(r),
+    )
+
+    class FakeResp:
+        status_code = 401
+        text = "unauthorized"
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def post(self, *_a, **_k):
+            return FakeResp()
+
+    import types
+
+    fake_httpx = types.ModuleType("httpx")
+    fake_httpx.Client = FakeClient
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    def fake_sleep(_):
+        raise SystemExit
+
+    monkeypatch.setattr("time.sleep", fake_sleep)
+
+    with pytest.raises(SystemExit):
+        mcp_cli._heartbeat_loop(
+            "https://test.moleculesai.app",
+            "ws-abc",
+            "tok",
+            interval=20.0,
+        )
+
+    assert saw == [], "4xx response must NOT trigger persist call"
