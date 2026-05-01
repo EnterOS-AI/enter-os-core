@@ -222,6 +222,48 @@ def test_per_file_oversize_returns_413(client: TestClient, monkeypatch: pytest.M
     assert "exceeds per-file limit" in r.json()["error"]
 
 
+# Pins the diagnostic shape of the 500 returned when the upload
+# directory cannot be created. Prior to this fix, the response was
+# {"error": "failed to prepare uploads dir"} only — opaque to the
+# operator inspecting browser devtools, requiring SSM access to the
+# workspace stderr to recover errno + actual path. Surfacing both in
+# the response body makes the failure self-diagnosing the next time
+# this class of bug recurs (e.g. EACCES on a root-owned `.molecule`
+# subtree, ENOSPC on a full disk, EROFS on a read-only mount).
+#
+# Reproduces the failure by pointing CHAT_UPLOAD_DIR at a path whose
+# parent the agent user can't write to. The exact errno in the test
+# is 13 (EACCES) on a chmod-0 dir; values are not asserted exactly
+# because they vary by OS / errno mapping. The PRESENCE of errno +
+# path is what's pinned — drift on those keys breaks the operator
+# diagnostic loop.
+def test_mkdir_failure_returns_errno_and_path(client: TestClient, chat_uploads_dir: Path, monkeypatch: pytest.MonkeyPatch):
+    # Plant a regular FILE where mkdir's parent should be — mkdir
+    # raises FileExistsError / NotADirectoryError reliably across
+    # platforms, exercising the OSError catch path.
+    blocker = chat_uploads_dir.parent / "chat-uploads-blocker"
+    blocker.write_text("not a dir")
+    # Repoint CHAT_UPLOAD_DIR to a child path under the regular file
+    # so mkdir(parents=True, exist_ok=True) raises NotADirectoryError.
+    monkeypatch.setattr(internal_chat_uploads, "CHAT_UPLOAD_DIR", str(blocker / "child"))
+
+    r = client.post(
+        "/internal/chat/uploads/ingest",
+        files={"files": ("a.txt", b"x")},
+        headers={"Authorization": "Bearer test-secret"},
+    )
+    assert r.status_code == 500, r.text
+    body = r.json()
+    # Backwards-compatible top-level error keeps existing canvas /
+    # external alert rules matching.
+    assert body.get("error") == "failed to prepare uploads dir"
+    # New diagnostic fields — operator can now see WHAT path failed
+    # and WHY without SSM access.
+    assert body.get("path") == str(blocker / "child")
+    assert isinstance(body.get("errno"), int) and body["errno"] != 0
+    assert "detail" in body and isinstance(body["detail"], str) and body["detail"]
+
+
 def test_total_request_body_oversize_returns_413(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     """Header-side total cap. Set the limit BELOW the actual body and
     confirm we reject before parsing multipart."""

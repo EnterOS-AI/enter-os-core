@@ -170,8 +170,25 @@ async def ingest_handler(request: Request) -> JSONResponse:
     try:
         Path(CHAT_UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
     except OSError as exc:
+        # Surface errno + path in the response so a fresh-tenant
+        # "failed to prepare uploads dir" 500 self-diagnoses without
+        # requiring SSM access to the workspace stderr. Prior incident
+        # 2026-05-01: hongming.moleculesai.app hit EACCES on the
+        # /workspace volume's `.molecule` subtree (root-owned race
+        # window between Docker volume create and entrypoint's chown,
+        # fixed via molecule-ai-workspace-template-claude-code#23).
+        # The errno + path are not security-sensitive — both are
+        # well-known to anyone with workspace access.
         logger.error("internal_chat_uploads: mkdir %s failed: %s", CHAT_UPLOAD_DIR, exc)
-        return JSONResponse({"error": "failed to prepare uploads dir"}, status_code=500)
+        return JSONResponse(
+            {
+                "error": "failed to prepare uploads dir",
+                "path": CHAT_UPLOAD_DIR,
+                "errno": exc.errno,
+                "detail": str(exc),
+            },
+            status_code=500,
+        )
 
     response_files: list[dict] = []
     total_bytes = 0
