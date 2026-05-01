@@ -533,3 +533,109 @@ func (h *SecretsHandler) SetModel(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "saved", "model": body.Model})
 }
+
+// GetProvider handles GET /workspaces/:id/provider
+// Returns the explicit LLM provider override stored as the LLM_PROVIDER
+// workspace secret. Mirror of GetModel — same shape, same response keys
+// (provider/source) to keep canvas wiring symmetric.
+//
+// Why a sibling endpoint rather than overloading PUT /model: the new
+// `provider` field (Option B, PR #2441) is orthogonal to the model
+// slug. A user might keep the same model alias and switch providers
+// (e.g., route the same alias through a different gateway), or keep
+// the same provider and switch models. Co-storing them under one
+// endpoint forces a single Save+Restart round-trip per change; two
+// endpoints let the canvas update each independently.
+func (h *SecretsHandler) GetProvider(c *gin.Context) {
+	workspaceID := c.Param("id")
+	ctx := c.Request.Context()
+
+	var bytesVal []byte
+	var version int
+	err := db.DB.QueryRowContext(ctx,
+		`SELECT encrypted_value, encryption_version FROM workspace_secrets WHERE workspace_id = $1 AND key = 'LLM_PROVIDER'`,
+		workspaceID).Scan(&bytesVal, &version)
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusOK, gin.H{"provider": "", "source": "default"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "query failed"})
+		return
+	}
+
+	decrypted, err := crypto.DecryptVersioned(bytesVal, version)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to decrypt"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"provider": string(decrypted), "source": "workspace_secrets"})
+}
+
+// SetProvider handles PUT /workspaces/:id/provider — writes the provider
+// slug into workspace_secrets as LLM_PROVIDER. Empty string clears the
+// override. Triggers auto-restart so the new env is in effect on the
+// next boot — without this the canvas Save+Restart can race the
+// already-restarting container and miss the window.
+//
+// CP user-data (controlplane PR #364) reads LLM_PROVIDER from env and
+// writes it into /configs/config.yaml at boot, so the choice survives
+// restart. Without that PR this endpoint still works but the value is
+// only sticky when the workspace_secrets row is read on every restart
+// (the secret-load path) — slower failure mode, same eventual behavior.
+func (h *SecretsHandler) SetProvider(c *gin.Context) {
+	workspaceID := c.Param("id")
+	if !uuidRegex.MatchString(workspaceID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid workspace ID"})
+		return
+	}
+	ctx := c.Request.Context()
+
+	var body struct {
+		Provider string `json:"provider"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	if body.Provider == "" {
+		if _, err := db.DB.ExecContext(ctx,
+			`DELETE FROM workspace_secrets WHERE workspace_id = $1 AND key = 'LLM_PROVIDER'`,
+			workspaceID); err != nil {
+			log.Printf("SetProvider delete error: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to clear provider"})
+			return
+		}
+		if h.restartFunc != nil {
+			go h.restartFunc(workspaceID)
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "cleared"})
+		return
+	}
+
+	encrypted, err := crypto.Encrypt([]byte(body.Provider))
+	if err != nil {
+		log.Printf("SetProvider encrypt error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt provider"})
+		return
+	}
+	version := crypto.CurrentEncryptionVersion()
+	_, err = db.DB.ExecContext(ctx, `
+		INSERT INTO workspace_secrets (workspace_id, key, encrypted_value, encryption_version)
+		VALUES ($1, 'LLM_PROVIDER', $2, $3)
+		ON CONFLICT (workspace_id, key) DO UPDATE
+			SET encrypted_value = $2, encryption_version = $3, updated_at = now()
+	`, workspaceID, encrypted, version)
+	if err != nil {
+		log.Printf("SetProvider upsert error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save provider"})
+		return
+	}
+
+	if h.restartFunc != nil {
+		go h.restartFunc(workspaceID)
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "saved", "provider": body.Provider})
+}

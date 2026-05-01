@@ -329,6 +329,8 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		wsAuth.DELETE("/secrets/:key", sech.Delete)
 		wsAuth.GET("/model", sech.GetModel)
 		wsAuth.PUT("/model", sech.SetModel)
+		wsAuth.GET("/provider", sech.GetProvider)
+		wsAuth.PUT("/provider", sech.SetProvider)
 
 		// Token usage metrics — cost transparency (#593).
 		// WorkspaceAuth middleware (on wsAuth) binds the bearer to :id.

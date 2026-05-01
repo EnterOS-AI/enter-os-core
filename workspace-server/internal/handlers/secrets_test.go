@@ -618,6 +618,152 @@ func TestSecretsSetModel_InvalidID(t *testing.T) {
 	}
 }
 
+// ==================== GetProvider / SetProvider (Option B PR-2) ====================
+//
+// Mirror of the GetModel/SetModel suite. Same secret-storage shape (key=
+// 'LLM_PROVIDER' instead of 'MODEL_PROVIDER'), same restart-trigger
+// contract, same UUID validation gate. We pin the contract symmetrically
+// so a future refactor that breaks one without the other shows up in CI.
+
+func TestSecretsGetProvider_Default(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	handler := NewSecretsHandler(nil)
+
+	mock.ExpectQuery("SELECT encrypted_value, encryption_version FROM workspace_secrets").
+		WithArgs("ws-prov").
+		WillReturnError(sql.ErrNoRows)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-prov"}}
+	c.Request = httptest.NewRequest("GET", "/workspaces/ws-prov/provider", nil)
+
+	handler.GetProvider(c)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if resp["provider"] != "" {
+		t.Errorf("expected empty provider, got %v", resp["provider"])
+	}
+	if resp["source"] != "default" {
+		t.Errorf("expected source 'default', got %v", resp["source"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+func TestSecretsGetProvider_DBError(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	handler := NewSecretsHandler(nil)
+
+	mock.ExpectQuery("SELECT encrypted_value, encryption_version FROM workspace_secrets").
+		WithArgs("ws-prov-err").
+		WillReturnError(sql.ErrConnDone)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-prov-err"}}
+	c.Request = httptest.NewRequest("GET", "/workspaces/ws-prov-err/provider", nil)
+
+	handler.GetProvider(c)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+func TestSecretsSetProvider_Upsert(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	restartCalled := make(chan string, 1)
+	handler := NewSecretsHandler(func(id string) { restartCalled <- id })
+
+	mock.ExpectExec(`INSERT INTO workspace_secrets`).
+		WithArgs("00000000-0000-0000-0000-000000000003", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "00000000-0000-0000-0000-000000000003"}}
+	c.Request = httptest.NewRequest("PUT", "/workspaces/00000000-0000-0000-0000-000000000003/provider",
+		strings.NewReader(`{"provider":"minimax"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.SetProvider(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	select {
+	case id := <-restartCalled:
+		if id != "00000000-0000-0000-0000-000000000003" {
+			t.Errorf("restart called with wrong id: %s", id)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Error("restart was not triggered")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+func TestSecretsSetProvider_EmptyClears(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	handler := NewSecretsHandler(func(string) {})
+
+	mock.ExpectExec(`DELETE FROM workspace_secrets`).
+		WithArgs("00000000-0000-0000-0000-000000000004").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "00000000-0000-0000-0000-000000000004"}}
+	c.Request = httptest.NewRequest("PUT", "/workspaces/00000000-0000-0000-0000-000000000004/provider",
+		strings.NewReader(`{"provider":""}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.SetProvider(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+func TestSecretsSetProvider_InvalidID(t *testing.T) {
+	setupTestDB(t)
+	setupTestRedis(t)
+	handler := NewSecretsHandler(nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "not-a-uuid"}}
+	c.Request = httptest.NewRequest("PUT", "/workspaces/not-a-uuid/provider",
+		strings.NewReader(`{"provider":"x"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.SetProvider(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for bad UUID, got %d", w.Code)
+	}
+}
+
 // ==================== Values — Phase 30.2 decrypted pull ====================
 
 // These tests target the secrets.Values handler (GET /workspaces/:id/secrets/values)
