@@ -164,6 +164,157 @@ def test_runtime_config_model_picks_up_env_via_top_level(tmp_path, monkeypatch):
     assert cfg.runtime_config.model == "minimax/abab7-chat-preview"
 
 
+# ===== Provider field (Option B — explicit `provider:` alongside `model:`) =====
+#
+# Why a separate `provider` field at all (we already parse the slug prefix off
+# `model`)? Three reasons:
+#   1. Custom model aliases that don't carry a recognizable prefix (e.g., a
+#      tenant-specific name routed through a gateway) need an explicit signal.
+#   2. Adapters were each implementing their own slug-parse — hermes's
+#      derive-provider.sh, claude-code's adapter-default branch, etc. One
+#      resolution point in load_config kills that drift class.
+#   3. The canvas Provider dropdown needs a stable storage field that doesn't
+#      get clobbered every time the user picks a new model.
+#
+# Backward compat: when `provider:` is absent, fall back to slug derivation,
+# so existing config.yaml files keep working without a migration.
+
+
+def test_provider_default_empty_when_bare_model(tmp_path, monkeypatch):
+    """Bare model names (no `:` or `/` separator) yield an empty provider —
+    the signal for "let the adapter decide". Don't guess.
+    """
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("MODEL_PROVIDER", raising=False)
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(yaml.dump({"model": "claude-opus-4-7"}))
+
+    cfg = load_config(str(tmp_path))
+    assert cfg.provider == ""
+    assert cfg.runtime_config.provider == ""
+
+
+def test_provider_derived_from_colon_slug(tmp_path, monkeypatch):
+    """`provider:model` shape (Anthropic/OpenAI/Google convention) derives
+    the provider from the prefix when no explicit `provider:` is set.
+    Exercises the backward-compat path for every existing config.yaml in
+    the wild.
+    """
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("MODEL_PROVIDER", raising=False)
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(yaml.dump({"model": "anthropic:claude-opus-4-7"}))
+
+    cfg = load_config(str(tmp_path))
+    assert cfg.provider == "anthropic"
+    # runtime_config.provider inherits the same way runtime_config.model does.
+    assert cfg.runtime_config.provider == "anthropic"
+
+
+def test_provider_derived_from_slash_slug(tmp_path, monkeypatch):
+    """`provider/model` shape (HuggingFace/Minimax convention) derives the
+    provider from the prefix when no explicit `provider:` is set.
+    """
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("MODEL_PROVIDER", raising=False)
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(yaml.dump({"model": "minimax/abab7-chat-preview"}))
+
+    cfg = load_config(str(tmp_path))
+    assert cfg.provider == "minimax"
+    assert cfg.runtime_config.provider == "minimax"
+
+
+def test_provider_yaml_explicit_wins_over_derived(tmp_path, monkeypatch):
+    """Explicit YAML `provider:` overrides the slug-prefix derivation —
+    needed when the model name's prefix doesn't match the actual gateway
+    (e.g., an `anthropic:claude-opus-4-7` model routed through a custom
+    gateway slug).
+    """
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("MODEL_PROVIDER", raising=False)
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(
+        yaml.dump(
+            {
+                "model": "anthropic:claude-opus-4-7",
+                "provider": "custom-gateway",
+            }
+        )
+    )
+
+    cfg = load_config(str(tmp_path))
+    # Slug prefix says "anthropic" but the explicit field wins.
+    assert cfg.provider == "custom-gateway"
+    assert cfg.runtime_config.provider == "custom-gateway"
+
+
+def test_provider_env_override_beats_yaml_and_derived(tmp_path, monkeypatch):
+    """`LLM_PROVIDER` env var beats both YAML and slug derivation.
+    This is the path the canvas Save+Restart cycle relies on: the user
+    picks a provider in the canvas Provider dropdown, the platform sets
+    `LLM_PROVIDER` on the workspace, and the next CP-driven restart picks
+    it up regardless of what's in the regenerated /configs/config.yaml.
+    """
+    monkeypatch.setenv("LLM_PROVIDER", "minimax")
+    monkeypatch.delenv("MODEL_PROVIDER", raising=False)
+    config_yaml = tmp_path / "config.yaml"
+    # YAML says one thing, slug says another, env wins.
+    config_yaml.write_text(
+        yaml.dump(
+            {
+                "model": "anthropic:claude-opus-4-7",
+                "provider": "openai",
+            }
+        )
+    )
+
+    cfg = load_config(str(tmp_path))
+    assert cfg.provider == "minimax"
+    assert cfg.runtime_config.provider == "minimax"
+
+
+def test_runtime_config_provider_yaml_wins_over_top_level(tmp_path, monkeypatch):
+    """An explicit `runtime_config.provider` takes precedence over the
+    top-level resolved provider — same fallback shape as `model`. Needed
+    when a workspace wants the top-level model/provider to stay
+    user-visible while pinning the runtime to a different gateway.
+    """
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("MODEL_PROVIDER", raising=False)
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(
+        yaml.dump(
+            {
+                "model": "anthropic:claude-opus-4-7",
+                "runtime_config": {"provider": "openai"},
+            }
+        )
+    )
+
+    cfg = load_config(str(tmp_path))
+    # Top-level still derives from the slug.
+    assert cfg.provider == "anthropic"
+    # runtime_config.provider explicit override wins.
+    assert cfg.runtime_config.provider == "openai"
+
+
+def test_provider_default_from_default_model(tmp_path, monkeypatch):
+    """When config.yaml is empty, the WorkspaceConfig default model
+    (`anthropic:claude-opus-4-7`) yields provider=`anthropic`. Pins the
+    "no config" boot path to a sensible derived provider.
+    """
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("MODEL_PROVIDER", raising=False)
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(yaml.dump({}))
+
+    cfg = load_config(str(tmp_path))
+    assert cfg.model == "anthropic:claude-opus-4-7"
+    assert cfg.provider == "anthropic"
+    assert cfg.runtime_config.provider == "anthropic"
+
+
 def test_delegation_config_defaults(tmp_path):
     """DelegationConfig nested defaults are applied."""
     config_yaml = tmp_path / "config.yaml"
