@@ -91,6 +91,12 @@ export interface PreflightResult {
    *  required (AllKeysModal renders the N envVars inline). */
   providers: ProviderChoice[];
   runtime: string;
+  /** Set of env var names already configured (i.e. `has_value: true`) at
+   *  the relevant scope (workspace if `workspaceId` was passed, otherwise
+   *  global). Surfaced so callers can mark pre-saved entries in the
+   *  picker without making a second `/settings/secrets` round trip.
+   *  Empty Set on secrets-endpoint failure (treated as "nothing set"). */
+  configuredKeys: Set<string>;
 }
 
 /* ---------- Provider options ---------- */
@@ -235,7 +241,13 @@ export async function checkDeploySecrets(
 
   if (providers.length === 0) {
     // Template declares no env requirements — nothing to preflight.
-    return { ok: true, missingKeys: [], providers: [], runtime };
+    return {
+      ok: true,
+      missingKeys: [],
+      providers: [],
+      runtime,
+      configuredKeys: new Set(),
+    };
   }
 
   let configured: Set<string>;
@@ -254,7 +266,13 @@ export async function checkDeploySecrets(
   }
 
   if (findSatisfiedProvider(providers, configured)) {
-    return { ok: true, missingKeys: [], providers, runtime };
+    return {
+      ok: true,
+      missingKeys: [],
+      providers,
+      runtime,
+      configuredKeys: configured,
+    };
   }
 
   // Nothing configured — surface every candidate env var so the modal
@@ -262,5 +280,11 @@ export async function checkDeploySecrets(
   const missingKeys = Array.from(
     new Set(providers.flatMap((p) => p.envVars)),
   );
-  return { ok: false, missingKeys, providers, runtime };
+  return {
+    ok: false,
+    missingKeys,
+    providers,
+    runtime,
+    configuredKeys: configured,
+  };
 }

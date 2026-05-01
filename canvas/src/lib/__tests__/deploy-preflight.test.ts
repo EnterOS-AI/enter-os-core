@@ -244,5 +244,26 @@ describe("checkDeploySecrets", () => {
     const result = await checkDeploySecrets(LANGGRAPH);
     expect(result.ok).toBe(false);
     expect(result.missingKeys).toEqual(["OPENAI_API_KEY"]);
+    // Empty Set on fetch failure — useTemplateDeploy relies on this
+    // so the picker still opens with every entry rendered as input.
+    expect(result.configuredKeys).toEqual(new Set());
+  });
+
+  it("surfaces configuredKeys (has_value=true entries only) so callers skip a second fetch", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve([
+          { key: "ANTHROPIC_API_KEY", has_value: true, created_at: "", updated_at: "" },
+          { key: "OPENROUTER_API_KEY", has_value: false, created_at: "", updated_at: "" },
+          { key: "RANDOM_OTHER_KEY", has_value: true, created_at: "", updated_at: "" },
+        ]),
+    } as Response);
+
+    const result = await checkDeploySecrets(HERMES);
+    // Only has_value=true entries belong in the set.
+    expect(result.configuredKeys).toEqual(
+      new Set(["ANTHROPIC_API_KEY", "RANDOM_OTHER_KEY"]),
+    );
   });
 });

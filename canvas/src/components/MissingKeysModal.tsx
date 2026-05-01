@@ -16,14 +16,35 @@ interface Props {
   /** Runtime slug — used only for the "The <runtime> runtime …"
    *  headline; behavior is driven by providers/missingKeys. */
   runtime: string;
-  /** Called when all required keys for the chosen provider are saved. */
-  onKeysAdded: () => void;
+  /** Called when all required keys for the chosen provider are saved.
+   *  Receives the model slug if the modal collected one (template-deploy
+   *  flow); legacy callers ignore it. */
+  onKeysAdded: (model?: string) => void;
   /** Called when the user cancels the deploy. */
   onCancel: () => void;
   /** Optional — open the Settings Panel (Config tab → Secrets). */
   onOpenSettings?: () => void;
   /** If provided, secrets save at workspace scope instead of global. */
   workspaceId?: string;
+  /** Set of env var names already configured in the relevant scope
+   *  (global or workspace). When provided, entries whose key is already
+   *  in this set start as `saved: true` so the user can confirm without
+   *  re-entering. Used by the template-deploy "always ask" flow so a
+   *  user can pick a different provider even when global env covers
+   *  the default one. */
+  configuredKeys?: Set<string>;
+  /** Model slug suggestions (datalist) — populated from the template's
+   *  models[]. When non-empty the picker renders a model input above
+   *  the API-key fields. The picker passes the entered slug back via
+   *  onKeysAdded. */
+  modelSuggestions?: string[];
+  /** Pre-fill the model input. */
+  initialModel?: string;
+  /** Override the modal's title + description copy. The default
+   *  "Missing API Keys" title misreads when the modal is opened to
+   *  pick provider/model with keys already configured. */
+  title?: string;
+  description?: string;
 }
 
 interface KeyEntry {
@@ -60,6 +81,11 @@ export function MissingKeysModal({
   onCancel,
   onOpenSettings,
   workspaceId,
+  configuredKeys,
+  modelSuggestions,
+  initialModel,
+  title,
+  description,
 }: Props) {
   const pickerProviders = providers ?? [];
   const pickerMode = pickerProviders.length > 1;
@@ -74,6 +100,11 @@ export function MissingKeysModal({
         onCancel={onCancel}
         onOpenSettings={onOpenSettings}
         workspaceId={workspaceId}
+        configuredKeys={configuredKeys}
+        modelSuggestions={modelSuggestions}
+        initialModel={initialModel}
+        title={title}
+        description={description}
       />
     );
   }
@@ -108,17 +139,41 @@ function ProviderPickerModal({
   onCancel,
   onOpenSettings,
   workspaceId,
+  configuredKeys,
+  modelSuggestions,
+  initialModel,
+  title,
+  description,
 }: {
   open: boolean;
   providers: ProviderChoice[];
   runtime: string;
-  onKeysAdded: () => void;
+  onKeysAdded: (model?: string) => void;
   onCancel: () => void;
   onOpenSettings?: () => void;
   workspaceId?: string;
+  configuredKeys?: Set<string>;
+  modelSuggestions?: string[];
+  initialModel?: string;
+  title?: string;
+  description?: string;
 }) {
-  const [selectedId, setSelectedId] = useState(providers[0].id);
+  // Prefer the first provider whose env vars are already satisfied by
+  // the configured set — pre-selecting "the option the user already has
+  // keys for" matches expected UX. Falls back to providers[0] otherwise.
+  const initialSelected = useMemo(() => {
+    if (configuredKeys) {
+      const satisfied = providers.find((p) =>
+        p.envVars.every((k) => configuredKeys.has(k)),
+      );
+      if (satisfied) return satisfied.id;
+    }
+    return providers[0].id;
+  }, [providers, configuredKeys]);
+
+  const [selectedId, setSelectedId] = useState(initialSelected);
   const [entries, setEntries] = useState<KeyEntry[]>([]);
+  const [model, setModel] = useState(initialModel ?? "");
   const firstInputRef = useRef<HTMLInputElement>(null);
 
   const selected = useMemo(
@@ -126,10 +181,13 @@ function ProviderPickerModal({
     [providers, selectedId],
   );
 
+  const showModelInput = (modelSuggestions?.length ?? 0) > 0 || initialModel !== undefined;
+
   useEffect(() => {
     if (!open) return;
-    setSelectedId(providers[0].id);
-  }, [open, providers]);
+    setSelectedId(initialSelected);
+    setModel(initialModel ?? "");
+  }, [open, initialSelected, initialModel]);
 
   useEffect(() => {
     if (!open) return;
@@ -137,12 +195,15 @@ function ProviderPickerModal({
       selected.envVars.map((key) => ({
         key,
         value: "",
-        saved: false,
+        // Pre-mark as saved when the key is already in the configured
+        // set (global or workspace scope). Lets the user click Deploy
+        // without re-entering a key the platform already holds.
+        saved: configuredKeys?.has(key) ?? false,
         saving: false,
         error: null,
       })),
     );
-  }, [open, selected]);
+  }, [open, selected, configuredKeys]);
 
   useEffect(() => {
     if (!open) return;
@@ -243,16 +304,52 @@ function ProviderPickerModal({
               </svg>
             </div>
             <h3 id="missing-keys-title" className="text-sm font-semibold text-zinc-100">
-              Missing API Keys
+              {title ?? "Missing API Keys"}
             </h3>
           </div>
           <p className="text-[12px] text-zinc-400 leading-relaxed">
-            The <span className="text-amber-300 font-medium">{runtimeLabel}</span>{" "}
-            runtime supports multiple providers. Pick one and paste its API key.
+            {description ?? (
+              <>
+                The <span className="text-amber-300 font-medium">{runtimeLabel}</span>{" "}
+                runtime supports multiple providers. Pick one and paste its API key.
+              </>
+            )}
           </p>
         </div>
 
         <div className="px-5 py-4 space-y-3">
+          {showModelInput && (
+            <div>
+              <label
+                htmlFor="provider-picker-model-input"
+                className="text-[10px] uppercase tracking-wide text-zinc-500 font-semibold mb-1.5 block"
+              >
+                Model{" "}
+                <span aria-hidden="true" className="text-red-400">*</span>
+                <span className="sr-only"> (required)</span>
+              </label>
+              <input
+                id="provider-picker-model-input"
+                type="text"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder="e.g. minimax/MiniMax-M2.7"
+                aria-label="Model slug"
+                autoComplete="off"
+                spellCheck={false}
+                list="provider-picker-model-suggestions"
+                className="w-full bg-zinc-900 border border-zinc-600 rounded px-2 py-1.5 text-[11px] text-zinc-100 font-mono focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20 transition-colors"
+              />
+              <datalist id="provider-picker-model-suggestions">
+                {modelSuggestions?.map((m) => (
+                  <option key={m} value={m} />
+                ))}
+              </datalist>
+              <p className="text-[9px] text-zinc-500 mt-1 leading-relaxed">
+                Slug determines provider routing at install time.
+              </p>
+            </div>
+          )}
           <fieldset className="space-y-1.5">
             <legend className="text-[10px] uppercase tracking-wide text-zinc-500 font-semibold mb-1.5">
               Provider
@@ -364,8 +461,12 @@ function ProviderPickerModal({
               Cancel Deploy
             </button>
             <button
-              onClick={onKeysAdded}
-              disabled={!allSaved || anySaving}
+              onClick={() => onKeysAdded(showModelInput ? model.trim() : undefined)}
+              disabled={
+                !allSaved ||
+                anySaving ||
+                (showModelInput && model.trim() === "")
+              }
               className="px-3.5 py-1.5 text-[12px] bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-40"
             >
               {allSaved ? "Deploy" : entries.length > 1 ? "Add Keys" : "Add Key"}
