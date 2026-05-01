@@ -6,6 +6,7 @@ import {
   checkDeploySecrets,
   resolveRuntime,
   type PreflightResult,
+  type SecretEntry,
   type Template,
 } from "@/lib/deploy-preflight";
 import { MissingKeysModal } from "@/components/MissingKeysModal";
@@ -44,10 +45,15 @@ export interface UseTemplateDeployOptions {
 /** Paired template + preflight result carried through the "user
  *  clicked deploy → modal opens → keys saved → retry" loop. Named
  *  so the `useState` generic and any future signature change have
- *  a single place to track. */
+ *  a single place to track. `configuredKeys` lets the modal mark
+ *  pre-saved entries (global secrets) without re-prompting — the
+ *  template-deploy "always ask" flow surfaces the picker even when
+ *  preflight.ok is true so the user can pick a different provider
+ *  per workspace. */
 interface MissingKeysInfo {
   template: Template;
   preflight: PreflightResult;
+  configuredKeys: Set<string>;
 }
 
 export interface UseTemplateDeployResult {
@@ -81,9 +87,14 @@ export function useTemplateDeploy(
 
   /** Actually execute the POST /workspaces call. Split from `deploy`
    *  so the "modal → keys added → retry" path can reuse it without
-   *  re-running preflight (the user just proved the keys are now set). */
+   *  re-running preflight (the user just proved the keys are now set).
+   *
+   *  `model` (optional) is the user-picked model slug from the picker
+   *  modal. When the template is multi-provider, hermes-style routing
+   *  reads the slug prefix at install time to pick the upstream
+   *  endpoint, so the slug must reach the workspace verbatim. */
   const executeDeploy = useCallback(
-    async (template: Template) => {
+    async (template: Template, model?: string) => {
       setDeploying(template.id);
       setError(null);
       try {
@@ -98,6 +109,7 @@ export function useTemplateDeploy(
           template: template.id,
           tier: template.tier,
           canvas: coords,
+          ...(model ? { model } : {}),
         });
         onDeployed?.(ws.id);
       } catch (e) {
@@ -133,8 +145,33 @@ export function useTemplateDeploy(
         setDeploying(null);
         return;
       }
-      if (!preflight.ok) {
-        setMissingKeysInfo({ template, preflight });
+      // Open the picker modal whenever preflight failed OR the
+      // template offers ≥2 provider options. Multi-provider
+      // templates (e.g. hermes) need an explicit per-workspace
+      // pick — silently inheriting whichever global key matches
+      // produces the "No LLM provider configured" 500 because the
+      // adapter falls back to its compiled-in default model when
+      // the user hasn't asserted a slug. The "always ask" rule
+      // skips claude-code / langgraph-style single-provider
+      // templates where there's nothing to choose between.
+      const shouldShowPicker =
+        !preflight.ok || preflight.providers.length >= 2;
+      if (shouldShowPicker) {
+        // Read the secret set the modal needs to mark pre-saved
+        // entries. We did this inside checkDeploySecrets too but
+        // didn't surface it; pull it again so a slow secrets
+        // endpoint failing here doesn't block the modal — empty
+        // set just means everything renders as input.
+        let configuredKeys = new Set<string>();
+        try {
+          const secrets = await api.get<SecretEntry[]>("/settings/secrets");
+          configuredKeys = new Set(
+            secrets.filter((s) => s.has_value).map((s) => s.key),
+          );
+        } catch {
+          // Empty set — modal will render every entry as input.
+        }
+        setMissingKeysInfo({ template, preflight, configuredKeys });
         setDeploying(null);
         return;
       }
@@ -147,19 +184,43 @@ export function useTemplateDeploy(
   // (it's placed inline in JSX), and useCallback's deps would
   // invalidate on every state change, making the memoisation a wash.
   // Plain ReactNode is simpler and equally performant.
+  const isMultiProvider = (missingKeysInfo?.preflight.providers.length ?? 0) >= 2;
+  // Suggestions for the model field — pull declared model ids from the
+  // template. Templates without `models` declared (e.g. claude-code)
+  // pass [] which suppresses the model field entirely.
+  const modelSuggestions =
+    missingKeysInfo?.template.models?.map((m) => m.id) ?? [];
+  // Pre-fill the model input with the template's default `model` so
+  // confirming without changing it preserves today's behaviour.
+  const initialModel = missingKeysInfo?.template.model;
+  // When the user has keys configured (preflight.ok) we re-purpose the
+  // modal as a "confirm provider/model" prompt — adjust copy
+  // accordingly so it doesn't claim keys are missing.
+  const allConfigured = missingKeysInfo?.preflight.ok ?? false;
+  const modalTitle = allConfigured
+    ? "Configure Workspace"
+    : undefined;
+  const modalDescription = allConfigured
+    ? "Pick the provider and model for this workspace. Saved API keys are reused — click Override to use a different one."
+    : undefined;
   const modal: ReactNode = (
     <MissingKeysModal
       open={!!missingKeysInfo}
       missingKeys={missingKeysInfo?.preflight.missingKeys ?? []}
       providers={missingKeysInfo?.preflight.providers ?? []}
       runtime={missingKeysInfo?.preflight.runtime ?? ""}
-      onKeysAdded={() => {
+      configuredKeys={missingKeysInfo?.configuredKeys}
+      modelSuggestions={isMultiProvider ? modelSuggestions : undefined}
+      initialModel={isMultiProvider ? initialModel : undefined}
+      title={modalTitle}
+      description={modalDescription}
+      onKeysAdded={(model?: string) => {
         if (missingKeysInfo) {
           const template = missingKeysInfo.template;
           setMissingKeysInfo(null);
           // Intentional fire-and-forget — executeDeploy manages
           // its own error state via setError.
-          void executeDeploy(template);
+          void executeDeploy(template, model);
         }
       }}
       onCancel={() => setMissingKeysInfo(null)}
