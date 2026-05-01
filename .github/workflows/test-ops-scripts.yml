@@ -4,11 +4,13 @@ name: Ops Scripts Tests
 # anything under scripts/. Kept separate from the main CI so a script-only
 # change doesn't trigger the heavier Go/Canvas/Python pipelines.
 #
-# Discovery: `unittest discover` from the scripts/ root walks recursively,
-# so both `scripts/test_*.py` and `scripts/ops/test_*.py` are picked up.
-# Tests should sit alongside the code they test (see
+# Discovery layout: tests sit alongside the code they test (see
 # scripts/ops/test_sweep_cf_decide.py for the pattern; scripts/
-# test_build_runtime_package.py for the rewriter coverage).
+# test_build_runtime_package.py for the rewriter coverage). The job
+# below runs `unittest discover` TWICE — once from `scripts/`, once
+# from `scripts/ops/` — because neither dir has an `__init__.py`, so
+# a single discover from `scripts/` doesn't recurse into the ops
+# subdir. Two passes is simpler than retrofitting namespace packages.
 
 on:
   push:
