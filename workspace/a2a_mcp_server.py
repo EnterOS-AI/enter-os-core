@@ -149,6 +149,30 @@ async def handle_tool_call(name: str, arguments: dict) -> str:
 _CHANNEL_NOTIFICATION_METHOD = "notifications/claude/channel"
 
 
+def _build_initialize_result() -> dict:
+    """MCP initialize handshake result.
+
+    The ``experimental.claude/channel`` capability declaration is what
+    tells Claude Code's MCP client to route our
+    ``notifications/claude/channel`` emissions as conversation
+    interrupts (push UX). Without it the notification arrives over the
+    wire but is silently dropped instead of becoming a ``<channel>``
+    tag in the next agent turn — matching the
+    "Notification arrives but Claude Code doesn't surface it" failure
+    mode anticipated in molecule-core#2444. Mirrors the contract
+    declared by the molecule-mcp-claude-channel bun bridge
+    (server.ts:374).
+    """
+    return {
+        "protocolVersion": "2024-11-05",
+        "capabilities": {
+            "tools": {"listChanged": False},
+            "experimental": {"claude/channel": {}},
+        },
+        "serverInfo": {"name": "a2a-delegation", "version": "1.0.0"},
+    }
+
+
 def _build_channel_notification(msg: dict) -> dict:
     """Transform an ``InboxMessage.to_dict()`` into the MCP notification
     envelope expected by Claude Code's channel-bridge contract.
@@ -246,11 +270,7 @@ async def main():  # pragma: no cover
                     await write_response({
                         "jsonrpc": "2.0",
                         "id": req_id,
-                        "result": {
-                            "protocolVersion": "2024-11-05",
-                            "capabilities": {"tools": {"listChanged": False}},
-                            "serverInfo": {"name": "a2a-delegation", "version": "1.0.0"},
-                        },
+                        "result": _build_initialize_result(),
                     })
 
                 elif method == "notifications/initialized":

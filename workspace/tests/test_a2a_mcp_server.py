@@ -237,3 +237,44 @@ def test_build_channel_notification_handles_missing_fields_gracefully():
     assert meta["activity_id"] == ""
     assert meta["peer_id"] == ""
     assert meta["kind"] == ""
+
+
+# ============== initialize handshake — capability declaration ==============
+# Without `experimental.claude/channel`, Claude Code's MCP client drops
+# our notifications/claude/channel emissions instead of routing them as
+# inline conversation interrupts. Anticipated as a failure mode in
+# molecule-core#2444 ("notification arrives but Claude Code doesn't
+# surface it"). Pin the declaration here so a refactor of
+# _build_initialize_result can't silently strip the flag.
+
+
+def test_initialize_declares_experimental_claude_channel_capability():
+    """Without this capability the push-UX bridge ships, the
+    notifications fire, and nothing happens in the host — silent. This
+    is the contract that flips Claude Code's routing on."""
+    from a2a_mcp_server import _build_initialize_result
+
+    result = _build_initialize_result()
+    experimental = result["capabilities"].get("experimental", {})
+
+    assert "claude/channel" in experimental, (
+        "experimental.claude/channel capability is required for Claude "
+        "Code to surface our notifications/claude/channel emissions as "
+        "conversation interrupts (issue #2444 §2). Removing this would "
+        "regress live push UX while leaving every unit test green."
+    )
+
+
+def test_initialize_keeps_tools_capability():
+    """Pin the tools capability too — losing it would break tools/list."""
+    from a2a_mcp_server import _build_initialize_result
+
+    assert "tools" in _build_initialize_result()["capabilities"]
+
+
+def test_initialize_protocol_version_is_pinned():
+    """MCP protocol version is part of the handshake contract; bumping
+    it changes what fields the host expects."""
+    from a2a_mcp_server import _build_initialize_result
+
+    assert _build_initialize_result()["protocolVersion"] == "2024-11-05"
