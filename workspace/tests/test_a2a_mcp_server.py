@@ -336,6 +336,150 @@ def test_initialize_instructions_documents_meta_attributes():
         )
 
 
+def test_initialize_instructions_documents_universal_poll_path():
+    """The polling contract is what makes inbound delivery universal —
+    every spec-compliant MCP client surfaces ``instructions`` to the
+    agent, so an instruction telling the agent to call
+    ``wait_for_message`` at every turn reaches Claude Code, Cursor,
+    Cline, opencode, hermes-agent, and codex alike.
+
+    Without this clause the wheel silently regresses to push-only
+    delivery, which only works on Claude Code with the dev-channels
+    flag — exactly the failure mode that bit live use 2026-05-01
+    (canvas message stuck in inbox, never reached the agent).
+
+    Pin the tool name AND the timeout-secs param so a copy-edit that
+    drops one half can't keep the surface but break the contract.
+    """
+    from a2a_mcp_server import _build_initialize_result
+
+    instructions = _build_initialize_result()["instructions"]
+
+    assert "wait_for_message" in instructions, (
+        "instructions must name `wait_for_message` as the universal "
+        "poll path so non-Claude-Code clients (Cursor, Cline, "
+        "opencode, hermes-agent, codex) and unflagged Claude Code "
+        "actually receive inbound messages instead of silently "
+        "stalling"
+    )
+    assert "timeout_secs" in instructions, (
+        "instructions must reference the timeout_secs parameter so "
+        "the agent calls wait_for_message with the operator-tunable "
+        "blocking window — without it the agent might pass 0 and "
+        "polling becomes a no-op"
+    )
+
+
+def test_initialize_instructions_calls_out_dual_paths():
+    """Push and poll co-exist intentionally (push promotes to
+    zero-stall delivery on capable hosts; poll is the universal
+    floor). Pin both labels so a future "simplification" that picks
+    one path can't ship green — that change must reach review."""
+    from a2a_mcp_server import _build_initialize_result
+
+    instructions = _build_initialize_result()["instructions"]
+    upper = instructions.upper()
+
+    assert "PUSH PATH" in upper, (
+        "instructions must explicitly label the PUSH PATH — Claude "
+        "Code channel users need to know <channel> tags are how "
+        "messages reach them, distinct from the poll path"
+    )
+    assert "POLL PATH" in upper, (
+        "instructions must explicitly label the POLL PATH — every "
+        "non-Claude-Code client (and unflagged Claude Code) reads "
+        "this section to know wait_for_message is the universal "
+        "delivery mechanism"
+    )
+
+
+def test_poll_timeout_resolution_clamps_and_falls_back():
+    """The env knob must accept positive ints, fall back gracefully
+    on bad input, and clamp to a sane upper bound — operator config
+    should never break the initialize handshake."""
+    import os
+
+    from a2a_mcp_server import _DEFAULT_POLL_TIMEOUT_SECS, _poll_timeout_secs
+
+    saved = os.environ.pop("MOLECULE_MCP_POLL_TIMEOUT_SECS", None)
+    try:
+        # Default when unset
+        assert _poll_timeout_secs() == _DEFAULT_POLL_TIMEOUT_SECS
+
+        # Operator override
+        os.environ["MOLECULE_MCP_POLL_TIMEOUT_SECS"] = "5"
+        assert _poll_timeout_secs() == 5
+
+        # 0 disables polling (push-only mode for flagged Claude Code)
+        os.environ["MOLECULE_MCP_POLL_TIMEOUT_SECS"] = "0"
+        assert _poll_timeout_secs() == 0
+
+        # Garbage falls back to default
+        os.environ["MOLECULE_MCP_POLL_TIMEOUT_SECS"] = "not-a-number"
+        assert _poll_timeout_secs() == _DEFAULT_POLL_TIMEOUT_SECS
+
+        # Negative falls back (treated as malformed)
+        os.environ["MOLECULE_MCP_POLL_TIMEOUT_SECS"] = "-3"
+        assert _poll_timeout_secs() == _DEFAULT_POLL_TIMEOUT_SECS
+
+        # Above 60 clamps to 60 — protects against an operator
+        # accidentally turning every agent turn into a 5-minute stall
+        os.environ["MOLECULE_MCP_POLL_TIMEOUT_SECS"] = "300"
+        assert _poll_timeout_secs() == 60
+    finally:
+        os.environ.pop("MOLECULE_MCP_POLL_TIMEOUT_SECS", None)
+        if saved is not None:
+            os.environ["MOLECULE_MCP_POLL_TIMEOUT_SECS"] = saved
+
+
+def test_instructions_substitute_operator_timeout():
+    """When the operator sets MOLECULE_MCP_POLL_TIMEOUT_SECS, the
+    value reaches the agent — instructions are built per-call so a
+    relaunch with new env is enough; no wheel rebuild needed."""
+    import os
+
+    from a2a_mcp_server import _build_initialize_result
+
+    saved = os.environ.pop("MOLECULE_MCP_POLL_TIMEOUT_SECS", None)
+    try:
+        os.environ["MOLECULE_MCP_POLL_TIMEOUT_SECS"] = "7"
+        instructions = _build_initialize_result()["instructions"]
+        assert "timeout_secs=7" in instructions, (
+            "operator override of MOLECULE_MCP_POLL_TIMEOUT_SECS must "
+            "appear in the instructions string — otherwise the agent "
+            "polls with a stale value and the env knob does nothing"
+        )
+    finally:
+        os.environ.pop("MOLECULE_MCP_POLL_TIMEOUT_SECS", None)
+        if saved is not None:
+            os.environ["MOLECULE_MCP_POLL_TIMEOUT_SECS"] = saved
+
+
+def test_instructions_zero_timeout_means_push_only_mode():
+    """Setting MOLECULE_MCP_POLL_TIMEOUT_SECS=0 is the explicit
+    operator gesture for "I'm running flagged Claude Code; don't
+    waste cycles polling." Instructions must reflect this so the
+    agent doesn't call wait_for_message in a tight loop."""
+    import os
+
+    from a2a_mcp_server import _build_initialize_result
+
+    saved = os.environ.pop("MOLECULE_MCP_POLL_TIMEOUT_SECS", None)
+    try:
+        os.environ["MOLECULE_MCP_POLL_TIMEOUT_SECS"] = "0"
+        instructions = _build_initialize_result()["instructions"]
+        assert "Polling is disabled" in instructions, (
+            "with timeout=0 the instructions must tell the agent "
+            "polling is off (push-only mode) instead of asking it to "
+            "call wait_for_message(timeout_secs=0) — which would "
+            "either spam the inbox or no-op silently"
+        )
+    finally:
+        os.environ.pop("MOLECULE_MCP_POLL_TIMEOUT_SECS", None)
+        if saved is not None:
+            os.environ["MOLECULE_MCP_POLL_TIMEOUT_SECS"] = saved
+
+
 def test_initialize_instructions_pins_prompt_injection_defense():
     """The threat-model sentence in `_CHANNEL_INSTRUCTIONS` is what
     tells the agent that inbound canvas-user / peer-agent message
