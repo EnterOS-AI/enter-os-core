@@ -189,6 +189,22 @@ func TestProvisionWorkspaceCP_ConcurrentBurst_NoSilentDrop(t *testing.T) {
 		}
 	}
 
+	// Assertion 4: every goroutine's failure path called RecordAndBroadcast
+	// exactly once (via h.markProvisionFailed inside provisionWorkspaceCP's
+	// "start failed" arm). Cross-checks Assertion 2 from a different angle
+	// — if a goroutine reaches Start() but then loses its WORKSPACE_
+	// PROVISION_FAILED broadcast, the canvas spinner sticks on
+	// "provisioning" until the sweeper. That regression class is what
+	// drove making logProvisionPanic a method on *WorkspaceHandler — so
+	// it's worth pinning here too.
+	bcast.mu.Lock()
+	bcastCount := bcast.count
+	bcast.mu.Unlock()
+	if bcastCount != numWorkspaces {
+		t.Errorf("broadcaster saw %d RecordAndBroadcast calls, want %d. SILENT-DROP CLASS: a goroutine reached cpProv.Start but never broadcast its failure.",
+			bcastCount, numWorkspaces)
+	}
+
 	if err := mock.ExpectationsWereMet(); err != nil {
 		// Soft-fail: under concurrency some queries may have been
 		// re-ordered relative to the (non-strict) expectation set,

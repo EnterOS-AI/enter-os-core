@@ -33,6 +33,10 @@ func newPanicTestHandler() (*WorkspaceHandler, *captureBroadcaster) {
 // load-bearing — `log.Writer()` evaluated at defer-fire time would
 // return the buffer (not the original writer) and never restore it,
 // poisoning subsequent tests in the package.
+//
+// log.SetOutput is process-global: do NOT call this from a test that
+// uses t.Parallel() or two captures will race + clobber. The panic
+// tests below are intentionally non-parallel for this reason.
 func captureLog(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var buf bytes.Buffer
@@ -42,16 +46,35 @@ func captureLog(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
+// guardAgainstReraise wraps a function in a recover-arm that flips the
+// returned bool to false if anything propagates past `defer
+// h.logProvisionPanic(...)`. Used in every panic test (not just
+// RecoversAndMarksFailed) so a future regression that re-raises from
+// the recovery path surfaces as a clean test failure, not a process
+// abort that crashes sibling tests.
+func guardAgainstReraise(fn func()) (didNotPanic bool) {
+	didNotPanic = true
+	defer func() {
+		if r := recover(); r != nil {
+			didNotPanic = false
+		}
+	}()
+	fn()
+	return
+}
+
 func TestLogProvisionPanic_NoOpWhenNoPanic(t *testing.T) {
 	// Sanity: the deferred recover must be silent when nothing panicked.
 	// Otherwise every successful provision would emit a spurious panic log.
 	buf := captureLog(t)
 	h, cap := newPanicTestHandler()
 
-	func() {
+	if !guardAgainstReraise(func() {
 		defer h.logProvisionPanic("ws-no-panic", "cp")
 		// no panic
-	}()
+	}) {
+		t.Fatal("logProvisionPanic re-raised on the no-panic path — recover() returned non-nil for a goroutine that didn't panic")
+	}
 
 	if buf.Len() != 0 {
 		t.Fatalf("expected no log output when no panic, got: %q", buf.String())
@@ -87,23 +110,13 @@ func TestLogProvisionPanic_RecoversAndMarksFailed(t *testing.T) {
 	h, cap := newPanicTestHandler()
 
 	// Exercise: a function that defers logProvisionPanic + then panics.
-	// The recover MUST swallow the panic — if it propagates, the test
-	// process crashes and the panic message bubbles up as a Go test
-	// failure rather than the assertion below.
-	didNotPanic := true
-	func() {
-		defer func() {
-			// If logProvisionPanic re-raised, this catches it for the
-			// test. We assert below that it did NOT re-raise.
-			if r := recover(); r != nil {
-				didNotPanic = false
-			}
-		}()
+	// The recover MUST swallow the panic — if it propagates,
+	// guardAgainstReraise catches it instead of letting the test
+	// process abort.
+	if !guardAgainstReraise(func() {
 		defer h.logProvisionPanic("ws-panic", "cp")
 		panic("simulated provision panic for #2486 regression")
-	}()
-
-	if !didNotPanic {
+	}) {
 		t.Fatal("logProvisionPanic re-raised the panic — the recover() arm did not swallow it")
 	}
 
@@ -156,10 +169,12 @@ func TestLogProvisionPanic_PersistFailureLogged(t *testing.T) {
 	buf := captureLog(t)
 	h, _ := newPanicTestHandler()
 
-	func() {
+	if !guardAgainstReraise(func() {
 		defer h.logProvisionPanic("ws-panic-persist-fail", "docker")
 		panic("simulated panic with DB unavailable")
-	}()
+	}) {
+		t.Fatal("logProvisionPanic re-raised when the persist-failure path was exercised — recover() arm did not swallow")
+	}
 
 	logged := buf.String()
 	// markProvisionFailed logs `markProvisionFailed: db update failed for <id>: <err>`
