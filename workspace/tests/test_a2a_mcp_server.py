@@ -405,12 +405,19 @@ def test_envelope_enrichment_re_fetches_after_ttl(_reset_peer_metadata_cache):
     """Cached entry past TTL: registry is hit again. Pin the TTL
     behaviour so a future caller bumping ``_PEER_METADATA_TTL_SECONDS``
     doesn't accidentally make the cache permanent."""
+    import time
+
     import a2a_client
     from a2a_mcp_server import _build_channel_notification
 
-    # Stale entry: fetched 1 hour ago (>> 5 min TTL).
+    # Stale entry: anchored to *current* monotonic time minus TTL+slack
+    # so the entry is unambiguously past the freshness window. A naked
+    # `0.0` looked stale relative to wall-clock but `time.monotonic()`
+    # starts at process uptime — when this test ran early in the pytest
+    # run, current was <300s and the entry was treated as fresh,
+    # silently skipping the re-fetch the assertion expects.
     a2a_client._peer_metadata[_PEER_UUID] = (
-        0.0,  # treated as ancient relative to time.monotonic()
+        time.monotonic() - a2a_client._PEER_METADATA_TTL_SECONDS - 60.0,
         {"id": _PEER_UUID, "name": "stale-name", "role": "old"},
     )
 
