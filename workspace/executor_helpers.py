@@ -844,23 +844,27 @@ def resolve_attachment_uri(uri: str) -> str | None:
 def extract_attached_files(message: Any) -> list[dict[str, str]]:
     """Pull ``{name, mime_type, path}`` dicts out of an A2A message.
 
-    Tolerates three Part shapes seen in the wild:
+    Tolerates three Part shapes:
 
     1. a2a-sdk v0 Pydantic RootModel — ``part.root.kind == 'file'`` with
-       ``part.root.file.{uri,name,mimeType}``.
-    2. a2a-sdk v0 flatter shape — ``part.kind == 'file'`` with
-       ``part.file.{uri,name,mimeType}`` (some hand-built callers).
-    3. a2a-sdk v1 protobuf — ``part.url`` non-empty with
-       ``part.filename`` + ``part.media_type``. The v1 ``Part`` proto
-       has no ``kind`` field at all (the discriminator is now a oneof
-       ``content`` of {text, raw, url, data}). Without this branch a v1
-       file part — which is what a v1 server constructs from any caller
-       that JSON-encodes the v1 shape — silently parses to an empty
-       Part on the v0→v1 transition because protobuf json_format with
-       ``ignore_unknown_fields=True`` drops the legacy ``kind`` and
-       ``file`` keys, surfacing as the user-visible
-       "Error: message contained no text content" on image-only chats
-       (2026-05-01 hongming incident).
+       ``part.root.file.{uri,name,mimeType}``. The hot path; this is
+       what every current caller produces (canvas chat, A2A peer
+       delegations, agent self-attached files).
+    2. v0 flatter shape — ``part.kind == 'file'`` with
+       ``part.file.{uri,name,mimeType}``. Some hand-built callers
+       (older test fixtures, third-party clients) emit this.
+    3. v1 protobuf — ``part.url`` non-empty with ``part.filename`` +
+       ``part.media_type``. **Defensive future-proofing only.** The
+       v1 ``Part`` proto exists in a2a-sdk's ``a2a.types.a2a_pb2`` but
+       a2a-sdk's JSON-RPC layer still validates inbound requests
+       against the v0 Pydantic discriminated union (TextPart |
+       FilePart | DataPart), so a v1 wire shape is rejected at the
+       request boundary today — this branch is unreachable on the
+       JSON-RPC ingress path. Kept so a future SDK release that
+       flips the JSON-RPC schema doesn't silently regress this
+       helper, and so non-conformant in-process callers (e.g. a
+       template that constructs a Part directly from protobuf) get
+       handled correctly.
 
     Non-file parts and files with unresolvable URIs are skipped — the
     caller sees an empty list rather than a mix of valid and broken
@@ -884,10 +888,11 @@ def extract_attached_files(message: Any) -> list[dict[str, str]]:
             name = getattr(f, "name", "") or ""
             mime = getattr(f, "mimeType", None) or getattr(f, "mime_type", None) or ""
         else:
-            # v1 protobuf Part has no `kind`; detect by a non-empty
-            # `url` (the file/url-of-bytes oneof slot). Fall back to
-            # `media_type` then `mimeType` for the camelCase Pydantic
-            # variant some adapters still hand us.
+            # Defensive v1 path (see docstring): v1 Part has no `kind`,
+            # detect by a non-empty `url` (the file/url-of-bytes oneof
+            # slot). Fall back from snake_case `media_type` to
+            # camelCase `mediaType` for callers that hand us the
+            # Pydantic-style attribute name.
             v1_url = getattr(part, "url", "") or ""
             if not v1_url:
                 continue
