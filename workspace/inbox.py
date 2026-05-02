@@ -364,6 +364,23 @@ def _extract_text(request_body: Any, summary: str | None) -> str:
     return summary or "(empty A2A message)"
 
 
+def _is_self_notify_row(row: dict[str, Any]) -> bool:
+    """Return True if ``row`` is the agent's own send_message_to_user
+    POST surfacing back through the activity API.
+
+    The shape (workspace-server handlers/activity.go, ``Notify`` writer):
+        method='notify' AND no peer (source_id is None or '')
+
+    Matched on both fields together so a future caller using
+    ``method='notify'`` for a different purpose with a real peer_id
+    still passes through.
+    """
+    if row.get("method") != "notify":
+        return False
+    source_id = row.get("source_id")
+    return source_id is None or source_id == ""
+
+
 def message_from_activity(row: dict[str, Any]) -> InboxMessage:
     """Convert one /activity row into an InboxMessage."""
     request_body = row.get("request_body")
@@ -456,6 +473,28 @@ def _poll_once(
     last_id: str | None = None
     for row in rows:
         if not isinstance(row, dict):
+            continue
+        if _is_self_notify_row(row):
+            # The workspace-server's `/notify` handler writes the agent's
+            # own send_message_to_user POSTs to activity_logs with
+            # activity_type='a2a_receive', method='notify', and no
+            # source_id, so the canvas chat-history loader can restore
+            # those bubbles after a page reload (handlers/activity.go,
+            # comment block at line 428). The activity API exposes that
+            # filter only on type, so the same row otherwise lands in
+            # this poll and gets pushed back to the agent — confirmed
+            # live 2026-05-01: agent observed its own outbound as an
+            # inbound `← molecule: Agent message: ...`. Filter here
+            # belt-and-braces; the long-term fix is upstream renaming
+            # the activity_type to `agent_outbound` (molecule-core
+            # #2469). Once that lands, this filter becomes redundant
+            # but stays in place because it only excludes rows we never
+            # want, so removing it would just be churn.
+            #
+            # NB: still call save_cursor for these rows below — we
+            # advance past them so the next poll doesn't keep re-seeing
+            # the same self-notify on every iteration.
+            last_id = str(row.get("id", "")) or last_id
             continue
         message = message_from_activity(row)
         if not message.activity_id:
