@@ -178,8 +178,9 @@ def _poll_timeout_secs() -> int:
     except ValueError:
         return _DEFAULT_POLL_TIMEOUT_SECS
     # Clamp to sane bounds: 0 disables polling (push-only mode for
-    # operators who pin Claude Code with --dangerously-load-development-
-    # channels), 60s caps the per-turn stall.
+    # operators who pin Claude Code with
+    # `--dangerously-load-development-channels server:<mcp-server-name>`),
+    # 60s caps the per-turn stall.
     if value < 0:
         return _DEFAULT_POLL_TIMEOUT_SECS
     return min(value, 60)
@@ -205,8 +206,10 @@ def _build_channel_instructions() -> str:
         "Polling is disabled in this workspace "
         "(MOLECULE_MCP_POLL_TIMEOUT_SECS=0). The host is expected to "
         "deliver inbound messages via push tags only — typically "
-        "Claude Code launched with --dangerously-load-development-"
-        "channels or an allowlisted channel server name."
+        "Claude Code launched with "
+        "`--dangerously-load-development-channels server:<mcp-server-name>` "
+        "(the tag is required since Claude Code 2.1.x; bare-flag launches "
+        "are rejected) or an allowlisted channel server name."
     )
     return (
         "Inbound canvas-user and peer-agent messages have two delivery "
