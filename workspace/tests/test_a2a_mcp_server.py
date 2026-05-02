@@ -730,13 +730,13 @@ class TestStdioPipeAssertion:
         """Happy path — both fds are pipes (the production launch shape
         from any MCP client). Should return None without printing or
         exiting."""
-        import a2a_mcp_server
+        from a2a_mcp_server import _assert_stdio_is_pipe_compatible
 
         r, w = os.pipe()
         try:
             # No exit, no stderr noise. We don't capture stderr here
             # because pipe path should produce zero output.
-            a2a_mcp_server._assert_stdio_is_pipe_compatible(stdin_fd=r, stdout_fd=w)
+            _assert_stdio_is_pipe_compatible(stdin_fd=r, stdout_fd=w)
         finally:
             os.close(r)
             os.close(w)
@@ -749,7 +749,7 @@ class TestStdioPipeAssertion:
         `ValueError: Pipe transport is only for pipes...`. Post-fix we
         exit with code 2 and a stderr message that names the symptom +
         fix."""
-        import a2a_mcp_server
+        from a2a_mcp_server import _assert_stdio_is_pipe_compatible
 
         # stdin = pipe (so we isolate the stdout failure path);
         # stdout = regular file (the bug condition).
@@ -758,7 +758,7 @@ class TestStdioPipeAssertion:
         f = open(regular, "wb")
         try:
             with pytest.raises(SystemExit) as excinfo:
-                a2a_mcp_server._assert_stdio_is_pipe_compatible(
+                _assert_stdio_is_pipe_compatible(
                     stdin_fd=r, stdout_fd=f.fileno()
                 )
             assert excinfo.value.code == 2
@@ -778,7 +778,7 @@ class TestStdioPipeAssertion:
     ):
         """Symmetric case — stdin redirected from a regular file. Same
         asyncio constraint applies via connect_read_pipe."""
-        import a2a_mcp_server
+        from a2a_mcp_server import _assert_stdio_is_pipe_compatible
 
         regular = tmp_path / "input.json"
         regular.write_bytes(b'{"jsonrpc":"2.0","id":1,"method":"initialize"}\n')
@@ -786,7 +786,7 @@ class TestStdioPipeAssertion:
         _r, w = os.pipe()
         try:
             with pytest.raises(SystemExit) as excinfo:
-                a2a_mcp_server._assert_stdio_is_pipe_compatible(
+                _assert_stdio_is_pipe_compatible(
                     stdin_fd=f.fileno(), stdout_fd=w
                 )
             assert excinfo.value.code == 2
@@ -801,13 +801,13 @@ class TestStdioPipeAssertion:
         """If stdio is closed (rare but seen in detached daemonized
         contexts), os.fstat raises OSError. We catch it and exit 2 with
         a guidance message instead of letting the traceback escape."""
-        import a2a_mcp_server
+        from a2a_mcp_server import _assert_stdio_is_pipe_compatible
 
         r, w = os.pipe()
         os.close(w)  # Now `w` is a stale fd — fstat will fail.
         try:
             with pytest.raises(SystemExit) as excinfo:
-                a2a_mcp_server._assert_stdio_is_pipe_compatible(
+                _assert_stdio_is_pipe_compatible(
                     stdin_fd=r, stdout_fd=w
                 )
             assert excinfo.value.code == 2
