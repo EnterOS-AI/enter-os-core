@@ -102,7 +102,22 @@ log "Fetching Cloudflare tunnels..."
 # `python3: Argument list too long`. Disk-buffering also makes the
 # accumulator O(n) instead of O(n^2).
 PAGES_DIR=$(mktemp -d -t cf-tunnels-XXXXXX)
-trap 'rm -rf "$PAGES_DIR"' EXIT
+# Single cleanup() covering all tempfiles created downstream
+# ($DELETE_PLAN, $NAME_MAP, $FAIL_LOG, $RESULT_LOG). One trap call so a
+# later `trap '...' EXIT` doesn't silently overwrite an earlier one.
+DELETE_PLAN=""
+NAME_MAP=""
+FAIL_LOG=""
+RESULT_LOG=""
+cleanup() {
+  rm -rf "$PAGES_DIR"
+  [ -n "$DELETE_PLAN" ] && rm -f "$DELETE_PLAN"
+  [ -n "$NAME_MAP" ] && rm -f "$NAME_MAP"
+  [ -n "$FAIL_LOG" ] && rm -f "$FAIL_LOG"
+  [ -n "$RESULT_LOG" ] && rm -f "$RESULT_LOG"
+  return 0
+}
+trap cleanup EXIT
 PAGE=1
 while :; do
   page_file="$PAGES_DIR/page-$(printf '%05d' "$PAGE").json"
@@ -241,27 +256,75 @@ for l in sys.stdin:
 fi
 
 # --- Execute deletes -------------------------------------------------------
+#
+# Parallel delete loop. Was a serial `curl -X DELETE` while-loop;
+# at ~0.7s/tunnel that meant 672 stale tunnels needed ~7-8 min, which
+# tripped the workflow's 5-min timeout-minutes (run 25248788312,
+# cancelled at 424/672). Fan out to $SWEEP_CONCURRENCY workers via
+# xargs so a 600+ backlog drains in ~60s.
+#
+# Design notes:
+#   - Materialize the (id, name) plan to a tempfile for stdin'ing into
+#     xargs. xargs `-a FILE` is GNU-only; piping/`<` is portable to
+#     macOS/BSD xargs (matters for local testing).
+#   - Pass ONLY the id on argv. xargs tokenizes on whitespace by
+#     default; tab-separating id+name on argv risks mangling. We keep
+#     the name in a side-channel id→name map ($NAME_MAP) for failure
+#     log readability, and the worker also writes failure detail to
+#     $FAIL_LOG (`FAIL <name> <id>`) for grep-ability.
+#   - Workers print exactly `OK` or `FAIL` on stdout (one line per
+#     invocation); we tally with `grep -c '^OK$' / '^FAIL$'`.
+
+CONCURRENCY="${SWEEP_CONCURRENCY:-8}"
+DELETE_PLAN=$(mktemp -t cf-tunnels-plan-XXXXXX)
+NAME_MAP=$(mktemp -t cf-tunnels-names-XXXXXX)
+FAIL_LOG=$(mktemp -t cf-tunnels-fail-XXXXXX)
+RESULT_LOG=$(mktemp -t cf-tunnels-result-XXXXXX)
+
+# Build delete plan (just ids, one per line) and the side-channel
+# id→name map (tab-separated).
+echo "$DECISIONS" | python3 -c '
+import json, os, sys
+plan_path = sys.argv[1]
+map_path = sys.argv[2]
+with open(plan_path, "w") as plan, open(map_path, "w") as nmap:
+    for line in sys.stdin:
+        d = json.loads(line)
+        if d.get("action") != "delete":
+            continue
+        tid = d["id"]
+        name = d.get("name", "")
+        plan.write(tid + "\n")
+        nmap.write(tid + "\t" + name + "\n")
+' "$DELETE_PLAN" "$NAME_MAP"
 
 log ""
-log "Executing $DELETE_COUNT deletions..."
-DELETED=0
-FAILED=0
-while IFS= read -r line; do
-  action=$(echo "$line" | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['action'])")
-  [ "$action" = "delete" ] || continue
-  tid=$(echo "$line" | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['id'])")
-  name=$(echo "$line" | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['name'])")
-  if curl -sS -m 10 -X DELETE \
-      -H "Authorization: Bearer $CF_API_TOKEN" \
-      "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/cfd_tunnel/$tid" \
-      | grep -q '"success":true'; then
-    DELETED=$((DELETED+1))
+log "Executing $DELETE_COUNT deletions ($CONCURRENCY-way parallel)..."
+
+export CF_API_TOKEN CF_ACCOUNT_ID NAME_MAP FAIL_LOG
+
+# shellcheck disable=SC2016
+xargs -P "$CONCURRENCY" -L 1 -I {} bash -c '
+  tid="$1"
+  resp=$(curl -sS -m 10 -X DELETE \
+    -H "Authorization: Bearer $CF_API_TOKEN" \
+    "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/cfd_tunnel/$tid")
+  if printf "%s" "$resp" | grep -q "\"success\":true"; then
+    echo OK
   else
-    FAILED=$((FAILED+1))
-    log "  FAILED: $name ($tid)"
+    name=$(awk -F"\t" -v id="$tid" "\$1==id {print \$2; exit}" "$NAME_MAP")
+    echo FAIL
+    echo "FAIL $name $tid" >> "$FAIL_LOG"
   fi
-done <<< "$DECISIONS"
+' _ {} < "$DELETE_PLAN" > "$RESULT_LOG"
+
+DELETED=$(grep -c '^OK$' "$RESULT_LOG" || true)
+FAILED=$(grep -c '^FAIL$' "$RESULT_LOG" || true)
 
 log ""
 log "Done. deleted=$DELETED failed=$FAILED"
+if [ "$FAILED" -ne 0 ]; then
+  log "Failure detail (first 20):"
+  head -20 "$FAIL_LOG" | while IFS= read -r fl; do log "  $fl"; done
+fi
 [ "$FAILED" -eq 0 ]

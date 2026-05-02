@@ -47,10 +47,22 @@ jobs:
   sweep:
     name: Sweep CF tunnels
     runs-on: ubuntu-latest
-    # 5 min surfaces hangs (CF API stall, slow pagination on busy
-    # accounts). Realistic worst case is ~3 min: 2 CP curls + N CF
-    # list pages + N×CF-DELETE, each capped at 10-15s by curl -m.
-    timeout-minutes: 5
+    # 30 min cap. Was 5 min on the theory that the only thing that
+    # could take >5min is a CF-API hang — but on 2026-05-02 a backlog
+    # of 672 stale tunnels accumulated (large staging E2E run + delayed
+    # sweep) and the serial `curl -X DELETE` loop (~0.7s/tunnel) needed
+    # ~7-8min to drain. The 5-min cap killed the run mid-sweep
+    # (cancelled at 424/672, see run 25248788312); a manual rerun
+    # finished the remainder fine.
+    #
+    # The fix is two-part: parallelize the delete loop (8-way xargs in
+    # the script — see scripts/ops/sweep-cf-tunnels.sh), AND raise the
+    # cap so a one-off backlog doesn't trip a hangs-detector that
+    # turned out to be a real-job-too-slow detector. With 8-way
+    # parallelism, 600+ tunnels drains in ~60s; 30 min is generous
+    # headroom for actual hangs to still surface (and is in line with
+    # the sweep-cf-orphans companion job).
+    timeout-minutes: 30
     env:
       CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
       CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
