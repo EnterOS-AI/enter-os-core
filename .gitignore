@@ -146,3 +146,4 @@ backups/
 *-temp.txt
 /test-pmm-*.txt
 /tick-reflections-*.md
+tests/harness/cp-stub/cp-stub

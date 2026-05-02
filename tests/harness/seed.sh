@@ -5,52 +5,53 @@
 # - "alpha"  parent (tier 0)
 # - "beta"   child of alpha (tier 1)
 #
-# Both register via the platform's /registry/register endpoint, which
-# is what real workspaces do at boot. The platform then has them in its
-# DB; tool_list_peers from inside alpha can resolve beta as a peer.
+# Both register via the platform's /workspaces endpoint, which is what
+# CP does at provision time. The platform then has them in its DB;
+# tool_list_peers from inside alpha can resolve beta as a peer.
 
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 
-BASE="${BASE:-http://harness-tenant.localhost:8080}"
-ADMIN="harness-admin-token"
-ORG="harness-org"
-
-curl_admin() {
-    curl -sS -H "Authorization: Bearer $ADMIN" \
-            -H "X-Molecule-Org-Id: $ORG" \
-            -H "Content-Type: application/json" "$@"
-}
+# shellcheck source=_curl.sh
+source "$HERE/_curl.sh"
 
 echo "[seed] confirming tenant is reachable via cf-proxy..."
-HEALTH=$(curl -sS "$BASE/health" || echo "")
+HEALTH=$(curl_anon "$BASE/health" || echo "")
 if [ -z "$HEALTH" ]; then
-    echo "[seed] FAILED: $BASE/health unreachable. Did ./up.sh complete? Did you add"
-    echo "       127.0.0.1 harness-tenant.localhost to /etc/hosts?"
+    echo "[seed] FAILED: $BASE/health unreachable. Did ./up.sh complete?"
     exit 1
 fi
 echo "[seed]   $HEALTH"
 
 echo "[seed] confirming /buildinfo returns the harness GIT_SHA..."
-BUILD=$(curl -sS "$BASE/buildinfo" || echo "")
+BUILD=$(curl_anon "$BASE/buildinfo" || echo "")
 echo "[seed]   $BUILD"
 
-# Mint a fresh admin-call workspace ID for the parent. Platform's
-# /admin/workspaces/:id/test-token mints a per-workspace bearer; the
-# replay scripts use it to call the workspace-scoped routes.
+# Create alpha (parent) and beta (child of alpha). The handler always
+# generates the workspace id server-side and ignores any id in the
+# request body, so we capture the returned id rather than minting one
+# locally — older versions of this script minted client-side and would
+# silently desync from the workspaces table, breaking FK-dependent
+# replays (chat-history seeds activity_logs which has a FK to workspaces).
 echo "[seed] creating workspace 'alpha' (parent)..."
-ALPHA_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
-curl_admin -X POST "$BASE/workspaces" \
-    -d "{\"id\":\"$ALPHA_ID\",\"name\":\"alpha\",\"tier\":0,\"runtime\":\"langgraph\"}" \
-    >/dev/null
+ALPHA_ID=$(curl_admin -X POST "$BASE/workspaces" \
+    -d '{"name":"alpha","tier":0,"runtime":"langgraph"}' \
+    | jq -r '.id')
+if [ -z "$ALPHA_ID" ] || [ "$ALPHA_ID" = "null" ]; then
+    echo "[seed] FAIL: alpha workspace creation returned no id"
+    exit 1
+fi
 echo "[seed]   alpha id=$ALPHA_ID"
 
 echo "[seed] creating workspace 'beta' (child of alpha)..."
-BETA_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
-curl_admin -X POST "$BASE/workspaces" \
-    -d "{\"id\":\"$BETA_ID\",\"name\":\"beta\",\"tier\":1,\"parent_id\":\"$ALPHA_ID\",\"runtime\":\"langgraph\"}" \
-    >/dev/null
+BETA_ID=$(curl_admin -X POST "$BASE/workspaces" \
+    -d "{\"name\":\"beta\",\"tier\":1,\"parent_id\":\"$ALPHA_ID\",\"runtime\":\"langgraph\"}" \
+    | jq -r '.id')
+if [ -z "$BETA_ID" ] || [ "$BETA_ID" = "null" ]; then
+    echo "[seed] FAIL: beta workspace creation returned no id"
+    exit 1
+fi
 echo "[seed]   beta id=$BETA_ID"
 
 # Stash IDs so replay scripts pick them up.

@@ -41,15 +41,18 @@ fi
 echo "[harness] starting cp-stub + postgres + redis + tenant + cf-proxy ..."
 docker compose -f compose.yml up -d --wait
 
-echo "[harness] /etc/hosts entry for harness-tenant.localhost..."
-if ! grep -q '^127\.0\.0\.1[[:space:]]\+harness-tenant\.localhost' /etc/hosts; then
-    echo "  (skip — your /etc/hosts may not resolve *.localhost. If tests fail with"
-    echo "   'getaddrinfo' errors, add: 127.0.0.1 harness-tenant.localhost)"
-fi
-
+# Sudo-free reachability: cf-proxy/nginx routes by Host header (matches
+# production CF tunnel), so replays target loopback :8080 with a Host
+# header rather than depending on /etc/hosts resolution. _curl.sh
+# centralises this. Legacy /etc/hosts users still work — the BASE env
+# var override accepts either shape.
 echo ""
-echo "[harness] up. Tenant: http://harness-tenant.localhost:8080/health"
-echo "                     http://harness-tenant.localhost:8080/buildinfo"
-echo "          cp-stub:    http://localhost (internal-only via compose net)"
+echo "[harness] up."
+echo "          Tenant via cf-proxy:  http://localhost:8080/health"
+echo "                                 (Host: harness-tenant.localhost)"
+echo "          cp-stub:               internal-only via compose net"
+echo ""
+echo "          Quick check:"
+echo "            curl -H 'Host: harness-tenant.localhost' http://localhost:8080/health"
 echo ""
 echo "Next: ./seed.sh   # mint admin token + register sample workspaces"

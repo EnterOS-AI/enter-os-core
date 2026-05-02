@@ -36,17 +36,13 @@ if [ ! -f .seed.env ]; then
 fi
 # shellcheck source=/dev/null
 source .seed.env
-
-BASE="${BASE:-http://harness-tenant.localhost:8080}"
-ADMIN="harness-admin-token"
-ORG="harness-org"
+# shellcheck source=../_curl.sh
+source "$HARNESS_ROOT/_curl.sh"
 
 # ─── (a) WIRE: tenant returns 404 for an unregistered workspace ────────
 ROGUE_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
 echo "[replay] (a) WIRE: querying /registry/$ROGUE_ID/peers (unregistered workspace)..."
-HTTP_CODE=$(curl -sS -o /tmp/peer-replay.json -w '%{http_code}' \
-    -H "Authorization: Bearer $ADMIN" \
-    -H "X-Molecule-Org-Id: $ORG" \
+HTTP_CODE=$(curl_admin -o /tmp/peer-replay.json -w '%{http_code}' \
     -H "X-Workspace-ID: $ROGUE_ID" \
     "$BASE/registry/$ROGUE_ID/peers")
 

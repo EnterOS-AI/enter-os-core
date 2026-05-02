@@ -22,12 +22,12 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HARNESS_ROOT="$(dirname "$HERE")"
-
-BASE="${BASE:-http://harness-tenant.localhost:8080}"
+# shellcheck source=../_curl.sh
+source "$HARNESS_ROOT/_curl.sh"
 
 # 1. Confirm /buildinfo wire shape — same shape the workflow's jq lookup expects.
 echo "[replay] curl $BASE/buildinfo ..."
-BUILD_JSON=$(curl -sS "$BASE/buildinfo")
+BUILD_JSON=$(curl_anon "$BASE/buildinfo")
 echo "[replay]   $BUILD_JSON"
 
 ACTUAL_SHA=$(echo "$BUILD_JSON" | jq -r '.git_sha // ""')

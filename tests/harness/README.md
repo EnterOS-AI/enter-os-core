@@ -1,11 +1,19 @@
 # Production-shape local harness
 
 The harness brings up the SaaS tenant topology on localhost using the
-same `Dockerfile.tenant` image that ships to production. Tests run
-against `http://harness-tenant.localhost:8080` and exercise the
-SAME code path a real tenant takes — including TenantGuard middleware,
+same `Dockerfile.tenant` image that ships to production. Tests target
+the cf-proxy on `http://localhost:8080` and pass the tenant identity
+via a `Host: harness-tenant.localhost` header — exactly the way
+production CF tunnel routes by Host header. The cf-proxy nginx then
+rewrites headers and proxies to the tenant container, exercising the
+SAME code path a real tenant takes including TenantGuard middleware,
 the `/cp/*` reverse proxy, the canvas reverse proxy, and a
 Cloudflare-tunnel-shape header rewrite layer.
+
+`tests/harness/_curl.sh` is the helper sourced by every replay —
+provides `curl_anon`, `curl_admin`, `curl_workspace`, and `psql_exec`
+wrappers that set the right Host + auth headers automatically. New
+replays should source it rather than rolling their own curl.
 
 ## Why this exists
 
@@ -53,15 +61,18 @@ KEEP_UP=1 ./run-all-replays.sh   # leave harness up for debugging
 REBUILD=1 ./run-all-replays.sh   # rebuild images before booting
 ```
 
-First-time setup needs an `/etc/hosts` entry so `harness-tenant.localhost`
-resolves to the local cf-proxy:
+No `/etc/hosts` edit required — replays use the cf-proxy's loopback
+port and pass `Host: harness-tenant.localhost` as a header (`_curl.sh`
+handles this automatically). This matches how production CF tunnel
+routes: the URL is the public CF endpoint, the Host header carries the
+per-tenant identity. Quick check:
 
 ```bash
-echo "127.0.0.1 harness-tenant.localhost" | sudo tee -a /etc/hosts
+curl -H "Host: harness-tenant.localhost" http://localhost:8080/health
 ```
 
-(macOS resolves `*.localhost` automatically in some setups; Linux
-typically does not.)
+(If you have a legacy `/etc/hosts` entry from older docs, it still
+works — `BASE` and `TENANT_HOST` both honor env-var overrides.)
 
 ## Replay scripts
 
@@ -74,6 +85,8 @@ green" — the script becomes the regression gate that closes that gap.
 |--------|--------|----------------|
 | `peer-discovery-404.sh` | #2397 | tool_list_peers surfaces the actual reason instead of "may be isolated" |
 | `buildinfo-stale-image.sh` | #2395 | GIT_SHA reaches the binary; verify-step comparison logic works |
+| `chat-history.sh` | #2472 + #2474 + #2476 | `peer_id` filter (incl. OR over source/target) + `before_ts` paging + UUID/RFC3339 trust boundary on the activity route |
+| `channel-envelope-trust-boundary.sh` | #2471 + #2481 | published wheel scrubs malformed `peer_id` from the channel envelope and from `agent_card_url` (path-traversal + XML-attr injection) |
 
 To add a new replay:
 1. Drop a script under `replays/` named after the issue.
@@ -111,9 +124,7 @@ its mandate of "exercise the tenant binary in production-shape topology."
 
 ## Roadmap
 
-- **Phase 1 (shipped):** harness + cp-stub + cf-proxy + 2 replays + `run-all-replays.sh` runner.
-- **Phase 2:** convert `tests/e2e/test_api.sh` to run against the
-  harness instead of localhost. Make harness-based E2E a required CI
-  check (a workflow that invokes `run-all-replays.sh` on every PR).
-- **Phase 3:** config-coherence lint that diffs harness env list
-  against production CP's env list, fails CI on drift.
+- **Phase 1 (shipped):** harness + cp-stub + cf-proxy + 4 replays + `run-all-replays.sh` runner. No-sudo `Host`-header path via `_curl.sh`. Per-replay psql seeding for tests that need DB-side fixtures.
+- **Phase 2 (in flight):** multi-tenant — second `tenant-beta` service in compose, second Postgres database, replays for cross-tenant A2A + TenantGuard isolation. Convert `tests/e2e/test_api.sh` to target the harness instead of localhost. Make harness-based E2E a required CI check (a workflow that invokes `run-all-replays.sh` on every PR via the self-hosted Mac runner).
+- **Phase 3:** replace `cp-stub/` with the real `molecule-controlplane` Docker build. Add a config-coherence lint that diffs harness env list against production CP's env list and fails CI on drift.
+- **Phase 4 (long-term):** Miniflare in front of cf-proxy for real CF emulation (WAF, BotID, rate-limit, cf-tunnel headers). LocalStack for the EC2 provisioner. Anonymized prod-traffic recording/replay for SaaS-scale regression detection.
