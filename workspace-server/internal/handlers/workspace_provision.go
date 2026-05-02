@@ -6,7 +6,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
+	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/crypto"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
@@ -14,6 +16,37 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/wsauth"
 )
+
+// logProvisionPanic is the deferred recover at the top of every provision
+// goroutine. Without it, a panic inside provisionWorkspaceOpts /
+// provisionWorkspaceCP propagates up the goroutine stack and crashes the
+// whole workspace-server process — taking every other tenant workspace
+// down with it. With it, the panic is logged with a stack trace, the
+// workspace gets persistently marked failed (so the canvas surfaces
+// something instead of leaving it stuck in provisioning until the 10-min
+// sweeper fires), and the rest of the process keeps serving.
+//
+// Issue #2486 added this after the symmetric class — silent goroutine
+// exit, no log, no failure mark — was observed in prod. Even if the
+// root cause turns out not to be a panic, surfacing the panic class
+// closes one branch of "what could have happened" cleanly.
+func logProvisionPanic(workspaceID, mode string) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	log.Printf("Provisioner: PANIC during provision goroutine for %s (mode=%s): %v\nstack:\n%s",
+		workspaceID, mode, r, debug.Stack())
+	// Best-effort mark-failed via a fresh context — the provision goroutine's
+	// ctx may have been the one panicking. 10s is enough for a single UPDATE.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := db.DB.ExecContext(ctx,
+		`UPDATE workspaces SET status='failed', last_sample_error=$2, updated_at=now() WHERE id=$1`,
+		workspaceID, fmt.Sprintf("provision panic: %v", r)); err != nil {
+		log.Printf("Provisioner: failed to persist panic-failure for %s: %v", workspaceID, err)
+	}
+}
 
 // provisionWorkspace handles async container deployment with timeout.
 func (h *WorkspaceHandler) provisionWorkspace(workspaceID, templatePath string, configFiles map[string][]byte, payload models.CreateWorkspacePayload) {
@@ -25,6 +58,14 @@ func (h *WorkspaceHandler) provisionWorkspace(workspaceID, templatePath string, 
 // that should NOT be persisted on CreateWorkspacePayload because they're
 // request-scoped flags.
 func (h *WorkspaceHandler) provisionWorkspaceOpts(workspaceID, templatePath string, configFiles map[string][]byte, payload models.CreateWorkspacePayload, resetClaudeSession bool) {
+	// Entry log — distinguishes "goroutine never started" from "started but
+	// exited via an unlogged path" when debugging stuck-in-provisioning
+	// rows. Issue #2486: 7 claude-code workspaces stuck in provisioning had
+	// neither a prepare-failed nor start-failed nor success log line, so an
+	// operator couldn't tell whether the goroutine ran at all.
+	log.Printf("Provisioner: goroutine entered for %s (runtime=%s, mode=docker)", workspaceID, payload.Runtime)
+	defer logProvisionPanic(workspaceID, "docker")
+
 	ctx, cancel := context.WithTimeout(context.Background(), provisioner.ProvisionTimeout)
 	defer cancel()
 
@@ -640,6 +681,14 @@ func loadWorkspaceSecrets(ctx context.Context, workspaceID string) (map[string]s
 // share so the next mint added can't be silently forgotten on one
 // side.
 func (h *WorkspaceHandler) provisionWorkspaceCP(workspaceID, templatePath string, configFiles map[string][]byte, payload models.CreateWorkspacePayload) {
+	// Entry log + panic recovery — see provisionWorkspaceOpts for rationale.
+	// Issue #2486: 7 claude-code workspaces stuck in provisioning produced
+	// none of the four documented exit-path log lines, leaving operators
+	// unable to distinguish "goroutine never started" from "started but
+	// returned via an unlogged path."
+	log.Printf("CPProvisioner: goroutine entered for %s (runtime=%s, mode=cp)", workspaceID, payload.Runtime)
+	defer logProvisionPanic(workspaceID, "cp")
+
 	ctx, cancel := context.WithTimeout(context.Background(), provisioner.ProvisionTimeout)
 	defer cancel()
 
