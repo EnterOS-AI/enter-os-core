@@ -22,30 +22,33 @@ import (
 // provisionWorkspaceCP propagates up the goroutine stack and crashes the
 // whole workspace-server process — taking every other tenant workspace
 // down with it. With it, the panic is logged with a stack trace, the
-// workspace gets persistently marked failed (so the canvas surfaces
-// something instead of leaving it stuck in provisioning until the 10-min
-// sweeper fires), and the rest of the process keeps serving.
+// workspace is marked failed via markProvisionFailed (so the canvas
+// surfaces a failure card immediately instead of leaving the spinner
+// stuck on "provisioning" until the 10-min sweeper fires), and the rest
+// of the process keeps serving.
 //
 // Issue #2486 added this after the symmetric class — silent goroutine
 // exit, no log, no failure mark — was observed in prod. Even if the
 // root cause turns out not to be a panic, surfacing the panic class
 // closes one branch of "what could have happened" cleanly.
-func logProvisionPanic(workspaceID, mode string) {
+//
+// Method on *WorkspaceHandler (not free function) so the panic path can
+// reuse markProvisionFailed and emit the WORKSPACE_PROVISION_FAILED
+// broadcast — without the broadcast the canvas only learns of the
+// failure when the next poll/refresh hits the DB.
+func (h *WorkspaceHandler) logProvisionPanic(workspaceID, mode string) {
 	r := recover()
 	if r == nil {
 		return
 	}
 	log.Printf("Provisioner: PANIC during provision goroutine for %s (mode=%s): %v\nstack:\n%s",
 		workspaceID, mode, r, debug.Stack())
-	// Best-effort mark-failed via a fresh context — the provision goroutine's
-	// ctx may have been the one panicking. 10s is enough for a single UPDATE.
+	// Fresh context: the provision goroutine's ctx may have been the one
+	// panicking (timeout, cancelled). 10s is enough for the broadcast +
+	// single UPDATE inside markProvisionFailed.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := db.DB.ExecContext(ctx,
-		`UPDATE workspaces SET status='failed', last_sample_error=$2, updated_at=now() WHERE id=$1`,
-		workspaceID, fmt.Sprintf("provision panic: %v", r)); err != nil {
-		log.Printf("Provisioner: failed to persist panic-failure for %s: %v", workspaceID, err)
-	}
+	h.markProvisionFailed(ctx, workspaceID, fmt.Sprintf("provision panic: %v", r), nil)
 }
 
 // provisionWorkspace handles async container deployment with timeout.
@@ -64,7 +67,7 @@ func (h *WorkspaceHandler) provisionWorkspaceOpts(workspaceID, templatePath stri
 	// neither a prepare-failed nor start-failed nor success log line, so an
 	// operator couldn't tell whether the goroutine ran at all.
 	log.Printf("Provisioner: goroutine entered for %s (runtime=%s, mode=docker)", workspaceID, payload.Runtime)
-	defer logProvisionPanic(workspaceID, "docker")
+	defer h.logProvisionPanic(workspaceID, "docker")
 
 	ctx, cancel := context.WithTimeout(context.Background(), provisioner.ProvisionTimeout)
 	defer cancel()
@@ -687,7 +690,7 @@ func (h *WorkspaceHandler) provisionWorkspaceCP(workspaceID, templatePath string
 	// unable to distinguish "goroutine never started" from "started but
 	// returned via an unlogged path."
 	log.Printf("CPProvisioner: goroutine entered for %s (runtime=%s, mode=cp)", workspaceID, payload.Runtime)
-	defer logProvisionPanic(workspaceID, "cp")
+	defer h.logProvisionPanic(workspaceID, "cp")
 
 	ctx, cancel := context.WithTimeout(context.Background(), provisioner.ProvisionTimeout)
 	defer cancel()

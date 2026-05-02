@@ -29,7 +29,9 @@ import (
 //
 // If the silent-drop class is present in current head code, this test
 // fails because either (a) the entry-log count is < 7 (meaning one or
-// more goroutines never started — Go runtime issue), or (b) the
+// more goroutines reached the goroutine boundary but never produced
+// the entry-log line — entry log renamed/removed, or log writer
+// hijacked), or (b) the
 // recorder count is < 7 (meaning a goroutine entered but exited before
 // reaching cpProv.Start, via some unlogged path).
 //
