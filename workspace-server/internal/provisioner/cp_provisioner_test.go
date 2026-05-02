@@ -348,6 +348,125 @@ func TestStop_TransportErrorSurfaces(t *testing.T) {
 	}
 }
 
+// TestStop_5xxResponseSurfacesError — pre-fix bug: the CP returning 500
+// (AWS hiccup, missing IAM, transient outage) was silently treated as
+// success because http.Client.Do only errors on transport failures.
+// Result was a leaked workspace EC2 the orphan-report couldn't see.
+// Workspace-server's Delete handler depends on this error to populate
+// stopErrs and surface a 500 to its client (the loud-fail-instead-of-
+// silent-leak choice documented in workspace_crud.go #1843).
+func TestStop_5xxResponseSurfacesError(t *testing.T) {
+	primeInstanceIDLookup(t, map[string]string{"ws-1": "i-leaksrc"})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "ec2 terminate hit IAM rate limit", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	p := &CPProvisioner{
+		baseURL: srv.URL, orgID: "org-1",
+		sharedSecret: "s", adminToken: "t",
+		httpClient: srv.Client(),
+	}
+	err := p.Stop(context.Background(), "ws-1")
+	if err == nil {
+		t.Fatal("Stop swallowed CP 500 — leak source still open")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error should contain status code, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "ws-1") {
+		t.Errorf("error should name the workspace for triage, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "IAM rate limit") {
+		t.Errorf("error should include CP body excerpt for triage, got %q", err.Error())
+	}
+}
+
+// TestStop_4xxResponseSurfacesError — same shape as 5xx for the 4xx
+// case (e.g. CP returns 404 because the instance_id was already gone,
+// or 401 because PROVISION_SHARED_SECRET drifted). 404 in particular
+// is a real signal — caller may want to short-circuit, but it must
+// NOT be swallowed as success because it leaves the workspace row
+// flipped to status='removed' on a different mismatch path.
+func TestStop_4xxResponseSurfacesError(t *testing.T) {
+	primeInstanceIDLookup(t, map[string]string{"ws-1": "i-gone"})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"instance not found"}`))
+	}))
+	defer srv.Close()
+
+	p := &CPProvisioner{
+		baseURL: srv.URL, orgID: "org-1",
+		sharedSecret: "s", adminToken: "t",
+		httpClient: srv.Client(),
+	}
+	err := p.Stop(context.Background(), "ws-1")
+	if err == nil {
+		t.Fatal("Stop swallowed CP 404")
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("error should contain status, got %q", err.Error())
+	}
+}
+
+// TestStop_2xxVariantsAllSucceed — ensures the new check accepts the
+// full 2xx range. CP currently returns 200, but we have historically
+// flipped between 200 and 204 No Content for DELETE; lock both in.
+func TestStop_2xxVariantsAllSucceed(t *testing.T) {
+	primeInstanceIDLookup(t, map[string]string{"ws-1": "i-ok"})
+	for _, code := range []int{
+		http.StatusOK,           // 200
+		http.StatusAccepted,     // 202
+		http.StatusNoContent,    // 204
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(code)
+		}))
+		p := &CPProvisioner{
+			baseURL: srv.URL, orgID: "org-1",
+			sharedSecret: "s", adminToken: "t",
+			httpClient: srv.Client(),
+		}
+		err := p.Stop(context.Background(), "ws-1")
+		srv.Close()
+		if err != nil {
+			t.Errorf("Stop with CP HTTP %d returned err = %v, want nil", code, err)
+		}
+	}
+}
+
+// TestStop_LongBodyTruncatedInError — defensive: a pathological CP
+// returning a multi-MB body shouldn't blow up the error message. The
+// fix uses io.LimitReader(512) so logs stay sane during an outage.
+func TestStop_LongBodyTruncatedInError(t *testing.T) {
+	primeInstanceIDLookup(t, map[string]string{"ws-1": "i-bigbody"})
+	bigBody := strings.Repeat("x", 10000)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, bigBody)
+	}))
+	defer srv.Close()
+
+	p := &CPProvisioner{
+		baseURL: srv.URL, orgID: "org-1",
+		sharedSecret: "s", adminToken: "t",
+		httpClient: srv.Client(),
+	}
+	err := p.Stop(context.Background(), "ws-1")
+	if err == nil {
+		t.Fatal("Stop swallowed 502")
+	}
+	// Error should contain SOME body bytes (proves we read something) but
+	// not all of it (proves the LimitReader actually capped).
+	if !strings.Contains(err.Error(), "x") {
+		t.Errorf("error should include body excerpt, got %q", err.Error())
+	}
+	if len(err.Error()) > 1024 {
+		t.Errorf("error length = %d, want capped well below body length 10000", len(err.Error()))
+	}
+}
+
 // TestIsRunning_ParsesStateField — CP returns the EC2 state, we expose
 // a bool ("running"/"pending"/"terminated" → true only for "running").
 func TestIsRunning_ParsesStateField(t *testing.T) {

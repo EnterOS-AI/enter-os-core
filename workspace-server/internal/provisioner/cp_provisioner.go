@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
@@ -254,7 +255,24 @@ func (p *CPProvisioner) Stop(ctx context.Context, workspaceID string) error {
 	if err != nil {
 		return fmt.Errorf("cp provisioner: stop: %w", err)
 	}
-	_ = resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
+	// http.Client.Do only returns err on transport failure; a 4xx/5xx
+	// response is NOT an error. Without this status check, a CP that
+	// returns 5xx (AWS hiccup, missing IAM, transient outage) is read
+	// as success, the workspace row is then marked status='removed' by
+	// the caller, and the EC2 stays alive forever — there's no DB row
+	// left to point at the orphan. This is the leak source documented
+	// in workspace_crud.go's #1843 comment ("orphan EC2 on a
+	// 0-customer account scenario"); the loud-fail path already exists
+	// upstream, this just plumbs it through.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Read a bounded slice of the body so the error message gives ops
+		// enough to triage without risking a multi-MB log line on a
+		// pathological response. 512 bytes covers any sane error envelope.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("cp provisioner: stop %s: unexpected %d: %s",
+			workspaceID, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
 	return nil
 }
 
