@@ -32,23 +32,19 @@ interface A2AFileRef {
   bytes?: string;
   size?: number;
 }
-// A2A Part shape — covers both v0 (Pydantic discriminated union with
-// `kind: "text" | "file"`) and v1 (a2a-sdk protobuf with flat fields:
-// `text` for text parts; `url` + `filename` + `mediaType` for file
-// parts; no `kind` discriminator at all). Outbound we now send v1 for
-// file parts because the v1 protobuf parser drops the v0 keys via
-// `ignore_unknown_fields=True`, surfacing as the user-visible
-// "Error: message contained no text content" on image-only chats
-// (2026-05-01 hongming incident). Text parts stay accident-compatible
-// across v0/v1 because the field name is `text` in both.
+// A2A Part — outbound matches the v0 Pydantic discriminated-union
+// shape that a2a-sdk's JSON-RPC layer validates against (TextPart |
+// FilePart | DataPart). The v1 flat-protobuf shape `{url, filename,
+// mediaType}` is internal SDK serialization only; sending it on the
+// wire fails Pydantic validation with `TextPart.text required,
+// FilePart.file required, DataPart.data required` and never reaches
+// the executor. Inbound also tolerates the v1 shape via
+// message-parser.ts since the agent itself may serialize as v1 in
+// some downstream tools.
 interface A2APart {
-  kind?: string;
+  kind: string;
   text?: string;
   file?: A2AFileRef;
-  // v1 file-part fields (flat — no nested `file` object):
-  url?: string;
-  filename?: string;
-  mediaType?: string;
 }
 interface A2AResponse {
   result?: {
@@ -516,21 +512,28 @@ function MyChatPanel({ workspaceId, data }: Props) {
     // A2A parts: text part (if any) + file parts (per attachment). The
     // agent sees both in a single turn, matching the A2A spec shape.
     //
-    // File parts use the v1 protobuf shape (flat `url`/`filename`/
-    // `mediaType`) because the workspace runtime's v1 parser drops
-    // the legacy v0 `{kind:"file", file:{...}}` shape via
-    // `ignore_unknown_fields=True`. Sending v0 → empty Part →
-    // empty attachments → "Error: message contained no text content"
-    // on image-only chats (2026-05-01 hongming). Text parts keep the
-    // shared `{kind:"text", text}` shape because `text` is a field
-    // in both v0 and v1.
+    // File parts use the v0 discriminated-union shape `{kind:"file",
+    // file:{...}}` because that's what a2a-sdk's JSON-RPC layer
+    // validates against (`SendMessageRequest.params.message.parts[]`
+    // → `TextPart | FilePart | DataPart` Pydantic union). Sending the
+    // v1 flat shape `{url, filename, mediaType}` returns
+    // `Invalid Request — TextPart.text required, FilePart.file
+    // required, DataPart.data required` and the message never
+    // reaches the executor. v1 protobuf is internal serialization
+    // only; the wire shape stays v0 until the SDK migrates the
+    // JSON-RPC schema. Text parts keep `{kind:"text", text}` for the
+    // same reason.
     const parts: A2APart[] = [];
     if (text) parts.push({ kind: "text", text });
     for (const att of uploaded) {
       parts.push({
-        url: att.uri,
-        filename: att.name,
-        mediaType: att.mimeType,
+        kind: "file",
+        file: {
+          name: att.name,
+          mimeType: att.mimeType,
+          uri: att.uri,
+          size: att.size,
+        },
       });
     }
 
