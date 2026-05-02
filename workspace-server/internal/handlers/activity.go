@@ -15,6 +15,7 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type ActivityHandler struct {
@@ -55,9 +56,24 @@ func (h *ActivityHandler) List(c *gin.Context) {
 	workspaceID := c.Param("id")
 	activityType := c.Query("type")
 	source := c.Query("source") // "canvas" = source_id IS NULL, "agent" = source_id IS NOT NULL
+	peerID := c.Query("peer_id") // optional UUID — restrict to rows where this peer is sender OR target
 	limitStr := c.DefaultQuery("limit", "100")
 	sinceSecsStr := c.Query("since_secs")
 	sinceID := c.Query("since_id")
+
+	// Validate peer_id as a UUID at the trust boundary so a malformed
+	// caller (the agent or a downstream MCP tool) can't smuggle SQL
+	// fragments into the WHERE clause via the parameter, even though
+	// args are bound. UUID-shape rejection is also the cleanest 400
+	// signal for the wheel-side chat_history MCP tool — clearer than a
+	// generic "no rows" empty list when the agent passed an obviously
+	// wrong id.
+	if peerID != "" {
+		if _, err := uuid.Parse(peerID); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "peer_id must be a UUID"})
+			return
+		}
+	}
 
 	limit := 100
 	if n, err := strconv.Atoi(limitStr); err == nil && n > 0 {
@@ -134,6 +150,22 @@ func (h *ActivityHandler) List(c *gin.Context) {
 	} else if source != "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "source must be 'canvas' or 'agent'"})
 		return
+	}
+	if peerID != "" {
+		// Restrict to rows where this peer is either the sender (source_id)
+		// or the recipient (target_id) of an A2A turn. This is the
+		// "conversation history with peer X" view the wheel-side
+		// chat_history MCP tool surfaces — agent receives a peer_agent
+		// push, wants to see the prior 20 turns with that workspace
+		// without paging through every other peer's traffic.
+		//
+		// Bound as a single arg, matched twice — keeps argIdx accurate
+		// and avoids duplicate parameter binding (some drivers reject the
+		// same arg slot reused, ours is fine but the explicit form is
+		// clearer to read and matches the rest of the builder.)
+		query += fmt.Sprintf(" AND (source_id = $%d OR target_id = $%d)", argIdx, argIdx)
+		args = append(args, peerID)
+		argIdx++
 	}
 	if sinceSecs > 0 {
 		// Use a parameterized interval so the value is bound, not

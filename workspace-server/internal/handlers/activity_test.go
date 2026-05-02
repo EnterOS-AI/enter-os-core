@@ -167,6 +167,119 @@ func TestActivityList_SourceWithType(t *testing.T) {
 	}
 }
 
+// ---------- Activity List peer_id filter ----------
+//
+// peer_id surfaces the conversation history with one specific peer
+// for the wheel-side chat_history MCP tool. The filter joins
+// (source_id = $X OR target_id = $X) so both inbound (where this
+// peer was the sender) and outbound (where this peer was the
+// recipient) turns appear in the same view, ordered by created_at.
+
+const testPeerUUID = "11111111-2222-3333-4444-555555555555"
+
+func TestActivityList_PeerIDFilter(t *testing.T) {
+	mock := setupTestDB(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewActivityHandler(broadcaster)
+
+	// peer_id binds twice in the query (source_id OR target_id) but is
+	// added to args once — sqlmock matches positional args, so the
+	// binding shape is what matters.
+	mock.ExpectQuery(
+		`SELECT .+ FROM activity_logs WHERE workspace_id = .+ AND \(source_id = .+ OR target_id = .+\)`,
+	).
+		WithArgs("ws-1", testPeerUUID, 100).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "workspace_id", "activity_type", "source_id", "target_id",
+			"method", "summary", "request_body", "response_body",
+			"tool_trace", "duration_ms", "status", "error_detail", "created_at",
+		}))
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}}
+	c.Request = httptest.NewRequest(
+		"GET", "/workspaces/ws-1/activity?peer_id="+testPeerUUID, nil,
+	)
+	handler.List(c)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestActivityList_PeerIDComposesWithType(t *testing.T) {
+	// peer_id + type + source must compose into a single AND-chain so
+	// the wheel can fetch e.g. "all peer_agent inbound from peer X" in
+	// one round-trip. Pin both args + arg order so a future refactor
+	// of the builder can't silently rearrange placeholders.
+	mock := setupTestDB(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewActivityHandler(broadcaster)
+
+	mock.ExpectQuery(
+		`SELECT .+ FROM activity_logs WHERE workspace_id = .+ AND activity_type = .+ AND source_id IS NOT NULL AND \(source_id = .+ OR target_id = .+\)`,
+	).
+		WithArgs("ws-1", "a2a_receive", testPeerUUID, 100).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "workspace_id", "activity_type", "source_id", "target_id",
+			"method", "summary", "request_body", "response_body",
+			"tool_trace", "duration_ms", "status", "error_detail", "created_at",
+		}))
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}}
+	c.Request = httptest.NewRequest(
+		"GET",
+		"/workspaces/ws-1/activity?type=a2a_receive&source=agent&peer_id="+testPeerUUID,
+		nil,
+	)
+	handler.List(c)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestActivityList_PeerIDRejectsNonUUID(t *testing.T) {
+	// Trust-boundary check: a malformed peer_id must 400 before any
+	// query is built. Defends against caller bugs (typoed UUID,
+	// leading whitespace) and against any future code path that might
+	// otherwise interpolate the value into the URL or another query.
+	gin.SetMode(gin.TestMode)
+	broadcaster := newTestBroadcaster()
+	handler := NewActivityHandler(broadcaster)
+
+	for _, bad := range []string{
+		"not-a-uuid",
+		"%27%20OR%201%3D1%20--",                          // URL-encoded ' OR 1=1 --
+		"11111111-2222-3333-4444",                        // truncated
+		"11111111-2222-3333-4444-555555555555-extra",     // overlong
+		"11111111-2222-3333-4444-55555555555G",           // non-hex
+	} {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = gin.Params{{Key: "id", Value: "ws-1"}}
+		c.Request = httptest.NewRequest(
+			"GET", "/workspaces/ws-1/activity?peer_id="+bad, nil,
+		)
+		handler.List(c)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("peer_id=%q: expected 400, got %d (%s)", bad, w.Code, w.Body.String())
+		}
+	}
+}
+
 // ---------- Activity type allowlist (#125: memory_write added) ----------
 
 func TestActivityReport_AcceptsMemoryWriteType(t *testing.T) {
