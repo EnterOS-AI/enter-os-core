@@ -143,25 +143,27 @@ export function useTemplateDeploy(
         setDeploying(null);
         return;
       }
-      // Open the picker modal whenever preflight failed OR the
-      // template offers ≥2 provider options. Multi-provider
-      // templates (e.g. hermes) need an explicit per-workspace
-      // pick — silently inheriting whichever global key matches
-      // produces the "No LLM provider configured" 500 because the
-      // adapter falls back to its compiled-in default model when
-      // the user hasn't asserted a slug. The "always ask" rule
-      // skips claude-code / langgraph-style single-provider
-      // templates where there's nothing to choose between.
-      const shouldShowPicker =
-        !preflight.ok || preflight.providers.length >= 2;
-      if (shouldShowPicker) {
-        setMissingKeysInfo({ template, preflight });
-        setDeploying(null);
-        return;
-      }
-      await executeDeploy(template);
+      // Always open the picker — every deploy goes through an
+      // explicit confirm-provider/model step. Reasons:
+      //   1. Multi-provider templates (e.g. hermes) need a per-
+      //      workspace pick or the adapter falls back to its
+      //      compiled-in default and 500s with "No LLM provider
+      //      configured".
+      //   2. Single-provider templates (claude-code, langgraph)
+      //      still need the model field — the template's default
+      //      may be wrong for the user's billing tier or a model
+      //      they explicitly want (sonnet vs opus vs haiku).
+      //   3. Even when keys + model are pre-filled, surfacing the
+      //      modal one-click-away is the cheapest UX for catching
+      //      a misconfigured org BEFORE provisioning an EC2 that
+      //      will then sit in degraded.
+      // The picker handles the "all-keys-saved single-provider"
+      // case as a confirm-only prompt (provider radio is hidden,
+      // model input is pre-filled with template.model).
+      setMissingKeysInfo({ template, preflight });
+      setDeploying(null);
     },
-    [executeDeploy],
+    [],
   );
 
   // No useCallback here — consumers call this on every render anyway
