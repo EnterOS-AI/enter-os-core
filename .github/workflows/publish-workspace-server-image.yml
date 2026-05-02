@@ -131,7 +131,7 @@ jobs:
       # drifted 10 days behind staging — same class of bug, different
       # mechanism.
       - name: Build & push platform image to GHCR (staging-<sha> + staging-latest)
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           context: .
           file: ./workspace-server/Dockerfile
@@ -155,7 +155,7 @@ jobs:
             org.opencontainers.image.description=Molecule AI platform (Go API server) — pending canary verify
 
       - name: Build & push tenant image to GHCR (staging-<sha> + staging-latest)
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           context: .
           file: ./workspace-server/Dockerfile.tenant
