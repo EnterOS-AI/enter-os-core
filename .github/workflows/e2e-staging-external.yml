@@ -90,7 +90,7 @@ jobs:
       E2E_STALE_WAIT_SECS: ${{ github.event.inputs.stale_wait_secs || '180' }}
 
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Verify admin token present
         run: |
