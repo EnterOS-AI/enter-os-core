@@ -16,7 +16,11 @@ workspace container running on it) over an [EC2 Instance Connect
 Endpoint](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-connect-setup-ec2-instance-connect-endpoint.html).
 End users see a terminal; no direct public SSH ingress is required.
 
-Tracking: [molecule-core#1528](https://github.com/Molecule-AI/molecule-core/issues/1528) (resolved 2026-04-22).
+Tracking: originally `molecule-core#1528` (resolved 2026-04-22). The
+`molecule-core` repo has since been renamed to `molecule-monorepo` and no
+longer accepts new issues under the old name; future terminal work is
+tracked in `molecule-monorepo` issues (workspace-server scope) and in
+`molecule-controlplane` issues for the EIC / per-tenant SG path.
 
 ## Where things are
 

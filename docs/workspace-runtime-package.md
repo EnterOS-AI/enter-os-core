@@ -17,6 +17,29 @@ distinct from the PyPI package) is no longer the source-of-truth and should
 be treated as a publish artifact only. It can be archived or used as a
 read-only mirror.
 
+## Where to make changes
+
+**All runtime edits land in `molecule-monorepo/workspace/`. Period.**
+
+The GitHub repo `Molecule-AI/molecule-ai-workspace-runtime` is **mirror-only**.
+It exists so external consumers (template repos, downstream operators) have a
+git-cloneable artifact that mirrors the PyPI wheel — nothing more.
+
+- **Direct PRs against `molecule-ai-workspace-runtime` are auto-rejected by
+  the `mirror-guard` CI check.** The check fails any push that did not come
+  from the publish pipeline. There is no opt-out — file the change against
+  `molecule-monorepo/workspace/` instead.
+- **The mirror + the PyPI wheel both auto-regenerate on every push to
+  `staging`** via `.github/workflows/publish-runtime.yml` (which calls
+  `scripts/build_runtime_package.py`, builds wheel + sdist, smoke-imports,
+  uploads to PyPI via Trusted Publisher, and force-pushes the rewritten tree
+  to the mirror repo). You never touch the mirror by hand.
+
+If you have an old local clone of the mirror and try to push a fix to it
+directly, expect a CI failure with a message pointing you here. Re-open the
+change against `molecule-monorepo/workspace/` and let the publish workflow
+do the rest.
+
 ## Why this shape
 
 The 8 workspace template repos (claude-code, langgraph, hermes, etc.) each

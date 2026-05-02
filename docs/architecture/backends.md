@@ -2,7 +2,7 @@
 
 **Status:** living document — update when you ship a feature that touches one backend.
 **Owner:** workspace-server + controlplane teams.
-**Last audit:** 2026-04-23 (Claude agent, PR #TBD).
+**Last audit:** 2026-05-02 (Claude agent, PR #TBD).
 
 ## Why this exists
 
@@ -37,6 +37,12 @@ This document is the canonical matrix. If you are landing a workspace-facing fea
 | **A2A proxy** | | | | |
 | Forward | `a2a_proxy.go` | `127.0.0.1:<port>` | EC2 private IP inside tenant VPC | ✅ parity |
 | Liveness | `a2a_proxy_helpers.go` | `provisioner.IsRunning()` | `cpProv.IsRunning()` (DB-backed) | ✅ parity |
+| Channel envelope enrichment (peer_name / peer_role / agent_card_url) | `a2a_proxy.go` + workspace-runtime channel emitter (PR #2471) | inbox row carries enriched fields | inbox row carries enriched fields | ✅ parity as of 2026-05-02 |
+| **MCP tools (a2a)** | | | | |
+| `chat_history` — fetch prior turns with a peer | `mcp_server.go` + workspace-runtime `a2a_mcp` (PR #2474) | runtime-served, backend-agnostic | runtime-served, backend-agnostic | ✅ parity as of 2026-05-02 |
+| **Activity API** | | | | |
+| `before_ts` paging on `/workspaces/:id/activity` | `activity.go` (PR #2476) | DB-driven | DB-driven | ✅ parity as of 2026-05-02 |
+| `peer_id` filter on `/workspaces/:id/activity` | `activity.go` (PR #2472) | DB-driven | DB-driven | ✅ parity as of 2026-05-02 |
 | **Config / template injection** | | | | |
 | Template copy at provision | `provisioner.go:553-648` | host walk → tar → `CopyToContainer(/configs)` | CP user-data bakes template into bootstrap script | ⚠️ divergent — sync (docker) vs async (EC2) |
 | Runtime config hot-reload | `templates.go` + handlers | no hot-reload — restart required | no hot-reload — restart required | ✅ parity (both require restart; acceptable) |
@@ -45,6 +51,9 @@ This document is the canonical matrix. If you are landing a workspace-facing fea
 | **Bootstrap signals** | | | | |
 | Ready detection | registry `/registry/register` | container heartbeat | tenant heartbeat + boot-event phone-home (CP `bootevents` table + `wait_platform_health=ok`) | ✅ parity as of molecule-controlplane#235 |
 | Console / log output | `workspace_bootstrap.go` | `docker logs` | `ec2:GetConsoleOutput` via CP proxy | 🟡 ec2-only (docker has `docker logs` directly; no unified API) |
+| `runtime_wedge` post-`execute()` smoke gate | workspace-runtime `smoke_mode.py` (PRs #2473 + #2475) | runtime-served, surfaces SDK-init wedges to wheel-smoke + container start | runtime-served, surfaces SDK-init wedges to wheel-smoke + container start | ✅ parity as of 2026-05-02 |
+| **Test infrastructure** | | | | |
+| Canvas-E2E `.playwright-staging-state.json` written before any CP call | `tools/e2e-staging-setup` (PR #2327, 2026-04-30) | n/a — staging-only safety net | required so workflow safety-net can find slug; pattern-sweeping by date prefix poisons concurrent runs | ✅ enforced (staging E2E) |
 | **Orphan cleanup** | | | | |
 | Detect + terminate stale | `healthsweep.go` + CP `DeprovisionInstance` | Docker daemon scan | CP OrgID-tag cascade (molecule-controlplane#234) | ✅ parity as of 2026-04-23 |
 | **Health / budget / schedules** | | | | |
