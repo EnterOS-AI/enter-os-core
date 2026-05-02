@@ -493,7 +493,7 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 // has no declared timeout — the canvas-side resolver falls through to
 // its runtime-profile default.
 func (h *WorkspaceHandler) addProvisionTimeoutMs(ws map[string]interface{}, runtime string) {
-	if secs := h.provisionTimeouts.get(h.configsDir, runtime); secs > 0 {
+	if secs := h.ProvisionTimeoutSecondsForRuntime(runtime); secs > 0 {
 		ws["provision_timeout_ms"] = secs * 1000
 	}
 }
