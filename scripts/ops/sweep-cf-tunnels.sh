@@ -94,27 +94,37 @@ log "  staging orgs: $(echo "$STAGING_SLUGS" | wc -w | tr -d ' ')"
 log "Fetching Cloudflare tunnels..."
 # The cfd_tunnel list endpoint is paginated; per_page max is 50.
 # Walk all pages so we don't silently miss orphans on busy accounts.
+#
+# Pages are buffered to a temp dir and merged at the end. The earlier
+# shape passed the accumulating JSON on argv every iteration, which on
+# a busy account (700+ tunnels = 14+ pages) blows past Linux ARG_MAX
+# (~128 KB combined argv+envp on the GH Ubuntu runner) and dies with
+# `python3: Argument list too long`. Disk-buffering also makes the
+# accumulator O(n) instead of O(n^2).
+PAGES_DIR=$(mktemp -d -t cf-tunnels-XXXXXX)
+trap 'rm -rf "$PAGES_DIR"' EXIT
 PAGE=1
-TUNNEL_JSON='{"result":[]}'
 while :; do
-  page_json=$(curl -sS -m 15 -H "Authorization: Bearer $CF_API_TOKEN" \
-    "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/cfd_tunnel?per_page=50&page=$PAGE&is_deleted=false")
-  page_count=$(echo "$page_json" | python3 -c "import json,sys; print(len(json.load(sys.stdin).get('result') or []))")
-  if [ "$page_count" = "0" ]; then break; fi
-  # Merge pages
-  TUNNEL_JSON=$(python3 -c "
-import json, sys
-acc = json.loads(sys.argv[1])
-new = json.loads(sys.argv[2])
-acc['result'].extend(new.get('result') or [])
-print(json.dumps(acc))
-" "$TUNNEL_JSON" "$page_json")
+  page_file="$PAGES_DIR/page-$(printf '%05d' "$PAGE").json"
+  curl -sS -m 15 -H "Authorization: Bearer $CF_API_TOKEN" \
+    "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/cfd_tunnel?per_page=50&page=$PAGE&is_deleted=false" \
+    > "$page_file"
+  page_count=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1])).get('result') or []))" "$page_file")
+  if [ "$page_count" = "0" ]; then rm -f "$page_file"; break; fi
   PAGE=$((PAGE + 1))
-  if [ "$PAGE" -gt 20 ]; then
-    log "::warning::stopping pagination at page 20 (1000 tunnels) — re-run if more"
+  if [ "$PAGE" -gt 40 ]; then
+    log "::warning::stopping pagination at page 40 (2000 tunnels) — re-run if more"
     break
   fi
 done
+TUNNEL_JSON=$(python3 -c '
+import glob, json, os, sys
+acc = {"result": []}
+for f in sorted(glob.glob(os.path.join(sys.argv[1], "page-*.json"))):
+    with open(f) as fh:
+        acc["result"].extend(json.load(fh).get("result") or [])
+print(json.dumps(acc))
+' "$PAGES_DIR")
 TOTAL_TUNNELS=$(echo "$TUNNEL_JSON" | python3 -c "import json,sys; print(len(json.load(sys.stdin)['result']))")
 log "  total tunnels: $TOTAL_TUNNELS"
 
