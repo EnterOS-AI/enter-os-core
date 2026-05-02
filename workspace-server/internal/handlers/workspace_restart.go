@@ -219,9 +219,7 @@ func (h *WorkspaceHandler) Restart(c *gin.Context) {
 		if h.provisioner != nil {
 			h.provisioner.Stop(bgCtx, id)
 		} else if h.cpProv != nil {
-			if err := h.cpProv.Stop(bgCtx, id); err != nil {
-				log.Printf("Restart: cpProv.Stop(%s) failed: %v (continuing to reprovision)", id, err)
-			}
+			h.cpStopWithRetry(bgCtx, id, "Restart")
 		}
 		if h.cpProv != nil {
 			h.provisionWorkspaceCP(id, templatePath, configFiles, payload)
@@ -440,10 +438,70 @@ func (h *WorkspaceHandler) stopForRestart(ctx context.Context, workspaceID strin
 		return
 	}
 	if h.cpProv != nil {
-		if err := h.cpProv.Stop(ctx, workspaceID); err != nil {
-			log.Printf("Auto-restart: cpProv.Stop(%s) failed: %v (continuing to reprovision)", workspaceID, err)
-		}
+		h.cpStopWithRetry(ctx, workspaceID, "Auto-restart")
 	}
+}
+
+// cpStopRetryAttempts caps total Stop attempts (initial + retries). 3 catches
+// the transient CP/AWS hiccups that produce most leaks (one EC2 metadata
+// service stall, one IAM rate-limit blip) without slowing recovery noticeably
+// — worst-case wait is ~7s (1 + 2 + 4 backoff) and we run in a detached
+// goroutine, so user UX is unaffected. Package-level so tests can shrink it.
+var cpStopRetryAttempts = 3
+
+// cpStopRetryBaseDelay is the first-retry backoff. Doubles each attempt:
+// 1s, 2s, 4s for default attempts=3.
+var cpStopRetryBaseDelay = 1 * time.Second
+
+// cpStopWithRetry wraps cpProv.Stop with bounded exponential backoff for
+// the restart paths. Different policy from workspace_crud.go's Delete:
+// Delete returns 500 to the client on Stop failure (loud-fail-and-block,
+// since the user asked to destroy and silent leak is unacceptable),
+// whereas Restart's contract is "make the workspace alive again" — if we
+// refuse to reprovision when Stop fails, we strand the user with a dead
+// workspace. So this helper retries to absorb transient failures, then on
+// final exhaustion emits a structured `LEAK-SUSPECT` log and returns —
+// the caller proceeds with reprovision regardless. The leak signal is
+// the bridge to the (forthcoming) CP-side workspace orphan reconciler;
+// grep `LEAK-SUSPECT cpProv.Stop` to find affected workspace IDs.
+//
+// source tags the originating path ("Restart" / "Auto-restart") so the
+// log line attributes leaks to the path that produced them.
+//
+// Returns nothing — caller's contract is unchanged.
+func (h *WorkspaceHandler) cpStopWithRetry(ctx context.Context, workspaceID, source string) {
+	if h.cpProv == nil {
+		return
+	}
+	var lastErr error
+	delay := cpStopRetryBaseDelay
+	for attempt := 1; attempt <= cpStopRetryAttempts; attempt++ {
+		err := h.cpProv.Stop(ctx, workspaceID)
+		if err == nil {
+			if attempt > 1 {
+				log.Printf("%s: cpProv.Stop(%s) succeeded on attempt %d", source, workspaceID, attempt)
+			}
+			return
+		}
+		lastErr = err
+		if attempt == cpStopRetryAttempts {
+			break
+		}
+		// Sleep with ctx awareness so a cancelled ctx exits early instead
+		// of stalling the goroutine through the remaining backoff.
+		select {
+		case <-ctx.Done():
+			log.Printf("%s: cpProv.Stop(%s) abandoned mid-retry: ctx cancelled (last_err=%v)",
+				source, workspaceID, lastErr)
+			return
+		case <-time.After(delay):
+		}
+		delay *= 2
+	}
+	// Exhausted. Loud-flag: stable prefix `LEAK-SUSPECT` + key=value pairs
+	// so logs are greppable / parseable for the CP-side orphan reconciler.
+	log.Printf("LEAK-SUSPECT cpProv.Stop workspace_id=%s source=%s attempts=%d last_err=%q",
+		workspaceID, source, cpStopRetryAttempts, lastErr.Error())
 }
 
 // runRestartCycle does the actual stop+provision work for one restart
