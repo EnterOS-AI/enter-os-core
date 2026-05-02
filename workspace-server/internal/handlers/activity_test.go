@@ -280,6 +280,110 @@ func TestActivityList_PeerIDRejectsNonUUID(t *testing.T) {
 	}
 }
 
+// ---------- before_ts paging knob ----------
+//
+// before_ts is the wall-clock paging companion to peer_id — the agent
+// walks backward through long histories by passing the oldest
+// `created_at` from the previous response. Validated as RFC3339 at the
+// trust boundary; mirrors the strict-inequality shape since_id uses
+// for forward paging.
+
+func TestActivityList_BeforeTSFilter(t *testing.T) {
+	mock := setupTestDB(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewActivityHandler(broadcaster)
+
+	cutoff, _ := time.Parse(time.RFC3339, "2026-05-01T00:00:00Z")
+	mock.ExpectQuery(
+		`SELECT .+ FROM activity_logs WHERE workspace_id = .+ AND created_at < .+`,
+	).
+		WithArgs("ws-1", cutoff, 100).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "workspace_id", "activity_type", "source_id", "target_id",
+			"method", "summary", "request_body", "response_body",
+			"tool_trace", "duration_ms", "status", "error_detail", "created_at",
+		}))
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}}
+	c.Request = httptest.NewRequest(
+		"GET", "/workspaces/ws-1/activity?before_ts=2026-05-01T00%3A00%3A00Z", nil,
+	)
+	handler.List(c)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestActivityList_BeforeTSComposesWithPeerID(t *testing.T) {
+	// peer_id + before_ts: the canonical wheel-side chat_history paging
+	// shape. Pin both args + arg order so a future builder refactor
+	// can't silently drop one filter or reorder placeholders.
+	mock := setupTestDB(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewActivityHandler(broadcaster)
+
+	cutoff, _ := time.Parse(time.RFC3339, "2026-05-01T00:00:00Z")
+	mock.ExpectQuery(
+		`SELECT .+ FROM activity_logs WHERE workspace_id = .+ AND \(source_id = .+ OR target_id = .+\) AND created_at < .+`,
+	).
+		WithArgs("ws-1", testPeerUUID, cutoff, 100).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "workspace_id", "activity_type", "source_id", "target_id",
+			"method", "summary", "request_body", "response_body",
+			"tool_trace", "duration_ms", "status", "error_detail", "created_at",
+		}))
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}}
+	c.Request = httptest.NewRequest(
+		"GET",
+		"/workspaces/ws-1/activity?peer_id="+testPeerUUID+"&before_ts=2026-05-01T00%3A00%3A00Z",
+		nil,
+	)
+	handler.List(c)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestActivityList_BeforeTSRejectsInvalidFormat(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	broadcaster := newTestBroadcaster()
+	handler := NewActivityHandler(broadcaster)
+
+	for _, bad := range []string{
+		"yesterday",
+		"2026-05-01",                            // missing time component
+		"2026-05-01%2000%3A00%3A00",             // URL-encoded space instead of T
+		"%27%20OR%201%3D1%20--",                 // URL-encoded SQL injection
+	} {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = gin.Params{{Key: "id", Value: "ws-1"}}
+		c.Request = httptest.NewRequest(
+			"GET", "/workspaces/ws-1/activity?before_ts="+bad, nil,
+		)
+		handler.List(c)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("before_ts=%q: expected 400, got %d (%s)", bad, w.Code, w.Body.String())
+		}
+	}
+}
+
 // ---------- Activity type allowlist (#125: memory_write added) ----------
 
 func TestActivityReport_AcceptsMemoryWriteType(t *testing.T) {

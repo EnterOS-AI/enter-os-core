@@ -60,6 +60,7 @@ func (h *ActivityHandler) List(c *gin.Context) {
 	limitStr := c.DefaultQuery("limit", "100")
 	sinceSecsStr := c.Query("since_secs")
 	sinceID := c.Query("since_id")
+	beforeTSStr := c.Query("before_ts") // optional RFC3339 — return rows strictly older than this timestamp
 
 	// Validate peer_id as a UUID at the trust boundary so a malformed
 	// caller (the agent or a downstream MCP tool) can't smuggle SQL
@@ -73,6 +74,25 @@ func (h *ActivityHandler) List(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "peer_id must be a UUID"})
 			return
 		}
+	}
+
+	// Parse before_ts as the wall-clock paging knob for the wheel-side
+	// `chat_history` MCP tool. The agent passes the oldest `created_at`
+	// from a previous response to walk backward through long histories.
+	// Validated as RFC3339 at the trust boundary so a typoed value
+	// surfaces as a clean 400 instead of being silently ignored.
+	var beforeTS time.Time
+	usingBeforeTS := false
+	if beforeTSStr != "" {
+		t, err := time.Parse(time.RFC3339, beforeTSStr)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "before_ts must be an RFC3339 timestamp (e.g. 2026-05-01T00:00:00Z)",
+			})
+			return
+		}
+		beforeTS = t
+		usingBeforeTS = true
 	}
 
 	limit := 100
@@ -165,6 +185,14 @@ func (h *ActivityHandler) List(c *gin.Context) {
 		// clearer to read and matches the rest of the builder.)
 		query += fmt.Sprintf(" AND (source_id = $%d OR target_id = $%d)", argIdx, argIdx)
 		args = append(args, peerID)
+		argIdx++
+	}
+	if usingBeforeTS {
+		// Strictly older — never replay a row with the exact same
+		// timestamp, mirrors the `created_at > cursorTime` shape
+		// `since_id` uses for forward paging.
+		query += fmt.Sprintf(" AND created_at < $%d", argIdx)
+		args = append(args, beforeTS)
 		argIdx++
 	}
 	if sinceSecs > 0 {
