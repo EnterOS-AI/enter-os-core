@@ -120,10 +120,17 @@ assert "E3: postgres-alpha has zero beta-named workspaces" "0" "$ALPHA_HAS_BETA"
 assert "E4: postgres-beta has zero alpha-named workspaces" "0" "$BETA_HAS_ALPHA"
 
 # ─── Phase F: concurrent INSERT race ───────────────────────────────────
-# Both tenants take turns inserting 10 rows concurrently. Race shape
-# catches: shared-connection-pool corruption, lib/pq prepared-statement
-# cache collision (org-wide hazard per memory), redis cross-keyspace
-# bleed. Each side must end with EXACTLY +10 rows from its own writes.
+# Both tenants insert 10 rows concurrently. Race shape catches the
+# failure modes that CAN cross tenants in this topology:
+#   - redis cross-keyspace bleed (shared redis container).
+#   - shared-cp-stub state corruption (single Go process serves both).
+#   - cf-proxy buffer mixup under simultaneous in-flight writes.
+# Does NOT catch lib/pq prepared-statement cache collision or shared
+# *sql.DB pool poisoning — each tenant has its own DATABASE_URL and
+# its own postgres-{alpha,beta} container, so there is no shared pool
+# to corrupt. A future replay variant on a single shared Postgres
+# would be the right place to assert that failure mode.
+# Each side must end with EXACTLY +10 rows from its own writes.
 echo ""
 echo "[replay] F. concurrent insert race — 10 rows per tenant in parallel"
 

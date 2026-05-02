@@ -61,6 +61,20 @@ assert_status() {
     fi
 }
 
+# Plain equality check — for non-HTTP values (counts, names, etc.).
+# Distinct from assert_status so output reads naturally instead of
+# claiming "(HTTP 0)" for what is really a count.
+assert() {
+    local desc="$1" expected="$2" actual="$3"
+    if [ "$expected" = "$actual" ]; then
+        printf "  PASS %s\n" "$desc"
+        PASS=$((PASS + 1))
+    else
+        printf "  FAIL %s\n    expected: %s\n    got     : %s\n" "$desc" "$expected" "$actual" >&2
+        FAIL=$((FAIL + 1))
+    fi
+}
+
 # ─── Phase A: positive controls ────────────────────────────────────────
 echo "[replay] A. positive controls — each tenant accepts its own valid creds"
 
@@ -148,11 +162,11 @@ fi
 # Cross-check: neither tenant's list contains the other's workspace ids.
 LEAKED_INTO_ALPHA=$(echo "$ALPHA_LIST" | jq -r --arg b1 "$BETA_PARENT_ID" --arg b2 "$BETA_CHILD_ID" \
     '[.[] | select(.id == $b1 or .id == $b2)] | length')
-assert_status "F3: alpha list contains zero beta workspace ids" "0" "$LEAKED_INTO_ALPHA"
+assert "F3: alpha list contains zero beta workspace ids" "0" "$LEAKED_INTO_ALPHA"
 
 LEAKED_INTO_BETA=$(echo "$BETA_LIST" | jq -r --arg a1 "$ALPHA_PARENT_ID" --arg a2 "$ALPHA_CHILD_ID" \
     '[.[] | select(.id == $a1 or .id == $a2)] | length')
-assert_status "F4: beta list contains zero alpha workspace ids" "0" "$LEAKED_INTO_BETA"
+assert "F4: beta list contains zero alpha workspace ids" "0" "$LEAKED_INTO_BETA"
 
 # ─── Phase G: /health is allowlisted (sanity) ──────────────────────────
 echo ""
