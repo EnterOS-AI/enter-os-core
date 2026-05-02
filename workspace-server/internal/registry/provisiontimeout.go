@@ -47,16 +47,42 @@ const HermesProvisioningTimeout = 30 * time.Minute
 // query which hits the primary key / status partial index.
 const DefaultProvisionSweepInterval = 30 * time.Second
 
-// provisioningTimeoutFor picks the per-runtime sweep deadline. Mirrors
-// the CP bootstrap-watcher's runtime gating (provisioner.bootstrapTimeoutFn).
-// PROVISION_TIMEOUT_SECONDS env override, when set, applies to ALL
-// runtimes — useful for ops debugging but loses the runtime nuance, so
-// operators should prefer the defaults unless they have a specific
-// reason.
-func provisioningTimeoutFor(runtime string) time.Duration {
+// RuntimeTimeoutLookup returns the per-runtime provision timeout in
+// seconds when a template's config.yaml declared
+// `runtime_config.provision_timeout_seconds`, else zero (= "no override,
+// fall through to runtime defaults below"). Same shape as
+// runtimeProvisionTimeoutsCache.get in handlers — wired through main.go
+// so this package stays template-discovery agnostic.
+//
+// Why an interface instead of importing the cache directly: registry
+// already sits below handlers in the import graph (handlers → registry,
+// not the reverse). A function-typed argument keeps that flow.
+type RuntimeTimeoutLookup func(runtime string) int
+
+// provisioningTimeoutFor picks the per-runtime sweep deadline. Resolution
+// order:
+//
+//  1. PROVISION_TIMEOUT_SECONDS env — global override, ops-debug only.
+//  2. Template manifest override (lookup) — what the canvas spinner
+//     also reads via #2054 phase 2. Without this, a template that
+//     declared `runtime_config.provision_timeout_seconds: 900` would
+//     still get killed by the sweeper at the 10-min hardcoded floor —
+//     a real wiring gap that drove every claude-code burst on a cold
+//     EC2 to false-positive timeout.
+//  3. Hermes special-case (CP bootstrap-watcher 25 min + 5 min slack).
+//  4. DefaultProvisioningTimeout (10 min) for everything else.
+//
+// lookup may be nil (during package tests, or before main.go has wired
+// it) — falls through to the legacy hermes/default split.
+func provisioningTimeoutFor(runtime string, lookup RuntimeTimeoutLookup) time.Duration {
 	if v := os.Getenv("PROVISION_TIMEOUT_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			return time.Duration(n) * time.Second
+		}
+	}
+	if lookup != nil {
+		if secs := lookup(runtime); secs > 0 {
+			return time.Duration(secs) * time.Second
 		}
 	}
 	if runtime == "hermes" {
@@ -74,7 +100,7 @@ func provisioningTimeoutFor(runtime string) time.Duration {
 // The sweep is idempotent: the UPDATE's WHERE clause re-checks both status
 // and age under the same row lock, so a workspace that raced to `online` or
 // was restarted while the sweep was scanning will not get flipped.
-func StartProvisioningTimeoutSweep(ctx context.Context, emitter ProvisionTimeoutEmitter, interval time.Duration) {
+func StartProvisioningTimeoutSweep(ctx context.Context, emitter ProvisionTimeoutEmitter, interval time.Duration, lookup RuntimeTimeoutLookup) {
 	if emitter == nil {
 		log.Println("Provision-timeout sweep: emitter is nil — skipping (no one to broadcast to)")
 		return
@@ -85,15 +111,15 @@ func StartProvisioningTimeoutSweep(ctx context.Context, emitter ProvisionTimeout
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	log.Printf("Provision-timeout sweep: started (interval=%s, timeout=%s default / %s hermes)",
-		interval, DefaultProvisioningTimeout, HermesProvisioningTimeout)
+	log.Printf("Provision-timeout sweep: started (interval=%s, timeout=%s default / %s hermes / per-runtime manifest override=%v)",
+		interval, DefaultProvisioningTimeout, HermesProvisioningTimeout, lookup != nil)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			sweepStuckProvisioning(ctx, emitter)
+			sweepStuckProvisioning(ctx, emitter, lookup)
 		}
 	}
 }
@@ -109,7 +135,7 @@ func StartProvisioningTimeoutSweep(ctx context.Context, emitter ProvisionTimeout
 // sweep, leaving an incoherent "marked failed but actually working"
 // state. See bootstrap_watcher.go's bootstrapTimeoutFn for the
 // canonical CP-side gating.
-func sweepStuckProvisioning(ctx context.Context, emitter ProvisionTimeoutEmitter) {
+func sweepStuckProvisioning(ctx context.Context, emitter ProvisionTimeoutEmitter, lookup RuntimeTimeoutLookup) {
 	// We can't pre-filter by age in SQL because the threshold depends
 	// on the row's runtime. Pull every provisioning row + its runtime
 	// + its age, evaluate per-row in Go. Still cheap — the
@@ -141,7 +167,7 @@ func sweepStuckProvisioning(ctx context.Context, emitter ProvisionTimeoutEmitter
 	}
 
 	for _, c := range ids {
-		timeout := provisioningTimeoutFor(c.runtime)
+		timeout := provisioningTimeoutFor(c.runtime, lookup)
 		timeoutSec := int(timeout / time.Second)
 		if c.ageSec < timeoutSec {
 			continue

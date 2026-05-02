@@ -260,7 +260,13 @@ func main() {
 	// and the state is incoherent (e.g. user sees "Retry" after 15min but
 	// backend still thinks provisioning is in progress).
 	go supervised.RunWithRecover(ctx, "provision-timeout-sweep", func(c context.Context) {
-		registry.StartProvisioningTimeoutSweep(c, broadcaster, registry.DefaultProvisionSweepInterval)
+		// Pass the handler's per-runtime template-manifest lookup so the
+		// sweeper honours `runtime_config.provision_timeout_seconds`
+		// declared in any template's config.yaml — the same value the
+		// canvas already reads via addProvisionTimeoutMs. Without this
+		// the sweeper killed claude-code at the 10-min hardcoded floor
+		// regardless of the manifest. See registry.RuntimeTimeoutLookup.
+		registry.StartProvisioningTimeoutSweep(c, broadcaster, registry.DefaultProvisionSweepInterval, wh.ProvisionTimeoutSecondsForRuntime)
 	})
 
 	// Cron Scheduler — fires A2A messages to workspaces on user-defined schedules

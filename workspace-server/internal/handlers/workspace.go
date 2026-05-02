@@ -498,6 +498,22 @@ func (h *WorkspaceHandler) addProvisionTimeoutMs(ws map[string]interface{}, runt
 	}
 }
 
+// ProvisionTimeoutSecondsForRuntime returns the per-runtime provision
+// timeout in seconds when a template's config.yaml declared
+// `runtime_config.provision_timeout_seconds`, else 0 ("no override —
+// caller falls through to its own default").
+//
+// Exported so cmd/server/main.go can pass it to
+// registry.StartProvisioningTimeoutSweep — same template-manifest value
+// the canvas reads via addProvisionTimeoutMs. Without this, the
+// sweeper killed claude-code at 10 min while the manifest declared a
+// longer window, and a user saw the "Retry" UI before their image
+// pull even finished. See registry.RuntimeTimeoutLookup for the
+// resolution order.
+func (h *WorkspaceHandler) ProvisionTimeoutSecondsForRuntime(runtime string) int {
+	return h.provisionTimeouts.get(h.configsDir, runtime)
+}
+
 // scanWorkspaceRow is a helper to scan workspace+layout rows into a clean JSON map.
 func scanWorkspaceRow(rows interface {
 	Scan(dest ...interface{}) error
