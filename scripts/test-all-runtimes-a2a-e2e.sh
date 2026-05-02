@@ -30,10 +30,17 @@ set -euo pipefail
 PLATFORM="${PLATFORM:-${1:-http://localhost:8080}}"
 HERMES_PROVIDER_KEY="${OPENROUTER_API_KEY:-${HERMES_API_KEY:-}}"
 PEER_OPENAI_KEY="${OPENAI_API_KEY:-}"
-ORIGIN_HEADER=""
+# SaaS auth chain — TENANT_ADMIN_TOKEN + TENANT_ORG_ID required when
+# hitting *.moleculesai.app (per-tenant ADMIN_TOKEN, NOT
+# CP_ADMIN_API_TOKEN). Optional for localhost.
+TENANT_ADMIN_TOKEN="${TENANT_ADMIN_TOKEN:-}"
+TENANT_ORG_ID="${TENANT_ORG_ID:-}"
+EXTRA_HEADERS=()
 case "$PLATFORM" in
   https://*.moleculesai.app|https://*.moleculesai.app/*)
-    ORIGIN_HEADER="-H Origin:$PLATFORM"
+    EXTRA_HEADERS+=("-H" "Origin: $PLATFORM")
+    [ -n "$TENANT_ADMIN_TOKEN" ] && EXTRA_HEADERS+=("-H" "Authorization: Bearer $TENANT_ADMIN_TOKEN")
+    [ -n "$TENANT_ORG_ID" ] && EXTRA_HEADERS+=("-H" "X-Molecule-Org-Id: $TENANT_ORG_ID")
     ;;
 esac
 
@@ -60,7 +67,7 @@ check() {
 }
 
 curl_p() {
-  /usr/bin/curl -s $ORIGIN_HEADER "$@"
+  /usr/bin/curl -s "${EXTRA_HEADERS[@]}" "$@"
 }
 
 wait_online() {
