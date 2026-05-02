@@ -295,3 +295,46 @@ if "coordinator" not in sys.modules:
 
 # Don't mock prompt or coordinator if they can be imported from the workspace-template dir
 # test_prompt.py and test_coordinator.py need the real modules
+
+
+
+# ─── runtime_wedge cross-test isolation ─────────────────────────────────
+#
+# `runtime_wedge` carries module-scope state via the `_DEFAULT` instance
+# (workspace/runtime_wedge.py). Any test that calls `mark_wedged` and
+# doesn't clean up leaks a sticky wedge into every later test in the
+# same pytest process. Smoke tests (test_smoke_mode.py) that read
+# `is_wedged()` would then fail-via-leak instead of assessing the code
+# under test.
+#
+# Autouse fixture is scoped to the workspace/tests/ tree (this conftest
+# is at workspace/tests/conftest.py), so it runs for every test that
+# touches the runtime — without each test having to opt in. The
+# import is deferred to fixture-call time so the fixture also works
+# in environments where runtime_wedge isn't yet importable (matches
+# the fail-open posture that smoke_mode + heartbeat take at the
+# consumer side).
+import pytest as _pytest  # alias to avoid colliding with any existing `pytest` name
+
+
+@_pytest.fixture(autouse=True)
+def _reset_runtime_wedge_between_tests():
+    """Reset the universal runtime_wedge flag before AND after every
+    workspace test so module-scope state can't leak across tests.
+
+    A test that calls `mark_wedged` without cleanup would otherwise
+    contaminate the next test's `is_wedged()` read — and because the
+    flag is sticky-first-write-wins, the later test couldn't even
+    overwrite the leaked reason. Two-sided reset (yield + cleanup)
+    means an early failure also doesn't poison the rest of the run.
+    """
+    try:
+        from runtime_wedge import reset_for_test
+    except (ImportError, ModuleNotFoundError):
+        # No runtime_wedge installed — nothing to reset. Yield as a
+        # no-op so the fixture still runs the test.
+        yield
+        return
+    reset_for_test()
+    yield
+    reset_for_test()

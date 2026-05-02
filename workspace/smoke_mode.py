@@ -111,13 +111,20 @@ def _check_runtime_wedge() -> str | None:
     a corrupt-rolling-deploy state, in which case "no wedge info"
     reads as "assume healthy" — same fail-open posture heartbeat.py
     takes for the same reason.
+
+    Catch is narrowed to import errors only — a signature change
+    (`is_wedged` removed/renamed, `wedge_reason` returning the wrong
+    type) must NOT silently degrade to "no wedge info." The runtime's
+    structural snapshot test (workspace/tests/test_runtime_wedge_signature.py,
+    task #169) carries the API-drift load: any rename surfaces there
+    as a snapshot mismatch instead of letting the smoke gate go blind.
     """
     try:
         from runtime_wedge import is_wedged, wedge_reason
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         return None
     if is_wedged():
-        return wedge_reason() or "<unspecified>"
+        return wedge_reason()
     return None
 
 

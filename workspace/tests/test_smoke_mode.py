@@ -17,6 +17,7 @@ construction skip when those symbols aren't reachable.
 from __future__ import annotations
 
 import asyncio
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -256,24 +257,14 @@ class _MarkWedgedThenBlockExecutor:
         await asyncio.Event().wait()
 
 
-@pytest.fixture
-def reset_runtime_wedge():
-    """Ensure each wedge-test starts and ends with the runtime healthy.
-
-    The wedge is module-scoped state (`_DEFAULT` in runtime_wedge.py),
-    so a leak from one test would contaminate every subsequent smoke
-    test in the same pytest process. Reset on both sides so an early
-    failure doesn't poison the rest of the file either.
-    """
-    import runtime_wedge
-    runtime_wedge.reset_for_test()
-    yield
-    runtime_wedge.reset_for_test()
+# Note: runtime_wedge state is reset before/after every test by the
+# autouse `_reset_runtime_wedge_between_tests` fixture in conftest.py
+# so individual wedge tests don't need an explicit fixture argument.
 
 
 @pytest.mark.asyncio
 async def test_smoke_fails_when_adapter_marked_wedged_via_exception(
-    stub_build, reset_runtime_wedge,
+    stub_build,
 ):
     """PR-25 regression class: adapter catches SDK init wedge, marks
     runtime_wedge, raises a sanitized error. Outer exception class
@@ -287,7 +278,7 @@ async def test_smoke_fails_when_adapter_marked_wedged_via_exception(
 
 @pytest.mark.asyncio
 async def test_smoke_fails_when_adapter_marked_wedged_then_blocks(
-    stub_build, reset_runtime_wedge, monkeypatch: pytest.MonkeyPatch,
+    stub_build, monkeypatch: pytest.MonkeyPatch,
 ):
     """Same wedge class as above but the adapter doesn't raise — it
     keeps awaiting (e.g. waiting on a control-message reply that will
@@ -303,7 +294,7 @@ async def test_smoke_fails_when_adapter_marked_wedged_then_blocks(
 
 @pytest.mark.asyncio
 async def test_smoke_passes_when_runtime_wedge_is_clean_after_clean_execute(
-    stub_build, reset_runtime_wedge,
+    stub_build,
 ):
     """Belt-and-braces: wedge-clean + clean execute() must still PASS.
     Pins that the new check is additive — it doesn't accidentally
@@ -317,9 +308,20 @@ def test_check_runtime_wedge_returns_none_when_module_missing(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """Direct test for the import-resilience contract — the helper
-    must swallow ImportError (and any other exception while reading
-    the module) so a corrupt install doesn't crash the smoke gate."""
+    must swallow ImportError so a corrupt install doesn't crash the
+    smoke gate. Catch is narrowed to (ImportError, ModuleNotFoundError)
+    so a SIGNATURE drift surfaces; this test only pins the missing-
+    module case.
+
+    Defensive: drop runtime_wedge from sys.modules cache before
+    patching __import__. Without the cache evict, an earlier test in
+    the same file that already imported runtime_wedge would let the
+    `from runtime_wedge import ...` here resolve from the cache and
+    skip __import__ entirely — the test would pass for the wrong
+    reason and a real regression (catch arm removed) wouldn't surface.
+    """
     import builtins
+    monkeypatch.delitem(sys.modules, "runtime_wedge", raising=False)
     real_import = builtins.__import__
 
     def _raising_import(name, *args, **kwargs):
@@ -331,7 +333,7 @@ def test_check_runtime_wedge_returns_none_when_module_missing(
     assert smoke_mode._check_runtime_wedge() is None
 
 
-def test_check_runtime_wedge_returns_reason_when_marked(reset_runtime_wedge):
+def test_check_runtime_wedge_returns_reason_when_marked():
     """When an adapter has called runtime_wedge.mark_wedged(reason),
     the helper returns that reason verbatim so the smoke can surface
     it in the FAIL log line."""
@@ -340,7 +342,7 @@ def test_check_runtime_wedge_returns_reason_when_marked(reset_runtime_wedge):
     assert smoke_mode._check_runtime_wedge() == "explicit test reason"
 
 
-def test_check_runtime_wedge_returns_none_when_clean(reset_runtime_wedge):
+def test_check_runtime_wedge_returns_none_when_clean():
     """Pre-condition for the additive contract: helper must return
     None (not the empty string from `wedge_reason()`) when no adapter
     has marked the runtime wedged, so the caller's `is not None`
