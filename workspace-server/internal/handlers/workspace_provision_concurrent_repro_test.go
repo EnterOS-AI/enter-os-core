@@ -201,7 +201,7 @@ func TestProvisionWorkspaceCP_ConcurrentBurst_NoSilentDrop(t *testing.T) {
 	bcastCount := bcast.count
 	bcast.mu.Unlock()
 	if bcastCount != numWorkspaces {
-		t.Errorf("broadcaster saw %d RecordAndBroadcast calls, want %d. SILENT-DROP CLASS: a goroutine reached cpProv.Start but never broadcast its failure.",
+		t.Errorf("broadcaster saw %d RecordAndBroadcast calls, want %d. SILENT-DROP CLASS: either a goroutine reached cpProv.Start but was lost before markProvisionFailed, OR it exited via an earlier path before reaching Start (cross-check Assertion 2 above).",
 			bcastCount, numWorkspaces)
 	}
 
