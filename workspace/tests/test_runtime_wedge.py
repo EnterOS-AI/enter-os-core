@@ -5,19 +5,13 @@ to its template repo without breaking heartbeat.
 
 The behavior is identical to the prior in-executor implementation; tests
 pin the contract so the re-export shim in claude_sdk_executor.py can
-later be deleted without surprise."""
-import pytest
+later be deleted without surprise.
 
+Cross-test isolation is provided by the autouse
+`_reset_runtime_wedge_between_tests` fixture in workspace/tests/conftest.py
+— this file does not need a local reset fixture.
+"""
 import runtime_wedge
-
-
-@pytest.fixture(autouse=True)
-def _reset():
-    """Each test starts with a clean wedge state — production wedges are
-    sticky-per-process, but cross-test bleed would couple unrelated cases."""
-    runtime_wedge.reset_for_test()
-    yield
-    runtime_wedge.reset_for_test()
 
 
 class TestRuntimeWedge:
