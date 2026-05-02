@@ -20,7 +20,7 @@ websockets>=16.0
 python-multipart>=0.0.18
 
 # Config parsing
-pyyaml>=6.0
+pyyaml>=6.0.3
 
 # Shared tools framework (used by coordinator, delegation, memory, sandbox)
 langchain-core>=0.3.0
