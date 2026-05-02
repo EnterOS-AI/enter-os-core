@@ -433,6 +433,19 @@ done
 
 # ─── 8. A2A round-trip on parent ───────────────────────────────────────
 log "8/11 Sending A2A message to parent — expecting agent response..."
+# Smoke prompt phrasing — DO NOT trim back to the bare "Reply with exactly: PONG"
+# version that ran here pre-2026-05-02. After the Platform Capabilities preamble
+# (#2332, 2026-04-30) landed in the system prompt, GPT-4o began intermittently
+# refusing the bare echo prompt with messages like:
+#   - "I'm unable to do that."
+#   - "I'm unable to fulfill that request. Can I assist you with anything else?"
+#   - "I'm unable to reply with responses that don't allow me to fulfill tasks…"
+# 3 fails / 10 runs ≈ 30% flake. Root cause: the preamble primes the model
+# ("Use them proactively") to expect tool use, then a zero-tool echo request
+# reads as out-of-role. Real user prompts (which is what hits prod) don't
+# trigger this — only this contrived smoke prompt does, so the right fix is
+# in the prompt phrasing, not in the platform's system prompt. Keep the
+# explicit "no tools needed" framing so the model has permission to comply.
 A2A_PAYLOAD=$(python3 -c "
 import json, uuid
 print(json.dumps({
@@ -443,7 +456,7 @@ print(json.dumps({
         'message': {
             'role': 'user',
             'messageId': f'e2e-{uuid.uuid4().hex[:8]}',
-            'parts': [{'kind': 'text', 'text': 'Reply with exactly: PONG'}]
+            'parts': [{'kind': 'text', 'text': 'This is the platform smoke test verifying agent wiring. No tools or memory are needed — please respond with exactly the single token: PONG'}]
         }
     }
 }))
@@ -559,7 +572,7 @@ print(json.dumps({
         'message': {
             'role': 'user',
             'messageId': f'e2e-deleg-{uuid.uuid4().hex[:8]}',
-            'parts': [{'kind': 'text', 'text': 'Reply with exactly: CHILD_PONG'}]
+            'parts': [{'kind': 'text', 'text': 'This is the platform smoke test verifying child workspace wiring. No tools or memory are needed — please respond with exactly the single token: CHILD_PONG'}]
         }
     }
 }))
