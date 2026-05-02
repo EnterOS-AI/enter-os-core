@@ -126,8 +126,13 @@ func TestProvisionWorkspaceCP_ConcurrentBurst_NoSilentDrop(t *testing.T) {
 	// goroutine entered AND reached the recorded Start() call.
 	rec := &recordingCPProv{startErr: fmt.Errorf("simulated CP rejection")}
 
-	cap := &captureBroadcaster{}
-	handler := NewWorkspaceHandler(cap, nil, "http://localhost:8080", t.TempDir())
+	// Concurrent-safe broadcaster — captureBroadcaster (used by sequential
+	// tests in workspace_provision_test.go) writes lastData unguarded.
+	// Under -race + 7 fan-out goroutines that's a real data race; this
+	// stub serializes via mutex and only counts (we don't need the
+	// payload for any assertion below).
+	bcast := &concurrentSafeBroadcaster{}
+	handler := NewWorkspaceHandler(bcast, nil, "http://localhost:8080", t.TempDir())
 	handler.SetCPProvisioner(rec)
 
 	var wg sync.WaitGroup
@@ -201,6 +206,26 @@ func TestProvisionWorkspaceCP_ConcurrentBurst_NoSilentDrop(t *testing.T) {
 type safeWriter struct {
 	buf *bytes.Buffer
 	mu  *sync.Mutex
+}
+
+// concurrentSafeBroadcaster is a thread-safe events.EventEmitter stub
+// for the 7-goroutine fan-out test. captureBroadcaster (the canonical
+// sequential-test stub in workspace_provision_test.go) writes its
+// lastData field without synchronization — under -race that's a true
+// data race when 7 markProvisionFailed calls run concurrently. This
+// stub only counts (no payload retention) and serializes via mutex.
+type concurrentSafeBroadcaster struct {
+	mu    sync.Mutex
+	count int
+}
+
+func (b *concurrentSafeBroadcaster) BroadcastOnly(_ string, _ string, _ interface{}) {}
+
+func (b *concurrentSafeBroadcaster) RecordAndBroadcast(_ context.Context, _, _ string, _ interface{}) error {
+	b.mu.Lock()
+	b.count++
+	b.mu.Unlock()
+	return nil
 }
 
 func (w *safeWriter) Write(p []byte) (int, error) {
