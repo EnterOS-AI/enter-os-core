@@ -767,6 +767,66 @@ def test_extract_attached_files_accepts_both_shapes(tmp_path, monkeypatch):
     assert {f["name"] for f in out} == {"a.txt", "b.txt"}
 
 
+def test_extract_attached_files_accepts_v1_protobuf_part(tmp_path, monkeypatch):
+    """a2a-sdk v1 protobuf ``Part`` has fields
+    ``[text, raw, url, data, metadata, filename, media_type]`` — no
+    ``kind`` field at all (the discriminator is now a oneof
+    ``content`` of {text, raw, url, data}). Without v1-shape tolerance,
+    every file part on the v0→v1 transition silently parses to an
+    empty Part and surfaces as the user-visible
+    "Error: message contained no text content" on image-only chats
+    (2026-05-01 hongming incident).
+
+    This pins the v1 detection: a non-empty ``url`` plus ``filename``
+    + ``media_type`` is treated as a file part regardless of the
+    missing ``kind``. The conftest stub ``Part`` mirrors v1's flat
+    field shape (kwargs become attributes) so extracting via getattr
+    sees the same surface the real protobuf does."""
+    from types import SimpleNamespace
+    from executor_helpers import extract_attached_files
+
+    img = tmp_path / "screenshot.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    monkeypatch.setattr("executor_helpers.WORKSPACE_MOUNT", str(tmp_path))
+
+    # v1 protobuf surface: flat Part with url/filename/media_type, no kind.
+    v1_part = SimpleNamespace(
+        url=f"workspace:{img}",
+        filename="screenshot.png",
+        media_type="image/png",
+    )
+    msg = SimpleNamespace(parts=[v1_part])
+    out = extract_attached_files(msg)
+    assert len(out) == 1
+    assert out[0]["name"] == "screenshot.png"
+    assert out[0]["mime_type"] == "image/png"
+    assert out[0]["path"] == str(img)
+
+
+def test_extract_attached_files_empty_v1_part_returns_empty(tmp_path, monkeypatch):
+    """Documents the v0→v1 silent-drop failure mode this fix defends
+    against. When canvas pre-fix sends ``{kind:"file", file:{...}}``
+    and the a2a-sdk v1 protobuf parser receives it with
+    ``ignore_unknown_fields=True``, both legacy keys silently drop —
+    the resulting Part has every field empty. The helper must NOT
+    raise and must return ``[]`` — empty, not crashy.
+
+    The real fix is shipping the canvas v1 shape; this test pins the
+    runtime's defense so a template stuck on an old wheel against a
+    new canvas still fails closed (empty attachments + agent
+    proceeds) rather than mid-turn."""
+    from types import SimpleNamespace
+    from executor_helpers import extract_attached_files
+
+    monkeypatch.setattr("executor_helpers.WORKSPACE_MOUNT", str(tmp_path))
+    # Empty Part — no kind, no url, no filename, no media_type. This is
+    # the all-empty proto state json_format leaves behind on the v0→v1
+    # silent-drop. The helper must skip it without raising.
+    empty_v1_part = SimpleNamespace()
+    msg = SimpleNamespace(parts=[empty_v1_part])
+    assert extract_attached_files(msg) == []
+
+
 def test_build_user_content_with_files_no_attachments_is_string():
     """Zero attachments → plain string so models without multi-modal
     support (most non-vision LLMs) see the same payload shape they always

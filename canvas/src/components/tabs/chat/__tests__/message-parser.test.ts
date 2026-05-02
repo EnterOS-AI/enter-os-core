@@ -263,6 +263,41 @@ describe("extractFilesFromTask", () => {
     expect(files[0]).toMatchObject({ name: "out.txt", uri: "workspace:/workspace/out.txt" });
   });
 
+  // a2a-sdk v1 protobuf flattens file parts: no `kind`, no nested `file`,
+  // top-level `url` + `filename` + `mediaType` instead. Every workspace
+  // runtime since the SDK migration emits this shape, so the canvas
+  // chat parser must surface them or chips silently disappear from
+  // agent replies. Pinning here so a parser refactor can't regress
+  // back to v0-only and lose the new wire format.
+  it("pulls v1 protobuf file parts (flat url/filename/mediaType, no kind)", () => {
+    const task = {
+      parts: [
+        { kind: "text", text: "here's the screenshot" },
+        {
+          url: "workspace:/screenshots/run-42.png",
+          filename: "run-42.png",
+          mediaType: "image/png",
+        },
+      ],
+    };
+    const files = extractFilesFromTask(task);
+    expect(files).toEqual([
+      {
+        name: "run-42.png",
+        uri: "workspace:/screenshots/run-42.png",
+        mimeType: "image/png",
+        size: undefined,
+      },
+    ]);
+  });
+
+  it("recovers a filename from the URI on v1 file parts when filename is absent", () => {
+    const task = {
+      parts: [{ url: "workspace:/workspace/out/graph.png" }],
+    };
+    expect(extractFilesFromTask(task)[0].name).toBe("graph.png");
+  });
+
   it("hydrates a notify-with-attachments response_body — both text caption AND file chips", () => {
     // Pins the exact wire shape the platform's Notify handler persists
     // when send_message_to_user passes attachments (activity.go writes

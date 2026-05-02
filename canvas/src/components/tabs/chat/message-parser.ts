@@ -40,27 +40,51 @@ export interface ParsedFilePart {
 }
 
 /** Extract file parts from an A2A response. Walks parts[] + artifacts[].
- *  Per the A2A spec a file part looks like:
- *    { kind: "file", file: { name, mimeType, uri | bytes } }
- *  We only surface parts that carry a `uri` — inline bytes would
- *  require a different renderer (data URL) and are out of scope for
- *  MVP. Names fall back to the URI's basename when absent. */
+ *
+ *  Tolerates both A2A protocol generations:
+ *    - v0 (Pydantic): `{ kind: "file", file: { name, mimeType, uri } }`
+ *    - v1 (protobuf): `{ url, filename, mediaType }` — flat, no `kind`
+ *      and no nested `file` object (the v1 Part's content oneof is
+ *      `{text, raw, url, data}`; file metadata sits at top level).
+ *
+ *  Without v1 tolerance, agents that emit the v1 shape (every workspace
+ *  runtime since the SDK migration) silently drop file parts in chat —
+ *  the agent says "I sent the file" but the user never sees the chip.
+ *
+ *  We only surface parts that carry a URL — inline bytes would require
+ *  a different renderer (data URL) and are out of scope for MVP. Names
+ *  fall back to the URL's basename when absent. */
 export function extractFilesFromTask(task: Record<string, unknown>): ParsedFilePart[] {
   const out: ParsedFilePart[] = [];
   const pushFromParts = (parts: unknown) => {
     if (!Array.isArray(parts)) return;
     for (const raw of parts as Array<Record<string, unknown>>) {
-      if (raw.kind !== "file" && raw.type !== "file") continue;
-      const file = (raw.file ?? raw) as Record<string, unknown>;
-      const uri = typeof file.uri === "string" ? file.uri : "";
-      if (!uri) continue;
-      const name = (typeof file.name === "string" && file.name) || basename(uri);
-      out.push({
-        name,
-        uri,
-        mimeType: typeof file.mimeType === "string" ? file.mimeType : undefined,
-        size: typeof file.size === "number" ? file.size : undefined,
-      });
+      const isV0File = raw.kind === "file" || raw.type === "file";
+      const v1Url = typeof raw.url === "string" ? raw.url : "";
+      if (!isV0File && !v1Url) continue;
+
+      let uri = "";
+      let name = "";
+      let mimeType: string | undefined;
+      let size: number | undefined;
+
+      if (isV0File) {
+        const file = (raw.file ?? raw) as Record<string, unknown>;
+        uri = typeof file.uri === "string" ? file.uri : "";
+        if (!uri) continue;
+        name = (typeof file.name === "string" && file.name) || basename(uri);
+        mimeType = typeof file.mimeType === "string" ? file.mimeType : undefined;
+        size = typeof file.size === "number" ? file.size : undefined;
+      } else {
+        // v1 flat shape: url + filename + mediaType (camelCase from
+        // protobuf JSON serialization of media_type).
+        uri = v1Url;
+        const v1Name = typeof raw.filename === "string" ? raw.filename : "";
+        name = v1Name || basename(uri);
+        mimeType = typeof raw.mediaType === "string" ? raw.mediaType : undefined;
+      }
+
+      out.push({ name, uri, mimeType, size });
     }
   };
   try {
