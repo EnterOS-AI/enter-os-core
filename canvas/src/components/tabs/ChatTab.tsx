@@ -32,10 +32,23 @@ interface A2AFileRef {
   bytes?: string;
   size?: number;
 }
+// A2A Part shape — covers both v0 (Pydantic discriminated union with
+// `kind: "text" | "file"`) and v1 (a2a-sdk protobuf with flat fields:
+// `text` for text parts; `url` + `filename` + `mediaType` for file
+// parts; no `kind` discriminator at all). Outbound we now send v1 for
+// file parts because the v1 protobuf parser drops the v0 keys via
+// `ignore_unknown_fields=True`, surfacing as the user-visible
+// "Error: message contained no text content" on image-only chats
+// (2026-05-01 hongming incident). Text parts stay accident-compatible
+// across v0/v1 because the field name is `text` in both.
 interface A2APart {
-  kind: string;
+  kind?: string;
   text?: string;
   file?: A2AFileRef;
+  // v1 file-part fields (flat — no nested `file` object):
+  url?: string;
+  filename?: string;
+  mediaType?: string;
 }
 interface A2AResponse {
   result?: {
@@ -502,17 +515,22 @@ function MyChatPanel({ workspaceId, data }: Props) {
 
     // A2A parts: text part (if any) + file parts (per attachment). The
     // agent sees both in a single turn, matching the A2A spec shape.
+    //
+    // File parts use the v1 protobuf shape (flat `url`/`filename`/
+    // `mediaType`) because the workspace runtime's v1 parser drops
+    // the legacy v0 `{kind:"file", file:{...}}` shape via
+    // `ignore_unknown_fields=True`. Sending v0 → empty Part →
+    // empty attachments → "Error: message contained no text content"
+    // on image-only chats (2026-05-01 hongming). Text parts keep the
+    // shared `{kind:"text", text}` shape because `text` is a field
+    // in both v0 and v1.
     const parts: A2APart[] = [];
     if (text) parts.push({ kind: "text", text });
     for (const att of uploaded) {
       parts.push({
-        kind: "file",
-        file: {
-          name: att.name,
-          mimeType: att.mimeType,
-          uri: att.uri,
-          size: att.size,
-        },
+        url: att.uri,
+        filename: att.name,
+        mediaType: att.mimeType,
       });
     }
 
