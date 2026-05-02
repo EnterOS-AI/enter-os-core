@@ -34,10 +34,24 @@ on:
   workflow_dispatch:
     inputs:
       target_tag:
-        description: 'Tenant image tag to deploy (e.g. "latest" or "a59f1a6c"). Defaults to latest when empty.'
+        # Empty default → auto-trigger and dispatch-without-input both
+        # resolve to `staging-<short_head_sha>` (the digest publish-image
+        # just pushed). Pre-fix this defaulted to 'latest', which only
+        # gets retagged by canary-verify's promote-to-latest job — and
+        # that job soft-skips when CANARY_TENANT_URLS is unset (the
+        # current state, until Phase 2 canary fleet is live). Result:
+        # `:latest` had been pinned to a 4-day-old digest (2026-04-28)
+        # while every main push pushed fresh `staging-<sha>` images;
+        # every prod redeploy pulled the stale `:latest` and the verify
+        # step correctly flagged 3/3 tenants STALE. Pulling the
+        # just-published `staging-<sha>` directly skips the dead retag
+        # path. When canary fleet is real, this workflow should chain
+        # on canary-verify completion (workflow_run from canary-verify),
+        # not publish-image — separate, smaller PR.
+        description: 'Tenant image tag to deploy (e.g. "latest", "staging-a59f1a6c"). Empty = auto staging-<head_sha>.'
         required: false
         type: string
-        default: 'latest'
+        default: ''
       canary_slug:
         description: 'Tenant slug to deploy first + soak (empty = skip canary, fan out immediately).'
         required: false
@@ -91,11 +105,39 @@ jobs:
     steps:
       - name: Wait for GHCR tag propagation
         # GHCR's edge cache takes ~15-30s to consistently serve the new
-        # :latest manifest after the registry accepts the push. Without
-        # this sleep, the first tenant's docker pull sometimes races
-        # and fetches the previous digest; sleeping is the cheapest
-        # way to reduce that without polling GHCR for the new digest.
+        # manifest after the registry accepts the push. Without this
+        # sleep, the first tenant's docker pull sometimes races and
+        # fetches the previous digest; sleeping is the cheapest way to
+        # reduce that without polling GHCR for the new digest.
         run: sleep 30
+
+      - name: Compute target tag
+        id: tag
+        # Resolution order:
+        #   1. Operator-supplied input (workflow_dispatch with explicit
+        #      tag) → used verbatim. Lets ops pin `latest` for emergency
+        #      rollback to last canary-verified digest, or pin a specific
+        #      `staging-<sha>` to roll back to a known-good build.
+        #   2. Default → `staging-<short_head_sha>`. The just-published
+        #      digest. Bypasses the `:latest` retag path that's currently
+        #      dead (canary-verify soft-skips without canary fleet, so
+        #      the only thing retagging `:latest` today is the manual
+        #      promote-latest.yml — last run 2026-04-28). Auto-trigger
+        #      from workflow_run uses workflow_run.head_sha; manual
+        #      dispatch with no input falls through to github.sha.
+        env:
+          INPUT_TAG: ${{ inputs.target_tag }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_TAG:-}" ]; then
+            echo "target_tag=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+            echo "Using operator-pinned tag: $INPUT_TAG"
+          else
+            SHORT="${HEAD_SHA:0:7}"
+            echo "target_tag=staging-$SHORT" >> "$GITHUB_OUTPUT"
+            echo "Using auto tag: staging-$SHORT (head_sha=$HEAD_SHA)"
+          fi
 
       - name: Call CP redeploy-fleet
         # CP_ADMIN_API_TOKEN must be set as a repo/org secret on
@@ -105,7 +147,7 @@ jobs:
         env:
           CP_URL: ${{ vars.CP_URL || 'https://api.moleculesai.app' }}
           CP_ADMIN_API_TOKEN: ${{ secrets.CP_ADMIN_API_TOKEN }}
-          TARGET_TAG: ${{ inputs.target_tag || 'latest' }}
+          TARGET_TAG: ${{ steps.tag.outputs.target_tag }}
           CANARY_SLUG: ${{ inputs.canary_slug || 'hongmingwang' }}
           SOAK_SECONDS: ${{ inputs.soak_seconds || '60' }}
           BATCH_SIZE: ${{ inputs.batch_size || '3' }}
@@ -209,7 +251,7 @@ jobs:
         # workflow_run.head_sha is the SHA that just published.
         env:
           EXPECTED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-          TARGET_TAG: ${{ inputs.target_tag || 'latest' }}
+          TARGET_TAG: ${{ steps.tag.outputs.target_tag }}
           # Tenant subdomain template — slugs from the response are
           # appended. Production CP issues `<slug>.moleculesai.app`;
           # staging CP issues `<slug>.staging.moleculesai.app`. This
@@ -218,13 +260,20 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ "$TARGET_TAG" != "latest" ] && [ "$TARGET_TAG" != "$EXPECTED_SHA" ]; then
+          EXPECTED_SHORT="${EXPECTED_SHA:0:7}"
+          if [ "$TARGET_TAG" != "latest" ] \
+             && [ "$TARGET_TAG" != "$EXPECTED_SHA" ] \
+             && [ "$TARGET_TAG" != "staging-$EXPECTED_SHORT" ]; then
             # workflow_dispatch with a pinned tag that isn't the head
             # SHA — operator is rolling back / pinning. Skip the
             # verification because we don't have the expected SHA in
             # this context (would need to crane-inspect the GHCR
             # manifest, which is a follow-up). Failing-open here is
             # safe: the operator chose the tag deliberately.
+            #
+            # `staging-<short_head_sha>` IS verified — it's the new
+            # auto-trigger default (see Compute target tag step) and
+            # the digest under that tag SHOULD match EXPECTED_SHA.
             echo "::notice::target_tag=$TARGET_TAG (operator-pinned) — skipping per-tenant SHA verification."
             exit 0
           fi
