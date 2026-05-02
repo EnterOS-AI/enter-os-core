@@ -197,7 +197,7 @@ def test_build_channel_notification_meta_carries_routing_fields():
     payload = _build_channel_notification({
         "activity_id": "act-7",
         "text": "ping",
-        "peer_id": "ws-peer-uuid",
+        "peer_id": "11111111-2222-3333-4444-555555555555",
         "kind": "peer_agent",
         "method": "message/send",
         "created_at": "2026-05-01T01:23:45Z",
@@ -206,7 +206,7 @@ def test_build_channel_notification_meta_carries_routing_fields():
 
     assert meta["source"] == "molecule"
     assert meta["kind"] == "peer_agent"
-    assert meta["peer_id"] == "ws-peer-uuid"
+    assert meta["peer_id"] == "11111111-2222-3333-4444-555555555555"
     assert meta["method"] == "message/send"
     assert meta["activity_id"] == "act-7"
     assert meta["ts"] == "2026-05-01T01:23:45Z"
@@ -499,9 +499,12 @@ def test_envelope_enrichment_re_fetches_after_ttl(_reset_peer_metadata_cache):
 
 def test_envelope_enrichment_invalid_peer_id_skips_lookup(_reset_peer_metadata_cache):
     """Defensive: a malformed peer_id (not a UUID) must not crash the
-    push path or cause a registry GET to be fired against an unsanitised
-    URL. enrich_peer_metadata returns None on validation failure; the
-    enrichment fields are simply absent."""
+    push path, must not fire a registry GET against an unsanitised URL,
+    and must not reflect the raw input back into either the envelope
+    `peer_id` field or the `agent_card_url`. UUID validation is a hard
+    trust boundary — the envelope's job is to surface metadata about
+    *trusted* peers, never to launder attacker-controlled bytes through
+    the JSON-RPC notification into the agent's rendered context."""
     from a2a_mcp_server import _build_channel_notification
 
     p, client = _patch_httpx_client(_make_httpx_response(200, {}))
@@ -517,13 +520,43 @@ def test_envelope_enrichment_invalid_peer_id_skips_lookup(_reset_peer_metadata_c
         "guards the URL-construction surface"
     )
     meta = payload["params"]["meta"]
-    assert meta["peer_id"] == "not-a-uuid"
+    # peer_id echo is canonicalised to empty-string on validation failure,
+    # so attacker bytes never reach the agent's <channel peer_id="..."> attr.
+    assert meta["peer_id"] == ""
     assert "peer_name" not in meta
     assert "peer_role" not in meta
-    # agent_card_url is constructed unconditionally from peer_id; even on
-    # an invalid id it's harmless (the receiving agent's GET will 404
-    # and it can fall back to inbox_pop without enrichment).
-    assert meta["agent_card_url"] == f"{__import__('a2a_client').PLATFORM_URL}/registry/discover/not-a-uuid"
+    # agent_card_url is omitted entirely rather than constructed against
+    # the unsanitised id — receiving agent gracefully degrades to
+    # inbox_pop without any URL to hit.
+    assert "agent_card_url" not in meta
+
+
+def test_envelope_enrichment_strips_path_traversal_peer_id(_reset_peer_metadata_cache):
+    """Hard regression for the trust-boundary issue surfaced in code review:
+    a peer_id containing path-traversal characters MUST NOT be interpolated
+    into the registry URL or echoed into the envelope. ``_agent_card_url_for``
+    builds against ``${PLATFORM_URL}/registry/discover/<peer_id>`` — without
+    the UUID guard, an upstream row with peer_id=``../../foo`` produces an
+    agent-visible URL pointing at a sibling path, and the receiving agent
+    would fetch from the wrong endpoint or the operator's reverse proxy
+    would normalise it into something unintended."""
+    from a2a_mcp_server import _build_channel_notification
+
+    p, client = _patch_httpx_client(_make_httpx_response(200, {}))
+    with p:
+        payload = _build_channel_notification({
+            "peer_id": "../../foo",
+            "kind": "peer_agent",
+            "text": "redirect-attempt",
+        })
+
+    assert client.get.call_count == 0
+    meta = payload["params"]["meta"]
+    assert meta["peer_id"] == ""
+    assert "agent_card_url" not in meta, (
+        "path-traversal peer_id leaked into agent_card_url — "
+        "_agent_card_url_for must call _validate_peer_id"
+    )
 
 
 # ============== initialize handshake — capability declaration ==============
@@ -877,7 +910,7 @@ async def test_inbox_bridge_emits_channel_notification_to_writer():
         msg = {
             "activity_id": "act-bridge-test",
             "text": "hello from peer",
-            "peer_id": "peer-ws-uuid",
+            "peer_id": "11111111-2222-3333-4444-555555555555",
             "kind": "peer_agent",
             "method": "message/send",
             "created_at": "2026-05-01T22:00:00Z",
@@ -912,7 +945,7 @@ async def test_inbox_bridge_emits_channel_notification_to_writer():
         meta = payload["params"]["meta"]
         assert meta["source"] == "molecule"
         assert meta["kind"] == "peer_agent"
-        assert meta["peer_id"] == "peer-ws-uuid"
+        assert meta["peer_id"] == "11111111-2222-3333-4444-555555555555"
         assert meta["activity_id"] == "act-bridge-test"
         assert meta["ts"] == "2026-05-01T22:00:00Z"
     finally:

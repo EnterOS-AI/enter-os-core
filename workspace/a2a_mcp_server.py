@@ -51,6 +51,7 @@ from a2a_client import (  # noqa: F401, E402
     _A2A_ERROR_PREFIX,
     _agent_card_url_for,
     _peer_names,
+    _validate_peer_id,
     discover_peer,
     enrich_peer_metadata,
     get_peers,
@@ -409,16 +410,27 @@ def _build_channel_notification(msg: dict) -> dict:
 
     peer_id = msg.get("peer_id") or ""
     if peer_id:
-        record = enrich_peer_metadata(peer_id)
-        if record is not None:
-            if name := record.get("name"):
-                meta["peer_name"] = name
-            if role := record.get("role"):
-                meta["peer_role"] = role
-        # agent_card_url is constructable from peer_id alone; surface it
-        # even when enrichment fails so the receiving agent has a single
-        # endpoint to hit for capabilities lookup.
-        meta["agent_card_url"] = _agent_card_url_for(peer_id)
+        # Canonicalise via the same UUID guard discover_peer uses, so an
+        # upstream row with a malformed peer_id (path-traversal chars,
+        # control bytes, embedded XML quotes) can't reflect raw input
+        # into either the JSON-RPC envelope or the registry URL. Trust
+        # boundary lives here because peer_id is sourced from the inbox
+        # row, which is platform-trusted but not always agent-trusted.
+        safe_peer_id = _validate_peer_id(peer_id)
+        if safe_peer_id is None:
+            meta["peer_id"] = ""
+        else:
+            meta["peer_id"] = safe_peer_id
+            record = enrich_peer_metadata(safe_peer_id)
+            if record is not None:
+                if name := record.get("name"):
+                    meta["peer_name"] = name
+                if role := record.get("role"):
+                    meta["peer_role"] = role
+            # agent_card_url is constructable from peer_id alone; surface it
+            # even when enrichment fails so the receiving agent has a single
+            # endpoint to hit for capabilities lookup.
+            meta["agent_card_url"] = _agent_card_url_for(safe_peer_id)
 
     return {
         "jsonrpc": "2.0",

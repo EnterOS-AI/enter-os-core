@@ -120,13 +120,22 @@ def enrich_peer_metadata(peer_id: str, *, now: float | None = None) -> dict | No
 def _agent_card_url_for(peer_id: str) -> str:
     """Construct the platform-side agent-card URL for ``peer_id``.
 
+    Returns the empty string when ``peer_id`` is not a UUID — same
+    trust-boundary rationale as ``discover_peer``: never interpolate
+    path-traversal characters into a URL. An invalid id reflected back
+    to the receiving agent as ``…/registry/discover/../../foo`` is a
+    foothold we close at construction time.
+
     Uses the registry's discovery path so the agent receiving a push
     can hit a single endpoint to enumerate the sender's capabilities
     + role + URL. Same shape every workspace exposes regardless of
     runtime — claude-code, hermes, langchain wrappers all register
     through ``/registry/register`` and surface through ``/registry/discover``.
     """
-    return f"{PLATFORM_URL}/registry/discover/{peer_id}"
+    safe_id = _validate_peer_id(peer_id)
+    if safe_id is None:
+        return ""
+    return f"{PLATFORM_URL}/registry/discover/{safe_id}"
 
 # Sentinel prefix for errors originating from send_a2a_message / child agents.
 # Used by delegate_task to distinguish real errors from normal response text.
