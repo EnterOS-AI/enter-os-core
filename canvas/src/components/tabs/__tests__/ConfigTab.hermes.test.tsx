@@ -215,12 +215,17 @@ describe("ConfigTab — Save persists model under runtime_config.model (2026-04-
       ).toBe("hermes"),
     );
 
-    // The model input is a free-text input wired to a datalist of suggestions.
-    const modelInput = (await waitFor(() =>
-      screen.getByPlaceholderText(/anthropic:claude-sonnet/i),
-    )) as HTMLInputElement;
+    // The model input is a <select> populated from the template's
+    // models[]. To exercise an off-list "user-typed" value the test
+    // uses the model-select's onChange handler — when the runtime
+    // ships no models, the form falls back to a free-text input
+    // (handled below); when it ships models, we change the select
+    // value to one that's in the list.
+    const modelSelect = (await waitFor(() =>
+      screen.getByTestId("model-select"),
+    )) as HTMLSelectElement;
 
-    fireEvent.change(modelInput, {
+    fireEvent.change(modelSelect, {
       target: { value: "minimax/MiniMax-M2.7-highspeed" },
     });
 

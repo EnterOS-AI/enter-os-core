@@ -45,6 +45,28 @@ type modelSpec struct {
 	RequiredEnv []string `json:"required_env,omitempty" yaml:"required_env"`
 }
 
+// providerEntry mirrors a single entry from the template's top-level
+// `providers:` registry block. The schema is a richer evolution of the
+// flat `runtime_config.providers []string` shape: each entry declares
+// which model ids it claims (via prefixes/aliases), the auth env vars
+// it accepts, and an optional ANTHROPIC_BASE_URL the adapter sets at
+// boot.
+//
+// claude-code-default ships this shape (anthropic-oauth, anthropic-api,
+// xiaomi-mimo, minimax, zai, moonshot, deepseek). Surfacing the full
+// shape lets the canvas Config tab build a provider→model cascade
+// without hardcoding the taxonomy and gives the adapter a single
+// source of truth. A template that hasn't migrated has no top-level
+// `providers:` block and the field is omitted on the wire.
+type providerEntry struct {
+	Name          string   `json:"name" yaml:"name"`
+	AuthMode      string   `json:"auth_mode,omitempty" yaml:"auth_mode"`
+	ModelPrefixes []string `json:"model_prefixes,omitempty" yaml:"model_prefixes"`
+	ModelAliases  []string `json:"model_aliases,omitempty" yaml:"model_aliases"`
+	BaseURL       string   `json:"base_url,omitempty" yaml:"base_url"`
+	AuthEnv       []string `json:"auth_env,omitempty" yaml:"auth_env"`
+}
+
 type templateSummary struct {
 	ID          string      `json:"id"`
 	Name        string      `json:"name"`
@@ -68,9 +90,17 @@ type templateSummary struct {
 	// a different vendor list doesn't need a canvas edit. Empty list →
 	// canvas falls back to deriving suggestions from `models[].id` slug
 	// prefixes (still adapter-driven, just inferred).
-	Providers   []string `json:"providers,omitempty"`
-	Skills      []string `json:"skills"`
-	SkillCount  int      `json:"skill_count"`
+	Providers []string `json:"providers,omitempty"`
+	// ProviderRegistry is the structured provider registry sourced from
+	// the template's TOP-LEVEL `providers:` block (the richer schema:
+	// each entry declares model_prefixes / model_aliases / auth_env /
+	// base_url). claude-code-default ships this; older templates ship
+	// only the flat `Providers` list above. Canvas prefers ProviderRegistry
+	// when non-empty so it can build a provider→model cascade and a
+	// read-only required-env display from a single source of truth.
+	ProviderRegistry []providerEntry `json:"provider_registry,omitempty"`
+	Skills           []string        `json:"skills"`
+	SkillCount       int             `json:"skill_count"`
 	// ProvisionTimeoutSeconds lets a slow runtime declare its expected
 	// cold-boot duration in its template manifest. Canvas's
 	// ProvisioningTimeout banner respects this per-workspace via the
@@ -100,12 +130,13 @@ func (h *TemplatesHandler) List(c *gin.Context) {
 	templates := make([]templateSummary, 0)
 	walkTemplateConfigs(h.configsDir, func(id string, data []byte) {
 		var raw struct {
-			Name          string   `yaml:"name"`
-			Description   string   `yaml:"description"`
-			Tier          int      `yaml:"tier"`
-			Runtime       string   `yaml:"runtime"`
-			Model         string   `yaml:"model"`
-			Skills        []string `yaml:"skills"`
+			Name          string          `yaml:"name"`
+			Description   string          `yaml:"description"`
+			Tier          int             `yaml:"tier"`
+			Runtime       string          `yaml:"runtime"`
+			Model         string          `yaml:"model"`
+			Skills        []string        `yaml:"skills"`
+			Providers     []providerEntry `yaml:"providers"`
 			RuntimeConfig struct {
 				Model                   string      `yaml:"model"`
 				Models                  []modelSpec `yaml:"models"`
@@ -124,6 +155,16 @@ func (h *TemplatesHandler) List(c *gin.Context) {
 			model = raw.RuntimeConfig.Model
 		}
 
+		// Defensive: drop providerEntry rows that have no name (yaml
+		// shape error). An entry without a name can't match anything
+		// and would render as a blank dropdown option in canvas.
+		registry := raw.Providers[:0:0]
+		for _, p := range raw.Providers {
+			if p.Name != "" {
+				registry = append(registry, p)
+			}
+		}
+
 		templates = append(templates, templateSummary{
 			ID:                      id,
 			Name:                    raw.Name,
@@ -134,6 +175,7 @@ func (h *TemplatesHandler) List(c *gin.Context) {
 			Models:                  raw.RuntimeConfig.Models,
 			RequiredEnv:             raw.RuntimeConfig.RequiredEnv,
 			Providers:               raw.RuntimeConfig.Providers,
+			ProviderRegistry:        registry,
 			Skills:                  raw.Skills,
 			SkillCount:              len(raw.Skills),
 			ProvisionTimeoutSeconds: raw.RuntimeConfig.ProvisionTimeoutSeconds,

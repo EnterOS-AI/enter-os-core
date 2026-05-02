@@ -269,6 +269,398 @@ skills: []
 	}
 }
 
+// TestTemplatesList_SurfacesProviderRegistry pins the structured
+// provider-registry shape that claude-code-default ships in its
+// TOP-LEVEL `providers:` block. Canvas reads this to build a
+// provider→model cascade (provider first, then a model dropdown
+// filtered to that provider's prefixes/aliases) and a read-only
+// required-env display sourced from auth_env + per-model required_env.
+//
+// If a future yaml-tag rename or struct edit drops the field, the
+// canvas dropdown silently degrades to "20 unfiltered models in a
+// datalist that hides everything not matching the typed substring" —
+// which is the exact UX bug a user reported on hongming.moleculesai.app
+// 2026-05-02 ("missing opus for claude code"). The fix landed here
+// pivots away from datalist filtering toward explicit selects, but
+// the wire shape carrying the registry is the load-bearing
+// dependency. Pinning it stops a silent rename from re-introducing
+// the bug under a different surface.
+func TestTemplatesList_SurfacesProviderRegistry(t *testing.T) {
+	setupTestDB(t)
+	setupTestRedis(t)
+
+	tmpDir := t.TempDir()
+	tmplDir := filepath.Join(tmpDir, "claude-code")
+	if err := os.MkdirAll(tmplDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Mirrors the production claude-code-default schema: structured
+	// providers at top level + flat models[] under runtime_config.
+	configYaml := `name: Claude Code Agent
+runtime: claude-code
+providers:
+  - name: anthropic-oauth
+    auth_mode: oauth
+    model_prefixes: []
+    model_aliases: [sonnet, opus, haiku]
+    base_url: null
+    auth_env: [CLAUDE_CODE_OAUTH_TOKEN]
+  - name: anthropic-api
+    auth_mode: anthropic_api
+    model_prefixes: [claude-]
+    model_aliases: []
+    auth_env: [ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN]
+  - name: xiaomi-mimo
+    auth_mode: third_party_anthropic_compat
+    model_prefixes: [mimo-]
+    base_url: https://api.xiaomimimo.com/anthropic
+    auth_env: [ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY]
+runtime_config:
+  model: sonnet
+  models:
+    - id: sonnet
+      name: Claude Sonnet (OAuth / Claude Code subscription)
+      required_env: [CLAUDE_CODE_OAUTH_TOKEN]
+    - id: opus
+      required_env: [CLAUDE_CODE_OAUTH_TOKEN]
+skills: []
+`
+	if err := os.WriteFile(filepath.Join(tmplDir, "config.yaml"), []byte(configYaml), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	handler := NewTemplatesHandler(tmpDir, nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/templates", nil)
+	handler.List(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp []templateSummary
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("expected 1 template, got %d", len(resp))
+	}
+	got := resp[0]
+
+	if len(got.ProviderRegistry) != 3 {
+		t.Fatalf("ProviderRegistry: want 3 entries, got %d (%+v)", len(got.ProviderRegistry), got.ProviderRegistry)
+	}
+
+	// First entry: OAuth path with model aliases (sonnet/opus/haiku).
+	oauth := got.ProviderRegistry[0]
+	if oauth.Name != "anthropic-oauth" {
+		t.Errorf("Provider[0].Name: got %q", oauth.Name)
+	}
+	if oauth.AuthMode != "oauth" {
+		t.Errorf("Provider[0].AuthMode: got %q", oauth.AuthMode)
+	}
+	if len(oauth.ModelAliases) != 3 || oauth.ModelAliases[1] != "opus" {
+		t.Errorf("Provider[0].ModelAliases: got %+v", oauth.ModelAliases)
+	}
+	if len(oauth.AuthEnv) != 1 || oauth.AuthEnv[0] != "CLAUDE_CODE_OAUTH_TOKEN" {
+		t.Errorf("Provider[0].AuthEnv: got %+v", oauth.AuthEnv)
+	}
+	if oauth.BaseURL != "" {
+		t.Errorf("Provider[0].BaseURL: want empty (yaml null), got %q", oauth.BaseURL)
+	}
+
+	// Second entry: API key with model prefixes.
+	api := got.ProviderRegistry[1]
+	if api.Name != "anthropic-api" {
+		t.Errorf("Provider[1].Name: got %q", api.Name)
+	}
+	if len(api.ModelPrefixes) != 1 || api.ModelPrefixes[0] != "claude-" {
+		t.Errorf("Provider[1].ModelPrefixes: got %+v", api.ModelPrefixes)
+	}
+
+	// Third entry: third-party with non-null base_url.
+	mimo := got.ProviderRegistry[2]
+	if mimo.BaseURL != "https://api.xiaomimimo.com/anthropic" {
+		t.Errorf("Provider[2].BaseURL: got %q", mimo.BaseURL)
+	}
+
+	// Wire-shape check — canvas reads `provider_registry` (snake case).
+	if !strings.Contains(w.Body.String(), `"provider_registry":[`) {
+		t.Errorf("response missing provider_registry JSON field: %s", w.Body.String())
+	}
+}
+
+// TestTemplatesList_RealClaudeCodeDefaultSchema is the live-shape
+// integration test: loads the actual workspace-configs-templates/
+// claude-code-default/config.yaml from the repo root, runs it
+// through the List handler, and asserts the response shape matches
+// what the canvas expects to consume. If the production config.yaml
+// drifts away from the shape canvas reads (e.g. providers becomes
+// `provider_set:` or model_aliases becomes `aliases:`), this test
+// fails the build at PR time instead of after deploy.
+//
+// This is the "live-test the actual code path before shipping a
+// hypothesis-driven fix" pattern from feedback memory 2026-05-02:
+// don't rely on synthetic fixtures alone when the production schema
+// is right there in the repo.
+func TestTemplatesList_RealClaudeCodeDefaultSchema(t *testing.T) {
+	setupTestDB(t)
+	setupTestRedis(t)
+
+	// Walk up from the test file's package dir to the repo root, then
+	// down into workspace-configs-templates/. Skip the test if we
+	// can't find it — the workspace-configs-templates dir is part of
+	// the monorepo, not the workspace-server module, so a partial
+	// checkout could omit it (CI builds the whole monorepo so it'll
+	// always be present there).
+	repoRoot := ""
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Skipf("getwd: %v", err)
+	}
+	for dir := cwd; dir != "/" && dir != "."; dir = filepath.Dir(dir) {
+		if _, err := os.Stat(filepath.Join(dir, "workspace-configs-templates")); err == nil {
+			repoRoot = dir
+			break
+		}
+	}
+	if repoRoot == "" {
+		t.Skip("workspace-configs-templates/ not found — partial checkout?")
+	}
+
+	configsDir := filepath.Join(repoRoot, "workspace-configs-templates")
+	handler := NewTemplatesHandler(configsDir, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/templates", nil)
+	handler.List(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp []templateSummary
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	// Locate claude-code-default in the response.
+	var ccd *templateSummary
+	for i := range resp {
+		if resp[i].ID == "claude-code-default" {
+			ccd = &resp[i]
+			break
+		}
+	}
+	if ccd == nil {
+		t.Fatalf("claude-code-default not found in /templates response (%d templates returned)", len(resp))
+	}
+
+	// The shape-contract assertions canvas depends on. Each one pins
+	// a specific UX point the user reported on 2026-05-02.
+
+	// (4) opus must be discoverable from the response. The model id
+	// is the literal "opus" alias, and a model.required_env declares
+	// what env var the workspace needs.
+	hasOpus := false
+	for _, m := range ccd.Models {
+		if m.ID == "opus" {
+			hasOpus = true
+			if len(m.RequiredEnv) == 0 {
+				t.Errorf("opus has no required_env in template")
+			}
+		}
+	}
+	if !hasOpus {
+		t.Errorf("opus alias missing from claude-code-default models[]: got %d models", len(ccd.Models))
+	}
+
+	// (2) Provider registry must surface so the canvas can render
+	// a Provider→Model cascade. The first entry must be the OAuth
+	// path with `sonnet`/`opus`/`haiku` aliases.
+	if len(ccd.ProviderRegistry) == 0 {
+		t.Fatalf("provider_registry empty for claude-code-default — canvas cascade UI won't render")
+	}
+	oauth := ccd.ProviderRegistry[0]
+	if oauth.Name != "anthropic-oauth" {
+		t.Errorf("provider_registry[0].name = %q, want anthropic-oauth", oauth.Name)
+	}
+	hasOpusAlias := false
+	for _, a := range oauth.ModelAliases {
+		if a == "opus" {
+			hasOpusAlias = true
+		}
+	}
+	if !hasOpusAlias {
+		t.Errorf("anthropic-oauth.model_aliases doesn't include opus: %+v", oauth.ModelAliases)
+	}
+
+	// (3) auth_env must be populated so the canvas can render the
+	// read-only required-env display. Without this the cascade
+	// degrades back to the editable TagList.
+	if len(oauth.AuthEnv) == 0 {
+		t.Errorf("anthropic-oauth.auth_env empty — required-env display will be empty")
+	}
+
+	// Cross-check: the JSON wire shape canvas actually parses.
+	body := w.Body.String()
+	if !strings.Contains(body, `"provider_registry"`) {
+		t.Errorf("response missing provider_registry JSON field")
+	}
+	if !strings.Contains(body, `"auth_env"`) {
+		t.Errorf("response missing auth_env in registry — canvas can't compute required env")
+	}
+	if !strings.Contains(body, `"model_aliases"`) {
+		t.Errorf("response missing model_aliases in registry — canvas can't filter models by provider")
+	}
+}
+
+// TestTemplatesList_OmitsProviderRegistryWhenAbsent — a template that
+// hasn't migrated to the structured `providers:` block must NOT emit
+// `provider_registry: null` (canvas's array-typed parser would treat
+// that as a load failure). omitempty on the struct slice elides the
+// field entirely.
+func TestTemplatesList_OmitsProviderRegistryWhenAbsent(t *testing.T) {
+	setupTestDB(t)
+	setupTestRedis(t)
+
+	tmpDir := t.TempDir()
+	tmplDir := filepath.Join(tmpDir, "no-registry")
+	if err := os.MkdirAll(tmplDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	configYaml := `name: Legacy
+runtime: hermes
+runtime_config:
+  model: anthropic:claude-opus-4-7
+  providers: [nous, openrouter]
+skills: []
+`
+	if err := os.WriteFile(filepath.Join(tmplDir, "config.yaml"), []byte(configYaml), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	handler := NewTemplatesHandler(tmpDir, nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/templates", nil)
+	handler.List(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), `"provider_registry":`) {
+		t.Errorf("response should omit provider_registry when template has none, got: %s", w.Body.String())
+	}
+	// Sanity: the legacy flat-string Providers field is still surfaced
+	// for hermes-style templates. Both shapes coexist intentionally.
+	if !strings.Contains(w.Body.String(), `"providers":["nous","openrouter"]`) {
+		t.Errorf("response should still surface flat providers list: %s", w.Body.String())
+	}
+}
+
+// TestTemplatesList_BothProviderShapesCoexist — claude-code-default
+// uses the structured top-level providers; hermes-shape templates may
+// keep the flat runtime_config.providers list. The /templates payload
+// must surface both fields independently so canvas can pick the
+// richer one when present and fall back to the flat list otherwise.
+func TestTemplatesList_BothProviderShapesCoexist(t *testing.T) {
+	setupTestDB(t)
+	setupTestRedis(t)
+
+	tmpDir := t.TempDir()
+	tmplDir := filepath.Join(tmpDir, "both")
+	if err := os.MkdirAll(tmplDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	configYaml := `name: Mixed
+runtime: experimental
+providers:
+  - name: vendor-a
+    auth_env: [VENDOR_A_KEY]
+runtime_config:
+  model: x
+  providers: [legacy-flat]
+skills: []
+`
+	if err := os.WriteFile(filepath.Join(tmplDir, "config.yaml"), []byte(configYaml), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	handler := NewTemplatesHandler(tmpDir, nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/templates", nil)
+	handler.List(c)
+
+	var resp []templateSummary
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("expected 1 template, got %d", len(resp))
+	}
+	got := resp[0]
+	if len(got.Providers) != 1 || got.Providers[0] != "legacy-flat" {
+		t.Errorf("flat Providers preserved: got %+v", got.Providers)
+	}
+	if len(got.ProviderRegistry) != 1 || got.ProviderRegistry[0].Name != "vendor-a" {
+		t.Errorf("structured ProviderRegistry preserved: got %+v", got.ProviderRegistry)
+	}
+}
+
+// TestTemplatesList_DropsRegistryEntriesWithoutName — a malformed
+// providers entry missing `name:` would otherwise render as a blank
+// dropdown option on canvas. Drop those defensively at parse time so
+// the wire shape never carries them.
+func TestTemplatesList_DropsRegistryEntriesWithoutName(t *testing.T) {
+	setupTestDB(t)
+	setupTestRedis(t)
+
+	tmpDir := t.TempDir()
+	tmplDir := filepath.Join(tmpDir, "malformed")
+	if err := os.MkdirAll(tmplDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	configYaml := `name: Test
+runtime: claude-code
+providers:
+  - name: real-provider
+    auth_env: [TOKEN]
+  - auth_env: [SHOULD_BE_DROPPED]
+  - name: ""
+    auth_env: [ALSO_DROPPED]
+runtime_config:
+  model: x
+skills: []
+`
+	if err := os.WriteFile(filepath.Join(tmplDir, "config.yaml"), []byte(configYaml), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	handler := NewTemplatesHandler(tmpDir, nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/templates", nil)
+	handler.List(c)
+
+	var resp []templateSummary
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("expected 1 template, got %d", len(resp))
+	}
+	got := resp[0]
+	if len(got.ProviderRegistry) != 1 {
+		t.Fatalf("expected 1 valid entry (others dropped), got %d: %+v", len(got.ProviderRegistry), got.ProviderRegistry)
+	}
+	if got.ProviderRegistry[0].Name != "real-provider" {
+		t.Errorf("wrong entry kept: %+v", got.ProviderRegistry[0])
+	}
+}
+
 // TestTemplatesList_OmitsProvidersWhenAbsent pins the omitempty
 // behavior — older templates that haven't migrated to
 // runtime_config.providers yet must NOT emit `providers: null` (which

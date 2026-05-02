@@ -210,19 +210,19 @@ describe("ConfigTab — Provider override (Option B PR-5)", () => {
     });
   });
 
-  // The dropdown's suggestion list MUST come from the runtime's own
-  // template (via /templates → runtime_config.providers), not a
-  // hardcoded canvas-side enum. This is the "Native + pluggable
-  // runtime" invariant: a new runtime declaring its own provider
-  // taxonomy in its config.yaml gets a working dropdown without ANY
-  // canvas-side change.
+  // The dropdown's options MUST come from the runtime's own template
+  // (via /templates → runtime_config.providers), not a hardcoded
+  // canvas-side enum. This is the "Native + pluggable runtime"
+  // invariant: a new runtime declaring its own provider taxonomy in
+  // its config.yaml gets a working dropdown without ANY canvas-side
+  // change.
   //
-  // Pinned by checking that suggestions surfaced in the datalist
-  // exactly mirror what the templates endpoint returned for the
-  // matching runtime. If a future contributor reintroduces a
-  // PROVIDER_SUGGESTIONS-style hardcoded list and the datalist
+  // Pinned by checking that the rendered <select> options exactly
+  // mirror what the templates endpoint returned for the matching
+  // runtime. If a future contributor reintroduces a
+  // PROVIDER_SUGGESTIONS-style hardcoded list and the dropdown
   // contents don't follow the template, this test fails.
-  it("populates the provider datalist from the matched runtime's templates entry", async () => {
+  it("populates the provider select from the matched runtime's templates entry", async () => {
     wireApi({
       workspaceRuntime: "hermes",
       workspaceModel: "nousresearch/hermes-4-70b",
@@ -242,15 +242,12 @@ describe("ConfigTab — Provider override (Option B PR-5)", () => {
     });
 
     render(<ConfigTab workspaceId="ws-test" />);
-    const input = await screen.findByTestId("provider-input");
-    const listId = (input as HTMLInputElement).getAttribute("list");
-    expect(listId).toBeTruthy();
+    const select = await screen.findByTestId("provider-input");
+    expect(select.tagName).toBe("SELECT");
     await waitFor(() => {
-      const datalist = document.getElementById(listId!);
-      expect(datalist).not.toBeNull();
-      const optionValues = Array.from(datalist!.querySelectorAll("option")).map(
-        (o) => (o as HTMLOptionElement).value,
-      );
+      const optionValues = Array.from(select.querySelectorAll("option"))
+        .map((o) => (o as HTMLOptionElement).value)
+        .filter((v) => v !== "(auto)");
       // Order matters — most-common-first is part of the contract so
       // the demo flow lands on a working choice without scrolling.
       expect(optionValues).toEqual(["nous", "openrouter", "anthropic", "minimax-cn"]);
@@ -285,14 +282,12 @@ describe("ConfigTab — Provider override (Option B PR-5)", () => {
     });
 
     render(<ConfigTab workspaceId="ws-test" />);
-    const input = await screen.findByTestId("provider-input");
-    const listId = (input as HTMLInputElement).getAttribute("list");
-    expect(listId).toBeTruthy();
+    const select = await screen.findByTestId("provider-input");
+    expect(select.tagName).toBe("SELECT");
     await waitFor(() => {
-      const datalist = document.getElementById(listId!);
-      const optionValues = Array.from(datalist!.querySelectorAll("option")).map(
-        (o) => (o as HTMLOptionElement).value,
-      );
+      const optionValues = Array.from(select.querySelectorAll("option"))
+        .map((o) => (o as HTMLOptionElement).value)
+        .filter((v) => v !== "(auto)");
       // Order = first-appearance from models[]; dedup keeps anthropic
       // once even though two model slugs use it.
       expect(optionValues).toEqual(["anthropic", "openai", "nousresearch"]);

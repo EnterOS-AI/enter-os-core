@@ -1,11 +1,20 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef, useId } from "react";
+import { useState, useEffect, useCallback, useRef, useId, useMemo } from "react";
 import { api } from "@/lib/api";
 import { useCanvasStore } from "@/store/canvas";
 import { type ConfigData, DEFAULT_CONFIG, TextInput, NumberInput, Toggle, TagList, Section } from "./config/form-inputs";
 import { parseYaml, toYaml } from "./config/yaml-utils";
 import { SecretsSection } from "./config/secrets-section";
+import {
+  AUTO_PROVIDER,
+  matchProviderForModel,
+  modelsForProvider,
+  requiredEnvFor,
+  providerListForRuntime,
+  type ProviderEntry,
+  type ModelSpec as CascadeModelSpec,
+} from "./config/provider-cascade";
 
 interface Props {
   workspaceId: string;
@@ -86,56 +95,25 @@ function AgentCardSection({ workspaceId }: { workspaceId: string }) {
 
 // --- Main ConfigTab ---
 
-interface ModelSpec {
-  id: string;
-  name?: string;
-  required_env?: string[];
-}
-
-function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
-  return a.length === b.length && a.every((v, i) => v === b[i]);
-}
+type ModelSpec = CascadeModelSpec;
 
 interface RuntimeOption {
   value: string;
   label: string;
   models: ModelSpec[];
-  // providers is the declarative provider list each template ships in
-  // its config.yaml under runtime_config.providers. The /templates API
-  // surfaces it (workspace-server templates.go) so canvas stays
-  // adapter-driven: hermes ships ~20 slugs, claude-code ships
-  // ["anthropic"], gemini-cli ships ["gemini"], etc. Empty list →
-  // canvas falls back to deriving unique vendor prefixes from
-  // models[].id (still adapter-driven, just inferred).
+  // providers is the legacy flat-string list each older template
+  // ships under runtime_config.providers. Hermes-style. Kept for
+  // back-compat — newer templates ship the structured registry below.
   providers: string[];
-}
-
-// deriveProvidersFromModels — when a template doesn't ship an explicit
-// providers list, infer suggestions from the vendor prefixes of its
-// model slugs. e.g. ["anthropic:claude-opus-4-7", "openai:gpt-4o",
-// "anthropic:claude-sonnet-4-5"] → ["anthropic", "openai"].
-//
-// This keeps the dropdown adapter-driven for older templates that
-// haven't migrated to the explicit `providers:` field yet, AND
-// continues to be a useful fallback for any future runtime whose
-// derive-provider semantics happen to match the slug prefix.
-function deriveProvidersFromModels(models: ModelSpec[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const m of models) {
-    if (!m.id) continue;
-    // Both ":" (anthropic:claude-opus-4-7) and "/" (nousresearch/hermes-4-70b)
-    // are valid vendor separators in our slug taxonomy. Take whichever
-    // appears first and split there.
-    const sep = m.id.match(/[:/]/)?.index ?? -1;
-    if (sep <= 0) continue;
-    const vendor = m.id.slice(0, sep);
-    if (!seen.has(vendor)) {
-      seen.add(vendor);
-      out.push(vendor);
-    }
-  }
-  return out;
+  // providerRegistry is the structured top-level `providers:` block
+  // from claude-code-default and similar runtimes (Option B PR-6).
+  // When non-empty it drives the Provider→Model cascade UI: the form
+  // shows a Provider <select> populated from registry[].name, then a
+  // Model <select> filtered to that provider's prefixes/aliases, then
+  // a read-only Required Env display sourced from the union of the
+  // selected provider.auth_env and the selected model.required_env.
+  // Empty → form falls back to the legacy flat-providers UX.
+  providerRegistry: ProviderEntry[];
 }
 
 // Fallback used when /templates can't be fetched (offline, older backend).
@@ -154,14 +132,14 @@ function deriveProvidersFromModels(models: ModelSpec[]): string[] {
 const RUNTIMES_WITH_OWN_CONFIG = new Set<string>(["external"]);
 
 const FALLBACK_RUNTIME_OPTIONS: RuntimeOption[] = [
-  { value: "", label: "LangGraph (default)", models: [], providers: [] },
-  { value: "claude-code", label: "Claude Code", models: [], providers: [] },
-  { value: "crewai", label: "CrewAI", models: [], providers: [] },
-  { value: "autogen", label: "AutoGen", models: [], providers: [] },
-  { value: "deepagents", label: "DeepAgents", models: [], providers: [] },
-  { value: "openclaw", label: "OpenClaw", models: [], providers: [] },
-  { value: "hermes", label: "Hermes", models: [], providers: [] },
-  { value: "gemini-cli", label: "Gemini CLI", models: [], providers: [] },
+  { value: "", label: "LangGraph (default)", models: [], providers: [], providerRegistry: [] },
+  { value: "claude-code", label: "Claude Code", models: [], providers: [], providerRegistry: [] },
+  { value: "crewai", label: "CrewAI", models: [], providers: [], providerRegistry: [] },
+  { value: "autogen", label: "AutoGen", models: [], providers: [], providerRegistry: [] },
+  { value: "deepagents", label: "DeepAgents", models: [], providers: [], providerRegistry: [] },
+  { value: "openclaw", label: "OpenClaw", models: [], providers: [], providerRegistry: [] },
+  { value: "hermes", label: "Hermes", models: [], providers: [], providerRegistry: [] },
+  { value: "gemini-cli", label: "Gemini CLI", models: [], providers: [], providerRegistry: [] },
 ];
 
 export function ConfigTab({ workspaceId }: Props) {
@@ -243,7 +221,18 @@ export function ConfigTab({ workspaceId }: Props) {
       // form doesn't contradict the node badge (issue: badge=T3, form=T2).
       const merged = { ...DEFAULT_CONFIG, ...parsed } as ConfigData;
       if (wsMetadataRuntime) merged.runtime = wsMetadataRuntime;
-      if (wsMetadataModel) merged.model = wsMetadataModel;
+      if (wsMetadataModel) {
+        // Display-vs-storage drift fix (task #190). The form reads
+        // `config.runtime_config?.model || config.model` so a stale
+        // top-level write would lose to the yaml's runtime_config.model
+        // and the form would show the template default instead of the
+        // workspace's actual model. Mirror to BOTH so whichever path
+        // the form prefers, the workspace-metadata wins.
+        merged.model = wsMetadataModel;
+        if (wsMetadataRuntime) {
+          merged.runtime_config = { ...(merged.runtime_config ?? {}), model: wsMetadataModel };
+        }
+      }
       if (wsMetadataTier !== null) merged.tier = wsMetadataTier;
       setConfig(merged);
     } catch {
@@ -272,11 +261,18 @@ export function ConfigTab({ workspaceId }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    api.get<Array<{ id: string; name?: string; runtime?: string; models?: ModelSpec[]; providers?: string[] }>>("/templates")
+    api.get<Array<{
+      id: string;
+      name?: string;
+      runtime?: string;
+      models?: ModelSpec[];
+      providers?: string[];
+      provider_registry?: ProviderEntry[];
+    }>>("/templates")
       .then((rows) => {
         if (cancelled || !Array.isArray(rows)) return;
         const byRuntime = new Map<string, RuntimeOption>();
-        byRuntime.set("", { value: "", label: "LangGraph (default)", models: [], providers: [] });
+        byRuntime.set("", { value: "", label: "LangGraph (default)", models: [], providers: [], providerRegistry: [] });
         for (const r of rows) {
           const v = (r.runtime || "").trim();
           if (!v || v === "langgraph") continue;
@@ -285,8 +281,9 @@ export function ConfigTab({ workspaceId }: Props) {
           const existing = byRuntime.get(v);
           const models = Array.isArray(r.models) ? r.models : [];
           const providers = Array.isArray(r.providers) ? r.providers : [];
+          const providerRegistry = Array.isArray(r.provider_registry) ? r.provider_registry : [];
           if (!existing || models.length > existing.models.length) {
-            byRuntime.set(v, { value: v, label: r.name || v, models, providers });
+            byRuntime.set(v, { value: v, label: r.name || v, models, providers, providerRegistry });
           }
         }
         if (byRuntime.size > 1) setRuntimeOptions(Array.from(byRuntime.values()));
@@ -298,18 +295,60 @@ export function ConfigTab({ workspaceId }: Props) {
   // Models + env hints for the currently-selected runtime.
   const selectedRuntime = runtimeOptions.find((o) => o.value === (config.runtime || "")) ?? null;
   const availableModels: ModelSpec[] = selectedRuntime?.models ?? [];
-  // Provider suggestions: prefer the runtime's declarative providers
-  // list (sourced from its template config.yaml runtime_config.providers
-  // and surfaced via /templates), fall back to deriving from model slug
-  // prefixes when the template hasn't migrated to the explicit field
-  // yet. Either way the data flows from the adapter — no hardcoded
-  // canvas-side enum.
-  const providerSuggestions: string[] =
-    (selectedRuntime?.providers && selectedRuntime.providers.length > 0)
-      ? selectedRuntime.providers
-      : deriveProvidersFromModels(availableModels);
+
+  // Provider→Model cascade (PR-6). The structured provider_registry
+  // declares which models each provider claims, so the form can show
+  // a Provider <select> first, then a Model <select> filtered to
+  // that provider's prefixes/aliases. When the registry is absent,
+  // the legacy flat-string `providers` list (or vendor-prefix
+  // derivation) populates a name-only dropdown and the model list is
+  // unfiltered.
+  const providerOptions = useMemo<ProviderEntry[]>(
+    () => providerListForRuntime(selectedRuntime?.providerRegistry, selectedRuntime?.providers, availableModels),
+    [selectedRuntime, availableModels],
+  );
+  const hasProviderRegistry = (selectedRuntime?.providerRegistry?.length ?? 0) > 0;
+
   const currentModelId = config.runtime_config?.model || config.model || "";
   const currentModelSpec = availableModels.find((m) => m.id === currentModelId) ?? null;
+
+  // The "auto-derived" provider from the selected model id. When the
+  // operator hasn't picked an explicit provider, this is what the
+  // adapter would resolve at boot. Used to:
+  //   1. Show "(auto: anthropic-oauth)" next to the AUTO_PROVIDER
+  //      option so the operator knows what they'll get.
+  //   2. Surface auth_env in the read-only required-env display even
+  //      when provider is left blank (the actual env var the
+  //      workspace will need still depends on which provider auto-
+  //      resolves).
+  const autoMatchedProvider = useMemo(
+    () => matchProviderForModel(currentModelId, providerOptions),
+    [currentModelId, providerOptions],
+  );
+
+  // The provider whose auth_env should drive the required-env
+  // display. Explicit override beats auto-derive.
+  const effectiveProvider = useMemo(() => {
+    if (provider && provider !== AUTO_PROVIDER) {
+      return providerOptions.find((p) => p.name === provider) ?? null;
+    }
+    return autoMatchedProvider;
+  }, [provider, providerOptions, autoMatchedProvider]);
+
+  // Models the form actually offers in the dropdown given the current
+  // provider selection. Empty provider / AUTO_PROVIDER → unfiltered.
+  const filteredModels = useMemo(
+    () => modelsForProvider(provider, availableModels, providerOptions),
+    [provider, availableModels, providerOptions],
+  );
+
+  // Required env names rendered read-only when the registry can supply
+  // them. Falls back to the per-template flat list (config.runtime_config.required_env)
+  // for legacy templates that haven't shipped the structured shape.
+  const cascadedRequiredEnv = useMemo(
+    () => requiredEnvFor(effectiveProvider, currentModelSpec),
+    [effectiveProvider, currentModelSpec],
+  );
 
   const update = <K extends keyof ConfigData>(key: K, value: ConfigData[K]) => {
     setConfig((prev) => ({ ...prev, [key]: value }));
@@ -551,158 +590,198 @@ export function ConfigTab({ workspaceId }: Props) {
           </Section>
 
           <Section title="Runtime">
+            <div>
+              <label htmlFor={runtimeId} className="text-[10px] text-zinc-500 block mb-1">Runtime</label>
+              <select
+                id={runtimeId}
+                value={config.runtime || ""}
+                onChange={(e) => update("runtime", e.target.value)}
+                className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-blue-500"
+              >
+                {runtimeOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
             <div className="grid grid-cols-2 gap-3">
+              {/* Provider <select> — first cascade. When the runtime
+                  ships a structured provider_registry (claude-code,
+                  hermes once it migrates), each registry entry becomes
+                  one option and selecting it filters the Model
+                  dropdown below. Without a registry, options come
+                  from the legacy flat `providers []string` list (or
+                  vendor-prefix derivation) and Model stays unfiltered.
+                  Selecting AUTO_PROVIDER (or leaving the value empty)
+                  saves "" to /workspaces/:id/provider, which the
+                  adapter resolves at boot. */}
               <div>
-                <label htmlFor={runtimeId} className="text-[10px] text-zinc-500 block mb-1">Runtime</label>
-                <select
-                  id={runtimeId}
-                  value={config.runtime || ""}
-                  onChange={(e) => update("runtime", e.target.value)}
-                  className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-blue-500"
-                >
-                  {runtimeOptions.map((opt) => (
-                    <option key={opt.value} value={opt.value}>{opt.label}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="text-[10px] text-zinc-500 block mb-1">
-                  Model
-                  {availableModels.length > 0 && (
-                    <span className="ml-1 text-zinc-600">({availableModels.length} suggested)</span>
+                <label htmlFor={`${runtimeId}-provider`} className="text-[10px] text-zinc-500 block mb-1">
+                  Provider
+                  {hasProviderRegistry && autoMatchedProvider && (
+                    <span className="ml-1 text-zinc-600">
+                      (auto: {autoMatchedProvider.name})
+                    </span>
                   )}
                 </label>
-                <input
-                  type="text"
-                  list={availableModels.length > 0 ? `${runtimeId}-models` : undefined}
-                  value={currentModelId}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setConfig((prev) => {
-                      // If the new value exactly matches a known modelSpec id,
-                      // swap required_env to that spec's list — but only when
-                      // the current required_env is empty or was itself
-                      // template-driven (i.e. matches the previous modelSpec's
-                      // required_env). User-typed envs always win.
-                      const nextSpec = availableModels.find((m) => m.id === v) ?? null;
-                      const prevModelId = prev.runtime_config?.model || prev.model || "";
-                      const prevSpec = availableModels.find((m) => m.id === prevModelId) ?? null;
-                      const prevRequired = prev.runtime_config?.required_env ?? [];
-                      const wasTemplateDriven =
-                        prevRequired.length === 0 ||
-                        (prevSpec?.required_env?.length
-                          ? prevRequired.length === prevSpec.required_env.length &&
-                            prevRequired.every((e, i) => e === prevSpec.required_env![i])
-                          : false);
-                      const nextRequired =
-                        nextSpec?.required_env?.length && wasTemplateDriven
-                          ? nextSpec.required_env
-                          : prevRequired;
-                      if (prev.runtime) {
-                        return {
-                          ...prev,
-                          runtime_config: {
-                            ...prev.runtime_config,
-                            model: v,
-                            ...(nextSpec?.required_env?.length && wasTemplateDriven
-                              ? { required_env: nextRequired }
-                              : {}),
-                          },
-                        };
+                {providerOptions.length > 0 ? (
+                  <select
+                    id={`${runtimeId}-provider`}
+                    value={provider || AUTO_PROVIDER}
+                    onChange={(e) => {
+                      const v = e.target.value === AUTO_PROVIDER ? "" : e.target.value;
+                      setProvider(v);
+                      // Switching providers can invalidate the current
+                      // model when it doesn't belong to the new provider's
+                      // claim list. Snap the model to the first one the
+                      // new provider DOES claim so the form never holds
+                      // an inconsistent (provider, model) pair.
+                      if (v && v !== AUTO_PROVIDER && hasProviderRegistry) {
+                        const filtered = modelsForProvider(v, availableModels, providerOptions);
+                        const stillValid = filtered.some((m) => m.id === currentModelId);
+                        if (!stillValid && filtered.length > 0) {
+                          setConfig((prev) => prev.runtime
+                            ? { ...prev, runtime_config: { ...prev.runtime_config, model: filtered[0].id } }
+                            : { ...prev, model: filtered[0].id });
+                        }
                       }
-                      return { ...prev, model: v };
-                    });
-                  }}
-                  placeholder="e.g. anthropic:claude-sonnet-4-6"
-                  className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 font-mono focus:outline-none focus:border-blue-500"
-                />
-                {availableModels.length > 0 && (
-                  <datalist id={`${runtimeId}-models`}>
-                    {availableModels.map((m, i) => (
-                      <option key={`${m.id}-${i}`} value={m.id}>{m.name || m.id}</option>
+                    }}
+                    aria-label="LLM provider"
+                    data-testid="provider-input"
+                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 font-mono focus:outline-none focus:border-blue-500"
+                  >
+                    <option value={AUTO_PROVIDER}>
+                      {AUTO_PROVIDER} — derive from model{autoMatchedProvider ? ` (${autoMatchedProvider.name})` : ""}
+                    </option>
+                    {providerOptions.map((p) => (
+                      <option key={p.name} value={p.name}>{p.name}</option>
                     ))}
-                  </datalist>
+                  </select>
+                ) : (
+                  // No suggestions and no registry — runtime hasn't
+                  // declared its taxonomy yet. Fall back to free-text
+                  // so a power user isn't blocked.
+                  <input
+                    id={`${runtimeId}-provider`}
+                    type="text"
+                    value={provider}
+                    onChange={(e) => setProvider(e.target.value.trim())}
+                    placeholder="empty = auto-derive from model slug"
+                    aria-label="LLM provider"
+                    data-testid="provider-input"
+                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 font-mono focus:outline-none focus:border-blue-500"
+                  />
+                )}
+                {provider && provider !== originalProvider && (
+                  <p className="text-[10px] text-amber-500 mt-1">
+                    Provider change → workspace will auto-restart on Save.
+                  </p>
+                )}
+              </div>
+              <div>
+                <label htmlFor={`${runtimeId}-model`} className="text-[10px] text-zinc-500 block mb-1">
+                  Model
+                  {filteredModels.length > 0 && (
+                    <span className="ml-1 text-zinc-600">
+                      ({filteredModels.length} {hasProviderRegistry && provider && provider !== AUTO_PROVIDER ? "for this provider" : "available"})
+                    </span>
+                  )}
+                </label>
+                {filteredModels.length > 0 ? (
+                  // <select> instead of <input list> — datalist would
+                  // hide options that don't substring-match the typed
+                  // value, which is the bug the user reported (typing
+                  // "sonnet" hides opus). A select shows everything
+                  // unconditionally.
+                  <select
+                    id={`${runtimeId}-model`}
+                    value={currentModelId}
+                    data-testid="model-select"
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setConfig((prev) => {
+                        if (prev.runtime) {
+                          return { ...prev, runtime_config: { ...prev.runtime_config, model: v } };
+                        }
+                        return { ...prev, model: v };
+                      });
+                    }}
+                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 font-mono focus:outline-none focus:border-blue-500"
+                  >
+                    {/* Defensive: if the saved model isn't in the
+                        filtered set (e.g. provider override picked but
+                        model didn't snap), surface it as a stranded
+                        option so the user can see what's currently
+                        saved without the select silently snapping it. */}
+                    {!filteredModels.some((m) => m.id === currentModelId) && currentModelId && (
+                      <option value={currentModelId}>{currentModelId} (current — not in this provider)</option>
+                    )}
+                    {filteredModels.map((m) => (
+                      <option key={m.id} value={m.id}>{m.name || m.id}</option>
+                    ))}
+                  </select>
+                ) : (
+                  // No models surfaced from the template (older runtime
+                  // or /templates failed). Free-text fallback.
+                  <input
+                    id={`${runtimeId}-model`}
+                    type="text"
+                    value={currentModelId}
+                    data-testid="model-select"
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setConfig((prev) => prev.runtime
+                        ? { ...prev, runtime_config: { ...prev.runtime_config, model: v } }
+                        : { ...prev, model: v });
+                    }}
+                    placeholder="e.g. anthropic:claude-sonnet-4-6"
+                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 font-mono focus:outline-none focus:border-blue-500"
+                  />
                 )}
               </div>
             </div>
-            {/* Provider override (Option B PR-5). Free-text combobox so
-                operators can use any of the 30+ slugs hermes-agent's
-                derive-provider.sh recognizes — the suggestion list is
-                a hint, not a constraint. Empty = "auto-derive from
-                model slug prefix" which is correct for the common case
-                (model "anthropic:claude-opus-4-7" → provider derived
-                as "anthropic"). The override is needed when the model
-                alias has no clean vendor prefix (e.g. hermes default
-                "nousresearch/hermes-4-70b" → derive returns empty →
-                hermes errors "No LLM provider configured"). */}
-            <div>
-              <label htmlFor={`${runtimeId}-provider`} className="text-[10px] text-zinc-500 block mb-1">
-                Provider
-                <span className="ml-1 text-zinc-600">
-                  (override — leave empty to auto-derive from model slug)
-                </span>
-              </label>
-              <input
-                id={`${runtimeId}-provider`}
-                type="text"
-                list={providerSuggestions.length > 0 ? `${runtimeId}-providers` : undefined}
-                value={provider}
-                onChange={(e) => setProvider(e.target.value.trim())}
-                placeholder={
-                  providerSuggestions.length > 0
-                    ? `e.g. ${providerSuggestions.slice(0, 3).join(", ")} (empty = auto-derive)`
-                    : "empty = auto-derive from model slug"
-                }
-                aria-label="LLM provider override"
-                data-testid="provider-input"
-                className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 font-mono focus:outline-none focus:border-blue-500"
-              />
-              {providerSuggestions.length > 0 && (
-                <datalist id={`${runtimeId}-providers`}>
-                  {providerSuggestions.map((p) => (
-                    <option key={p} value={p} />
+            {/* Required Env Var Names. When the structured registry
+                supplies a (provider, model) pair, the union of
+                provider.auth_env + model.required_env is what the
+                workspace actually needs and the field is read-only —
+                the user can't usefully edit it because the truth lives
+                in the template registry, not in this form. The
+                editor only re-appears as a TagList for legacy
+                templates that haven't shipped the structured shape. */}
+            {hasProviderRegistry && cascadedRequiredEnv.length > 0 ? (
+              <div>
+                <label className="text-[10px] text-zinc-500 block mb-1">
+                  Required Env Var Names <span className="ml-1 text-zinc-600">(from template — read-only)</span>
+                </label>
+                <div className="flex flex-wrap gap-1" data-testid="required-env-display">
+                  {cascadedRequiredEnv.map((e) => (
+                    <span key={e} className="px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 rounded text-[10px] text-zinc-300 font-mono">
+                      {e}
+                    </span>
                   ))}
-                </datalist>
-              )}
-              {provider && provider !== originalProvider && (
-                <p className="text-[10px] text-amber-500 mt-1">
-                  Provider change → workspace will auto-restart on Save.
+                </div>
+                <p className="text-[10px] text-zinc-500 mt-1">
+                  Set the actual values in the <strong>Secrets</strong> section
+                  below — encrypted and mounted into the container at
+                  runtime. {effectiveProvider?.auth_env && effectiveProvider.auth_env.length > 1 && (
+                    <span>Provider <code className="text-zinc-400">{effectiveProvider.name}</code> accepts any one of its env vars.</span>
+                  )}
                 </p>
-              )}
-            </div>
-            <TagList
-              label={
-                currentModelSpec?.required_env?.length &&
-                arraysEqual(config.runtime_config?.required_env ?? [], currentModelSpec.required_env)
-                  ? "Required Env Var Names (from template)"
-                  : "Required Env Var Names"
-              }
-              values={config.runtime_config?.required_env ?? []}
-              onChange={(v) => updateNested("runtime_config" as keyof ConfigData, "required_env", v)}
-              placeholder="variable NAME (e.g. ANTHROPIC_API_KEY) — not the value"
-            />
-            <p className="text-[10px] text-zinc-500 mt-1">
-              This declares which env var <em>names</em> the workspace needs.
-              Set the actual values in the <strong>Secrets</strong> section
-              below — those are encrypted and mounted into the container at
-              runtime.
-            </p>
-            {currentModelSpec?.required_env?.length &&
-              !arraysEqual(config.runtime_config?.required_env ?? [], currentModelSpec.required_env) && (
-              <div className="text-[10px] text-zinc-500 mt-1 flex items-center gap-2">
-                <span>
-                  Template suggests{" "}
-                  <code className="text-zinc-400">{currentModelSpec.required_env.join(", ")}</code>{" "}
-                  for <code className="text-zinc-400">{currentModelSpec.name || currentModelSpec.id}</code>.
-                </span>
-                <button
-                  type="button"
-                  onClick={() => updateNested("runtime_config" as keyof ConfigData, "required_env", currentModelSpec.required_env)}
-                  className="text-blue-400 hover:text-blue-300 underline"
-                >
-                  Apply
-                </button>
               </div>
+            ) : (
+              <>
+                <TagList
+                  label="Required Env Var Names"
+                  values={config.runtime_config?.required_env ?? []}
+                  onChange={(v) => updateNested("runtime_config" as keyof ConfigData, "required_env", v)}
+                  placeholder="variable NAME (e.g. ANTHROPIC_API_KEY) — not the value"
+                />
+                <p className="text-[10px] text-zinc-500 mt-1">
+                  This declares which env var <em>names</em> the workspace needs.
+                  Set the actual values in the <strong>Secrets</strong> section
+                  below — those are encrypted and mounted into the container at
+                  runtime.
+                </p>
+              </>
             )}
           </Section>
 
