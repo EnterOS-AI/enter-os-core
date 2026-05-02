@@ -28,7 +28,7 @@ langchain-core>=0.3.0
 # OpenTelemetry — workspace-level distributed tracing
 # tools/telemetry.py gracefully degrades (noop) when these are absent,
 # but they are required for actual trace export.
-opentelemetry-api>=1.24.0
+opentelemetry-api>=1.41.1
 opentelemetry-sdk>=1.41.1
 # OTLP/HTTP exporter: sends spans to any OTEL collector and to Langfuse ≥4
 opentelemetry-exporter-otlp-proto-http>=1.24.0
