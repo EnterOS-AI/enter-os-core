@@ -3,17 +3,27 @@
 The harness brings up the SaaS tenant topology on localhost using the
 same `Dockerfile.tenant` image that ships to production. Tests target
 the cf-proxy on `http://localhost:8080` and pass the tenant identity
-via a `Host: harness-tenant.localhost` header — exactly the way
-production CF tunnel routes by Host header. The cf-proxy nginx then
-rewrites headers and proxies to the tenant container, exercising the
-SAME code path a real tenant takes including TenantGuard middleware,
-the `/cp/*` reverse proxy, the canvas reverse proxy, and a
-Cloudflare-tunnel-shape header rewrite layer.
+via a `Host:` header — exactly the way production CF tunnel routes by
+Host header. The cf-proxy nginx then rewrites headers and proxies to
+the right tenant container, exercising the SAME code path a real tenant
+takes including TenantGuard middleware, the `/cp/*` reverse proxy, the
+canvas reverse proxy, and a Cloudflare-tunnel-shape header rewrite
+layer.
 
-`tests/harness/_curl.sh` is the helper sourced by every replay —
-provides `curl_anon`, `curl_admin`, `curl_workspace`, and `psql_exec`
-wrappers that set the right Host + auth headers automatically. New
-replays should source it rather than rolling their own curl.
+Since Phase 2 the harness runs **two tenants in parallel** (alpha and
+beta) with their own Postgres instance and distinct
+`MOLECULE_ORG_ID`s — same shape as production, where each tenant gets
+its own EC2 + DB. This is what cross-tenant isolation replays need to
+prove TenantGuard actually 404s a misrouted request.
+
+`tests/harness/_curl.sh` is the helper sourced by every replay. Per
+tenant: `curl_alpha_anon` / `curl_alpha_admin` / `curl_beta_anon` /
+`curl_beta_admin` / `psql_exec_alpha` / `psql_exec_beta`. Plus
+deliberately-wrong cross-tenant negative-test helpers for isolation
+replays: `curl_alpha_creds_at_beta` / `curl_beta_creds_at_alpha`.
+Legacy single-tenant aliases (`curl_anon`, `curl_admin`, `psql_exec`)
+default to alpha so pre-Phase-2 replays continue to work. New replays
+should source `_curl.sh` rather than rolling their own curl.
 
 ## Why this exists
 
@@ -30,25 +40,37 @@ in one of those layers. The harness activates ALL of them.
 ## Topology
 
 ```
-client
-  ↓
-cf-proxy        nginx, mirrors CF tunnel header rewrites
-  ↓ (Host:harness-tenant.localhost, X-Forwarded-*)
-tenant          workspace-server/Dockerfile.tenant — same image as prod
-  ↓ (CP_UPSTREAM_URL=http://cp-stub:9090, /cp/* proxied)
-cp-stub         minimal Go service, mocks CP wire surface
-postgres        same version as production
-redis           same version as production
+                                      client
+                                        ↓
+                                     cf-proxy            nginx, mirrors CF tunnel header rewrites
+                                        ↓ (routes by Host header)
+              ┌─────────────────────────┴─────────────────────────┐
+              ↓                                                   ↓
+        tenant-alpha                                        tenant-beta
+        Host: harness-tenant-alpha.localhost                Host: harness-tenant-beta.localhost
+        MOLECULE_ORG_ID=harness-org-alpha                   MOLECULE_ORG_ID=harness-org-beta
+              ↓                                                   ↓
+        postgres-alpha                                      postgres-beta
+              ↓                                                   ↓
+              └─────────────────────────┬─────────────────────────┘
+                                        ↓
+                             cp-stub + redis (shared)
 ```
+
+Each tenant runs the production `Dockerfile.tenant` image with its own
+admin token, org id, and Postgres instance — identical isolation
+boundaries to production where each tenant gets a dedicated EC2 + DB.
+cp-stub and redis are shared because they model the per-region
+multi-tenant CP and a single Redis cluster.
 
 ## Quickstart
 
 ```bash
 cd tests/harness
-./up.sh                 # builds + starts all services
-./seed.sh               # mints admin token, registers two sample workspaces
-./replays/peer-discovery-404.sh
-./replays/buildinfo-stale-image.sh
+./up.sh                 # builds + starts all services (both tenants)
+./seed.sh               # registers parent+child workspaces in BOTH tenants
+./replays/tenant-isolation.sh
+./replays/per-tenant-independence.sh
 ./down.sh               # tear down + remove volumes
 ```
 
@@ -62,17 +84,19 @@ REBUILD=1 ./run-all-replays.sh   # rebuild images before booting
 ```
 
 No `/etc/hosts` edit required — replays use the cf-proxy's loopback
-port and pass `Host: harness-tenant.localhost` as a header (`_curl.sh`
-handles this automatically). This matches how production CF tunnel
-routes: the URL is the public CF endpoint, the Host header carries the
-per-tenant identity. Quick check:
+port and pass the per-tenant `Host:` header (`_curl.sh` handles this
+automatically). This matches how production CF tunnel routes: the URL
+is the public CF endpoint, the Host header carries the per-tenant
+identity. Quick check:
 
 ```bash
-curl -H "Host: harness-tenant.localhost" http://localhost:8080/health
+curl -H "Host: harness-tenant-alpha.localhost" http://localhost:8080/health
+curl -H "Host: harness-tenant-beta.localhost"  http://localhost:8080/health
 ```
 
 (If you have a legacy `/etc/hosts` entry from older docs, it still
-works — `BASE` and `TENANT_HOST` both honor env-var overrides.)
+works — `BASE`, `ALPHA_HOST`, `BETA_HOST` all honor env-var overrides.
+The legacy `harness-tenant.localhost` host alias maps to alpha.)
 
 ## Replay scripts
 
@@ -87,6 +111,8 @@ green" — the script becomes the regression gate that closes that gap.
 | `buildinfo-stale-image.sh` | #2395 | GIT_SHA reaches the binary; verify-step comparison logic works |
 | `chat-history.sh` | #2472 + #2474 + #2476 | `peer_id` filter (incl. OR over source/target) + `before_ts` paging + UUID/RFC3339 trust boundary on the activity route |
 | `channel-envelope-trust-boundary.sh` | #2471 + #2481 | published wheel scrubs malformed `peer_id` from the channel envelope and from `agent_card_url` (path-traversal + XML-attr injection) |
+| `tenant-isolation.sh` | Phase 2 | TenantGuard 404s any request whose `X-Molecule-Org-Id` doesn't match the container's `MOLECULE_ORG_ID` (covers cross-tenant routing bug + allowlist drift); per-tenant `/workspaces` listings stay partitioned |
+| `per-tenant-independence.sh` | Phase 2 | parallel A2A workflows in both tenants don't bleed into each other's `activity_logs` / `workspaces`, including under a concurrent INSERT race (catches lib/pq prepared-statement cache collision + shared-pool poisoning) |
 
 To add a new replay:
 1. Drop a script under `replays/` named after the issue.
@@ -125,6 +151,6 @@ its mandate of "exercise the tenant binary in production-shape topology."
 ## Roadmap
 
 - **Phase 1 (shipped):** harness + cp-stub + cf-proxy + 4 replays + `run-all-replays.sh` runner. No-sudo `Host`-header path via `_curl.sh`. Per-replay psql seeding for tests that need DB-side fixtures.
-- **Phase 2 (in flight):** multi-tenant — second `tenant-beta` service in compose, second Postgres database, replays for cross-tenant A2A + TenantGuard isolation. Convert `tests/e2e/test_api.sh` to target the harness instead of localhost. Make harness-based E2E a required CI check (a workflow that invokes `run-all-replays.sh` on every PR via the self-hosted Mac runner).
-- **Phase 3:** replace `cp-stub/` with the real `molecule-controlplane` Docker build. Add a config-coherence lint that diffs harness env list against production CP's env list and fails CI on drift.
+- **Phase 2 (shipped):** multi-tenant — `tenant-alpha` + `tenant-beta` with their own Postgres instances and distinct `MOLECULE_ORG_ID`s; cf-proxy nginx routes by Host header (prod CF tunnel parity); `seed.sh` registers parent+child workspaces in both tenants; `_curl.sh` exposes per-tenant + cross-tenant-negative helpers; new replays cover TenantGuard isolation (`tenant-isolation.sh`) and per-tenant independence under concurrent load (`per-tenant-independence.sh`). `harness-replays.yml` runs `run-all-replays.sh` as a required check on every PR touching `workspace-server/**`, `canvas/**`, `tests/harness/**`, or the workflow itself.
+- **Phase 3:** replace `cp-stub/` with the real `molecule-controlplane` Docker build. Add a config-coherence lint that diffs harness env list against production CP's env list and fails CI on drift. Convert `tests/e2e/test_api.sh` to target the harness instead of localhost.
 - **Phase 4 (long-term):** Miniflare in front of cf-proxy for real CF emulation (WAF, BotID, rate-limit, cf-tunnel headers). LocalStack for the EC2 provisioner. Anonymized prod-traffic recording/replay for SaaS-scale regression detection.

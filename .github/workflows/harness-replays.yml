@@ -106,16 +106,6 @@ jobs:
           path: molecule-ai-plugin-github-app-auth
           token: ${{ secrets.PLUGIN_REPO_PAT || secrets.GITHUB_TOKEN }}
 
-      - name: Add /etc/hosts entry for harness-tenant.localhost
-        # ubuntu-latest doesn't auto-resolve *.localhost the way macOS
-        # sometimes does. seed.sh + replay scripts curl
-        # http://harness-tenant.localhost:8080 — without the entry
-        # they'd fail with getaddrinfo ENOTFOUND.
-        if: needs.detect-changes.outputs.run == 'true'
-        run: |
-          echo "127.0.0.1 harness-tenant.localhost" | sudo tee -a /etc/hosts >/dev/null
-          getent hosts harness-tenant.localhost
-
       - name: Install Python deps for replays
         # peer-discovery-404 (and future replays) eval Python against the
         # running tenant — importing workspace/a2a_client.py pulls in
@@ -144,19 +134,32 @@ jobs:
         run: ./run-all-replays.sh
 
       - name: Dump compose logs on failure
+        # SECRETS_ENCRYPTION_KEY: docker compose validates the entire compose
+        # file even for read-only `logs` calls. up.sh generates a per-run key
+        # and exports it to its OWN shell — this step runs in a fresh shell
+        # that wouldn't see it, so without a placeholder the validate step
+        # errors before logs print (verified against PR #2492's first run:
+        # "required variable SECRETS_ENCRYPTION_KEY is missing a value").
+        # A placeholder is fine — we're only reading log streams, not booting.
         if: failure() && needs.detect-changes.outputs.run == 'true'
         working-directory: tests/harness
+        env:
+          SECRETS_ENCRYPTION_KEY: dump-logs-placeholder
         run: |
           echo "=== docker compose ps ==="
           docker compose -f compose.yml ps || true
-          echo "=== tenant logs ==="
-          docker compose -f compose.yml logs tenant || true
+          echo "=== tenant-alpha logs ==="
+          docker compose -f compose.yml logs tenant-alpha || true
+          echo "=== tenant-beta logs ==="
+          docker compose -f compose.yml logs tenant-beta || true
           echo "=== cp-stub logs ==="
           docker compose -f compose.yml logs cp-stub || true
           echo "=== cf-proxy logs ==="
           docker compose -f compose.yml logs cf-proxy || true
-          echo "=== postgres logs (last 100) ==="
-          docker compose -f compose.yml logs --tail 100 postgres || true
+          echo "=== postgres-alpha logs (last 100) ==="
+          docker compose -f compose.yml logs --tail 100 postgres-alpha || true
+          echo "=== postgres-beta logs (last 100) ==="
+          docker compose -f compose.yml logs --tail 100 postgres-beta || true
 
       - name: Force teardown
         # We pass KEEP_UP=1 to run-all-replays.sh so the dump step

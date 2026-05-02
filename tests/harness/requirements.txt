@@ -12,3 +12,9 @@
 # when a new replay introduces a new Python import.
 
 httpx>=0.28.1
+
+# channel-envelope-trust-boundary.sh imports from `molecule_runtime.*` (the
+# wheel-rewritten path) so it catches the failure mode where the wheel
+# build silently strips a fix that unit tests on local source still pass.
+# >= 0.1.78 ships PR #2481's peer_id trust-boundary guard.
+molecule-ai-workspace-runtime>=0.1.78

@@ -38,21 +38,22 @@ if [ "$REBUILD" = true ]; then
     docker compose -f compose.yml build --no-cache tenant cp-stub
 fi
 
-echo "[harness] starting cp-stub + postgres + redis + tenant + cf-proxy ..."
+echo "[harness] starting redis + cp-stub + tenant-alpha + tenant-beta + cf-proxy ..."
 docker compose -f compose.yml up -d --wait
 
-# Sudo-free reachability: cf-proxy/nginx routes by Host header (matches
-# production CF tunnel), so replays target loopback :8080 with a Host
-# header rather than depending on /etc/hosts resolution. _curl.sh
-# centralises this. Legacy /etc/hosts users still work — the BASE env
-# var override accepts either shape.
+# Sudo-free reachability: cf-proxy/nginx routes by Host header to the
+# right tenant container (matches production CF tunnel: same URL,
+# different Host = different tenant). Replays target loopback :8080
+# with a per-tenant Host header. _curl.sh centralises the helper
+# functions (curl_alpha_admin, curl_beta_admin, etc.).
 echo ""
-echo "[harness] up."
-echo "          Tenant via cf-proxy:  http://localhost:8080/health"
-echo "                                 (Host: harness-tenant.localhost)"
-echo "          cp-stub:               internal-only via compose net"
+echo "[harness] up. Multi-tenant topology:"
+echo "          tenant-alpha:  Host: harness-tenant-alpha.localhost"
+echo "          tenant-beta:   Host: harness-tenant-beta.localhost"
+echo "          legacy alias:  Host: harness-tenant.localhost → alpha"
 echo ""
-echo "          Quick check:"
-echo "            curl -H 'Host: harness-tenant.localhost' http://localhost:8080/health"
+echo "          Quick check (no /etc/hosts needed):"
+echo "            curl -H 'Host: harness-tenant-alpha.localhost' http://localhost:8080/health"
+echo "            curl -H 'Host: harness-tenant-beta.localhost'  http://localhost:8080/health"
 echo ""
-echo "Next: ./seed.sh   # mint admin token + register sample workspaces"
+echo "Next: ./seed.sh   # register parent+child workspaces in BOTH tenants"

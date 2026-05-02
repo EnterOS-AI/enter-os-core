@@ -1,45 +1,38 @@
-# Production-shape harness for local E2E.
+# Production-shape harness for local E2E. Multi-tenant.
 #
 # Reproduces the SaaS tenant topology on localhost using the SAME
 # images that ship to production:
 #
-#   client → cf-proxy (nginx, mimics CF tunnel headers)
-#          → tenant (workspace-server/Dockerfile.tenant — combined platform + canvas)
-#          → cp-stub (control-plane stand-in) for /cp/* and CP-callback paths
-#          → postgres + redis (same versions as production)
+#   client → cf-proxy (nginx, mimics CF tunnel headers, routes by Host)
+#          ├─ Host: harness-tenant-alpha.localhost → tenant-alpha
+#          │   ↓ (CP_UPSTREAM_URL=http://cp-stub:9090)
+#          │   tenant-alpha (workspace-server/Dockerfile.tenant)
+#          │   ↓
+#          │   postgres-alpha (per-tenant DB, matches prod)
+#          ├─ Host: harness-tenant-beta.localhost  → tenant-beta
+#          │   ↓
+#          │   tenant-beta + postgres-beta
+#          └─ cp-stub + redis (shared infra; CP is Railway-singleton in prod,
+#                              redis is shared cluster)
 #
-# Why this matters: the workspace-server binary IS identical between
-# local and production. The bugs that survive local E2E are topology
-# bugs — env-gated middleware (TenantGuard, CP proxy, Canvas proxy),
-# auth state, header rewrites, real production image. This harness
-# activates ALL of them.
+# The two-tenant topology catches:
+#   - TenantGuard cross-tenant escape (alpha-org token shouldn't see
+#     beta-tenant data even with a valid bearer)
+#   - cf-proxy Host-header routing correctness
+#   - Per-tenant DB isolation (workspaces table, activity_logs)
+#   - Concurrent multi-tenant operation (no shared mutable state)
 #
-# Quickstart:
-#   cd tests/harness && ./up.sh
-#   ./seed.sh
-#   ./replays/peer-discovery-404.sh   # reproduces issue #2397
+# Quickstart (no /etc/hosts edits — see README):
+#   cd tests/harness && ./up.sh && ./seed.sh
+#   ./replays/peer-discovery-404.sh
+#   ./run-all-replays.sh
 #
 # Env config:
-#   GIT_SHA — passed to the tenant build for /buildinfo verification.
-#             Defaults to "harness" so /buildinfo distinguishes the
-#             harness build from any cached image.
+#   GIT_SHA — passed to BOTH tenant builds for /buildinfo verification.
 #   CP_STUB_PEERS_MODE — peers failure mode for replay scripts.
-#                       "" / "404" / "401" / "500" / "timeout".
 
 services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: harness
-      POSTGRES_PASSWORD: harness
-      POSTGRES_DB: molecule
-    networks: [harness-net]
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U harness"]
-      interval: 2s
-      timeout: 5s
-      retries: 10
-
+  # ─── Shared infra (matches prod: CP is Railway-singleton, redis shared) ───
   redis:
     image: redis:7-alpine
     networks: [harness-net]
@@ -62,52 +55,44 @@ services:
       timeout: 5s
       retries: 10
 
-  # The actual production tenant image — same Dockerfile.tenant CI publishes.
-  # This is the load-bearing part of the harness: every bug class that hides
-  # behind "but it works locally" is reproducible HERE, against this image,
-  # not against `go run ./cmd/server`.
-  tenant:
+  # ─── Tenant alpha: postgres + workspace-server ────────────────────────
+  postgres-alpha:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: harness
+      POSTGRES_PASSWORD: harness
+      POSTGRES_DB: molecule
+    networks: [harness-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U harness"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  tenant-alpha:
     build:
       context: ../..
       dockerfile: workspace-server/Dockerfile.tenant
       args:
         GIT_SHA: "${GIT_SHA:-harness}"
     depends_on:
-      postgres:
+      postgres-alpha:
         condition: service_healthy
       redis:
         condition: service_healthy
       cp-stub:
         condition: service_healthy
     environment:
-      DATABASE_URL: "postgres://harness:harness@postgres:5432/molecule?sslmode=disable"
+      DATABASE_URL: "postgres://harness:harness@postgres-alpha:5432/molecule?sslmode=disable"
       REDIS_URL: "redis://redis:6379"
       PORT: "8080"
-      PLATFORM_URL: "http://tenant:8080"
+      PLATFORM_URL: "http://tenant-alpha:8080"
       MOLECULE_ENV: "production"
-      # SECRETS_ENCRYPTION_KEY is required when MOLECULE_ENV=production —
-      # crypto.InitStrict() refuses to boot without it. up.sh generates a
-      # fresh 32-byte key per harness lifetime via `openssl rand -base64 32`
-      # and exports it into this compose file's interpolation environment.
-      # The :? sentinel makes the misuse loud — running `docker compose up`
-      # directly without going through up.sh fails fast with a clear error
-      # rather than getting a confusing tenant-unhealthy timeout.
       SECRETS_ENCRYPTION_KEY: "${SECRETS_ENCRYPTION_KEY:?must be set — run via tests/harness/up.sh, which generates one per run}"
-      # ADMIN_TOKEN flips the platform into strict-auth mode (matches
-      # production's CP-minted token configuration). Seeded value lets
-      # E2E scripts authenticate without going through CP.
-      ADMIN_TOKEN: "harness-admin-token"
-      # MOLECULE_ORG_ID — activates TenantGuard middleware. Every request
-      # must carry X-Molecule-Org-Id matching this value. Replays bugs
-      # that only fire in SaaS mode.
-      MOLECULE_ORG_ID: "harness-org"
-      # CP_UPSTREAM_URL — activates the /cp/* reverse proxy mount in
-      # router.go. Without this set, /cp/* would 404 and the canvas
-      # bootstrap would silently drift from production behavior.
+      ADMIN_TOKEN: "harness-admin-token-alpha"
+      MOLECULE_ORG_ID: "harness-org-alpha"
       CP_UPSTREAM_URL: "http://cp-stub:9090"
       RATE_LIMIT: "1000"
-      # Canvas auto-proxy — entrypoint-tenant.sh exports CANVAS_PROXY_URL
-      # by default; keeping it explicit here makes the topology readable.
       CANVAS_PROXY_URL: "http://localhost:3000"
     networks: [harness-net]
     healthcheck:
@@ -116,21 +101,69 @@ services:
       timeout: 5s
       retries: 20
 
-  # Cloudflare-tunnel-shape proxy — strips the :8080 suffix, rewrites
-  # Host to the tenant subdomain, injects X-Forwarded-*. Tests target
-  # http://harness-tenant.localhost:8080 and exercise the production
-  # routing layer.
+  # ─── Tenant beta: postgres + workspace-server (parallel to alpha) ─────
+  postgres-beta:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: harness
+      POSTGRES_PASSWORD: harness
+      POSTGRES_DB: molecule
+    networks: [harness-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U harness"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  tenant-beta:
+    build:
+      context: ../..
+      dockerfile: workspace-server/Dockerfile.tenant
+      args:
+        GIT_SHA: "${GIT_SHA:-harness}"
+    depends_on:
+      postgres-beta:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      cp-stub:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://harness:harness@postgres-beta:5432/molecule?sslmode=disable"
+      REDIS_URL: "redis://redis:6379"
+      PORT: "8080"
+      PLATFORM_URL: "http://tenant-beta:8080"
+      MOLECULE_ENV: "production"
+      SECRETS_ENCRYPTION_KEY: "${SECRETS_ENCRYPTION_KEY:?must be set — run via tests/harness/up.sh, which generates one per run}"
+      # Distinct ADMIN_TOKEN — replays use this to verify TenantGuard
+      # blocks alpha-token presented at beta's URL.
+      ADMIN_TOKEN: "harness-admin-token-beta"
+      MOLECULE_ORG_ID: "harness-org-beta"
+      CP_UPSTREAM_URL: "http://cp-stub:9090"
+      RATE_LIMIT: "1000"
+      CANVAS_PROXY_URL: "http://localhost:3000"
+    networks: [harness-net]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ─── cf-proxy: routes by Host to the right tenant container ───────────
+  # Production shape: same single CF tunnel front-doors every tenant
+  # subdomain — the Host header carries the tenant identity, not the
+  # routing destination. Local cf-proxy mirrors this exactly.
   cf-proxy:
     image: nginx:1.27-alpine
     depends_on:
-      tenant:
+      tenant-alpha:
+        condition: service_healthy
+      tenant-beta:
         condition: service_healthy
     volumes:
       - ./cf-proxy/nginx.conf:/etc/nginx/nginx.conf:ro
-    # Bind to 127.0.0.1 only — the harness uses a hardcoded ADMIN_TOKEN
-    # ("harness-admin-token") so binding 0.0.0.0 (compose's default)
-    # would expose admin access to anyone on the local network or VPN.
-    # Loopback-only is safe for E2E and prevents a known-token leak.
+    # Bind to 127.0.0.1 only — hardcoded ADMIN_TOKENs make 0.0.0.0
+    # exposure unsafe even on a local network.
     ports:
       - "127.0.0.1:8080:8080"
     networks: [harness-net]
