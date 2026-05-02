@@ -51,21 +51,77 @@ adapter POSTs A2A messages to it; gateway dispatches through the same
 
 ## hermes
 
-**Status:** Upstream PR drafted; short-term shim deemed unnecessary.
+**Status:** Workspace template patch PR #32 MERGED 2026-05-02; image
+rebuild succeeded; plugin baked into the workspace runtime. Plugin
+package published. Real-subprocess full-chain E2E (`scripts/e2e_full_chain.py`)
+green — proves wire shape end-to-end against a real `hermes gateway run`
+subprocess + stub OpenAI-compat LLM. Caught + fixed a real `KeyError`
+in upstream `hermes_cli/tools_config.py` (PLATFORMS dict lookup
+crashed on plugin platforms) — fix on the patched fork branch
+(`HongmingWang-Rabbit/hermes-agent` `feat/platform-adapter-plugins`,
+commit `18e4849e`). Upstream PR #18775 OPEN; CONFLICTING with main.
+Not on critical path for our platform — patched fork is what the
+workspace image installs.
 
-**Path:** Open the upstream `BasePlatformAdapter` system to external
-plugins. Hermes already ships a working plugin discovery system for
-memory backends (`plugins/memory/`, `register(ctx)` collector pattern,
-`$HERMES_HOME/plugins/<name>/` user-installed tier). The PR extends
-the same shape to platforms — `register_platform_adapter(...)` on the
-existing collector, new `plugins/platforms/` discovery directory,
-3-line fallback in `_create_adapter()`. Symmetric, not novel.
+Real A2A peer traffic on staging gated only on running the harness
+(`molecule-core/scripts/test-all-runtimes-a2a-e2e.sh`) — script ready,
+needs provider keys.
+
+**Path:** Hermes's MODERN plugin system is `hermes_cli/plugins.py`
+(not the older `plugins/memory/`). It already does full discovery
+across user dir + project dir + pip entry_points (group:
+`hermes_agent.plugins`) for tools / hooks / CLI commands / slash
+commands / context engines / skills. **Platform adapters are the only
+plugin type still hardcoded** (`gateway/run.py:_create_adapter`).
+
+The PR adds three pieces upstream:
+1. `PluginContext.register_platform_adapter(name, adapter_class, requirements_check=None)`
+2. `GatewayConfig.plugin_platforms` populated by `from_dict` for
+   plugin-claimed names
+3. `GatewayRunner._create_plugin_adapter(name, config)` boot-path
+   fallback
+
+Plus a `PluginPlatformIdentifier` helper class so plugin adapters can
+satisfy `BasePlatformAdapter.__init__(config, platform: Platform)`
+without extending the closed Platform enum.
+
+Total: ~100 LOC upstream change. External plugin then ships as
+`hermes-platform-molecule-a2a` via `pip install` + entry_points — no
+fork needed in production.
 
 **Artifacts landed:**
-- `docs/integrations/hermes-platform-plugins-upstream-pr.md` — full
-  PR draft including problem, prior art, proposal, code shape,
-  backward compat, test plan, and four open questions to resolve in
-  Discord before submitting.
+- **Upstream PR**: [NousResearch/hermes-agent#18775](https://github.com/NousResearch/hermes-agent/pull/18775)
+  — 5 commits on `feat/platform-adapter-plugins`: registration
+  surface, config + boot wiring, `PluginPlatformIdentifier` helper,
+  `resolve_platform_id` for plugin-platform-safe deserialization, and
+  `self.adapters[adapter.platform]` keying fix (caught by real-subprocess
+  test before merge — see below).
+- **Plugin package**: [Molecule-AI/hermes-platform-molecule-a2a](https://github.com/Molecule-AI/hermes-platform-molecule-a2a)
+  v0.1.0 — public, MIT-licensed. 11 unit tests + 8 in-process E2E
+  + 4 real-subprocess E2E checkpoints all green.
+- **Workspace template patch**: [Molecule-AI/molecule-ai-workspace-template-hermes#32](https://github.com/Molecule-AI/molecule-ai-workspace-template-hermes/pull/32)
+  — Dockerfile installs the patched fork + plugin into the hermes
+  installer's venv; start.sh seeds `platforms.molecule-a2a` config
+  stanza. Pre-demo deliberately install-only; adapter.py rewrite to
+  USE the plugin path is a separate post-demo PR.
+- Real adapter package at `~/hermes-platform-molecule-a2a/`:
+  - `pyproject.toml` with `hermes_agent.plugins` entry point
+  - `hermes_platform_molecule_a2a/adapter.py` —
+    `MoleculeA2APlatformAdapter(BasePlatformAdapter)` with HTTP
+    listener (aiohttp), inbound `MessageEvent(internal=True)` dispatch,
+    outbound `send()` POST to per-chat callback URL, optional shared
+    secret enforcement
+  - `tests/test_adapter.py` — **11/11 unit tests pass** covering plugin
+    entry-point shape, lifecycle, inbound auth, outbound routing
+  - `scripts/e2e_validate.py` — production-path validation (entry
+    points → registry → GatewayConfig → boot → HTTP roundtrip), all
+    7 checkpoints pass
+- `docs/integrations/hermes-platform-plugins-upstream-pr.md` — PR
+  draft including problem, prior art, proposal, code shape, backward
+  compat, test plan, and open questions.
+- `.hermes-validation/test_register_platform_adapter.py` — local
+  9-check validation of the patched fork via the user-dir discovery
+  path (complementary to the entry-points path tested by the package).
 
 **Why no short-term polling shim:** earlier framing was wrong. Molecule
 runtime already polls the inbox via `wait_for_message` per turn; each
@@ -77,23 +133,31 @@ conversation across turns because chat/completions is stateless), not
 push latency. That gap is solved by the upstream PR; no
 intermediate shim earns its complexity.
 
-**Remaining (task #83):**
-1. Reach out in Nous Research Discord to validate open questions
-   (Platform enum-vs-string refactor, naming, example-plugin scope).
-2. Submit PR to `NousResearch/hermes-agent`. **Requires user
-   confirmation** — opening an upstream PR is an action visible to
-   others.
-3. Once merged: ship `hermes-platform-molecule-a2a` as the first
-   external consumer, bump our hermes workspace template to enable
-   it, remove any transitional code.
+**Remaining:**
+1. **Upstream PR review/merge** (NousResearch/hermes-agent#18775). On
+   maintainers — typical OSS review lag.
+2. **Workspace template merge + image republish** (PR #32). Once
+   merged, `publish-runtime.yml` regenerates the hermes workspace image
+   with the plugin baked in. Safe to merge as-is — install-only, no
+   behavior change for current workspaces.
+3. **Runtime adapter rewrite** (task #87 equivalent for hermes).
+   `molecule-ai-workspace-template-hermes/adapter.py` currently proxies
+   A2A → `/v1/chat/completions`. Switching to POST `/a2a/inbound` is
+   what unlocks single-session continuity. **Post-demo timing**
+   (touches a working live integration).
+4. **Real A2A peer traffic E2E** (task #86): boot a real workspace
+   from the republished image, send peer A2A message from another
+   workspace, observe single-session reply. Gated on items 2 + 3.
 
 ---
 
 ## Codex (OpenAI Codex CLI)
 
-**Status:** Template structurally complete (12 files, 12/12 tests passing,
-validated against real codex-cli 0.72.0). Awaiting molecule-core
-registry integration + E2E.
+**Status:** Template SHIPPED. Repo live at
+[`Molecule-AI/molecule-ai-workspace-template-codex`](https://github.com/Molecule-AI/molecule-ai-workspace-template-codex)
+(14 files, 1411 LOC, 12/12 tests). molecule-core registration in
+[PR #2512](https://github.com/Molecule-AI/molecule-core/pull/2512).
+E2E with real A2A traffic remains.
 
 **Path:** Persistent `codex app-server` stdio JSON-RPC client
 (NDJSON-framed, v2 protocol). One app-server child per workspace
