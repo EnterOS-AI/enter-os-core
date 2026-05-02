@@ -258,7 +258,6 @@ def test_build_channel_notification_handles_missing_fields_gracefully():
 
 
 _PEER_UUID = "11111111-2222-3333-4444-555555555555"
-_OTHER_PEER = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 
 @pytest.fixture()
