@@ -129,19 +129,57 @@ fi
 # ──────────────────────────────────────────────────────────
 # 6. Secrets: No tokens/keys in staged files
 # ──────────────────────────────────────────────────────────
+#
+# Pattern set MUST match .github/workflows/secret-scan.yml SECRET_PATTERNS
+# and molecule-ai-workspace-runtime/molecule_runtime/scripts/pre-commit-checks.sh —
+# .github/workflows/secret-pattern-drift.yml lints this invariant. Rebuilt
+# against canonical 2026-05-02 after #1569 Phase 1 discovery surfaced
+# real ghs_*/github_pat_* leaks that the prior pattern set
+# ('sk-ant-|sk-proj-|ghp_|gho_|AKIA|mol_pk_|cfut_') would have missed:
+# (a) it lacked ghs_ / ghu_ / ghr_ / github_pat_ / sk-svcacct- / sk-cp- /
+# xox[baprs]- / ASIA prefixes, (b) it skipped *.md and docs/* — but the
+# actual leaks lived in tick-reflections-temp.md, qa-audit-2026-04-21.md,
+# docs/incidents/INCIDENT_LOG.md.
+SECRET_PATTERNS=(
+  'ghp_[A-Za-z0-9]{36,}'           # GitHub PAT (classic)
+  'ghs_[A-Za-z0-9]{36,}'           # GitHub App installation token
+  'gho_[A-Za-z0-9]{36,}'           # GitHub OAuth user-to-server
+  'ghu_[A-Za-z0-9]{36,}'           # GitHub OAuth user
+  'ghr_[A-Za-z0-9]{36,}'           # GitHub OAuth refresh
+  'github_pat_[A-Za-z0-9_]{82,}'   # GitHub fine-grained PAT
+  'sk-ant-[A-Za-z0-9_-]{40,}'      # Anthropic API key
+  'sk-proj-[A-Za-z0-9_-]{40,}'     # OpenAI project key
+  'sk-svcacct-[A-Za-z0-9_-]{40,}'  # OpenAI service-account key
+  'sk-cp-[A-Za-z0-9_-]{60,}'       # MiniMax API key (F1088 vector — caught only after the fact)
+  'xox[baprs]-[A-Za-z0-9-]{20,}'   # Slack tokens (bot/app/user/refresh)
+  'AKIA[0-9A-Z]{16}'               # AWS access key ID
+  'ASIA[0-9A-Z]{16}'               # AWS STS temp access key ID
+)
 
 ALL_STAGED=$(git diff --cached --name-only --diff-filter=ACM || true)
 if [ -n "$ALL_STAGED" ]; then
   for f in $ALL_STAGED; do
-    # Skip binary, known safe files, hooks, docs, and markdown
-    if echo "$f" | grep -qE '\.png$|\.jpg$|\.ico$|\.woff|node_modules|\.lock$|\.githooks/|\.md$|docs/'; then
+    # Skip ONLY binary + lockfiles + the hook itself. Markdown +
+    # docs/* are NOT skipped — that was the bug (#1569 leaks were
+    # all in *.md). If a doc legitimately needs a token-shaped
+    # placeholder, use ghs_EXAMPLE_TOKEN_DO_NOT_USE — short enough
+    # to dodge the {36,} length suffix.
+    if echo "$f" | grep -qE '\.png$|\.jpg$|\.ico$|\.woff|node_modules|\.lock$|\.githooks/'; then
       continue
     fi
-    DIFF=$(git diff --cached "$f" 2>/dev/null | grep '^+' | grep -v '^+++' || true)
-    if echo "$DIFF" | grep -qE 'sk-ant-|sk-proj-|ghp_|gho_|AKIA[A-Z0-9]|mol_pk_|cfut_' 2>/dev/null; then
-      echo "❌ POSSIBLE SECRET in $f — do not commit API keys or tokens"
-      ERRORS=$((ERRORS + 1))
-    fi
+    DIFF=$(git diff --cached --no-color --unified=0 -- "$f" 2>/dev/null | grep -E '^\+[^+]' || true)
+    [ -z "$DIFF" ] && continue
+    for pattern in "${SECRET_PATTERNS[@]}"; do
+      if echo "$DIFF" | grep -qE "$pattern"; then
+        echo "❌ POSSIBLE SECRET in $f (matched: ${pattern})"
+        echo "   The actual matched value is NOT echoed here — round-tripping a"
+        echo "   leaked credential into scrollback widens the blast radius."
+        echo "   If false positive (test/docs example), use a short placeholder"
+        echo "   like ghs_EXAMPLE_TOKEN_DO_NOT_USE that doesn't satisfy the length."
+        ERRORS=$((ERRORS + 1))
+        break
+      fi
+    done
   done
 fi
 

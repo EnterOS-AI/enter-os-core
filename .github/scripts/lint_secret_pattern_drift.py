@@ -41,6 +41,17 @@ CONSUMERS: list[tuple[str, str]] = [
     ),
 ]
 
+# In-repo consumers — paths read locally from the workflow checkout.
+# Read-from-disk avoids the staging→main lag that the URL fetcher
+# would hit (a freshly-edited canonical wouldn't yet be on the
+# consumer's default branch). Same drift semantics, no network.
+LOCAL_CONSUMERS: list[tuple[str, Path]] = [
+    (
+        ".githooks/pre-commit (molecule-core local hook)",
+        Path(".githooks/pre-commit"),
+    ),
+]
+
 # Matches the SECRET_PATTERNS=( ... ) array in either yaml-indented
 # (the canonical workflow's `run:` block) or shell-flat (runtime
 # hook) format. Patterns inside are single-quoted Bash strings; we
@@ -89,6 +100,27 @@ def main() -> int:
     print(f"canonical ({CANONICAL_FILE}): {len(canonical)} patterns")
 
     drift = False
+
+    # In-repo consumers first — these are read from the workflow's own
+    # checkout, so they never lag behind the canonical and a missing
+    # file IS a real error (not a fetch warning).
+    for label, path in LOCAL_CONSUMERS:
+        if not path.exists():
+            print(f"::error::{label}: file not found at {path}")
+            drift = True
+            continue
+        consumer = extract_patterns(path.read_text(), label)
+        missing, extra = diff_patterns(canonical, consumer)
+        if not missing and not extra:
+            print(f"  ✓ {label}: aligned ({len(consumer)} patterns)")
+            continue
+        drift = True
+        print(f"::error::DRIFT in {label}:")
+        for p in missing:
+            print(f"  -  missing from consumer: {p!r}")
+        for p in extra:
+            print(f"  -  extra in consumer (not in canonical): {p!r}")
+
     for label, url in CONSUMERS:
         try:
             content = fetch(url)
