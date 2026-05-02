@@ -32,15 +32,11 @@ interface A2AFileRef {
   bytes?: string;
   size?: number;
 }
-// A2A Part — outbound matches the v0 Pydantic discriminated-union
-// shape that a2a-sdk's JSON-RPC layer validates against (TextPart |
-// FilePart | DataPart). The v1 flat-protobuf shape `{url, filename,
-// mediaType}` is internal SDK serialization only; sending it on the
-// wire fails Pydantic validation with `TextPart.text required,
-// FilePart.file required, DataPart.data required` and never reaches
-// the executor. Inbound also tolerates the v1 shape via
-// message-parser.ts since the agent itself may serialize as v1 in
-// some downstream tools.
+// Outbound shape matches a2a-sdk's JSON-RPC `SendMessageRequest`
+// Pydantic union (TextPart | FilePart | DataPart). The flat
+// protobuf shape `{url, filename, mediaType}` is rejected at the
+// request boundary with `Field required` errors — keep this
+// outbound shape unless a2a-sdk migrates the JSON-RPC schema.
 interface A2APart {
   kind: string;
   text?: string;
@@ -511,18 +507,7 @@ function MyChatPanel({ workspaceId, data }: Props) {
 
     // A2A parts: text part (if any) + file parts (per attachment). The
     // agent sees both in a single turn, matching the A2A spec shape.
-    //
-    // File parts use the v0 discriminated-union shape `{kind:"file",
-    // file:{...}}` because that's what a2a-sdk's JSON-RPC layer
-    // validates against (`SendMessageRequest.params.message.parts[]`
-    // → `TextPart | FilePart | DataPart` Pydantic union). Sending the
-    // v1 flat shape `{url, filename, mediaType}` returns
-    // `Invalid Request — TextPart.text required, FilePart.file
-    // required, DataPart.data required` and the message never
-    // reaches the executor. v1 protobuf is internal serialization
-    // only; the wire shape stays v0 until the SDK migrates the
-    // JSON-RPC schema. Text parts keep `{kind:"text", text}` for the
-    // same reason.
+    // Wire shape is v0 — see A2APart definition above.
     const parts: A2APart[] = [];
     if (text) parts.push({ kind: "text", text });
     for (const att of uploaded) {

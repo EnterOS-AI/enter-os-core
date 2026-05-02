@@ -41,15 +41,15 @@ export interface ParsedFilePart {
 
 /** Extract file parts from an A2A response. Walks parts[] + artifacts[].
  *
- *  Tolerates both A2A protocol generations:
- *    - v0 (Pydantic): `{ kind: "file", file: { name, mimeType, uri } }`
- *    - v1 (protobuf): `{ url, filename, mediaType }` — flat, no `kind`
- *      and no nested `file` object (the v1 Part's content oneof is
- *      `{text, raw, url, data}`; file metadata sits at top level).
+ *  Hot path: v0 Pydantic shape `{ kind: "file", file: { name, mimeType,
+ *  uri } }` — what every current workspace runtime emits.
  *
- *  Without v1 tolerance, agents that emit the v1 shape (every workspace
- *  runtime since the SDK migration) silently drop file parts in chat —
- *  the agent says "I sent the file" but the user never sees the chip.
+ *  Defensive secondary path: v1 protobuf shape `{ url, filename,
+ *  mediaType }` — flat, no `kind`, no nested `file`. Not currently
+ *  observed on the wire (a2a-sdk's JSON-RPC layer still validates
+ *  against v0), but kept so a future SDK release that flips the wire
+ *  shape, or a third-party agent that round-trips through protobuf
+ *  serialization, doesn't silently lose file chips.
  *
  *  We only surface parts that carry a URL — inline bytes would require
  *  a different renderer (data URL) and are out of scope for MVP. Names
