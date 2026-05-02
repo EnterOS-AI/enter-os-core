@@ -26,6 +26,7 @@ from typing import Callable
 import inbox
 
 from a2a_tools import (
+    tool_chat_history,
     tool_check_task_status,
     tool_commit_memory,
     tool_delegate_task,
@@ -134,6 +135,12 @@ async def handle_tool_call(name: str, arguments: dict) -> str:
     elif name == "inbox_pop":
         return await tool_inbox_pop(
             arguments.get("activity_id", ""),
+        )
+    elif name == "chat_history":
+        return await tool_chat_history(
+            arguments.get("peer_id", ""),
+            arguments.get("limit", 20),
+            arguments.get("before_ts", ""),
         )
     return f"Unknown tool: {name}"
 

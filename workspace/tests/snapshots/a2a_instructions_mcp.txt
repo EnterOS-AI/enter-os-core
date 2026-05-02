@@ -9,6 +9,7 @@
 - **wait_for_message**: Block until the next inbound message (canvas user OR peer agent) arrives, or until ``timeout_secs`` elapses.
 - **inbox_peek**: List pending inbound messages without removing them.
 - **inbox_pop**: Remove a handled message from the inbox queue by activity_id.
+- **chat_history**: Fetch the prior conversation with one peer (both sides, chronological).
 
 ### delegate_task
 Use for QUICK questions and small sub-tasks where you can afford to wait inline. Returns the peer's response text directly. For longer-running work (research, multi-minute jobs) use delegate_task_async + check_task_status instead so you don't hold this workspace busy waiting.
@@ -36,5 +37,8 @@ Standalone-runtime ONLY. Use to inspect what's queued before deciding which to h
 
 ### inbox_pop
 Standalone-runtime ONLY. Call after you've replied to a message returned from wait_for_message or inbox_peek to drop it from the queue. Idempotent — popping a missing id reports removed=false without erroring.
+
+### chat_history
+Call this when a peer_agent push lands and you need context from prior turns with that workspace — e.g. "what task did this peer assign me last hour?" or "what did I tell them?". Both sides of the conversation appear in chronological order, so the agent reads the log top-down. Cheaper than re-deriving context from memory because the platform already audits every A2A turn into activity_logs. Pair with `agent_card_url` from the channel envelope when you also need the peer's capabilities.
 
 Always use list_peers first to discover available workspace IDs. Access control is enforced — you can only reach siblings and parent/children. If a delegation returns a DELEGATION FAILED message, do NOT forward the raw error to the user. Instead: (1) try a different peer, (2) handle the task yourself, or (3) tell the user which peer is unavailable and provide your own best answer.

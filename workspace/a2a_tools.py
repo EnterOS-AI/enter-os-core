@@ -554,6 +554,85 @@ _INBOX_NOT_ENABLED_MSG = (
 )
 
 
+async def tool_chat_history(peer_id: str, limit: int = 20, before_ts: str = "") -> str:
+    """Fetch the prior conversation with one peer.
+
+    Hits ``/workspaces/<self>/activity?peer_id=<peer>&limit=<N>``
+    against the workspace-server, which returns activity rows where
+    this workspace is either the sender (``source_id=peer``) or the
+    recipient (``target_id=peer``) of an A2A turn — both sides of the
+    conversation in chronological order.
+
+    Args:
+        peer_id: The other workspace's UUID. Same value the agent
+            sees as ``peer_id`` on a peer_agent push or ``workspace_id``
+            on a delegate_task call.
+        limit: Maximum rows to return; capped server-side at 500. The
+            default of 20 covers \"most recent context for this peer\"
+            without flooding the agent's context window.
+        before_ts: Optional RFC3339 timestamp; only rows strictly
+            older are returned. Used to page backward through long
+            histories — pass the oldest ``ts`` from the previous
+            response. Empty (default) returns the most recent ``limit``
+            rows.
+
+    Returns a JSON-encoded list of activity rows (or an error string
+    starting with ``Error:`` so the agent can branch). Each row carries
+    ``activity_type``, ``source_id``, ``target_id``, ``method``,
+    ``summary``, ``request_body``, ``response_body``, ``status``,
+    ``created_at`` — same shape ``inbox_peek`` and the canvas chat
+    loader already see.
+    """
+    if not peer_id or not isinstance(peer_id, str):
+        return "Error: peer_id is required"
+    if not isinstance(limit, int) or limit <= 0:
+        limit = 20
+    if limit > 500:
+        limit = 500
+
+    params: dict[str, str] = {
+        "peer_id": peer_id,
+        "limit": str(limit),
+    }
+    # Forward verbatim — the server route validates as RFC3339 at the
+    # trust boundary and translates into a `created_at < $X` clause.
+    if before_ts:
+        params["before_ts"] = before_ts
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{PLATFORM_URL}/workspaces/{WORKSPACE_ID}/activity",
+                params=params,
+                headers=_auth_headers_for_heartbeat(),
+            )
+    except Exception as exc:  # noqa: BLE001
+        return f"Error: chat_history request failed: {exc}"
+
+    if resp.status_code == 400:
+        # Trust-boundary rejection (malformed peer_id, etc.) — surface
+        # the server's reason verbatim so the agent can correct itself.
+        try:
+            err = resp.json().get("error", "bad request")
+        except Exception:  # noqa: BLE001
+            err = "bad request"
+        return f"Error: {err}"
+    if resp.status_code >= 400:
+        return f"Error: chat_history returned HTTP {resp.status_code}"
+
+    try:
+        rows = resp.json()
+    except Exception:  # noqa: BLE001
+        return "Error: chat_history response was not JSON"
+    if not isinstance(rows, list):
+        return "Error: chat_history response was not a list"
+
+    # Server returns DESC (most recent first); reverse to chronological
+    # so the agent reads the conversation top-down like a chat log.
+    rows.reverse()
+    return json.dumps(rows)
+
+
 async def tool_inbox_peek(limit: int = 10) -> str:
     """Return up to ``limit`` pending inbound messages without removing them."""
     import inbox  # local import — avoids a circular dep at module load

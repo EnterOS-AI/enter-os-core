@@ -966,3 +966,154 @@ class TestToolRecallMemory:
         mc.get.assert_not_called()
         assert "Error" in result
         assert "memory.read" in result
+
+
+# ---------------------------------------------------------------------------
+# tool_chat_history — wraps /workspaces/:id/activity?peer_id=X
+# ---------------------------------------------------------------------------
+#
+# The tool fetches both sides of an A2A conversation with one peer for
+# resume-context UX. Hits the new peer_id filter on the activity API
+# (workspace-server PR #2472), reverses the DESC-ordered server response
+# into chronological order, and returns the rows as JSON. Tests pin
+# every distinct execution path so a regression in the server response
+# shape, the validation, the sort direction, or the error envelope is
+# caught at unit-test time instead of on a live workspace.
+
+
+_PEER = "11111111-2222-3333-4444-555555555555"
+
+
+class TestChatHistory:
+
+    async def test_rejects_empty_peer_id(self):
+        """Empty peer_id: short-circuit before any HTTP call. Defense
+        in depth — server also 400s on missing peer_id, but a clean
+        error message at the wheel side is friendlier to the agent."""
+        import a2a_tools
+
+        mc = _make_http_mock()
+        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+            result = await a2a_tools.tool_chat_history(peer_id="")
+
+        mc.get.assert_not_called()
+        assert result.startswith("Error:")
+
+    async def test_calls_activity_route_with_peer_id_filter(self):
+        """peer_id is forwarded as a query param exactly. Limit
+        defaults to 20, before_ts is omitted when empty."""
+        import a2a_tools
+
+        mc = _make_http_mock(get_resp=_resp(200, []))
+        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+            await a2a_tools.tool_chat_history(peer_id=_PEER)
+
+        url, kwargs = mc.get.call_args.args[0], mc.get.call_args.kwargs
+        assert url.endswith("/activity")
+        params = kwargs["params"]
+        assert params["peer_id"] == _PEER
+        assert params["limit"] == "20"
+        assert "before_ts" not in params
+
+    async def test_caps_limit_at_500(self):
+        """Server caps at 500; mirror the cap client-side so an
+        agent passing limit=999999 doesn't waste a round-trip on the
+        server's 400-or-truncate decision."""
+        import a2a_tools
+
+        mc = _make_http_mock(get_resp=_resp(200, []))
+        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+            await a2a_tools.tool_chat_history(peer_id=_PEER, limit=10000)
+
+        params = mc.get.call_args.kwargs["params"]
+        assert params["limit"] == "500"
+
+    async def test_negative_or_zero_limit_falls_to_default(self):
+        """Defensive: limit=0 or negative reverts to 20 instead of
+        echoing a useless query that the server would reject."""
+        import a2a_tools
+
+        mc = _make_http_mock(get_resp=_resp(200, []))
+        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+            await a2a_tools.tool_chat_history(peer_id=_PEER, limit=0)
+
+        assert mc.get.call_args.kwargs["params"]["limit"] == "20"
+
+    async def test_passes_before_ts_when_set(self):
+        import a2a_tools
+
+        mc = _make_http_mock(get_resp=_resp(200, []))
+        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+            await a2a_tools.tool_chat_history(
+                peer_id=_PEER, before_ts="2026-05-01T00:00:00Z",
+            )
+
+        assert mc.get.call_args.kwargs["params"]["before_ts"] == "2026-05-01T00:00:00Z"
+
+    async def test_reverses_desc_response_to_chronological(self):
+        """Server returns DESC (newest first); the wheel reverses to
+        chronological so the agent reads the chat top-down — same
+        order a human would scrolling through canvas history."""
+        import a2a_tools
+
+        rows = [
+            {"id": "act-3", "created_at": "2026-05-01T00:03:00Z"},
+            {"id": "act-2", "created_at": "2026-05-01T00:02:00Z"},
+            {"id": "act-1", "created_at": "2026-05-01T00:01:00Z"},
+        ]
+        mc = _make_http_mock(get_resp=_resp(200, rows))
+        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+            result = await a2a_tools.tool_chat_history(peer_id=_PEER)
+
+        out = json.loads(result)
+        assert [r["id"] for r in out] == ["act-1", "act-2", "act-3"]
+
+    async def test_400_returns_server_error_verbatim(self):
+        """Server-side trust-boundary rejection (e.g. malformed
+        peer_id): surface the server's error message verbatim so the
+        agent can correct itself instead of guessing why."""
+        import a2a_tools
+
+        mc = _make_http_mock(get_resp=_resp(400, {"error": "peer_id must be a UUID"}))
+        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+            result = await a2a_tools.tool_chat_history(peer_id="bad")
+
+        assert "peer_id must be a UUID" in result
+
+    async def test_500_returns_generic_error(self):
+        """Server 5xx: don't echo the body (might leak internals);
+        return a clean error string the agent can branch on."""
+        import a2a_tools
+
+        mc = _make_http_mock(get_resp=_resp(500, {"error": "internal"}))
+        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+            result = await a2a_tools.tool_chat_history(peer_id=_PEER)
+
+        assert result.startswith("Error:")
+        assert "500" in result
+
+    async def test_network_failure_returns_error_envelope(self):
+        """httpx raises (network down, DNS fail, etc.): tool must
+        not crash the MCP server — return an error string so the
+        agent can retry or fall back."""
+        import a2a_tools
+
+        mc = _make_http_mock(get_exc=httpx.ConnectError("network down"))
+        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+            result = await a2a_tools.tool_chat_history(peer_id=_PEER)
+
+        assert result.startswith("Error:")
+        assert "network down" in result
+
+    async def test_non_list_response_returns_error(self):
+        """Server somehow returns a dict instead of a list (proxy
+        returns an HTML error page that JSON-parses, or a future
+        wire-shape change): defend against the type mismatch so the
+        json.loads on the agent side doesn't blow up."""
+        import a2a_tools
+
+        mc = _make_http_mock(get_resp=_resp(200, {"unexpected": "shape"}))
+        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+            result = await a2a_tools.tool_chat_history(peer_id=_PEER)
+
+        assert result.startswith("Error:")

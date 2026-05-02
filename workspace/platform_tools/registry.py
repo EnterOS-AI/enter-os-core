@@ -51,6 +51,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from a2a_tools import (
+    tool_chat_history,
     tool_check_task_status,
     tool_commit_memory,
     tool_delegate_task,
@@ -363,6 +364,54 @@ _INBOX_PEEK = ToolSpec(
     section=A2A_SECTION,
 )
 
+_CHAT_HISTORY = ToolSpec(
+    name="chat_history",
+    short="Fetch the prior conversation with one peer (both sides, chronological).",
+    when_to_use=(
+        "Call this when a peer_agent push lands and you need context "
+        "from prior turns with that workspace — e.g. \"what task did "
+        "this peer assign me last hour?\" or \"what did I tell them?\". "
+        "Both sides of the conversation appear in chronological order, "
+        "so the agent reads the log top-down. Cheaper than re-deriving "
+        "context from memory because the platform already audits every "
+        "A2A turn into activity_logs. Pair with `agent_card_url` from "
+        "the channel envelope when you also need the peer's "
+        "capabilities."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "peer_id": {
+                "type": "string",
+                "description": (
+                    "The peer workspace's UUID — same value you got "
+                    "as `peer_id` on the inbound push, or as "
+                    "`workspace_id` from `list_peers`."
+                ),
+            },
+            "limit": {
+                "type": "integer",
+                "description": (
+                    "Max rows to return (default 20, capped at 500). "
+                    "Default 20 covers \"most recent context\" without "
+                    "flooding the conversation window."
+                ),
+            },
+            "before_ts": {
+                "type": "string",
+                "description": (
+                    "Optional RFC3339 timestamp; passes through to the "
+                    "server for paging backward through long histories. "
+                    "Use the oldest `created_at` from a previous response."
+                ),
+            },
+        },
+        "required": ["peer_id"],
+    },
+    impl=tool_chat_history,
+    section=A2A_SECTION,
+)
+
 _INBOX_POP = ToolSpec(
     name="inbox_pop",
     short="Remove a handled message from the inbox queue by activity_id.",
@@ -469,6 +518,7 @@ TOOLS: list[ToolSpec] = [
     _WAIT_FOR_MESSAGE,
     _INBOX_PEEK,
     _INBOX_POP,
+    _CHAT_HISTORY,
     # HMA
     _COMMIT_MEMORY,
     _RECALL_MEMORY,

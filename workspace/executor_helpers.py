@@ -342,6 +342,14 @@ _CLI_A2A_COMMAND_KEYWORDS: dict[str, str | None] = {
     "wait_for_message": None,
     "inbox_peek": None,
     "inbox_pop": None,
+    # `chat_history` is reachable from the CLI runtime in principle
+    # (it's just an HTTP GET) but the standard CLI doesn't expose a
+    # subcommand for it today — the in-container CLI runtimes drive
+    # via a2a_cli's delegate / status / peers verbs, and chat-history
+    # browsing is a wheel-side standalone-runtime use case. Mapped
+    # to None here for adapter consistency; flip to a keyword if the
+    # a2a_cli grows a `history` subcommand in the future.
+    "chat_history": None,
 }
 
 
