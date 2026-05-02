@@ -136,6 +136,84 @@ func TestSweepStuckProvisioning_HermesPastDeadline(t *testing.T) {
 	}
 }
 
+// TestSweepStuckProvisioning_ManifestOverrideSparesRow pins the
+// integration of the sweeper + RuntimeTimeoutLookup contract introduced
+// in #2494. Closes the gap that the unit-test on provisioningTimeoutFor
+// alone left open: a future refactor could drop the lookup arg from
+// sweepStuckProvisioning's call to provisioningTimeoutFor and only the
+// unit test would catch it. This test fails on that refactor too.
+//
+// Scenario: a claude-code workspace 11 min old (660s). Default budget
+// is 10 min (600s) → without manifest override, this would be flipped
+// to failed. Manifest override declares 1200s → it should be SPARED.
+// No UPDATE, no event emitted.
+func TestSweepStuckProvisioning_ManifestOverrideSparesRow(t *testing.T) {
+	mock := setupTestDB(t)
+
+	mock.ExpectQuery(`SELECT id, COALESCE\(runtime, ''\), EXTRACT`).
+		WillReturnRows(candidateRows([3]any{"ws-claude-templated", "claude-code", 660}))
+
+	// No ExpectExec — if the sweeper still flips the row, sqlmock will
+	// fail with an unexpected-query error.
+
+	lookup := func(runtime string) int {
+		if runtime == "claude-code" {
+			return 1200 // manifest override: 20 min
+		}
+		return 0
+	}
+
+	emit := &fakeEmitter{}
+	sweepStuckProvisioning(context.Background(), emit, lookup)
+
+	if emit.count() != 0 {
+		t.Errorf("manifest-overridden row should NOT have been flipped, got %d events", emit.count())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestSweepStuckProvisioning_ManifestOverrideStillFlipsPastDeadline —
+// the symmetric case. Manifest override gives a longer window but a
+// row past THAT longer window must still be flipped. Otherwise a
+// template that declares an absurd timeout could leave rows wedged
+// forever.
+func TestSweepStuckProvisioning_ManifestOverrideStillFlipsPastDeadline(t *testing.T) {
+	mock := setupTestDB(t)
+
+	// 21 min = 1260s > 1200s manifest override → flipped.
+	mock.ExpectQuery(`SELECT id, COALESCE\(runtime, ''\), EXTRACT`).
+		WillReturnRows(candidateRows([3]any{"ws-claude-truly-stuck", "claude-code", 1260}))
+	mock.ExpectExec(`UPDATE workspaces`).
+		WithArgs("ws-claude-truly-stuck", sqlmock.AnyArg(), sqlmock.AnyArg(), models.StatusFailed).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	lookup := func(runtime string) int {
+		if runtime == "claude-code" {
+			return 1200
+		}
+		return 0
+	}
+
+	emit := &fakeEmitter{}
+	sweepStuckProvisioning(context.Background(), emit, lookup)
+
+	if emit.count() != 1 {
+		t.Fatalf("row past manifest deadline must still be flipped, got %d events", emit.count())
+	}
+	payload, ok := emit.events[0].Payload.(map[string]interface{})
+	if !ok {
+		t.Fatalf("payload not a map: %T", emit.events[0].Payload)
+	}
+	if payload["timeout_secs"] != 1200 {
+		t.Errorf("payload.timeout_secs = %v, want 1200 (manifest override applied to event payload)", payload["timeout_secs"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
 // TestSweepStuckProvisioning_RaceSafe covers the case where UPDATE affects
 // 0 rows because the workspace flipped to online (or got restarted) between
 // the SELECT and the UPDATE. We should skip the event, not emit a false
