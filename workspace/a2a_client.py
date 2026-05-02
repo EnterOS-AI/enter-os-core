@@ -34,9 +34,12 @@ _peer_names: dict[str, str] = {}
 # Populated by tool_list_peers and by the lazy registry lookup in
 # enrich_peer_metadata. The notification-callback path (channel envelope
 # enrichment) reads this cache on every inbound peer_agent push, so a
-# bare ``dict[str, dict]`` is the fastest read shape; entries carry their
-# fetched-at timestamp so TTL eviction is in-line with the lookup.
-_peer_metadata: dict[str, tuple[float, dict]] = {}
+# bare ``dict[str, tuple[float, dict | None]]`` is the fastest read
+# shape; entries carry their fetched-at timestamp so TTL eviction is
+# in-line with the lookup. ``None`` as the record is the negative-cache
+# sentinel: registry failure is cached for one TTL window so we don't
+# re-fire the 2s-bounded GET on every push from a flaky peer.
+_peer_metadata: dict[str, tuple[float, dict | None]] = {}
 
 # How long an entry in ``_peer_metadata`` is treated as fresh. 5 minutes
 # is the same window we use for delegation routing — long enough that a
@@ -57,6 +60,13 @@ def enrich_peer_metadata(peer_id: str, *, now: float | None = None) -> dict | No
     degrade gracefully (the channel envelope falls back to the raw
     ``peer_id`` instead of crashing the push path).
 
+    Negative caching: failure outcomes (4xx/5xx/non-JSON/network
+    exception) are stored as ``(now, None)`` and treated as
+    fresh-but-empty for the TTL window. Without this, a peer with a
+    flaky/missing registry record would re-fire the 2s-bounded GET on
+    EVERY push — turning the cache into a no-op for the exact failure
+    scenarios it most needs to defend against.
+
     The fetched dict is stored as-is, so callers can read whatever
     fields the platform exposes (currently: ``id``, ``name``, ``role``,
     ``status``, ``url``). New fields surface automatically without a
@@ -71,6 +81,9 @@ def enrich_peer_metadata(peer_id: str, *, now: float | None = None) -> dict | No
     if cached is not None:
         fetched_at, record = cached
         if current - fetched_at < _PEER_METADATA_TTL_SECONDS:
+            # Fresh entry — return whatever's there. ``None`` is the
+            # negative-cache sentinel: caller treats absence of fields
+            # the same as a registry miss, which is the desired UX.
             return record
 
     url = f"{PLATFORM_URL}/registry/discover/{canon}"
@@ -79,20 +92,24 @@ def enrich_peer_metadata(peer_id: str, *, now: float | None = None) -> dict | No
             resp = client.get(url, headers={"X-Workspace-ID": WORKSPACE_ID, **auth_headers()})
     except Exception as exc:  # noqa: BLE001
         logger.debug("enrich_peer_metadata: GET %s failed: %s", url, exc)
-        return cached[1] if cached is not None else None
+        _peer_metadata[canon] = (current, None)
+        return None
 
     if resp.status_code != 200:
         logger.debug(
             "enrich_peer_metadata: %s returned HTTP %d", url, resp.status_code
         )
-        return cached[1] if cached is not None else None
+        _peer_metadata[canon] = (current, None)
+        return None
 
     try:
         data = resp.json()
     except Exception:  # noqa: BLE001
-        return cached[1] if cached is not None else None
+        _peer_metadata[canon] = (current, None)
+        return None
     if not isinstance(data, dict):
-        return cached[1] if cached is not None else None
+        _peer_metadata[canon] = (current, None)
+        return None
 
     _peer_metadata[canon] = (current, data)
     if name := data.get("name"):

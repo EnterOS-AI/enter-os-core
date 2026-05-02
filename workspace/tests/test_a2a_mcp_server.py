@@ -401,6 +401,67 @@ def test_envelope_enrichment_degrades_on_registry_failure(_reset_peer_metadata_c
     )
 
 
+def test_envelope_enrichment_negative_caches_registry_failure(_reset_peer_metadata_cache):
+    """Registry failure must be cached for the TTL window. Without
+    this, a peer with a flaky or missing registry record re-fires the
+    2s-bounded GET on EVERY push — the cache becomes a no-op for the
+    exact scenarios it most needs to defend against, and the poller
+    thread stalls 2s per push for that peer until the registry comes
+    back. Pin: two pushes from a 5xx-returning peer fire exactly one
+    GET, not two."""
+    from a2a_mcp_server import _build_channel_notification
+
+    p, client = _patch_httpx_client(_make_httpx_response(500, {}))
+    with p:
+        payload1 = _build_channel_notification({
+            "peer_id": _PEER_UUID, "kind": "peer_agent", "text": "first",
+        })
+        payload2 = _build_channel_notification({
+            "peer_id": _PEER_UUID, "kind": "peer_agent", "text": "second",
+        })
+
+    assert client.get.call_count == 1, (
+        f"second push from a 5xx-returning peer must use the negative "
+        f"cache, got {client.get.call_count} GETs"
+    )
+    # Both pushes deliver without enrichment (peer_name/role absent),
+    # but agent_card_url surfaces unconditionally.
+    for payload in (payload1, payload2):
+        meta = payload["params"]["meta"]
+        assert "peer_name" not in meta
+        assert "peer_role" not in meta
+        assert meta["agent_card_url"].endswith(f"/registry/discover/{_PEER_UUID}")
+
+
+def test_envelope_enrichment_negative_caches_network_exception(_reset_peer_metadata_cache):
+    """Same negative-caching contract for network exceptions —
+    httpx.ConnectError, DNS failure, registry pod restart all
+    surface as exceptions from client.get(). Without negative
+    caching, a temporary network blip turns into a 2s stall on
+    every push for the duration."""
+    import a2a_client
+    from a2a_mcp_server import _build_channel_notification
+
+    client = MagicMock()
+    client.__enter__ = MagicMock(return_value=client)
+    client.__exit__ = MagicMock(return_value=False)
+    # Important: simulate the exception INSIDE the with-block (which
+    # is where the real httpx.Client raises) by making get() raise.
+    import httpx as _httpx
+    client.get = MagicMock(side_effect=_httpx.ConnectError("dns down"))
+    with patch("httpx.Client", return_value=client):
+        _build_channel_notification({"peer_id": _PEER_UUID, "kind": "peer_agent"})
+        _build_channel_notification({"peer_id": _PEER_UUID, "kind": "peer_agent"})
+
+    assert client.get.call_count == 1, (
+        f"network exceptions must be negative-cached, got "
+        f"{client.get.call_count} GETs"
+    )
+    # Sanity: the cache entry exists and carries None as the record.
+    cached = a2a_client._peer_metadata[_PEER_UUID]
+    assert cached[1] is None
+
+
 def test_envelope_enrichment_re_fetches_after_ttl(_reset_peer_metadata_cache):
     """Cached entry past TTL: registry is hit again. Pin the TTL
     behaviour so a future caller bumping ``_PEER_METADATA_TTL_SECONDS``
