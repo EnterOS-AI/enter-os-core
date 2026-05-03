@@ -509,7 +509,15 @@ class LangGraphA2AExecutor(AgentExecutor):
                         # accept the assignment. See #1787 + commit dcbcf19
                         # for the original test-mock motivation.
                         logger.debug("metadata attach skipped (non-Message return from new_text_message)")
-                await event_queue.enqueue_event(msg)
+                # A2A v1 (a2a-sdk ≥ 1.0): once Task is enqueued (above, PR #2558),
+                # the executor is in task mode and raw Message enqueues are
+                # rejected with InvalidAgentResponseError("Received Message
+                # object in task mode. Use TaskStatusUpdateEvent or
+                # TaskArtifactUpdateEvent instead."). updater.complete()
+                # wraps the Message in a terminal TaskStatusUpdateEvent
+                # (state=COMPLETED, final=True) which both streaming and
+                # non-streaming clients accept.
+                await updater.complete(message=msg)
                 _result = final_text
 
             except Exception as e:
@@ -520,10 +528,13 @@ class LangGraphA2AExecutor(AgentExecutor):
                     task_span.set_status(StatusCode.ERROR, str(e))
                 except Exception:
                     pass
-                # Emit a Message so both streaming and non-streaming clients
-                # receive an error response rather than hanging.
-                await event_queue.enqueue_event(
-                    new_text_message(
+                # A2A v1: in task mode, terminal errors must publish a
+                # FAILED TaskStatusUpdateEvent (carrying the error Message)
+                # rather than a raw Message enqueue. updater.failed() does
+                # exactly this — both streaming and non-streaming clients
+                # receive the error and stop polling.
+                await updater.failed(
+                    message=new_text_message(
                         f"Agent error: {e}", task_id=task_id, context_id=context_id
                     )
                 )

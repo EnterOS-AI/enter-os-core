@@ -1123,3 +1123,81 @@ async def test_no_task_enqueue_on_continuation():
         assert not isinstance(event, Task), (
             f"continuation must not re-enqueue Task, but got Task at {call}"
         )
+
+
+# ---------------------------------------------------------------------------
+# A2A v1 task-mode terminal-event contract (PR #2558 follow-up, task #262)
+# ---------------------------------------------------------------------------
+# After PR #2558 enqueues a Task at the start of new requests, the executor
+# is in v1 "task mode". The SDK then rejects any subsequent raw Message
+# enqueue with InvalidAgentResponseError("Received Message object in task
+# mode. Use TaskStatusUpdateEvent or TaskArtifactUpdateEvent instead.") —
+# see a2a/server/agent_execution/active_task.py validation site. Synth-E2E
+# 2026-05-03T11:00:34Z surfaced this. The fix routes the terminal Message
+# through TaskUpdater.complete()/failed() which wrap it in a
+# TaskStatusUpdateEvent. Both tests below pin that path so the regression
+# can't recur (raw enqueue at the terminal step would NOT touch
+# event_queue._complete_calls / _failed_calls).
+
+@pytest.mark.asyncio
+async def test_terminal_success_routes_via_updater_complete():
+    """A successful run must terminate via updater.complete(message=...) —
+    raw event_queue.enqueue_event(Message) crashes the v1 SDK in task mode."""
+    agent = MagicMock()
+    agent.astream_events = MagicMock(return_value=_stream(_text_chunk("Hello")))
+    executor = LangGraphA2AExecutor(agent)
+
+    part = MagicMock()
+    part.text = "Hi"
+
+    context = _make_context([part], "ctx-term-ok", task_id="task-term-ok")
+    context.current_task = None  # forces task-mode (Task gets enqueued)
+    eq = _make_event_queue()
+    # Pre-init real lists so the AsyncMock event_queue doesn't auto-spec
+    # _complete_calls/_failed_calls into child MagicMocks. The conftest
+    # TaskUpdater stub appends to these lists when complete/failed fire.
+    eq._complete_calls = []
+    eq._failed_calls = []
+
+    await executor.execute(context, eq)
+
+    assert eq._complete_calls, (
+        "terminal Message must route via updater.complete() in task mode — "
+        "raw event_queue.enqueue_event(Message) is rejected by a2a-sdk v1"
+    )
+    final_msg = eq._complete_calls[-1]
+    assert "Hello" in str(final_msg)
+
+
+@pytest.mark.asyncio
+async def test_terminal_error_routes_via_updater_failed():
+    """An agent crash must terminate via updater.failed(message=...) — raw
+    enqueue in task mode hits the same v1 contract violation."""
+    async def _error_stream(*args, **kwargs):
+        raise RuntimeError("model crashed")
+        yield  # pragma: no cover — makes this an async generator
+
+    agent = MagicMock()
+    agent.astream_events = MagicMock(return_value=_error_stream())
+    executor = LangGraphA2AExecutor(agent)
+
+    part = MagicMock()
+    part.text = "Break things"
+
+    context = _make_context([part], "ctx-term-err", task_id="task-term-err")
+    context.current_task = None  # forces task-mode
+    eq = _make_event_queue()
+    eq._complete_calls = []
+    eq._failed_calls = []
+
+    await executor.execute(context, eq)
+
+    assert eq._failed_calls, (
+        "terminal error Message must route via updater.failed() in task mode"
+    )
+    err_msg = eq._failed_calls[-1]
+    assert "model crashed" in str(err_msg)
+    # And complete() must NOT have been called on the failure path.
+    assert not eq._complete_calls, (
+        "complete() should not fire when execute() raises"
+    )
