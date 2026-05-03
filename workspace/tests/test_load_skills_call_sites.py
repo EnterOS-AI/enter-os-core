@@ -96,11 +96,6 @@ def test_every_runtime_load_skills_call_passes_current_runtime():
             continue
 
         for call in _find_load_skills_calls(tree):
-            if call.func.__class__.__name__ == "Name" and call.func.id == "load_skills":
-                # Skip the function DEFINITION itself (it appears as a
-                # FunctionDef, not a Call — but the Call check ensures
-                # we only trip on actual invocations). Defensive.
-                pass
             if not _has_current_runtime_kwarg(call):
                 violations.append((py.relative_to(WORKSPACE_DIR.parent), call.lineno))
 
