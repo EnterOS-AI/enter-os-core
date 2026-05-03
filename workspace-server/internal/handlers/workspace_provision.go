@@ -127,7 +127,7 @@ func (h *WorkspaceHandler) provisionWorkspaceOpts(workspaceID, templatePath stri
 							workspaceID, filepath.Base(runtimeTemplate))
 						templatePath = runtimeTemplate
 						// Rebuild cfg with the recovered template path so Start() sees it.
-						cfg = h.buildProvisionerConfig(workspaceID, templatePath, configFiles, payload, prepared.EnvVars, prepared.PluginsPath, prepared.AwarenessNamespace)
+						cfg = h.buildProvisionerConfig(ctx, workspaceID, templatePath, configFiles, payload, prepared.EnvVars, prepared.PluginsPath, prepared.AwarenessNamespace)
 						cfg.ResetClaudeSession = resetClaudeSession
 						recovered = true
 						break
@@ -243,6 +243,7 @@ func (h *WorkspaceHandler) loadAwarenessNamespace(ctx context.Context, workspace
 }
 
 func (h *WorkspaceHandler) buildProvisionerConfig(
+	ctx context.Context,
 	workspaceID, templatePath string,
 	configFiles map[string][]byte,
 	payload models.CreateWorkspacePayload,
@@ -291,6 +292,7 @@ func (h *WorkspaceHandler) buildProvisionerConfig(
 		PlatformURL:        h.platformURL,
 		AwarenessURL:       os.Getenv("AWARENESS_URL"),
 		AwarenessNamespace: awarenessNamespace,
+		Image:              resolveRuntimeImage(ctx, payload.Runtime),
 	}
 }
 

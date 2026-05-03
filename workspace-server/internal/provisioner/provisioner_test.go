@@ -436,6 +436,62 @@ func TestWorkspaceConfig_ResetClaudeSessionFieldPresent(t *testing.T) {
 	}
 }
 
+// ---------- selectImage (#2272 layer 1) ----------
+
+// TestSelectImage_PrefersExplicitImage: when the handler resolved a digest
+// pin via runtime_image_pins, cfg.Image is set. selectImage must honor it
+// and ignore the cfg.Runtime → :latest fallback. This is the load-bearing
+// invariant for digest pinning — if it ever silently reverts to :latest,
+// we lose the "one bad publish doesn't break every workspace" guarantee.
+func TestSelectImage_PrefersExplicitImage(t *testing.T) {
+	pinned := "ghcr.io/molecule-ai/workspace-template-claude-code@sha256:3d6761a97ed07d7d33cfc19a8fbab81175d9d9179618d493dbc00c5f7ef076a3"
+	got := selectImage(WorkspaceConfig{Runtime: "claude-code", Image: pinned})
+	if got != pinned {
+		t.Errorf("selectImage with cfg.Image=pinned: got %q, want %q", got, pinned)
+	}
+}
+
+// TestSelectImage_FallsBackToRuntimeMap: handler returned "" (no pin or
+// pin lookup deliberately bypassed via WORKSPACE_IMAGE_LOCAL_OVERRIDE).
+// selectImage must use the legacy runtime→:latest map.
+func TestSelectImage_FallsBackToRuntimeMap(t *testing.T) {
+	got := selectImage(WorkspaceConfig{Runtime: "claude-code", Image: ""})
+	want := RuntimeImages["claude-code"]
+	if got != want {
+		t.Errorf("selectImage with empty Image: got %q, want %q", got, want)
+	}
+}
+
+// TestSelectImage_UnknownRuntimeFallsBackToDefault preserves today's
+// behavior — an unrecognized runtime resolves to DefaultImage rather than
+// "" so ContainerCreate gets a usable arg and surfaces a meaningful
+// "No such image" error if the default itself is missing.
+func TestSelectImage_UnknownRuntimeFallsBackToDefault(t *testing.T) {
+	got := selectImage(WorkspaceConfig{Runtime: "no-such-runtime"})
+	if got != DefaultImage {
+		t.Errorf("selectImage with unknown runtime: got %q, want DefaultImage %q", got, DefaultImage)
+	}
+}
+
+// TestSelectImage_EmptyRuntimeFallsBackToDefault: same invariant for the
+// no-runtime-supplied path (legacy callers / older handler code).
+func TestSelectImage_EmptyRuntimeFallsBackToDefault(t *testing.T) {
+	got := selectImage(WorkspaceConfig{})
+	if got != DefaultImage {
+		t.Errorf("selectImage with zero cfg: got %q, want DefaultImage %q", got, DefaultImage)
+	}
+}
+
+// TestWorkspaceConfig_ImageFieldPresent compile-time-pins the Image field
+// so the handler→provisioner contract for digest-pinned image refs can't
+// be silently removed by a future struct refactor (#2272).
+func TestWorkspaceConfig_ImageFieldPresent(t *testing.T) {
+	cfg := WorkspaceConfig{Image: "ghcr.io/example@sha256:abc"}
+	if cfg.Image == "" {
+		t.Fatal("Image should round-trip through struct literal")
+	}
+}
+
 // ---------- buildContainerEnv — #67 MOLECULE_URL injection ----------
 
 func TestBuildContainerEnv_InjectsBothPlatformURLAndMoleculeAIURL(t *testing.T) {

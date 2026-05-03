@@ -642,6 +642,7 @@ func TestBuildProvisionerConfig_BasicFields(t *testing.T) {
 	templatePath := filepath.Join(tmpDir, "template")
 	pluginsPath := t.TempDir()
 	cfg := handler.buildProvisionerConfig(
+		context.Background(),
 		"ws-basic",
 		templatePath,
 		map[string][]byte{"config.yaml": []byte("name: test")},
@@ -687,6 +688,7 @@ func TestBuildProvisionerConfig_WorkspacePathFromEnv(t *testing.T) {
 
 	pluginsPath := t.TempDir()
 	cfg := handler.buildProvisionerConfig(
+		context.Background(),
 		"ws-env",
 		"",
 		nil,

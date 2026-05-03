@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -363,6 +364,7 @@ func TestBuildProvisionerConfig_IncludesAwarenessSettings(t *testing.T) {
 	t.Setenv("WORKSPACE_DIR", "/tmp/workspace")
 
 	cfg := handler.buildProvisionerConfig(
+		context.Background(),
 		"ws-123",
 		"/tmp/configs/template",
 		map[string][]byte{"config.yaml": []byte("name: test")},
