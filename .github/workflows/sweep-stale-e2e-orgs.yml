@@ -25,16 +25,23 @@ name: Sweep stale e2e-* orgs (staging)
 
 on:
   schedule:
-    # Every hour on the hour. E2E orgs are short-lived (~10-25 min wall
-    # clock from create to teardown). Anything older than the
-    # MAX_AGE_MINUTES threshold below is presumed dead.
-    - cron: '0 * * * *'
+    # Every 15 min. E2E orgs are short-lived (~8-25 min wall clock from
+    # create to teardown — canary is ~8 min, full SaaS ~25 min). The
+    # previous hourly + 120-min stale threshold meant a leaked tenant
+    # could keep an EC2 alive for up to 2 hours, eating ~2 vCPU per
+    # leak. Tightening the cadence + threshold reduces the worst-case
+    # leak window from 120 min to ~45 min (15-min sweep cadence + 30-min
+    # threshold) without risk of catching in-progress runs (the longest
+    # e2e run is the 25-min canary, well under the 30-min threshold).
+    # See molecule-controlplane#420 for the leak-class accounting that
+    # motivated this tightening.
+    - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
       max_age_minutes:
-        description: "Delete e2e-* orgs older than N minutes (default 120)"
+        description: "Delete e2e-* orgs older than N minutes (default 30)"
         required: false
-        default: "120"
+        default: "30"
       dry_run:
         description: "Dry run only — list what would be deleted"
         required: false
@@ -58,7 +65,7 @@ jobs:
     env:
       MOLECULE_CP_URL: https://staging-api.moleculesai.app
       ADMIN_TOKEN: ${{ secrets.MOLECULE_STAGING_ADMIN_TOKEN }}
-      MAX_AGE_MINUTES: ${{ github.event.inputs.max_age_minutes || '120' }}
+      MAX_AGE_MINUTES: ${{ github.event.inputs.max_age_minutes || '30' }}
       DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
       # Refuse to delete more than this many orgs in one tick. If the
       # CP DB is briefly empty (or the admin endpoint goes weird and
