@@ -1048,3 +1048,78 @@ async def test_cancel_emits_canceled_event(monkeypatch):
     assert isinstance(event, _TaskStatusUpdateEvent), "expected a TaskStatusUpdateEvent"
     assert event.final is True, "cancel event must be marked final=True"
     assert event.status.state == _TaskState.TASK_STATE_CANCELED, "cancel event must have state=TASK_STATE_CANCELED"
+
+
+# ---------------------------------------------------------------------------
+# A2A v1 contract — Task event MUST precede any TaskStatusUpdateEvent
+# ---------------------------------------------------------------------------
+# Regression guard: a2a-sdk ≥ 1.0 raises InvalidAgentResponseError when the
+# executor enqueues a TaskStatusUpdateEvent (e.g. via TaskUpdater.start_work)
+# before any Task event for fresh requests (no continuation task in the
+# task_manager). PR #2170 migrated to v1 but missed this contract; the
+# synthetic E2E gate caught it on every staging run with:
+#   {"error":{"code":-32603,"message":"Agent should enqueue Task before
+#    TaskStatusUpdateEvent event"}}
+# This test pins the executor's first event as a Task instance for the
+# new-request path so the regression cannot recur.
+
+@pytest.mark.asyncio
+async def test_first_event_is_task_for_new_request():
+    """For a new request (context.current_task is None), the executor must
+    enqueue a Task event before any TaskUpdater status updates."""
+    from a2a.types import Task
+
+    agent = MagicMock()
+    agent.astream_events = MagicMock(return_value=_stream(_text_chunk("ok")))
+    executor = LangGraphA2AExecutor(agent)
+
+    part = MagicMock()
+    part.text = "Hi"
+
+    context = _make_context([part], "ctx-new", task_id="task-new")
+    context.current_task = None
+    eq = _make_event_queue()
+
+    await executor.execute(context, eq)
+
+    # First enqueue must be a Task — TaskUpdater is stubbed in conftest so
+    # its start_work() does NOT enqueue, leaving the new Task as the only
+    # framework-protocol event before the terminal Message.
+    first_call = eq.enqueue_event.call_args_list[0]
+    first_event = first_call[0][0]
+    assert isinstance(first_event, Task), (
+        f"expected first event to be Task, got {type(first_event).__name__}"
+    )
+    assert first_event.id == "task-new"
+    assert first_event.context_id == "ctx-new"
+
+
+@pytest.mark.asyncio
+async def test_no_task_enqueue_on_continuation():
+    """For a continuation request (context.current_task is set), the executor
+    must NOT enqueue a Task — the framework already knows about it. Re-
+    enqueueing causes the SDK to log 'Task already exists. Ignoring task
+    replacement.' and confuses the task store."""
+    from a2a.types import Task
+
+    agent = MagicMock()
+    agent.astream_events = MagicMock(return_value=_stream(_text_chunk("ok")))
+    executor = LangGraphA2AExecutor(agent)
+
+    part = MagicMock()
+    part.text = "Followup"
+
+    context = _make_context([part], "ctx-cont", task_id="task-cont")
+    # Simulate the framework having already discovered the task.
+    context.current_task = Task(id="task-cont", context_id="ctx-cont")
+    eq = _make_event_queue()
+
+    await executor.execute(context, eq)
+
+    # No enqueued event should be a Task — TaskUpdater stubs are no-ops, so
+    # the only events should be the executor's own (Message at end).
+    for call in eq.enqueue_event.call_args_list:
+        event = call[0][0]
+        assert not isinstance(event, Task), (
+            f"continuation must not re-enqueue Task, but got Task at {call}"
+        )

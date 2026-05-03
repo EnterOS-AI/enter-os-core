@@ -268,6 +268,26 @@ class LangGraphA2AExecutor(AgentExecutor):
             task_id = context.task_id or str(uuid.uuid4())
             context_id = context.context_id or str(uuid.uuid4())
 
+            # A2A v1 contract (a2a-sdk ≥ 1.0): enqueue a Task event before any
+            # TaskStatusUpdateEvent. The framework only auto-creates the Task
+            # on continuation messages (existing task_id resolves via
+            # task_manager.get_task()). For fresh requests get_task() returns
+            # None and the SDK rejects the first status update with
+            # InvalidAgentResponseError("Agent should enqueue Task before
+            # TaskStatusUpdateEvent event") — see a2a/server/agent_execution/
+            # active_task.py for the validation site. PR #2170 migrated the
+            # surface to v1 but missed this contract; the synth-E2E gate
+            # surfaced it on every run after staging deploy.
+            if getattr(context, "current_task", None) is None:
+                from a2a.types import Task, TaskState, TaskStatus
+                await event_queue.enqueue_event(
+                    Task(
+                        id=task_id,
+                        context_id=context_id,
+                        status=TaskStatus(state=TaskState.TASK_STATE_SUBMITTED),
+                    )
+                )
+
             updater = TaskUpdater(event_queue, task_id, context_id)
 
             try:
