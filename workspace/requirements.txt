@@ -11,7 +11,7 @@ a2a-sdk[http-server]>=1.0.0,<2.0
 # HTTP / server
 httpx>=0.28.1
 uvicorn>=0.46.0
-starlette>=0.38.0
+starlette>=1.0.0
 websockets>=16.0
 
 # multipart/form-data parser — required for Starlette's Request.form() on
