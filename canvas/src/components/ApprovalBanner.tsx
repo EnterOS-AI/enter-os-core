@@ -73,14 +73,19 @@ export function ApprovalBanner() {
                 <button
                   type="button"
                   onClick={() => handleDecide(approval, "approved")}
-                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-xs rounded-lg text-white font-medium transition-colors"
+                  // Hover DARKER not lighter — emerald-500 on white text
+                  // drops contrast vs emerald-700.
+                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-xs rounded-lg text-white font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-amber-950 focus-visible:ring-emerald-400/70"
                 >
                   Approve
                 </button>
                 <button
                   type="button"
                   onClick={() => handleDecide(approval, "denied")}
-                  className="px-3 py-1.5 bg-surface-card hover:bg-surface-card text-xs rounded-lg text-ink-mid transition-colors"
+                  // Was a no-op hover (`bg-surface-card hover:bg-surface-card`).
+                  // Lift to surface-elevated on hover so the button visibly
+                  // responds before a destructive deny.
+                  className="px-3 py-1.5 bg-surface-card hover:bg-surface-elevated hover:text-ink text-xs rounded-lg text-ink-mid transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-amber-950 focus-visible:ring-amber-400/70"
                 >
                   Deny
                 </button>

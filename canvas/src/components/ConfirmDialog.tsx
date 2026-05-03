@@ -91,12 +91,15 @@ export function ConfirmDialog({
 
   if (!open || !mounted) return null;
 
+  // Hover goes DARKER, not lighter — lighter shades on white text drop
+  // contrast below AA on the accent and red ramps. Darker hovers stay
+  // readable in both light and dark themes.
   const confirmColors =
     confirmVariant === "danger"
-      ? "bg-red-600 hover:bg-red-500 text-white"
+      ? "bg-red-600 hover:bg-red-700 text-white"
       : confirmVariant === "warning"
-        ? "bg-amber-600 hover:bg-amber-500 text-white"
-        : "bg-accent-strong hover:bg-accent text-white";
+        ? "bg-amber-600 hover:bg-amber-700 text-white"
+        : "bg-accent hover:bg-accent-strong text-white";
 
   // Render via Portal so the fixed-position dialog escapes any containing block
   // (e.g. parents with transform, filter, will-change that break position:fixed).
@@ -123,7 +126,7 @@ export function ConfirmDialog({
             <button
               type="button"
               onClick={onCancel}
-              className="px-3.5 py-1.5 text-[13px] text-ink-mid hover:text-ink bg-surface-card hover:bg-surface-card border border-line rounded-lg transition-colors"
+              className="px-3.5 py-1.5 text-[13px] text-ink-mid hover:text-ink bg-surface-card hover:bg-surface-elevated border border-line hover:border-line-soft rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             >
               Cancel
             </button>
@@ -131,7 +134,7 @@ export function ConfirmDialog({
           <button
             type="button"
             onClick={onConfirm}
-            className={`px-3.5 py-1.5 text-[13px] rounded-lg transition-colors ${confirmColors}`}
+            className={`px-3.5 py-1.5 text-[13px] rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-sunken focus-visible:ring-accent/60 ${confirmColors}`}
           >
             {confirmLabel}
           </button>

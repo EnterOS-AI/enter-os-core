@@ -169,7 +169,17 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
         orgID = row.id;
         return true;
       }
-      if (row.instance_status === "failed") throw new Error(`provision failed: ${slug}`);
+      if (row.instance_status === "failed") {
+        // Dump every diagnostic field the admin row carries — boot stage,
+        // last error, terraform/SSM state, etc. The bare slug message used
+        // to surface ZERO context, so triaging a failed provision meant
+        // re-running locally to repro. Now the failure log carries enough
+        // to point at the right subsystem (CP/AWS/SSM/runtime) without a
+        // second round-trip.
+        throw new Error(
+          `provision failed: ${slug} — admin-orgs row: ${JSON.stringify(row)}`,
+        );
+      }
       return null;
     },
     PROVISION_TIMEOUT_MS,
@@ -249,7 +259,17 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
       if (r.status !== 200) return null;
       if (r.body?.status === "online") return true;
       if (r.body?.status === "failed") {
-        throw new Error(`Workspace failed: ${r.body.last_sample_error || ""}`);
+        // last_sample_error is often empty when the failure happens before
+        // the agent emits a sample (e.g. boot crash, image pull error,
+        // missing PYTHONPATH, OpenAI quota at startup). Dumping the full
+        // body gives triage the boot_stage / last_error / image fields it
+        // needs without a second probe. Otherwise this propagates as a
+        // bare "Workspace failed: " — the exact useless message that
+        // sent #2632 to the issue tracker.
+        const detail = r.body.last_sample_error
+          ? r.body.last_sample_error
+          : `(no last_sample_error) full body: ${JSON.stringify(r.body)}`;
+        throw new Error(`Workspace failed: ${detail}`);
       }
       return null;
     },

@@ -454,6 +454,41 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 						"{{PLATFORM_URL}}", platformURL),
 					"{{WORKSPACE_ID}}", id,
 				),
+				// Hermes channel snippet — for operators whose external
+				// agent IS a hermes-agent session. Routes A2A traffic
+				// into the hermes gateway via the molecule-channel
+				// plugin (Molecule-AI/hermes-channel-molecule). Long-
+				// poll based (no tunnel) — same UX as the Claude Code
+				// channel tab. Gives hermes true push parity with the
+				// other runtime templates.
+				"hermes_channel_snippet": strings.ReplaceAll(
+					strings.ReplaceAll(externalHermesChannelTemplate,
+						"{{PLATFORM_URL}}", platformURL),
+					"{{WORKSPACE_ID}}", id,
+				),
+				// Codex MCP config snippet — for operators whose
+				// external agent is a codex CLI (@openai/codex)
+				// session. Wires the molecule MCP server into
+				// ~/.codex/config.toml. Outbound-tools-only today;
+				// codex's MCP client doesn't route arbitrary
+				// notifications/* so push parity needs a separate
+				// bridge daemon (future work).
+				"codex_snippet": strings.ReplaceAll(
+					strings.ReplaceAll(externalCodexTemplate,
+						"{{PLATFORM_URL}}", platformURL),
+					"{{WORKSPACE_ID}}", id,
+				),
+				// OpenClaw MCP config snippet — for operators whose
+				// external agent is an openclaw session. Wires the
+				// molecule MCP server via `openclaw mcp set` + starts
+				// the gateway on loopback. Outbound-tools-only today;
+				// full push parity needs a sessions.steer bridge
+				// daemon (future work).
+				"openclaw_snippet": strings.ReplaceAll(
+					strings.ReplaceAll(externalOpenClawTemplate,
+						"{{PLATFORM_URL}}", platformURL),
+					"{{WORKSPACE_ID}}", id,
+				),
 			}
 		}
 		c.JSON(http.StatusCreated, resp)

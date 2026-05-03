@@ -186,3 +186,191 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 `
+
+// externalHermesChannelTemplate — install snippet for operators whose
+// external agent IS a hermes-agent session. Routes the workspace's
+// A2A traffic into the running hermes gateway as platform messages
+// via the molecule-channel plugin.
+//
+// The plugin (Molecule-AI/hermes-channel-molecule) is a hermes
+// platform adapter that:
+//   1. Spawns ``python -m molecule_runtime.a2a_mcp_server`` as a
+//      stdio MCP subprocess (separate from any hermes-side MCP
+//      client connection).
+//   2. Long-polls ``wait_for_message`` on the platform's inbox.
+//   3. Dispatches each inbound activity into the hermes gateway as a
+//      MessageEvent — same code path Telegram/Discord use.
+//   4. Outbound replies route via ``send_message_to_user`` (canvas
+//      user) or ``delegate_task`` (peer agent) MCP tool calls.
+//
+// Result: hermes gets push parity with Claude Code / codex / openclaw —
+// canvas messages and peer A2A arrive as conversation turns mid-session,
+// not just at the start of a new ``hermes`` invocation.
+//
+// Plugin uses the upstream ``register_platform`` API shipped by
+// NousResearch/hermes-agent#17751 (merged 2026-04-30) and falls back
+// to the legacy ``register_platform_adapter`` shape on older forks —
+// same wheel installs cleanly on stock or patched hermes-agent.
+const externalHermesChannelTemplate = `# Hermes channel — bridges this workspace's A2A traffic into your
+# hermes-agent session. No tunnel/public URL needed (long-poll based,
+# same shape as the Claude Code channel).
+#
+# Prereq: a hermes-agent install on the target machine. Latest builds
+# (post #17751) ship the platform-plugin API natively; older ones are
+# also supported via the plugin's dual-mode fallback.
+#
+# 1. Install the runtime + plugin:
+pip install molecule-ai-workspace-runtime
+pip install 'git+https://github.com/Molecule-AI/hermes-channel-molecule.git'
+
+# 2. Export the workspace credentials:
+export MOLECULE_WORKSPACE_ID={{WORKSPACE_ID}}
+export MOLECULE_PLATFORM_URL={{PLATFORM_URL}}
+export MOLECULE_WORKSPACE_TOKEN="<paste from create response>"
+export MOLECULE_ORG_ID="<your org id>"
+
+# 3. Edit ~/.hermes/config.yaml — under your existing top-level
+#    gateway: block, add a plugin_platforms entry:
+#
+#      gateway:
+#        # ...your existing gateway settings...
+#        plugin_platforms:
+#          molecule:
+#            enabled: true
+#
+#    If you don't yet have a gateway: block, create one with just
+#    that plugin_platforms entry. Don't append blindly — YAML
+#    rejects duplicate top-level keys, so a second gateway: block
+#    will silently break hermes config loading.
+
+# 4. Restart the hermes gateway:
+hermes gateway --replace
+
+# Inbound canvas messages + peer A2A now arrive as MessageEvents —
+# same dispatch path Telegram/Discord/Slack use. The agent replies via
+# send_message_to_user / delegate_task MCP tool calls (already wired
+# by the plugin's molecule_runtime MCP subprocess).
+#
+# Source + issue tracker:
+# https://github.com/Molecule-AI/hermes-channel-molecule
+`
+
+// externalCodexTemplate — for operators whose external agent is a
+// codex CLI (@openai/codex) session. Wires the molecule_runtime A2A
+// MCP server into codex's config.toml so the agent can call
+// list_peers / delegate_task / send_message_to_user / commit_memory.
+//
+// Push parity caveat: codex's MCP client doesn't forward arbitrary
+// notifications/* from configured MCP servers (verified by reading
+// codex-rs/codex-mcp/src/connection_manager.rs in openai/codex). So
+// this snippet gives outbound tools but NOT mid-turn push from
+// inbound A2A. For full push parity on a codex external, the
+// equivalent of hermes-channel-molecule would be needed — a bridge
+// daemon that long-polls the platform inbox and calls codex's
+// turn/steer RPC. Tracked separately; this snippet is the
+// outbound-tool-only first cut.
+const externalCodexTemplate = `# Codex MCP config — outbound tool path. For operators whose external
+# agent is a codex CLI (@openai/codex) session.
+#
+# This wires the molecule platform's A2A MCP server into codex so
+# the agent can call list_peers / delegate_task / send_message_to_user
+# / commit_memory. Inbound A2A (canvas messages, peer-initiated tasks)
+# does NOT push into the running codex turn yet — codex's MCP runtime
+# doesn't route arbitrary notifications/* from configured MCP servers.
+# For inbound delivery into a codex session, pair with the Python SDK
+# tab for now.
+
+# 1. Install codex CLI + the workspace runtime wheel:
+npm install -g @openai/codex@^0.57
+pip install molecule-ai-workspace-runtime
+
+# 2. Edit ~/.codex/config.toml and add the block below. {{PLATFORM_URL}}
+#    and {{WORKSPACE_ID}} are stamped server-side; paste your auth
+#    token for MOLECULE_WORKSPACE_TOKEN before saving.
+#
+#    Don't append blindly — TOML rejects duplicate
+#    [mcp_servers.molecule] tables, so re-running on an existing
+#    config will break codex parsing. If [mcp_servers.molecule]
+#    already exists (e.g. you set this up before), replace the
+#    existing block instead of appending.
+
+mkdir -p ~/.codex
+# (then open ~/.codex/config.toml in your editor and paste:)
+#
+# [mcp_servers.molecule]
+# command = "python3"
+# args = ["-m", "molecule_runtime.a2a_mcp_server"]
+# startup_timeout_sec = 30
+#
+# [mcp_servers.molecule.env]
+# WORKSPACE_ID = "{{WORKSPACE_ID}}"
+# PLATFORM_URL = "{{PLATFORM_URL}}"
+# MOLECULE_WORKSPACE_TOKEN = "<paste from create response>"
+# MOLECULE_ORG_ID = "<your org id>"
+
+# 3. Run codex — the molecule tools are now available to the agent:
+codex
+`
+
+// externalOpenClawTemplate — for operators whose external agent is an
+// openclaw session. Wires the molecule MCP server via openclaw's
+// `mcp set` config + starts the openclaw gateway on loopback.
+//
+// Like the codex tab, this is outbound-only. Full push parity on an
+// external openclaw would need a sessions.steer bridge daemon (the
+// equivalent of hermes-channel-molecule for openclaw). Tracked
+// separately; outbound tools is the first cut.
+const externalOpenClawTemplate = `# OpenClaw MCP config — outbound tool path. For operators whose
+# external agent is an openclaw session.
+#
+# This wires the molecule platform's A2A MCP server into openclaw's
+# gateway so the agent can call list_peers / delegate_task /
+# send_message_to_user / commit_memory. Inbound A2A push into a
+# running openclaw run is not wired here yet — the platform-side
+# openclaw template (template-openclaw) implements the full
+# sessions.steer push path; an external setup would need the same
+# bridge daemon the template uses. For inbound delivery on an
+# external machine today, pair with the Python SDK tab.
+
+# 1. Install openclaw CLI + the workspace runtime wheel:
+npm install -g openclaw@latest
+pip install molecule-ai-workspace-runtime
+
+# 2. Onboard openclaw against your model provider (one-time setup).
+#    --non-interactive needs an explicit --provider + --model so it
+#    doesn't prompt; pick what matches your API key. Skip step 2 if
+#    you've already onboarded on this host.
+#
+#    openclaw onboard --non-interactive \
+#      --provider openai \
+#      --model gpt-5
+
+# 3. Wire the molecule MCP server. {{WORKSPACE_ID}} + {{PLATFORM_URL}}
+# are stamped server-side; paste the auth token before running.
+WORKSPACE_TOKEN="<paste from create response>"
+MOLECULE_ORG_ID="<your org id>"
+openclaw mcp set molecule "$(cat <<EOF
+{
+  "command": "python3",
+  "args": ["-m", "molecule_runtime.a2a_mcp_server"],
+  "env": {
+    "WORKSPACE_ID": "{{WORKSPACE_ID}}",
+    "PLATFORM_URL": "{{PLATFORM_URL}}",
+    "MOLECULE_WORKSPACE_TOKEN": "$WORKSPACE_TOKEN",
+    "MOLECULE_ORG_ID": "$MOLECULE_ORG_ID"
+  }
+}
+EOF
+)"
+
+# 4. Start the openclaw gateway as a durable background process.
+#    A bare '&' dies when the terminal closes; nohup + log file keeps
+#    the gateway alive across logout. For systemd-managed hosts,
+#    register a unit instead.
+nohup openclaw gateway --dev --port 18789 --bind loopback \
+  > ~/.openclaw/gateway.log 2>&1 &
+disown
+
+# 5. Run an agent turn — molecule tools are now available:
+openclaw agent --message "list my peers"
+`

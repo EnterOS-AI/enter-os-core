@@ -40,6 +40,22 @@ export interface ExternalConnectionInfo {
   // + inbound. Optional for backward compat with platforms that
   // haven't shipped PR #2413 yet.
   universal_mcp_snippet?: string;
+  // Hermes channel snippet — for operators whose external agent IS a
+  // hermes-agent session. Routes A2A traffic into the hermes gateway
+  // via the molecule-channel plugin (Molecule-AI/hermes-channel-molecule).
+  // Long-poll based (no tunnel) — same UX shape as the Claude Code
+  // channel tab. Gives hermes true push parity. Optional for backward
+  // compat with platforms that haven't shipped this PR yet.
+  hermes_channel_snippet?: string;
+  // Codex MCP config snippet — wires the molecule MCP server into
+  // ~/.codex/config.toml so codex agents can call platform tools.
+  // Outbound-tools-only today (codex's MCP client doesn't route
+  // notifications/*); push parity would need a separate bridge daemon.
+  codex_snippet?: string;
+  // OpenClaw MCP config snippet — wires molecule MCP + starts the
+  // openclaw gateway on loopback. Outbound-tools-only today; push
+  // parity on an external openclaw needs a sessions.steer bridge.
+  openclaw_snippet?: string;
 }
 
 interface Props {
@@ -47,13 +63,21 @@ interface Props {
   onClose: () => void;
 }
 
-type Tab = "python" | "curl" | "claude" | "mcp" | "fields";
+type Tab = "python" | "curl" | "claude" | "mcp" | "hermes" | "codex" | "openclaw" | "fields";
 
 export function ExternalConnectModal({ info, onClose }: Props) {
-  // Default to Claude Code when the platform offers it — that's the
-  // newest + simplest path (no tunnel needed). Falls back to Python
-  // for older platform builds that don't ship the snippet.
-  const initialTab: Tab = info?.claude_code_channel_snippet ? "claude" : "python";
+  // Default to Universal MCP when the platform offers it — runtime-
+  // agnostic outbound tool path that works for any MCP-aware runtime
+  // (Claude Code, hermes, codex, etc.) and lets operators inspect the
+  // primitives before picking a runtime-specific tab. Python SDK is
+  // the fallback for platforms predating the universal_mcp_snippet
+  // field. Pre-2026-05-03 the default was "claude" (Claude Code first)
+  // but operators using non-Claude runtimes opened to a tab they had
+  // to skip past — universal MCP works for everyone as a starting
+  // point and the runtime-specific tabs are still one click away.
+  const initialTab: Tab = info?.universal_mcp_snippet
+    ? "mcp"
+    : "python";
   const [tab, setTab] = useState<Tab>(initialTab);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
@@ -108,6 +132,24 @@ export function ExternalConnectModal({ info, onClose }: Props) {
     'MOLECULE_WORKSPACE_TOKEN="<paste from create response>"',
     `MOLECULE_WORKSPACE_TOKEN="${info.auth_token}"`,
   );
+  // Hermes channel snippet uses MOLECULE_WORKSPACE_TOKEN (same env-var
+  // name as Universal MCP). Stamp the auth_token in so the operator's
+  // copy-paste is fully ready-to-run.
+  const filledHermes = info.hermes_channel_snippet?.replace(
+    'MOLECULE_WORKSPACE_TOKEN="<paste from create response>"',
+    `MOLECULE_WORKSPACE_TOKEN="${info.auth_token}"`,
+  );
+  // Codex + OpenClaw snippets carry the placeholder inside the
+  // generated config block (TOML / JSON respectively). Stamp the
+  // token in so the copy-paste is one less manual edit.
+  const filledCodex = info.codex_snippet?.replace(
+    'MOLECULE_WORKSPACE_TOKEN = "<paste from create response>"',
+    `MOLECULE_WORKSPACE_TOKEN = "${info.auth_token}"`,
+  );
+  const filledOpenClaw = info.openclaw_snippet?.replace(
+    'WORKSPACE_TOKEN="<paste from create response>"',
+    `WORKSPACE_TOKEN="${info.auth_token}"`,
+  );
 
   return (
     <Dialog.Root open onOpenChange={(o) => !o && onClose()}>
@@ -135,10 +177,18 @@ export function ExternalConnectModal({ info, onClose }: Props) {
               // SDK second (full register+heartbeat+inbound); Universal
               // MCP third (any MCP-aware runtime, outbound-only); curl
               // for one-shot register; Fields for raw values.
+              // Tab order: Universal MCP first (default, runtime-
+              // agnostic primitives), then runtime-specific channel/
+              // SDK tabs, then curl + Fields. Each runtime tab only
+              // appears when the platform supplies the snippet — no
+              // dead "tab missing snippet" UX.
               const tabs: Tab[] = [];
-              if (filledChannel) tabs.push("claude");
-              tabs.push("python");
               if (filledUniversalMcp) tabs.push("mcp");
+              tabs.push("python");
+              if (filledChannel) tabs.push("claude");
+              if (filledHermes) tabs.push("hermes");
+              if (filledCodex) tabs.push("codex");
+              if (filledOpenClaw) tabs.push("openclaw");
               tabs.push("curl", "fields");
               return tabs;
             })().map((t) => (
@@ -156,6 +206,12 @@ export function ExternalConnectModal({ info, onClose }: Props) {
               >
                 {t === "claude"
                   ? "Claude Code"
+                  : t === "hermes"
+                  ? "Hermes"
+                  : t === "codex"
+                  ? "Codex"
+                  : t === "openclaw"
+                  ? "OpenClaw"
                   : t === "python"
                   ? "Python SDK"
                   : t === "mcp"
@@ -203,6 +259,33 @@ export function ExternalConnectModal({ info, onClose }: Props) {
                 copyKey="mcp"
                 copied={copiedKey === "mcp"}
                 onCopy={() => copy(filledUniversalMcp, "mcp")}
+              />
+            )}
+            {tab === "hermes" && filledHermes && (
+              <SnippetBlock
+                value={filledHermes}
+                label="Hermes channel — bridges this workspace's A2A traffic into your hermes-agent session as platform messages (push parity with Claude Code). Long-poll based; no tunnel needed."
+                copyKey="hermes"
+                copied={copiedKey === "hermes"}
+                onCopy={() => copy(filledHermes, "hermes")}
+              />
+            )}
+            {tab === "codex" && filledCodex && (
+              <SnippetBlock
+                value={filledCodex}
+                label="Codex MCP config — wires the molecule MCP server into ~/.codex/config.toml. Outbound tools today; inbound A2A push needs the Python SDK tab paired in (codex's MCP runtime doesn't route arbitrary notifications/* yet)."
+                copyKey="codex"
+                copied={copiedKey === "codex"}
+                onCopy={() => copy(filledCodex, "codex")}
+              />
+            )}
+            {tab === "openclaw" && filledOpenClaw && (
+              <SnippetBlock
+                value={filledOpenClaw}
+                label="OpenClaw MCP config — wires the molecule MCP server via openclaw mcp set + starts the gateway on loopback. Outbound tools today; inbound A2A push on an external openclaw needs the Python SDK tab paired in (a sessions.steer bridge daemon is future work)."
+                copyKey="openclaw"
+                copied={copiedKey === "openclaw"}
+                onCopy={() => copy(filledOpenClaw, "openclaw")}
               />
             )}
             {tab === "fields" && (
