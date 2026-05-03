@@ -55,7 +55,7 @@ jobs:
     outputs:
       run: ${{ steps.decide.outputs.run }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         id: filter
         with:
@@ -93,14 +93,14 @@ jobs:
           echo "::notice::Harness Replays no-op pass (paths filter excluded this commit)."
 
       - if: needs.detect-changes.outputs.run == 'true'
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Checkout sibling plugin repo
         # Dockerfile.tenant copies molecule-ai-plugin-github-app-auth/
         # at the build-context root (see workspace-server/Dockerfile.tenant
         # line 19). PLUGIN_REPO_PAT pattern matches publish-workspace-server-image.yml.
         if: needs.detect-changes.outputs.run == 'true'
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: Molecule-AI/molecule-ai-plugin-github-app-auth
           path: molecule-ai-plugin-github-app-auth

@@ -32,7 +32,7 @@ jobs:
       python: ${{ steps.check.outputs.python }}
       scripts: ${{ steps.check.outputs.scripts }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
       - id: check
@@ -78,7 +78,7 @@ jobs:
         working-directory: .
         run: echo "No platform/** changes — skipping real build steps; this job always runs to satisfy the required-check name on branch protection."
       - if: needs.changes.outputs.platform == 'true'
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - if: needs.changes.outputs.platform == 'true'
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
@@ -213,7 +213,7 @@ jobs:
         working-directory: .
         run: echo "No canvas/** changes — skipping real build steps; this job always runs to satisfy the required-check name on branch protection."
       - if: needs.changes.outputs.canvas == 'true'
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - if: needs.changes.outputs.canvas == 'true'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
@@ -260,7 +260,7 @@ jobs:
       - if: needs.changes.outputs.scripts != 'true'
         run: echo "No tests/e2e/ or infra/scripts/ changes — skipping real shellcheck; this job always runs to satisfy the required-check name on branch protection."
       - if: needs.changes.outputs.scripts == 'true'
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - if: needs.changes.outputs.scripts == 'true'
         name: Run shellcheck on tests/e2e/*.sh and infra/scripts/*.sh
         # shellcheck is pre-installed on ubuntu-latest runners (via apt).
@@ -332,7 +332,7 @@ jobs:
         working-directory: .
         run: echo "No workspace/** changes — skipping real lint+test; this job always runs to satisfy the required-check name on branch protection."
       - if: needs.changes.outputs.python == 'true'
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - if: needs.changes.outputs.python == 'true'
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
