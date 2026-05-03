@@ -65,7 +65,7 @@ export function EventsTab({ workspaceId }: Props) {
         <span className="text-xs text-ink-mid">{events.length} events</span>
         <button
           onClick={loadEvents}
-          className="px-2 py-1 bg-surface-card hover:bg-zinc-600 text-[10px] rounded text-ink-mid"
+          className="px-2 py-1 bg-surface-card hover:bg-surface-card text-[10px] rounded text-ink-mid"
         >
           Refresh
         </button>

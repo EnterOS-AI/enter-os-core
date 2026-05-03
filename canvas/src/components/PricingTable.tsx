@@ -130,7 +130,7 @@ function PlanCard({
         disabled={loading}
         className={`mt-6 rounded-lg px-4 py-3 text-sm font-medium ${
           plan.highlighted
-            ? "bg-accent-strong text-ink hover:bg-accent disabled:bg-blue-900"
+            ? "bg-accent-strong text-white hover:bg-accent disabled:bg-blue-900"
             : "border border-line bg-surface-sunken text-ink hover:bg-surface-card disabled:opacity-50"
         }`}
       >

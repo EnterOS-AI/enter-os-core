@@ -165,7 +165,7 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
       <Handle
         type="target"
         position={Position.Top}
-        className="!w-2.5 !h-1 !rounded-full !bg-zinc-600/80 !border-0 !-top-0.5 hover:!bg-blue-400 hover:!h-1.5 transition-all"
+        className="!w-2.5 !h-1 !rounded-full !bg-surface-card/80 !border-0 !-top-0.5 hover:!bg-blue-400 hover:!h-1.5 transition-all"
       />
 
       <div className="relative px-3.5 py-2.5">
@@ -318,7 +318,7 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
       <Handle
         type="source"
         position={Position.Bottom}
-        className="!w-2.5 !h-1 !rounded-full !bg-zinc-600/80 !border-0 !-bottom-0.5 hover:!bg-blue-400 hover:!h-1.5 transition-all"
+        className="!w-2.5 !h-1 !rounded-full !bg-surface-card/80 !border-0 !-bottom-0.5 hover:!bg-blue-400 hover:!h-1.5 transition-all"
       />
     </div>
     </>

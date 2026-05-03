@@ -73,14 +73,14 @@ export function ApprovalBanner() {
                 <button
                   type="button"
                   onClick={() => handleDecide(approval, "approved")}
-                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-xs rounded-lg text-ink font-medium transition-colors"
+                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-xs rounded-lg text-white font-medium transition-colors"
                 >
                   Approve
                 </button>
                 <button
                   type="button"
                   onClick={() => handleDecide(approval, "denied")}
-                  className="px-3 py-1.5 bg-surface-card hover:bg-zinc-600 text-xs rounded-lg text-ink-mid transition-colors"
+                  className="px-3 py-1.5 bg-surface-card hover:bg-surface-card text-xs rounded-lg text-ink-mid transition-colors"
                 >
                   Deny
                 </button>

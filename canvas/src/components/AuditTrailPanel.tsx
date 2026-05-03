@@ -174,7 +174,7 @@ export function AuditTrailPanel({ workspaceId }: Props) {
         {entries.length === 0 ? (
           /* Empty state */
           <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
-            <span className="text-4xl text-zinc-700" aria-hidden="true">⊟</span>
+            <span className="text-4xl text-ink-soft" aria-hidden="true">⊟</span>
             <p className="text-sm font-medium text-ink-mid">No audit events yet</p>
             <p className="text-[11px] text-ink-soft max-w-[200px] leading-relaxed">
               Delegation, decision, gate, and human-in-the-loop events will appear here.

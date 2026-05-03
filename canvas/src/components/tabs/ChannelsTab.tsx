@@ -366,7 +366,7 @@ export function ChannelsTab({ workspaceId }: Props) {
           )}
           <button
             onClick={handleCreate}
-            className="w-full text-xs py-1.5 rounded bg-accent-strong hover:bg-accent text-ink transition"
+            className="w-full text-xs py-1.5 rounded bg-accent-strong hover:bg-accent text-white transition"
           >
             Connect Channel
           </button>
@@ -392,7 +392,7 @@ export function ChannelsTab({ workspaceId }: Props) {
             <div className="flex items-center gap-2">
               <span
                 className={`w-2 h-2 rounded-full ${
-                  ch.enabled ? "bg-emerald-500" : "bg-zinc-600"
+                  ch.enabled ? "bg-emerald-500" : "bg-surface-card"
                 }`}
               />
               <span className="text-xs font-medium text-ink">

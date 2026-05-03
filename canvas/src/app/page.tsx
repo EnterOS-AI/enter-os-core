@@ -87,7 +87,7 @@ export default function Home() {
               setHydrationError(null);
               window.location.reload();
             }}
-            className="px-4 py-2 bg-accent-strong hover:bg-accent text-ink rounded-md text-sm"
+            className="px-4 py-2 bg-accent-strong hover:bg-accent text-white rounded-md text-sm"
           >
             Retry
           </button>
@@ -129,7 +129,7 @@ brew services start redis`}</pre>
       </p>
       <button
         onClick={() => window.location.reload()}
-        className="px-4 py-2 bg-accent-strong hover:bg-accent text-ink rounded-md text-sm mt-2"
+        className="px-4 py-2 bg-accent-strong hover:bg-accent text-white rounded-md text-sm mt-2"
       >
         Reload
       </button>

@@ -901,7 +901,7 @@ function MyChatPanel({ workspaceId, data }: Props) {
           <button
             onClick={sendMessage}
             disabled={(!input.trim() && pendingFiles.length === 0) || !agentReachable || sending || uploading}
-            className="px-4 py-2 bg-accent-strong hover:bg-accent text-xs font-medium rounded-lg text-ink disabled:opacity-30 transition-colors shrink-0"
+            className="px-4 py-2 bg-accent-strong hover:bg-accent text-xs font-medium rounded-lg text-white disabled:opacity-30 transition-colors shrink-0"
           >
             {uploading ? "Uploading…" : "Send"}
           </button>

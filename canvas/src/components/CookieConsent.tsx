@@ -137,7 +137,7 @@ export function CookieConsent() {
           <button
             type="button"
             onClick={() => decide("accepted")}
-            className="rounded border border-accent bg-accent-strong px-4 py-2 text-sm font-medium text-ink hover:bg-accent"
+            className="rounded border border-accent bg-accent-strong px-4 py-2 text-sm font-medium text-white hover:bg-accent"
           >
             Accept all
           </button>

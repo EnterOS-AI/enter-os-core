@@ -181,7 +181,7 @@ export function OnboardingWizard() {
           <button
             type="button"
             onClick={handleAction}
-            className="flex-1 px-3 py-1.5 bg-accent-strong/90 hover:bg-accent rounded-lg text-[11px] font-medium text-ink transition-colors"
+            className="flex-1 px-3 py-1.5 bg-accent-strong/90 hover:bg-accent rounded-lg text-[11px] font-medium text-white transition-colors"
           >
             {step === "welcome"
               ? "Create Workspace"

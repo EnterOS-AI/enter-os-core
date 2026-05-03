@@ -65,11 +65,11 @@ function AgentCardSection({ workspaceId }: { workspaceId: string }) {
           {error && <div className="px-2 py-1 bg-red-900/30 border border-red-800 rounded text-[10px] text-bad">{error}</div>}
           <div className="flex gap-2">
             <button type="button" onClick={handleSave} disabled={saving}
-              className="px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-ink disabled:opacity-50">
+              className="px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-white disabled:opacity-50">
               {saving ? "Saving..." : "Save"}
             </button>
             <button type="button" onClick={() => setEditing(false)}
-              className="px-2 py-1 bg-surface-card hover:bg-zinc-600 text-[10px] rounded text-ink-mid">Cancel</button>
+              className="px-2 py-1 bg-surface-card hover:bg-surface-card text-[10px] rounded text-ink-mid">Cancel</button>
           </div>
         </div>
       ) : (
@@ -955,7 +955,7 @@ export function ConfigTab({ workspaceId }: Props) {
           type="button"
           onClick={() => handleSave(true)}
           disabled={!isDirty || saving}
-          className="px-3 py-1.5 bg-accent-strong hover:bg-accent text-xs rounded text-ink disabled:opacity-30 transition-colors"
+          className="px-3 py-1.5 bg-accent-strong hover:bg-accent text-xs rounded text-white disabled:opacity-30 transition-colors"
         >
           {saving ? "Restarting..." : "Save & Restart"}
         </button>
@@ -963,14 +963,14 @@ export function ConfigTab({ workspaceId }: Props) {
           type="button"
           onClick={() => handleSave(false)}
           disabled={!isDirty || saving}
-          className="px-3 py-1.5 bg-surface-card hover:bg-zinc-600 text-xs rounded text-ink-mid disabled:opacity-30 transition-colors"
+          className="px-3 py-1.5 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid disabled:opacity-30 transition-colors"
         >
           Save
         </button>
         <button
           type="button"
           onClick={loadConfig}
-          className="px-3 py-1.5 bg-surface-card hover:bg-zinc-600 text-xs rounded text-ink-mid ml-auto"
+          className="px-3 py-1.5 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid ml-auto"
         >
           Reload
         </button>

@@ -167,7 +167,7 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
               className={[
                 "px-3 py-1 text-[11px] rounded transition-colors",
                 activeScope === scope
-                  ? "bg-accent-strong text-ink"
+                  ? "bg-accent-strong text-white"
                   : "bg-surface-card text-ink-mid hover:bg-surface-card hover:text-ink",
               ].join(" ")}
             >
@@ -269,7 +269,7 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
         ) : entries.length === 0 ? (
           debouncedQuery ? (
             <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
-              <span className="text-4xl text-zinc-700" aria-hidden="true">◇</span>
+              <span className="text-4xl text-ink-soft" aria-hidden="true">◇</span>
               <p className="text-sm font-medium text-ink-mid">
                 No memories match your search
               </p>
@@ -290,7 +290,7 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
             </div>
           ) : (
             <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
-              <span className="text-4xl text-zinc-700" aria-hidden="true">◇</span>
+              <span className="text-4xl text-ink-soft" aria-hidden="true">◇</span>
               <p className="text-sm font-medium text-ink-mid">No {activeScope} memories</p>
               <p className="text-[11px] text-ink-soft max-w-[200px] leading-relaxed">
                 {activeScope === "LOCAL"

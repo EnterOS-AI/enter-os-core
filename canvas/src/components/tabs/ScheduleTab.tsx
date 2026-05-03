@@ -271,7 +271,7 @@ export function ScheduleTab({ workspaceId }: Props) {
             <button
               onClick={handleSubmit}
               disabled={!formCron || !formPrompt}
-              className="text-[11px] px-3 py-1 bg-accent-strong text-ink rounded hover:bg-accent disabled:opacity-40 transition-colors"
+              className="text-[11px] px-3 py-1 bg-accent-strong text-white rounded hover:bg-accent disabled:opacity-40 transition-colors"
             >
               {editId ? "Update" : "Create"}
             </button>
@@ -320,7 +320,7 @@ export function ScheduleTab({ workspaceId }: Props) {
                           ? "bg-red-400"
                           : sched.last_status === "ok"
                           ? "bg-emerald-400"
-                          : "bg-zinc-600"
+                          : "bg-surface-card"
                       }`}
                       title={sched.enabled ? "Click to disable" : "Click to enable"}
                     />

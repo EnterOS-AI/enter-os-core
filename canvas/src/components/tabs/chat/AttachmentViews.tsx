@@ -58,7 +58,7 @@ export function AttachmentChip({
   const toneClasses =
     tone === "user"
       ? "border-blue-400/30 bg-accent-strong/20 hover:bg-accent-strong/30 text-blue-100"
-      : "border-line/50 bg-surface-card/40 hover:bg-zinc-600/50 text-ink";
+      : "border-line/50 bg-surface-card/40 hover:bg-surface-card/50 text-ink";
   return (
     <button
       onClick={() => onDownload(attachment)}

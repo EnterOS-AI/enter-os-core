@@ -111,7 +111,7 @@ export function ActivityTab({ workspaceId }: Props) {
             </button>
             <button
               onClick={loadActivities}
-              className="px-2 py-1 bg-surface-card hover:bg-zinc-600 text-[11px] rounded text-ink-mid"
+              className="px-2 py-1 bg-surface-card hover:bg-surface-card text-[11px] rounded text-ink-mid"
             >
               Refresh
             </button>
@@ -137,7 +137,7 @@ export function ActivityTab({ workspaceId }: Props) {
         {!loading && !error && activities.length === 0 && (
           <div className="text-center py-8">
             <div className="text-ink-soft text-xs">No activity recorded yet</div>
-            <div className="text-zinc-700 text-[9px] mt-1">
+            <div className="text-ink-soft text-[9px] mt-1">
               Activity logs appear when agents communicate or perform tasks
             </div>
           </div>

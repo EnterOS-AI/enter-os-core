@@ -155,7 +155,7 @@ export function DeleteCascadeConfirmDialog({
             disabled={!checked}
             className={`px-3.5 py-1.5 text-[13px] rounded-lg transition-colors
               ${checked
-                ? "bg-red-600 hover:bg-red-500 text-ink cursor-pointer"
+                ? "bg-red-600 hover:bg-red-500 text-white cursor-pointer"
                 : "bg-red-900/30 text-bad/40 cursor-not-allowed"
               }`}
           >

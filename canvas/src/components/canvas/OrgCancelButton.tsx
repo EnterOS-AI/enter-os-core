@@ -130,7 +130,7 @@ export function OrgCancelButton({ rootId, rootName, workspaceCount }: Props) {
           type="button"
           onClick={() => setConfirming(false)}
           disabled={submitting}
-          className="px-2 py-0.5 rounded bg-surface-card/80 hover:bg-zinc-600 text-[10px] text-ink"
+          className="px-2 py-0.5 rounded bg-surface-card/80 hover:bg-surface-card text-[10px] text-ink"
         >
           No
         </button>

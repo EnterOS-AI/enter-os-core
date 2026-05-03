@@ -283,7 +283,7 @@ function OrgCTA({ org }: { org: Org }) {
     return (
       <a
         href={href}
-        className="rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-ink hover:bg-emerald-500"
+        className="rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
       >
         Open
       </a>
@@ -293,7 +293,7 @@ function OrgCTA({ org }: { org: Org }) {
     return (
       <a
         href={`/pricing?org=${encodeURIComponent(org.slug)}`}
-        className="rounded bg-amber-600 px-4 py-2 text-sm font-medium text-ink hover:bg-amber-500"
+        className="rounded bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-500"
       >
         Complete payment
       </a>
@@ -303,7 +303,7 @@ function OrgCTA({ org }: { org: Org }) {
     return (
       <a
         href="mailto:support@moleculesai.app"
-        className="rounded bg-surface-card px-4 py-2 text-sm font-medium text-ink hover:bg-zinc-600"
+        className="rounded bg-surface-card px-4 py-2 text-sm font-medium text-ink hover:bg-surface-card"
       >
         Contact support
       </a>
@@ -395,7 +395,7 @@ function CreateOrgForm({ onCreated }: { onCreated: (slug: string) => void }) {
       <button
         type="submit"
         disabled={submitting}
-        className="rounded bg-accent-strong px-4 py-2 text-sm font-medium text-ink hover:bg-accent disabled:opacity-50"
+        className="rounded bg-accent-strong px-4 py-2 text-sm font-medium text-white hover:bg-accent disabled:opacity-50"
       >
         {submitting ? "Creating…" : "Create organization"}
       </button>

@@ -154,7 +154,7 @@ export function Toolbar() {
         {counts.failed > 0 && (
           <StatusPill color={statusDotClass("failed")} count={counts.failed} label="failed" />
         )}
-        <span className="text-zinc-700" aria-hidden="true">·</span>
+        <span className="text-ink-soft" aria-hidden="true">·</span>
         <span className="text-[10px] text-ink-soft whitespace-nowrap">
           {counts.roots} workspace{counts.roots !== 1 ? "s" : ""}
           {counts.children > 0 && <span className="text-ink-soft"> + {counts.children} sub</span>}

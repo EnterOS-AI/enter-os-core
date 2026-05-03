@@ -137,14 +137,14 @@ export function MemoryTab({ workspaceId }: Props) {
             <button
               type="button"
               onClick={() => setShowAwareness((prev) => !prev)}
-              className="shrink-0 px-2 py-1 bg-surface-card hover:bg-zinc-600 text-[10px] rounded text-ink"
+              className="shrink-0 px-2 py-1 bg-surface-card hover:bg-surface-card text-[10px] rounded text-ink"
             >
               {showAwareness ? "Collapse" : "Expand"}
             </button>
             <button
               type="button"
               onClick={openAwareness}
-              className="shrink-0 px-2 py-1 bg-surface-card hover:bg-zinc-600 text-[10px] rounded text-ink"
+              className="shrink-0 px-2 py-1 bg-surface-card hover:bg-surface-card text-[10px] rounded text-ink"
             >
               Open
             </button>
@@ -177,7 +177,7 @@ export function MemoryTab({ workspaceId }: Props) {
             <button
               type="button"
               onClick={() => setShowAwareness(true)}
-              className="shrink-0 px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-ink"
+              className="shrink-0 px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-white"
             >
               Expand
             </button>
@@ -212,21 +212,21 @@ export function MemoryTab({ workspaceId }: Props) {
             <button
               type="button"
               onClick={() => setShowAdvanced((prev) => !prev)}
-              className="px-2 py-1 bg-surface-card hover:bg-zinc-600 text-[10px] rounded text-ink-mid"
+              className="px-2 py-1 bg-surface-card hover:bg-surface-card text-[10px] rounded text-ink-mid"
             >
               {showAdvanced ? "Hide Advanced" : "Advanced"}
             </button>
             <button
               type="button"
               onClick={loadMemory}
-              className="px-2 py-1 bg-surface-card hover:bg-zinc-600 text-[10px] rounded text-ink-mid"
+              className="px-2 py-1 bg-surface-card hover:bg-surface-card text-[10px] rounded text-ink-mid"
             >
               Refresh
             </button>
             <button
               type="button"
               onClick={() => { setShowAdd(!showAdd); if (!showAdd) setShowAdvanced(true); }}
-              className="px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-ink"
+              className="px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-white"
             >
               + Add
             </button>
@@ -262,7 +262,7 @@ export function MemoryTab({ workspaceId }: Props) {
               <button
                 type="button"
                 onClick={handleAdd}
-                className="px-3 py-1 bg-accent-strong hover:bg-accent text-xs rounded text-ink"
+                className="px-3 py-1 bg-accent-strong hover:bg-accent text-xs rounded text-white"
               >
                 Save
               </button>
@@ -272,7 +272,7 @@ export function MemoryTab({ workspaceId }: Props) {
                   setShowAdd(false);
                   setError(null);
                 }}
-                className="px-3 py-1 bg-surface-card hover:bg-zinc-600 text-xs rounded text-ink-mid"
+                className="px-3 py-1 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid"
               >
                 Cancel
               </button>
@@ -340,7 +340,7 @@ export function MemoryTab({ workspaceId }: Props) {
             <button
               type="button"
               onClick={() => setShowAdvanced(true)}
-              className="shrink-0 px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-ink"
+              className="shrink-0 px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-white"
             >
               Show
             </button>

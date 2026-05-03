@@ -476,7 +476,7 @@ export function TemplatePalette() {
         onClick={() => setOpen(!open)}
         className={`fixed top-4 left-4 z-40 w-9 h-9 flex items-center justify-center rounded-lg transition-colors ${
           open
-            ? "bg-accent-strong text-ink"
+            ? "bg-accent-strong text-white"
             : "bg-surface-sunken/90 border border-line/50 text-ink-mid hover:text-ink hover:border-line"
         }`}
         title="Template Palette"

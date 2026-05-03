@@ -93,10 +93,10 @@ export function ConfirmDialog({
 
   const confirmColors =
     confirmVariant === "danger"
-      ? "bg-red-600 hover:bg-red-500 text-ink"
+      ? "bg-red-600 hover:bg-red-500 text-white"
       : confirmVariant === "warning"
-        ? "bg-amber-600 hover:bg-amber-500 text-ink"
-        : "bg-accent-strong hover:bg-accent text-ink";
+        ? "bg-amber-600 hover:bg-amber-500 text-white"
+        : "bg-accent-strong hover:bg-accent text-white";
 
   // Render via Portal so the fixed-position dialog escapes any containing block
   // (e.g. parents with transform, filter, will-change that break position:fixed).

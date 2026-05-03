@@ -169,9 +169,9 @@ export function EmptyState() {
         <div className="mt-5 pt-4 border-t border-line/50">
           <div className="flex items-center justify-center gap-6 text-[10px] text-ink-mid">
             <span>Drag to nest workspaces into teams</span>
-            <span className="text-zinc-700">|</span>
+            <span className="text-ink-soft">|</span>
             <span>Right-click for actions</span>
-            <span className="text-zinc-700">|</span>
+            <span className="text-ink-soft">|</span>
             <span>Press <kbd className="px-1 py-0.5 bg-surface-card rounded text-ink-soft font-mono">&#8984;K</kbd> to search</span>
           </div>
         </div>

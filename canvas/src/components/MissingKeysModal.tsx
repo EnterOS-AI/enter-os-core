@@ -451,7 +451,7 @@ function ProviderPickerModal({
                     <button
                       onClick={() => handleSaveKey(index)}
                       disabled={!entry.value.trim() || entry.saving}
-                      className="px-3 py-1.5 bg-accent-strong hover:bg-accent text-[11px] rounded text-ink disabled:opacity-30 transition-colors shrink-0"
+                      className="px-3 py-1.5 bg-accent-strong hover:bg-accent text-[11px] rounded text-white disabled:opacity-30 transition-colors shrink-0"
                     >
                       {entry.saving ? "..." : "Save"}
                     </button>
@@ -492,7 +492,7 @@ function ProviderPickerModal({
                 !selectorValue.providerId ||
                 (showModelInput && model.trim() === "")
               }
-              className="px-3.5 py-1.5 text-[12px] bg-accent-strong hover:bg-accent text-ink rounded-lg transition-colors disabled:opacity-40"
+              className="px-3.5 py-1.5 text-[12px] bg-accent-strong hover:bg-accent text-white rounded-lg transition-colors disabled:opacity-40"
             >
               {allSaved ? "Deploy" : entries.length > 1 ? "Add Keys" : "Add Key"}
             </button>
@@ -706,7 +706,7 @@ function AllKeysModal({
                     type="button"
                     onClick={() => handleSaveKey(index)}
                     disabled={!entry.value.trim() || entry.saving}
-                    className="px-3 py-1.5 bg-accent-strong hover:bg-accent text-[11px] rounded text-ink disabled:opacity-30 transition-colors shrink-0"
+                    className="px-3 py-1.5 bg-accent-strong hover:bg-accent text-[11px] rounded text-white disabled:opacity-30 transition-colors shrink-0"
                   >
                     {entry.saving ? "..." : "Save"}
                   </button>
@@ -748,7 +748,7 @@ function AllKeysModal({
               type="button"
               onClick={handleAddKeysAndDeploy}
               disabled={!allSaved || anySaving}
-              className="px-3.5 py-1.5 text-[12px] bg-accent-strong hover:bg-accent text-ink rounded-lg transition-colors disabled:opacity-40"
+              className="px-3.5 py-1.5 text-[12px] bg-accent-strong hover:bg-accent text-white rounded-lg transition-colors disabled:opacity-40"
             >
               {anySaving ? "Saving..." : allSaved ? "Deploy" : "Add Keys"}
             </button>

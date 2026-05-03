@@ -310,7 +310,7 @@ export function CreateWorkspaceButton() {
   return (
     <Dialog.Root open={open} onOpenChange={setOpen}>
       <Dialog.Trigger asChild>
-        <button type="button" className="fixed bottom-6 right-6 z-40 px-5 py-2.5 bg-accent-strong hover:bg-accent active:bg-accent-strong text-sm font-medium rounded-xl text-ink shadow-lg shadow-blue-600/20 hover:shadow-xl hover:shadow-blue-500/30 transition-all duration-200 flex items-center gap-2">
+        <button type="button" className="fixed bottom-6 right-6 z-40 px-5 py-2.5 bg-accent-strong hover:bg-accent active:bg-accent-strong text-sm font-medium rounded-xl text-white shadow-lg shadow-blue-600/20 hover:shadow-xl hover:shadow-blue-500/30 transition-all duration-200 flex items-center gap-2">
           <svg
             width="14"
             height="14"
@@ -560,7 +560,7 @@ export function CreateWorkspaceButton() {
               type="button"
               onClick={handleCreate}
               disabled={creating}
-              className="px-5 py-2 bg-accent-strong hover:bg-accent active:bg-accent-strong text-sm rounded-lg text-ink disabled:opacity-50 transition-colors"
+              className="px-5 py-2 bg-accent-strong hover:bg-accent active:bg-accent-strong text-sm rounded-lg text-white disabled:opacity-50 transition-colors"
             >
               {creating ? "Creating..." : "Create"}
             </button>

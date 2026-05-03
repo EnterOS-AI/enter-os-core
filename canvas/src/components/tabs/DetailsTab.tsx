@@ -166,7 +166,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
                 type="button"
                 onClick={handleSave}
                 disabled={saving}
-                className="px-3 py-1 bg-accent-strong hover:bg-accent text-xs rounded text-ink disabled:opacity-50"
+                className="px-3 py-1 bg-accent-strong hover:bg-accent text-xs rounded text-white disabled:opacity-50"
               >
                 {saving ? "Saving..." : "Save"}
               </button>
@@ -179,7 +179,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
                   setRole(data.role || "");
                   setTier(data.tier);
                 }}
-                className="px-3 py-1 bg-surface-card hover:bg-zinc-600 text-xs rounded text-ink-mid"
+                className="px-3 py-1 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid"
               >
                 Cancel
               </button>
@@ -208,7 +208,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
                   type="button"
                   onClick={handleRestart}
                   disabled={restarting}
-                  className="px-3 py-1 bg-green-700 hover:bg-green-600 text-xs rounded text-ink disabled:opacity-50"
+                  className="px-3 py-1 bg-green-700 hover:bg-green-600 text-xs rounded text-white disabled:opacity-50"
                 >
                   {restarting ? "Restarting..." : data.status === "failed" ? "Retry" : "Restart"}
                 </button>
@@ -217,7 +217,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
             <button
               type="button"
               onClick={() => setEditing(true)}
-              className="mt-2 px-3 py-1 bg-surface-card hover:bg-zinc-600 text-xs rounded text-ink-mid"
+              className="mt-2 px-3 py-1 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid"
             >
               Edit
             </button>
@@ -322,7 +322,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
               <button
                 type="button"
                 onClick={handleDelete}
-                className="px-3 py-1 bg-red-600 hover:bg-red-500 text-xs rounded text-ink"
+                className="px-3 py-1 bg-red-600 hover:bg-red-500 text-xs rounded text-white"
               >
                 Confirm Delete
               </button>
@@ -334,7 +334,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
                   // Return focus to the trigger so keyboard users aren't stranded
                   deleteButtonRef.current?.focus();
                 }}
-                className="px-3 py-1 bg-surface-card hover:bg-zinc-600 text-xs rounded text-ink-mid"
+                className="px-3 py-1 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid"
               >
                 Cancel
               </button>

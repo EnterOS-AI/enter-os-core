@@ -161,7 +161,7 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
                                 ? "bg-cyan-500"
                                 : isReceive
                                 ? "bg-accent"
-                                : "bg-zinc-600"
+                                : "bg-surface-card"
                             }`}
                           />
                           <div className="w-px flex-1 bg-surface-card min-h-[8px]" />

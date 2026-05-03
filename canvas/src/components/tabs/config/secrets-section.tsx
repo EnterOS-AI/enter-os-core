@@ -131,7 +131,7 @@ function SecretRow({ label, secretKey, isSet, scope, globalMode, onSave, onDelet
           <button type="button"
             onClick={() => { onSave(value); setEditing(false); setValue(""); }}
             disabled={!value}
-            className="px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-ink disabled:opacity-30"
+            className="px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-white disabled:opacity-30"
           >Save</button>
         </div>
       )}
@@ -184,7 +184,7 @@ function CustomSecretRow({ secretKey, scope, globalMode, onSave, onDelete }: {
           <button type="button"
             onClick={() => { onSave(value); setEditing(false); setValue(""); }}
             disabled={!value}
-            className="px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-ink disabled:opacity-30"
+            className="px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-white disabled:opacity-30"
           >Save</button>
         </div>
       )}
@@ -298,7 +298,7 @@ export function SecretsSection({ workspaceId, requiredEnv }: { workspaceId: stri
             <button
               onClick={() => setGlobalMode(false)}
               className={`text-[10px] px-2 py-0.5 rounded transition-colors ${
-                !globalMode ? "bg-accent-strong/20 text-accent border border-accent/30" : "text-ink-soft hover:text-ink-mid"
+                !globalMode ? "bg-accent-strong/20 text-accent border border-accent/30" : "text-white-soft hover:text-white-mid"
               }`}
             >
               This Workspace
@@ -306,7 +306,7 @@ export function SecretsSection({ workspaceId, requiredEnv }: { workspaceId: stri
             <button
               onClick={() => setGlobalMode(true)}
               className={`text-[10px] px-2 py-0.5 rounded transition-colors ${
-                globalMode ? "bg-amber-600/20 text-warm border border-amber-500/30" : "text-ink-soft hover:text-ink-mid"
+                globalMode ? "bg-amber-600/20 text-warm border border-amber-500/30" : "text-white-soft hover:text-white-mid"
               }`}
             >
               Global (All Workspaces)
@@ -356,11 +356,11 @@ export function SecretsSection({ workspaceId, requiredEnv }: { workspaceId: stri
                 className="w-full bg-surface-sunken border border-line rounded px-2 py-1 text-[10px] text-ink focus:outline-none focus:border-accent" />
               <div className="flex gap-2">
                 <button type="button" onClick={() => { if (newKey && newValue) handleSave(newKey, newValue); }} disabled={!newKey || !newValue}
-                  className="px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-ink disabled:opacity-30">
+                  className="px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-white disabled:opacity-30">
                   Save{globalMode ? " (Global)" : ""}
                 </button>
                 <button type="button" onClick={() => { setShowAdd(false); setNewKey(""); setNewValue(""); }}
-                  className="px-2 py-1 bg-surface-card hover:bg-zinc-600 text-[10px] rounded text-ink-mid">Cancel</button>
+                  className="px-2 py-1 bg-surface-card hover:bg-surface-card text-[10px] rounded text-ink-mid">Cancel</button>
               </div>
             </div>
           ) : (

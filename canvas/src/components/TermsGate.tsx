@@ -105,7 +105,7 @@ export function TermsGate({ children }: { children: React.ReactNode }) {
                 type="button"
                 onClick={accept}
                 disabled={submitting}
-                className="rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-ink hover:bg-emerald-500 disabled:opacity-50"
+                className="rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
               >
                 {submitting ? "Saving…" : "I agree"}
               </button>

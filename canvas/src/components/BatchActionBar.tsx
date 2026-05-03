@@ -83,7 +83,7 @@ export function BatchActionBar() {
       className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] flex items-center gap-3 px-4 py-2.5 rounded-2xl bg-surface-sunken/95 border border-line/70 shadow-2xl shadow-black/50 backdrop-blur-md"
     >
       {/* Selection count badge */}
-      <span className="text-[12px] font-semibold text-ink bg-accent-strong/80 px-2.5 py-0.5 rounded-full tabular-nums">
+      <span className="text-[12px] font-semibold text-white bg-accent-strong/80 px-2.5 py-0.5 rounded-full tabular-nums">
         {count} selected
       </span>
 
