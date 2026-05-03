@@ -67,6 +67,12 @@ log()  { echo "[$(date +%H:%M:%S)] $*"; }
 fail() { echo "[$(date +%H:%M:%S)] ❌ $*" >&2; exit 1; }
 ok()   { echo "[$(date +%H:%M:%S)] ✅ $*"; }
 
+# Per-runtime model slug dispatch — see lib/model_slug.sh for the rationale.
+# Extracted so unit tests (tests/e2e/test_model_slug.sh) can pin every branch
+# without booting the full 11-step lifecycle.
+# shellcheck source=lib/model_slug.sh
+source "$(dirname "$0")/lib/model_slug.sh"
+
 CURL_COMMON=(-sS --fail-with-body --max-time 30)
 
 # ─── cleanup trap ───────────────────────────────────────────────────────
@@ -352,42 +358,7 @@ print(json.dumps({
 ")
 fi
 
-# Model slug format depends on the runtime — different model resolvers
-# parse it differently:
-#
-#   hermes      → "openai/gpt-4o"  (slash-form: derive-provider.sh splits
-#                                    on the prefix to set
-#                                    HERMES_INFERENCE_PROVIDER. Bare
-#                                    "gpt-4o" falls through to Anthropic
-#                                    default + 401, see PR #1714.)
-#
-#   langgraph   → "openai:gpt-4o"  (colon-form: langchain init_chat_model
-#                                    requires "<provider>:<model>".
-#                                    Slash-form was misinterpreted as
-#                                    OpenRouter routing → fell through
-#                                    without auth, surfaced 2026-05-03
-#                                    after the a2a-sdk v1 contract bugs
-#                                    PR #2558+#2563+#2567 cleared the
-#                                    masking layers.)
-#
-#   claude-code → "sonnet"         (entry-id form: claude-code template's
-#                                    config.yaml uses bare model names,
-#                                    auth comes via CLAUDE_CODE_OAUTH_TOKEN
-#                                    or ANTHROPIC_API_KEY rather than the
-#                                    slug.)
-#
-# When E2E_MODEL_SLUG is set, it overrides this dispatch — useful when an
-# operator dispatches the workflow to test a specific slug.
-if [ -n "${E2E_MODEL_SLUG:-}" ]; then
-  MODEL_SLUG="$E2E_MODEL_SLUG"
-else
-  case "$RUNTIME" in
-    hermes)      MODEL_SLUG="openai/gpt-4o" ;;
-    langgraph)   MODEL_SLUG="openai:gpt-4o" ;;
-    claude-code) MODEL_SLUG="sonnet" ;;
-    *)           MODEL_SLUG="openai/gpt-4o" ;;  # safest fallback (matches hermes)
-  esac
-fi
+MODEL_SLUG=$(pick_model_slug "$RUNTIME")
 
 log "5/11 Provisioning parent workspace (runtime=$RUNTIME)..."
 PARENT_RESP=$(tenant_call POST /workspaces \
