@@ -153,12 +153,28 @@ jobs:
           if [ -n "$orgs" ]; then
             echo "Safety-net sweep: deleting leftover orgs:"
             echo "$orgs"
+            # Per-slug verified DELETE — see molecule-controlplane#420.
+            # `>/dev/null 2>&1` previously hid every failure; surface
+            # non-2xx as workflow warnings so the run page names what
+            # leaked. Sweeper catches the rest within ~45 min.
+            leaks=()
             for slug in $orgs; do
-              curl -sS -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
+              code=$(curl -sS -o /tmp/external-cleanup.out -w "%{http_code}" \
+                -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
                 -H "Authorization: Bearer $ADMIN_TOKEN" \
                 -H "Content-Type: application/json" \
-                -d "{\"confirm\":\"$slug\"}" >/dev/null 2>&1
+                -d "{\"confirm\":\"$slug\"}" \
+                || echo "000")
+              if [ "$code" = "200" ] || [ "$code" = "204" ]; then
+                echo "[teardown] deleted $slug (HTTP $code)"
+              else
+                echo "::warning::external teardown for $slug returned HTTP $code — sweep-stale-e2e-orgs will catch it within ~45 min. Body: $(head -c 300 /tmp/external-cleanup.out 2>/dev/null)"
+                leaks+=("$slug")
+              fi
             done
+            if [ ${#leaks[@]} -gt 0 ]; then
+              echo "::warning::external teardown left ${#leaks[@]} leak(s): ${leaks[*]}"
+            fi
           else
             echo "Safety-net sweep: no leftover orgs to clean."
           fi

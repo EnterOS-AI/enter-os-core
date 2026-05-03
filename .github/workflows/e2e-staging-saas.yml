@@ -164,11 +164,27 @@ jobs:
                         and o.get('instance_status') not in ('purged',)]
           print('\n'.join(candidates))
           " 2>/dev/null)
+          # Per-slug verified DELETE (was `>/dev/null || true` — see
+          # molecule-controlplane#420). Surface non-2xx as a workflow
+          # warning naming the leaked slug; don't exit 1 (sweeper is
+          # the safety net within ~45 min).
+          leaks=()
           for slug in $orgs; do
             echo "Safety-net teardown: $slug"
-            curl -sS -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
+            code=$(curl -sS -o /tmp/saas-cleanup.out -w "%{http_code}" \
+              -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
               -H "Authorization: Bearer $ADMIN_TOKEN" \
               -H "Content-Type: application/json" \
-              -d "{\"confirm\":\"$slug\"}" >/dev/null || true
+              -d "{\"confirm\":\"$slug\"}" \
+              || echo "000")
+            if [ "$code" = "200" ] || [ "$code" = "204" ]; then
+              echo "[teardown] deleted $slug (HTTP $code)"
+            else
+              echo "::warning::saas teardown for $slug returned HTTP $code — sweep-stale-e2e-orgs will catch it within ~45 min. Body: $(head -c 300 /tmp/saas-cleanup.out 2>/dev/null)"
+              leaks+=("$slug")
+            fi
           done
+          if [ ${#leaks[@]} -gt 0 ]; then
+            echo "::warning::saas teardown left ${#leaks[@]} leak(s): ${leaks[*]}"
+          fi
           exit 0
