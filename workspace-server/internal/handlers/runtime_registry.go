@@ -73,15 +73,10 @@ type manifestFile struct {
 // supported in the wild. "external" is always a valid runtime —
 // manifest or not — because it has no template repo.
 var fallbackRuntimes = map[string]struct{}{
-	"langgraph":   {},
 	"claude-code": {},
-	"openclaw":    {},
-	"crewai":      {},
-	"autogen":     {},
-	"deepagents":  {},
 	"hermes":      {},
+	"openclaw":    {},
 	"codex":       {},
-	"gemini-cli":  {},
 	"external":    {},
 }
 

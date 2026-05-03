@@ -94,12 +94,12 @@ func TestResolveRestartTemplate_ApplyTemplate_NameMatch(t *testing.T) {
 // the restart handler needs to lay down the new runtime's base files
 // via `<runtime>-default/`. Matches the existing behaviour comment.
 func TestResolveRestartTemplate_ApplyTemplate_RuntimeDefault(t *testing.T) {
-	root := newTemplateDir(t, "langgraph-default")
+	root := newTemplateDir(t, "hermes-default")
 
-	path, label := resolveRestartTemplate(root, "Some Workspace", "langgraph", restartTemplateInput{
+	path, label := resolveRestartTemplate(root, "Some Workspace", "hermes", restartTemplateInput{
 		ApplyTemplate: true,
 	})
-	if path == "" || label != "langgraph-default" {
+	if path == "" || label != "hermes-default" {
 		t.Errorf("apply_template + dbRuntime should resolve runtime-default; got path=%q label=%q", path, label)
 	}
 }
@@ -227,17 +227,18 @@ func TestResolveRestartTemplate_CWE22_TraversalRuntime_FallsThrough(t *testing.T
 // string in dbRuntime resolves langgraph-default (the safe default) rather
 // than any attacker-chosen path.  The attacker gains no additional access.
 func TestResolveRestartTemplate_CWE22_TraversalRuntime_CannotOverrideKnownRuntime(t *testing.T) {
-	root := newTemplateDir(t, "langgraph-default")
+	root := newTemplateDir(t, "claude-code-default")
 
 	path, label := resolveRestartTemplate(root, "Some Workspace", "../../../etc", restartTemplateInput{
 		ApplyTemplate: true,
 	})
-	// Must resolve to langgraph-default, not to an escaped path
-	expected := filepath.Join(root, "langgraph-default")
+	// Must resolve to claude-code-default (the safe default after sanitizeRuntime),
+	// not to an escaped path
+	expected := filepath.Join(root, "claude-code-default")
 	if path != expected {
-		t.Errorf("traversal runtime must resolve to langgraph-default; got path=%q", path)
+		t.Errorf("traversal runtime must resolve to claude-code-default; got path=%q", path)
 	}
-	if label != "langgraph-default" {
-		t.Errorf("label must be langgraph-default; got %q", label)
+	if label != "claude-code-default" {
+		t.Errorf("label must be claude-code-default; got %q", label)
 	}
 }

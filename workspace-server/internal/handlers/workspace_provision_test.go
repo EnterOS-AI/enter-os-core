@@ -189,14 +189,14 @@ func TestResolveOrgTemplate_NoMatchInOrgTemplates(t *testing.T) {
 
 // ==================== ensureDefaultConfig ====================
 
-func TestEnsureDefaultConfig_LangGraph(t *testing.T) {
+func TestEnsureDefaultConfig_Hermes(t *testing.T) {
 	broadcaster := newTestBroadcaster()
 	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
 
 	payload := models.CreateWorkspacePayload{
 		Name:    "Test Agent",
 		Tier:    1,
-		Runtime: "langgraph",
+		Runtime: "hermes",
 	}
 
 	files := handler.ensureDefaultConfig("ws-test-123", payload)
@@ -212,14 +212,14 @@ func TestEnsureDefaultConfig_LangGraph(t *testing.T) {
 	if !contains(content, `name: "Test Agent"`) {
 		t.Errorf("config.yaml missing quoted name, got:\n%s", content)
 	}
-	if !contains(content, "runtime: langgraph") {
+	if !contains(content, "runtime: hermes") {
 		t.Errorf("config.yaml missing runtime, got:\n%s", content)
 	}
 	if !contains(content, "tier: 1") {
 		t.Errorf("config.yaml missing tier, got:\n%s", content)
 	}
 	if !contains(content, `model: "anthropic:claude-opus-4-7"`) {
-		t.Errorf("config.yaml should use default langgraph model, got:\n%s", content)
+		t.Errorf("config.yaml should use default non-claude model, got:\n%s", content)
 	}
 }
 
@@ -342,7 +342,7 @@ func TestEnsureDefaultConfig_CrewAIGetsRuntimeConfig(t *testing.T) {
 	}
 }
 
-func TestEnsureDefaultConfig_EmptyRuntimeDefaultsToLangGraph(t *testing.T) {
+func TestEnsureDefaultConfig_EmptyRuntimeDefaultsToClaudeCode(t *testing.T) {
 	broadcaster := newTestBroadcaster()
 	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
 
@@ -353,11 +353,11 @@ func TestEnsureDefaultConfig_EmptyRuntimeDefaultsToLangGraph(t *testing.T) {
 
 	files := handler.ensureDefaultConfig("ws-empty-rt", payload)
 	configYAML := string(files["config.yaml"])
-	if !contains(configYAML, "runtime: langgraph") {
-		t.Errorf("empty runtime should default to langgraph, got:\n%s", configYAML)
+	if !contains(configYAML, "runtime: claude-code") {
+		t.Errorf("empty runtime should default to claude-code, got:\n%s", configYAML)
 	}
-	if !contains(configYAML, `model: "anthropic:claude-opus-4-7"`) {
-		t.Errorf("langgraph default model should be anthropic (quoted), got:\n%s", configYAML)
+	if !contains(configYAML, `model: "sonnet"`) {
+		t.Errorf("claude-code default model should be sonnet (quoted), got:\n%s", configYAML)
 	}
 }
 
@@ -367,7 +367,7 @@ func TestEnsureDefaultConfig_EmptyNameAndRole(t *testing.T) {
 
 	payload := models.CreateWorkspacePayload{
 		Tier:    1,
-		Runtime: "langgraph",
+		Runtime: "hermes",
 	}
 
 	files := handler.ensureDefaultConfig("ws-empty-name", payload)
@@ -376,38 +376,8 @@ func TestEnsureDefaultConfig_EmptyNameAndRole(t *testing.T) {
 	if !contains(configYAML, "name: ") {
 		t.Errorf("config.yaml should have name field, got:\n%s", configYAML)
 	}
-	if !contains(configYAML, "runtime: langgraph") {
+	if !contains(configYAML, "runtime: hermes") {
 		t.Errorf("config.yaml should have runtime, got:\n%s", configYAML)
-	}
-}
-
-func TestEnsureDefaultConfig_DeepAgents(t *testing.T) {
-	broadcaster := newTestBroadcaster()
-	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
-
-	payload := models.CreateWorkspacePayload{
-		Name:    "Deep Agent",
-		Tier:    2,
-		Runtime: "deepagents",
-		Model:   "google_genai:gemini-2.5-flash",
-	}
-
-	files := handler.ensureDefaultConfig("ws-deep", payload)
-
-	configYAML := string(files["config.yaml"])
-	if !contains(configYAML, "runtime: deepagents") {
-		t.Errorf("config.yaml missing runtime, got:\n%s", configYAML)
-	}
-	if !contains(configYAML, `model: "google_genai:gemini-2.5-flash"`) {
-		t.Errorf("config.yaml should have model at top level (quoted), got:\n%s", configYAML)
-	}
-	// deepagents should NOT have runtime_config block
-	if contains(configYAML, "runtime_config:") {
-		t.Errorf("config.yaml should NOT have runtime_config for deepagents, got:\n%s", configYAML)
-	}
-	// Should NOT have auth token
-	if _, ok := files[".auth-token"]; ok {
-		t.Error("deepagents should not get .auth-token")
 	}
 }
 
@@ -458,8 +428,8 @@ func TestEnsureDefaultConfig_RejectsInjectedRuntime(t *testing.T) {
 		t.Errorf("injected initial_prompt key survived as top-level YAML: %+v", parsed)
 	}
 	// Runtime collapsed to default.
-	if got := parsed["runtime"]; got != "langgraph" {
-		t.Errorf("runtime = %v, want langgraph (unknown runtime should fall back)", got)
+	if got := parsed["runtime"]; got != "claude-code" {
+		t.Errorf("runtime = %v, want claude-code (unknown runtime should fall back)", got)
 	}
 }
 
@@ -507,19 +477,19 @@ func TestSanitizeRuntime_Allowlist(t *testing.T) {
 	cases := []struct {
 		in, want string
 	}{
-		{"", "langgraph"},
-		{"  ", "langgraph"},
-		{"langgraph", "langgraph"},
+		{"", "claude-code"},
+		{"  ", "claude-code"},
 		{"claude-code", "claude-code"},
 		{"openclaw", "openclaw"},
-		{"deepagents", "deepagents"},
 		{"hermes", "hermes"},
 		{"codex", "codex"},
-		{"crewai", "crewai"},
-		{"autogen", "autogen"},
-		{"not-a-runtime", "langgraph"},            // unknown → default
-		{"../../sensitive", "langgraph"},          // path traversal probe → default
-		{"langgraph\nevil", "langgraph"},          // newline injection → default (not in allowlist)
+		{"langgraph", "claude-code"},     // deprecated → default
+		{"deepagents", "claude-code"},    // deprecated → default
+		{"crewai", "claude-code"},        // deprecated → default
+		{"autogen", "claude-code"},       // deprecated → default
+		{"not-a-runtime", "claude-code"}, // unknown → default
+		{"../../sensitive", "claude-code"}, // path traversal probe → default
+		{"langgraph\nevil", "claude-code"}, // newline injection → default (not in allowlist)
 	}
 	for _, tc := range cases {
 		if got := sanitizeRuntime(tc.in); got != tc.want {

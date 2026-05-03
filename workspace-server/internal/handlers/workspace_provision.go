@@ -510,13 +510,13 @@ func yamlQuote(s string) string {
 func sanitizeRuntime(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "langgraph"
+		return "claude-code"
 	}
 	if _, ok := knownRuntimes[raw]; ok {
 		return raw
 	}
-	log.Printf("provisioner: rejected unknown runtime %q, falling back to langgraph", raw)
-	return "langgraph"
+	log.Printf("provisioner: rejected unknown runtime %q, falling back to claude-code", raw)
+	return "claude-code"
 }
 
 // ensureDefaultConfig generates minimal config files in memory for workspaces without a template.
@@ -562,12 +562,7 @@ func (h *WorkspaceHandler) ensureDefaultConfig(workspaceID string, payload model
 	// and preflight already validates that the env vars are present before
 	// the agent loop starts.  Hardcoding token names here caused #1028
 	// (expired CLAUDE_CODE_OAUTH_TOKEN baked into config.yaml).
-	switch runtime {
-	case "langgraph", "deepagents":
-		// These runtimes read API keys from env directly, no runtime_config needed.
-	default:
-		configYAML += "runtime_config:\n  timeout: 0\n"
-	}
+	configYAML += "runtime_config:\n  timeout: 0\n"
 
 	files["config.yaml"] = []byte(configYAML)
 
