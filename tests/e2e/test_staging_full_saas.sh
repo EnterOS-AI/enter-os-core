@@ -517,6 +517,7 @@ fi
 #   "Encrypted content is not supported" → hermes codex_responses API misroute (#14)
 #   "Unknown provider"               → bridge misconfigured PROVIDER= (regression of #13 fix)
 #   "hermes-agent unreachable"       → gateway process died
+#   "exceeded your current quota"    → MOLECULE_STAGING_OPENAI_KEY billing (NOT a platform regression — #2578)
 #
 # Fail LOUD with the specific pattern so CI log + alert channel makes the
 # regression unambiguous.
@@ -541,6 +542,16 @@ fi
 # "error|exception" catch-all below, so they'd slip through.
 if echo "$AGENT_TEXT" | grep -qF "Invalid API key"; then
   fail "A2A — REGRESSION: tenant auth chain returned 'Invalid API key'. Likely CP boot-event 401 race (CP #238) or stale OPENAI_API_KEY in the runtime env. Raw: $AGENT_TEXT"
+fi
+# Provider quota exhausted — distinguish from a platform regression so
+# the canary alert names the operator action directly instead of falling
+# through to the generic "error-shaped response" message. Steps 0-7 having
+# passed means the platform itself is healthy (CP up, tenant provisioned,
+# workspace online, A2A delivery end-to-end). When the agent comes back
+# with a provider-side 429, that is a billing event on the configured
+# OpenAI key, not a platform regression. Tracked in #2578.
+if echo "$AGENT_TEXT" | grep -qiE "exceeded your current quota|insufficient_quota"; then
+  fail "A2A — PROVIDER QUOTA EXHAUSTED (NOT a platform regression). Operator action: top up MOLECULE_STAGING_OPENAI_KEY billing or rotate to a higher-quota org at Settings → Secrets and Variables → Actions. Tracked in #2578. Raw: $AGENT_TEXT"
 fi
 # Generic catch-all — falls through if none of the known regressions hit.
 if echo "$AGENT_TEXT" | grep -qiE "error|exception"; then
