@@ -162,6 +162,31 @@ async def handle_tool_call(name: str, arguments: dict) -> str:
 _CHANNEL_NOTIFICATION_METHOD = "notifications/claude/channel"
 
 
+# ============= Trust-boundary gates for channel-notification meta ==============
+_VALID_KINDS = frozenset({"canvas_user", "peer_agent"})
+_VALID_METHODS = frozenset({"message/send", "tasks/send", "tasks/get", "notify", ""})
+
+import re as _re
+_ACTIVITY_ID_RE = _re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_ISO8601_RE = _re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
+
+
+def _safe_meta_field(value, allowlist) -> str:
+    return value if value in allowlist else ""
+
+
+def _safe_activity_id(value) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value if _ACTIVITY_ID_RE.match(value) else ""
+
+
+def _safe_ts(value) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value if _ISO8601_RE.match(value) else ""
+
+
 # Default seconds the agent should block on `wait_for_message` per
 # turn. 2s is the cost/latency knee — long enough that a peer A2A
 # landing 0-2s before the agent starts its turn is caught, short
@@ -402,11 +427,11 @@ def _build_channel_notification(msg: dict) -> dict:
     """
     meta = {
         "source": "molecule",
-        "kind": msg.get("kind", ""),
+        "kind": _safe_meta_field(msg.get("kind", ""), _VALID_KINDS),
         "peer_id": msg.get("peer_id", ""),
-        "method": msg.get("method", ""),
-        "activity_id": msg.get("activity_id", ""),
-        "ts": msg.get("created_at", ""),
+        "method": _safe_meta_field(msg.get("method", ""), _VALID_METHODS),
+        "activity_id": _safe_activity_id(msg.get("activity_id", "")),
+        "ts": _safe_ts(msg.get("created_at", "")),
     }
 
     peer_id = msg.get("peer_id") or ""
