@@ -102,6 +102,35 @@ def _make_a2a_mocks():
     types_mod.Message = Message
     types_mod.Role = _RoleEnum
 
+    # v1 Task / TaskStatus / TaskState — used by the executor's "enqueue Task
+    # before any TaskStatusUpdateEvent" guard (a2a-sdk ≥ 1.0 contract). The
+    # stubs preserve every kwarg so tests can assert on Task(id=..., status=...).
+    class TaskStatus:
+        def __init__(self, state=None, **kwargs):
+            self.state = state
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+
+    class _TaskStateEnum:
+        TASK_STATE_SUBMITTED = 1
+        TASK_STATE_WORKING = 2
+        TASK_STATE_COMPLETED = 3
+        TASK_STATE_CANCELED = 4
+        TASK_STATE_FAILED = 5
+        TASK_STATE_REJECTED = 6
+
+    class Task:
+        def __init__(self, id="", context_id="", status=None, **kwargs):
+            self.id = id
+            self.context_id = context_id
+            self.status = status
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+
+    types_mod.Task = Task
+    types_mod.TaskStatus = TaskStatus
+    types_mod.TaskState = _TaskStateEnum
+
     # a2a.helpers (v1: moved from a2a.utils, renamed new_agent_text_message
     # → new_text_message). Mock both names — production code only calls
     # new_text_message, but if any test still references the old name it
