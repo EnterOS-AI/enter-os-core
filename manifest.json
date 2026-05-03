@@ -28,7 +28,12 @@
     {"name": "claude-code-default", "repo": "Molecule-AI/molecule-ai-workspace-template-claude-code", "ref": "main"},
     {"name": "hermes", "repo": "Molecule-AI/molecule-ai-workspace-template-hermes", "ref": "main"},
     {"name": "openclaw", "repo": "Molecule-AI/molecule-ai-workspace-template-openclaw", "ref": "main"},
-    {"name": "codex", "repo": "Molecule-AI/molecule-ai-workspace-template-codex", "ref": "main"}
+    {"name": "codex", "repo": "Molecule-AI/molecule-ai-workspace-template-codex", "ref": "main"},
+    {"name": "langgraph", "repo": "Molecule-AI/molecule-ai-workspace-template-langgraph", "ref": "main"},
+    {"name": "crewai", "repo": "Molecule-AI/molecule-ai-workspace-template-crewai", "ref": "main"},
+    {"name": "autogen", "repo": "Molecule-AI/molecule-ai-workspace-template-autogen", "ref": "main"},
+    {"name": "deepagents", "repo": "Molecule-AI/molecule-ai-workspace-template-deepagents", "ref": "main"},
+    {"name": "gemini-cli", "repo": "Molecule-AI/molecule-ai-workspace-template-gemini-cli", "ref": "main"}
   ],
   "org_templates": [
     {"name": "molecule-dev", "repo": "Molecule-AI/molecule-ai-org-template-molecule-dev", "ref": "main"},

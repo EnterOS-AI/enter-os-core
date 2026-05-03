@@ -59,8 +59,8 @@ export function getTenantSlug(): string {
  * isSaaSTenant reports whether the canvas is running as the UI for a
  * SaaS tenant (served at <slug>.moleculesai.app). Use for client-side
  * UX branches that should behave differently on SaaS vs self-hosted —
- * e.g. the workspace tier picker hides T1/T2 sandbox tiers because every
- * SaaS workspace gets its own EC2 VM (inherently T3 Full Access).
+ * e.g. the workspace tier picker hides T1/T2/T3 sandbox tiers because
+ * every SaaS workspace gets its own EC2 VM (inherently T4 Full Access).
  *
  * SSR-safe: returns false on the server to avoid hydration drift; call
  * sites should tolerate a flip from false→true on first client render.

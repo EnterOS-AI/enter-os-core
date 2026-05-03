@@ -655,7 +655,8 @@ export function ConfigTab({ workspaceId }: Props) {
                 >
                   <option value={1}>T1 — Sandboxed</option>
                   <option value={2}>T2 — Standard</option>
-                  <option value={3}>T3 — Full Access</option>
+                  <option value={3}>T3 — Privileged</option>
+                  <option value={4}>T4 — Full Access</option>
                 </select>
               </div>
             </div>
