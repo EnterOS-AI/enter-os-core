@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -266,6 +267,151 @@ skills: []
 	// break consumers without surfacing in the typed assertions above.
 	if !strings.Contains(w.Body.String(), `"providers":["nous","openrouter","anthropic"]`) {
 		t.Errorf("response missing providers JSON field: %s", w.Body.String())
+	}
+}
+
+// TestTemplatesList_SurfacesProviderRegistry pins the #235 enrichment:
+// /templates must echo the template's TOP-LEVEL `providers:` block as a
+// structured array of providerRegistryEntry, separate from the
+// runtime_config.providers slug list above. Each entry carries auth_env
+// + model_prefixes + base_url so the canvas can stop inferring vendor
+// taxonomy from per-model required_env tuples.
+//
+// Use a claude-code-shaped fixture (the only template in production
+// that ships the registry today, modulo the per-vendor work in PR #33).
+// Order MUST be preserved — the canvas surfaces the dropdown in
+// declaration order so operators can put their preferred provider first.
+func TestTemplatesList_SurfacesProviderRegistry(t *testing.T) {
+	setupTestDB(t)
+	setupTestRedis(t)
+
+	tmpDir := t.TempDir()
+	tmplDir := filepath.Join(tmpDir, "claude-code")
+	if err := os.MkdirAll(tmplDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	configYaml := `name: Claude Code
+runtime: claude-code
+providers:
+  - name: anthropic-oauth
+    auth_mode: oauth
+    model_prefixes: []
+    model_aliases: [sonnet, opus, haiku]
+    base_url: null
+    auth_env: [CLAUDE_CODE_OAUTH_TOKEN]
+  - name: minimax
+    auth_mode: third_party_anthropic_compat
+    model_prefixes: [minimax-]
+    model_aliases: []
+    base_url: https://api.minimax.io/anthropic
+    auth_env: [MINIMAX_API_KEY, ANTHROPIC_AUTH_TOKEN]
+runtime_config:
+  model: claude-sonnet-4-6
+skills: []
+`
+	if err := os.WriteFile(filepath.Join(tmplDir, "config.yaml"), []byte(configYaml), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	handler := NewTemplatesHandler(tmpDir, nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/templates", nil)
+	handler.List(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp []templateSummary
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("expected 1 template, got %d", len(resp))
+	}
+	got := resp[0].ProviderRegistry
+	if len(got) != 2 {
+		t.Fatalf("ProviderRegistry: want 2 entries, got %d (%+v)", len(got), got)
+	}
+	// Order preservation
+	if got[0].Name != "anthropic-oauth" {
+		t.Errorf("ProviderRegistry[0].Name: want %q, got %q", "anthropic-oauth", got[0].Name)
+	}
+	if got[1].Name != "minimax" {
+		t.Errorf("ProviderRegistry[1].Name: want %q, got %q", "minimax", got[1].Name)
+	}
+	// Field plumbing on the first (oauth) entry
+	if got[0].AuthMode != "oauth" {
+		t.Errorf("ProviderRegistry[0].AuthMode: want %q, got %q", "oauth", got[0].AuthMode)
+	}
+	if !reflect.DeepEqual(got[0].ModelAliases, []string{"sonnet", "opus", "haiku"}) {
+		t.Errorf("ProviderRegistry[0].ModelAliases: want sonnet/opus/haiku, got %v", got[0].ModelAliases)
+	}
+	if !reflect.DeepEqual(got[0].AuthEnv, []string{"CLAUDE_CODE_OAUTH_TOKEN"}) {
+		t.Errorf("ProviderRegistry[0].AuthEnv: want [CLAUDE_CODE_OAUTH_TOKEN], got %v", got[0].AuthEnv)
+	}
+	// Field plumbing on the second (third-party) entry — base_url is the
+	// distinguishing signal for compat providers; canvas uses it to render
+	// the "via Anthropic-compat endpoint" badge.
+	if got[1].BaseURL != "https://api.minimax.io/anthropic" {
+		t.Errorf("ProviderRegistry[1].BaseURL: want minimax url, got %q", got[1].BaseURL)
+	}
+	if !reflect.DeepEqual(got[1].ModelPrefixes, []string{"minimax-"}) {
+		t.Errorf("ProviderRegistry[1].ModelPrefixes: want [minimax-], got %v", got[1].ModelPrefixes)
+	}
+	if !reflect.DeepEqual(got[1].AuthEnv, []string{"MINIMAX_API_KEY", "ANTHROPIC_AUTH_TOKEN"}) {
+		t.Errorf("ProviderRegistry[1].AuthEnv: want [MINIMAX_API_KEY, ANTHROPIC_AUTH_TOKEN], got %v", got[1].AuthEnv)
+	}
+
+	// Wire-shape gate — canvas reads this as `provider_registry` (snake_case).
+	// A struct-tag rename would silently drop it from consumers; the typed
+	// assertions above can't catch a tag-only change because they decode via
+	// the same struct.
+	if !strings.Contains(w.Body.String(), `"provider_registry":[{"name":"anthropic-oauth"`) {
+		t.Errorf("response missing provider_registry JSON field with expected first entry: %s", w.Body.String())
+	}
+}
+
+// TestTemplatesList_OmitsProviderRegistryWhenAbsent pins the omitempty
+// behavior for the new field — templates without a top-level
+// `providers:` block (hermes today, langgraph, etc.) must NOT emit
+// `provider_registry: null`, which would break canvas's array-typed
+// parser (Array.isArray check returns false for null).
+func TestTemplatesList_OmitsProviderRegistryWhenAbsent(t *testing.T) {
+	setupTestDB(t)
+	setupTestRedis(t)
+
+	tmpDir := t.TempDir()
+	tmplDir := filepath.Join(tmpDir, "hermes-no-reg")
+	if err := os.MkdirAll(tmplDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	configYaml := `name: Hermes
+runtime: hermes
+runtime_config:
+  model: nousresearch/hermes-4-70b
+  providers: [nous, openrouter]
+skills: []
+`
+	if err := os.WriteFile(filepath.Join(tmplDir, "config.yaml"), []byte(configYaml), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	handler := NewTemplatesHandler(tmpDir, nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/templates", nil)
+	handler.List(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), `"provider_registry":`) {
+		t.Errorf("response should omit provider_registry when template has none, got: %s", w.Body.String())
+	}
+	// But the slug list must still surface — both shapes coexist.
+	if !strings.Contains(w.Body.String(), `"providers":["nous","openrouter"]`) {
+		t.Errorf("expected slug-list providers field still present: %s", w.Body.String())
 	}
 }
 

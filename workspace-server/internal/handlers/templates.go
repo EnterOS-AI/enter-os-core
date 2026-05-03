@@ -45,6 +45,28 @@ type modelSpec struct {
 	RequiredEnv []string `json:"required_env,omitempty" yaml:"required_env"`
 }
 
+// providerRegistryEntry mirrors a row from a template's top-level
+// `providers:` registry block (claude-code, hermes, etc.). Each entry
+// fully describes one provider: its name, auth flow, the model id
+// prefixes/aliases that route to it, an optional base_url override, and
+// the env vars required to authenticate.
+//
+// This is the structured taxonomy the canvas's ProviderModelSelector
+// comment anticipates ("Templates that ship explicit vendor metadata
+// (future) should override the heuristic.") — surfacing it here lets
+// the canvas drop its prefix-inference fallback for templates that ship
+// an explicit registry. Templates without the block omit the field
+// (omitempty); the canvas falls back to its current per-model
+// required_env derivation.
+type providerRegistryEntry struct {
+	Name          string   `json:"name" yaml:"name"`
+	AuthMode      string   `json:"auth_mode,omitempty" yaml:"auth_mode"`
+	ModelPrefixes []string `json:"model_prefixes,omitempty" yaml:"model_prefixes"`
+	ModelAliases  []string `json:"model_aliases,omitempty" yaml:"model_aliases"`
+	BaseURL       string   `json:"base_url,omitempty" yaml:"base_url"`
+	AuthEnv       []string `json:"auth_env,omitempty" yaml:"auth_env"`
+}
+
 type templateSummary struct {
 	ID          string      `json:"id"`
 	Name        string      `json:"name"`
@@ -68,9 +90,24 @@ type templateSummary struct {
 	// a different vendor list doesn't need a canvas edit. Empty list →
 	// canvas falls back to deriving suggestions from `models[].id` slug
 	// prefixes (still adapter-driven, just inferred).
-	Providers   []string `json:"providers,omitempty"`
-	Skills      []string `json:"skills"`
-	SkillCount  int      `json:"skill_count"`
+	Providers []string `json:"providers,omitempty"`
+	// ProviderRegistry is the structured provider taxonomy from the
+	// template's TOP-LEVEL `providers:` block (separate from the
+	// runtime_config.providers slug list above). Each entry carries
+	// auth_env / model_prefixes / model_aliases / base_url so the canvas
+	// can render an authoritative Provider→Model cascade without
+	// re-deriving vendor metadata from per-model required_env tuples.
+	//
+	// Closes #235 (server-side enrichment): the `Providers []string`
+	// field shipped a name list but never the structured payload the
+	// canvas's ProviderModelSelector comment block anticipates as the
+	// override for its prefix-inference heuristic. Pre-existing
+	// templates without the top-level block omit the field
+	// (omitempty); the canvas's existing per-model fallback continues
+	// to work for them.
+	ProviderRegistry []providerRegistryEntry `json:"provider_registry,omitempty"`
+	Skills           []string                `json:"skills"`
+	SkillCount       int                     `json:"skill_count"`
 	// ProvisionTimeoutSeconds lets a slow runtime declare its expected
 	// cold-boot duration in its template manifest. Canvas's
 	// ProvisioningTimeout banner respects this per-workspace via the
@@ -100,12 +137,18 @@ func (h *TemplatesHandler) List(c *gin.Context) {
 	templates := make([]templateSummary, 0)
 	walkTemplateConfigs(h.configsDir, func(id string, data []byte) {
 		var raw struct {
-			Name          string   `yaml:"name"`
-			Description   string   `yaml:"description"`
-			Tier          int      `yaml:"tier"`
-			Runtime       string   `yaml:"runtime"`
-			Model         string   `yaml:"model"`
-			Skills        []string `yaml:"skills"`
+			Name        string   `yaml:"name"`
+			Description string   `yaml:"description"`
+			Tier        int      `yaml:"tier"`
+			Runtime     string   `yaml:"runtime"`
+			Model       string   `yaml:"model"`
+			Skills      []string `yaml:"skills"`
+			// Top-level `providers:` block — structured registry. Distinct
+			// from runtime_config.providers (slug list) below. Both shapes
+			// coexist in production: claude-code ships the structured
+			// registry, hermes still uses the slug list. /templates surfaces
+			// both verbatim so each runtime owns its taxonomy.
+			Providers     []providerRegistryEntry `yaml:"providers"`
 			RuntimeConfig struct {
 				Model                   string      `yaml:"model"`
 				Models                  []modelSpec `yaml:"models"`
@@ -134,6 +177,7 @@ func (h *TemplatesHandler) List(c *gin.Context) {
 			Models:                  raw.RuntimeConfig.Models,
 			RequiredEnv:             raw.RuntimeConfig.RequiredEnv,
 			Providers:               raw.RuntimeConfig.Providers,
+			ProviderRegistry:        raw.Providers,
 			Skills:                  raw.Skills,
 			SkillCount:              len(raw.Skills),
 			ProvisionTimeoutSeconds: raw.RuntimeConfig.ProvisionTimeoutSeconds,
