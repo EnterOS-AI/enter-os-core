@@ -39,9 +39,14 @@ on:
   workflow_dispatch:
     inputs:
       runtime:
-        description: "Runtime to provision (langgraph = fastest, default; hermes = slower but covers SDK-native path; claude-code = needs OAUTH token in tenant env)"
+        description: "Runtime to provision (claude-code = default + cheapest via MiniMax; langgraph = OpenAI-only; hermes = SDK-native path, slower)"
         required: false
-        default: "langgraph"
+        default: "claude-code"
+        type: string
+      model_slug:
+        description: "Model id to provision the workspace with (default MiniMax-M2.7-highspeed; e.g. 'sonnet' to test direct Anthropic, 'openai/gpt-4o' for hermes)"
+        required: false
+        default: "MiniMax-M2.7-highspeed"
         type: string
       keep_org:
         description: "Skip teardown for post-mortem debugging (only manual dispatch — never set this for cron runs)"
@@ -70,13 +75,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     env:
-      # langgraph default keeps cold-start under 5 min on staging EC2.
-      # hermes is slower (~7-10 min) and isn't needed for the
-      # regression class this gate exists to catch (deployment-pipeline
-      # + schema-drift + integration). Operators can pick hermes via
-      # workflow_dispatch when they need to exercise the SDK-native
-      # session path.
-      E2E_RUNTIME: ${{ github.event.inputs.runtime || 'langgraph' }}
+      # claude-code default: cold-start ~5 min (comparable to langgraph),
+      # but uses MiniMax-M2.7-highspeed via the template's third-party-
+      # Anthropic-compat path (workspace-configs-templates/claude-code-
+      # default/config.yaml:64-69). MiniMax is ~5-10x cheaper than
+      # gpt-4.1-mini per token AND avoids the recurring OpenAI quota-
+      # exhaustion class that took the canary down 2026-05-03 (#265).
+      # Operators can pick langgraph / hermes via workflow_dispatch
+      # when they specifically need to exercise the OpenAI or SDK-
+      # native paths.
+      E2E_RUNTIME: ${{ github.event.inputs.runtime || 'claude-code' }}
+      # Pin the canary to a specific MiniMax model rather than relying
+      # on the per-runtime default ("sonnet" → routes to direct
+      # Anthropic, defeats the cost saving). Operators can override
+      # via workflow_dispatch by setting a different E2E_MODEL_SLUG
+      # input if they need to exercise a specific model. M2.7-highspeed
+      # is "Token Plan only" but cheap-per-token and fast.
+      E2E_MODEL_SLUG: ${{ github.event.inputs.model_slug || 'MiniMax-M2.7-highspeed' }}
       # Bound to 10 min so a stuck provision fails the run instead of
       # holding up the next cron firing. 15-min default in the script
       # is for the on-PR full lifecycle where we have more headroom.
@@ -88,19 +103,26 @@ jobs:
       E2E_KEEP_ORG: ${{ github.event.inputs.keep_org == 'true' && '1' || '' }}
       MOLECULE_CP_URL: ${{ vars.STAGING_CP_URL || 'https://staging-api.moleculesai.app' }}
       MOLECULE_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
-      # Provisioned tenant's default model (langgraph: openai:gpt-4.1-mini)
-      # needs OPENAI_API_KEY at first call. Sibling workflows
-      # e2e-staging-saas.yml + canary-staging.yml use the same secret;
-      # without this wire-up the tenant boots, accepts a2a messages,
-      # then returns "Could not resolve authentication method" — masked
-      # earlier by the a2a-sdk task-mode contract bugs PR #2558+#2563
-      # fixed. tests/e2e/test_staging_full_saas.sh:325 reads this and
-      # persists it as a workspace_secret on tenant create.
+      # MiniMax key is the canary's PRIMARY auth path. claude-code
+      # template's `minimax` provider routes ANTHROPIC_BASE_URL to
+      # api.minimax.io/anthropic and reads MINIMAX_API_KEY at boot.
+      # tests/e2e/test_staging_full_saas.sh branches SECRETS_JSON on
+      # which key is present — MiniMax wins when set.
+      E2E_MINIMAX_API_KEY: ${{ secrets.MOLECULE_STAGING_MINIMAX_API_KEY }}
+      # OpenAI fallback — kept wired so operators can dispatch with
+      # E2E_RUNTIME=langgraph or =hermes and still have a working
+      # canary path. The script picks the right blob shape based on
+      # which key is non-empty.
       E2E_OPENAI_API_KEY: ${{ secrets.MOLECULE_STAGING_OPENAI_KEY }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Verify required secret present
+      - name: Verify required secrets present
+        env:
+          # Re-bind so the per-runtime LLM key check below sees the right
+          # secret. The job-level env block already reads both; this just
+          # makes them visible inside the conditional shell.
+          IS_DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           # Schedule-vs-dispatch hardening (mirrors the sweep-cf-* and
           # redeploy-tenants-on-* workflows): hard-fail on missing secret
@@ -109,13 +131,43 @@ jobs:
           # dispatch — operators can dispatch ad-hoc to verify a fix
           # without setting up the secret first.
           if [ -z "${MOLECULE_ADMIN_TOKEN:-}" ]; then
-            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "$IS_DISPATCH" = "true" ]; then
               echo "::warning::CP_STAGING_ADMIN_API_TOKEN not set — synth E2E cannot run"
               echo "::warning::Set it at Settings → Secrets and Variables → Actions"
               exit 0
             fi
             echo "::error::CP_STAGING_ADMIN_API_TOKEN secret missing — synth E2E cannot run"
             echo "::error::Set it at Settings → Secrets and Variables → Actions; pull from staging-CP's CP_ADMIN_API_TOKEN env in Railway."
+            exit 1
+          fi
+
+          # LLM-key requirement is per-runtime: claude-code uses MiniMax
+          # (MOLECULE_STAGING_MINIMAX_API_KEY), langgraph + hermes use
+          # OpenAI (MOLECULE_STAGING_OPENAI_KEY). Cron firing must have
+          # the right key for the active runtime; dispatch can soft-skip.
+          case "${E2E_RUNTIME}" in
+            claude-code)
+              required_secret_name="MOLECULE_STAGING_MINIMAX_API_KEY"
+              required_secret_value="${E2E_MINIMAX_API_KEY:-}"
+              ;;
+            langgraph|hermes)
+              required_secret_name="MOLECULE_STAGING_OPENAI_KEY"
+              required_secret_value="${E2E_OPENAI_API_KEY:-}"
+              ;;
+            *)
+              echo "::warning::Unknown E2E_RUNTIME='${E2E_RUNTIME}' — skipping LLM-key check"
+              required_secret_name=""
+              required_secret_value="present"
+              ;;
+          esac
+          if [ -n "$required_secret_name" ] && [ -z "$required_secret_value" ]; then
+            if [ "$IS_DISPATCH" = "true" ]; then
+              echo "::warning::${required_secret_name} not set — synth E2E with runtime=${E2E_RUNTIME} cannot reach an LLM"
+              echo "::warning::Set it at Settings → Secrets and Variables → Actions, OR dispatch with a different runtime"
+              exit 0
+            fi
+            echo "::error::${required_secret_name} secret missing — runtime=${E2E_RUNTIME} cannot authenticate against its LLM provider"
+            echo "::error::Set it at Settings → Secrets and Variables → Actions"
             exit 1
           fi
 
