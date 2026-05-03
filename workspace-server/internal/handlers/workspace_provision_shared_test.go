@@ -437,6 +437,25 @@ func TestDeriveProviderFromModelSlug(t *testing.T) {
 		// boot if HERMES_API_KEY/OPENAI_API_KEY are present).
 		{"nousresearch defaults to openrouter at provision time", "nousresearch/hermes-4-70b", "openrouter"},
 		{"openai defaults to openrouter at provision time", "openai/gpt-5", "openrouter"},
+		// hermes-agent v0.12.0 / 2026-04-30 provider list — the drift gate
+		// in derive_provider_drift_test.go pins parity with the shell case
+		// statement.
+		{"xai", "xai/grok-4", "xai"},
+		{"xai via grok alias", "grok/grok-4", "xai"},
+		{"bedrock", "bedrock/anthropic.claude-sonnet-4-6", "bedrock"},
+		{"bedrock via aws alias", "aws/anthropic.claude-sonnet-4-6", "bedrock"},
+		{"tencent", "tencent/hunyuan-coder", "tencent-tokenhub"},
+		{"tencent-tokenhub passthrough", "tencent-tokenhub/hunyuan-coder", "tencent-tokenhub"},
+		{"gmi", "gmi/gmi-coder-1", "gmi"},
+		{"qwen-oauth", "qwen-oauth/qwen3-coder", "qwen-oauth"},
+		{"lmstudio", "lmstudio/qwen3-coder", "lmstudio"},
+		{"lmstudio via lm-studio alias", "lm-studio/qwen3-coder", "lmstudio"},
+		{"minimax-oauth", "minimax-oauth/MiniMax-M2.7", "minimax-oauth"},
+		{"alibaba-coding-plan", "alibaba-coding-plan/qwen3-coder", "alibaba-coding-plan"},
+		{"google-gemini-cli", "google-gemini-cli/gemini-2.5-pro", "google-gemini-cli"},
+		{"openai-codex", "openai-codex/gpt-5-codex", "openai-codex"},
+		{"copilot-acp", "copilot-acp/claude-sonnet-4-6", "copilot-acp"},
+		{"copilot", "copilot/claude-sonnet-4-6", "copilot"},
 		// Unknowns return "" so the caller skips the LLM_PROVIDER write
 		// and lets derive-provider.sh's *=auto branch decide at runtime.
 		{"unknown prefix returns empty", "totally-unknown-model/foo", ""},

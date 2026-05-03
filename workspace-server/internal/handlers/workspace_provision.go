@@ -662,6 +662,34 @@ func deriveProviderFromModelSlug(model string) string {
 	// extra config) and let the script upgrade to nous/custom at runtime.
 	case "nousresearch", "openai":
 		return "openrouter"
+	// Additional 1:1 prefix→provider mappings — kept aligned with upstream's
+	// HERMES_INFERENCE_PROVIDER list (NousResearch/hermes-agent v0.12.0,
+	// 2026-04-30) and the additional case clauses in derive-provider.sh.
+	// The drift gate in derive_provider_drift_test.go enforces parity.
+	case "xai", "grok":
+		return "xai"
+	case "bedrock", "aws":
+		return "bedrock"
+	case "tencent", "tencent-tokenhub":
+		return "tencent-tokenhub"
+	case "gmi":
+		return "gmi"
+	case "qwen-oauth":
+		return "qwen-oauth"
+	case "lmstudio", "lm-studio":
+		return "lmstudio"
+	case "minimax-oauth":
+		return "minimax-oauth"
+	case "alibaba-coding-plan":
+		return "alibaba-coding-plan"
+	case "google-gemini-cli":
+		return "google-gemini-cli"
+	case "openai-codex":
+		return "openai-codex"
+	case "copilot-acp":
+		return "copilot-acp"
+	case "copilot":
+		return "copilot"
 	}
 	// Unknown prefix → don't persist a guess. derive-provider.sh's
 	// *=auto fallback handles it at runtime.
