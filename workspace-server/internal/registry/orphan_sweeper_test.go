@@ -20,11 +20,13 @@ import (
 // individual tests don't have to spell out a query they're not actually
 // asserting against.
 //
-// The regex is anchored at the start of the query AND requires the
-// status-filter to keep us from accidentally matching a future query
-// that opens with the same column name. R3 from the review.
+// The regex is anchored at the start of the query AND requires both the
+// status-filter (R3 from the review) and the runtime-filter (2026-05-03
+// fix for external workspaces being incorrectly swept), to keep us from
+// accidentally matching a future query that opens with the same column
+// name OR a regression that drops one of the load-bearing predicates.
 func expectStaleTokenSweepNoOp(mock sqlmock.Sqlmock) {
-	mock.ExpectQuery(`(?s)^\s*SELECT DISTINCT t\.workspace_id::text\s+FROM workspace_auth_tokens.*status NOT IN \('removed', 'provisioning'\)`).
+	mock.ExpectQuery(`(?s)^\s*SELECT DISTINCT t\.workspace_id::text\s+FROM workspace_auth_tokens.*status NOT IN \('removed', 'provisioning'\).*runtime != 'external'`).
 		WillReturnRows(sqlmock.NewRows([]string{"workspace_id"}))
 }
 
@@ -486,9 +488,11 @@ func TestSweepOnce_StaleTokenRevokeFiresWhenNoContainer(t *testing.T) {
 
 	// Third-pass query returns the orphaned workspace.
 	// Tight regex pins the safety guards: status-filter excludes
-	// 'removed' and 'provisioning' (R2 + the C1 fix), and the
-	// staleness predicate appears in the SELECT.
-	mock.ExpectQuery(`(?s)^\s*SELECT DISTINCT t\.workspace_id::text\s+FROM workspace_auth_tokens.*status NOT IN \('removed', 'provisioning'\).*COALESCE\(t\.last_used_at, t\.created_at\) < now\(\) - make_interval`).
+	// 'removed' and 'provisioning' (R2 + the C1 fix), runtime filter
+	// excludes 'external' (2026-05-03 fix — the sweep was incorrectly
+	// targeting external workspaces which have no container by design),
+	// and the staleness predicate appears in the SELECT.
+	mock.ExpectQuery(`(?s)^\s*SELECT DISTINCT t\.workspace_id::text\s+FROM workspace_auth_tokens.*status NOT IN \('removed', 'provisioning'\).*runtime != 'external'.*COALESCE\(t\.last_used_at, t\.created_at\) < now\(\) - make_interval`).
 		WillReturnRows(sqlmock.NewRows([]string{"workspace_id"}).
 			AddRow(orphanedID))
 
@@ -544,7 +548,7 @@ func TestSweepOnce_StaleTokenRevokeFailureBailsLoop(t *testing.T) {
 
 	// Third-pass returns two stale-token workspaces; the first revoke
 	// errors. Loop must bail without attempting the second.
-	mock.ExpectQuery(`(?s)^\s*SELECT DISTINCT t\.workspace_id::text\s+FROM workspace_auth_tokens.*status NOT IN \('removed', 'provisioning'\)`).
+	mock.ExpectQuery(`(?s)^\s*SELECT DISTINCT t\.workspace_id::text\s+FROM workspace_auth_tokens.*status NOT IN \('removed', 'provisioning'\).*runtime != 'external'`).
 		WillReturnRows(sqlmock.NewRows([]string{"workspace_id"}).
 			AddRow("aaaa1111-0000-0000-0000-000000000000").
 			AddRow("bbbb2222-0000-0000-0000-000000000000"))
