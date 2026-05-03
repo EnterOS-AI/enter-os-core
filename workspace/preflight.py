@@ -140,6 +140,44 @@ def run_preflight(config: WorkspaceConfig, config_path: str) -> PreflightReport:
     # Check required environment variables (e.g. CLAUDE_CODE_OAUTH_TOKEN, OPENAI_API_KEY).
     # These are declared per-runtime in config.yaml and injected via the secrets API.
     required_env = getattr(config.runtime_config, "required_env", []) or []
+
+    # Per-model override path. When the template's runtime_config declares
+    # `models[]` (canvas Model dropdown), prefer the picked model's own
+    # `required_env` over the top-level fallback. The picked model is
+    # `runtime_config.model` (which already honors the MODEL_PROVIDER env
+    # override at parse time — see config.py:RuntimeConfig.model resolution).
+    # Match on `entry["id"]` case-insensitively because canvas-side ids
+    # ("MiniMax-M2.7") and adapter-side normalization ("minimax-m2.7") drift
+    # by case across registries.
+    #
+    # Bug surfaced 2026-05-02: claude-code-default top-level required_env
+    # demands CLAUDE_CODE_OAUTH_TOKEN, but the user picked MiniMax and only
+    # set MINIMAX_API_KEY. Without this lookup, preflight failed and the
+    # workspace crash-looped despite the user having satisfied the picked
+    # model's actual auth requirement.
+    models = getattr(config.runtime_config, "models", None) or []
+    picked_model = (getattr(config.runtime_config, "model", "") or "").strip()
+    if models and picked_model:
+        picked_lower = picked_model.lower()
+        for entry in models:
+            if not isinstance(entry, dict):
+                continue
+            entry_id = str(entry.get("id", "")).strip()
+            if not entry_id:
+                continue
+            if entry_id.lower() != picked_lower:
+                continue
+            per_model_env = entry.get("required_env")
+            if per_model_env:
+                # Per-model required_env wins outright — do NOT union with the
+                # top-level list. Templates use per-model entries precisely
+                # to express that different models have *different* auth
+                # paths (OAuth token vs API key vs third-party provider key);
+                # unioning would re-introduce the very crash-loop this fix
+                # closes.
+                required_env = list(per_model_env)
+            break
+
     for env_var in required_env:
         if not os.environ.get(env_var):
             report.failures.append(

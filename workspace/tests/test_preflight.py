@@ -286,6 +286,140 @@ def test_required_env_empty_list_passes(tmp_path):
     assert report.ok is True
 
 
+# ---------- Per-model required_env (models[] override) ----------
+
+
+def test_per_model_required_env_wins_over_top_level(tmp_path, monkeypatch):
+    """When `runtime_config.models[]` declares per-model `required_env` and
+    the picked `model` matches an entry id, the entry's required_env wins
+    over the top-level fallback. The 2026-05-02 MiniMax-on-claude-code bug:
+    user picks MiniMax + sets MINIMAX_API_KEY, top-level demands
+    CLAUDE_CODE_OAUTH_TOKEN — without this override path the workspace
+    crash-loops on a stale top-level requirement."""
+    monkeypatch.setenv("MINIMAX_API_KEY", "mx-test")
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+    config = make_config(
+        runtime="claude-code",
+        runtime_config=RuntimeConfig(
+            model="MiniMax-M2.7",
+            required_env=["CLAUDE_CODE_OAUTH_TOKEN"],  # top-level fallback
+            models=[
+                {"id": "sonnet", "required_env": ["CLAUDE_CODE_OAUTH_TOKEN"]},
+                {"id": "MiniMax-M2.7", "required_env": ["MINIMAX_API_KEY"]},
+            ],
+        ),
+    )
+
+    report = run_preflight(config, str(tmp_path))
+
+    assert report.ok is True
+    assert not any(issue.title == "Required env" for issue in report.failures)
+
+
+def test_top_level_required_env_used_when_no_models_declared(tmp_path, monkeypatch):
+    """No `models[]` field → preserve the existing top-level behavior. This
+    is the single-model template path — claude-code-default before it grew
+    a Model dropdown, codex-default today, etc."""
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+    config = make_config(
+        runtime="claude-code",
+        runtime_config=RuntimeConfig(
+            model="sonnet",
+            required_env=["CLAUDE_CODE_OAUTH_TOKEN"],
+            models=[],
+        ),
+    )
+
+    report = run_preflight(config, str(tmp_path))
+
+    assert report.ok is False
+    assert any(
+        issue.title == "Required env" and "CLAUDE_CODE_OAUTH_TOKEN" in issue.detail
+        for issue in report.failures
+    )
+
+
+def test_top_level_used_when_picked_model_not_in_models_list(tmp_path, monkeypatch):
+    """`models[]` declared but the picked `model` isn't listed → fall back
+    to the top-level required_env. Defensive: protects against typos /
+    template drift / a CP override that names a model the template doesn't
+    enumerate. Never silently accept zero-auth in that case."""
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+    config = make_config(
+        runtime="claude-code",
+        runtime_config=RuntimeConfig(
+            model="some-unknown-model",
+            required_env=["CLAUDE_CODE_OAUTH_TOKEN"],
+            models=[
+                {"id": "sonnet", "required_env": ["CLAUDE_CODE_OAUTH_TOKEN"]},
+                {"id": "MiniMax-M2.7", "required_env": ["MINIMAX_API_KEY"]},
+            ],
+        ),
+    )
+
+    report = run_preflight(config, str(tmp_path))
+
+    assert report.ok is False
+    assert any(
+        issue.title == "Required env" and "CLAUDE_CODE_OAUTH_TOKEN" in issue.detail
+        for issue in report.failures
+    )
+
+
+def test_per_model_match_is_case_insensitive(tmp_path, monkeypatch):
+    """Match `entry["id"]` against `runtime_config.model` case-insensitively
+    — canvas surfaces `MiniMax-M2.7`, registries normalise to lowercase
+    `minimax-m2.7`, MODEL_PROVIDER env may carry either. The match must
+    not be brittle to that drift or templates ship preflight failures
+    on a working auth setup."""
+    monkeypatch.setenv("MINIMAX_API_KEY", "mx-test")
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+    config = make_config(
+        runtime="claude-code",
+        runtime_config=RuntimeConfig(
+            model="minimax-m2.7",  # lowercase
+            required_env=["CLAUDE_CODE_OAUTH_TOKEN"],
+            models=[
+                {"id": "MiniMax-M2.7", "required_env": ["MINIMAX_API_KEY"]},  # mixed case
+            ],
+        ),
+    )
+
+    report = run_preflight(config, str(tmp_path))
+
+    assert report.ok is True
+    assert not any(issue.title == "Required env" for issue in report.failures)
+
+
+def test_per_model_match_with_no_required_env_falls_back_to_top_level(tmp_path, monkeypatch):
+    """An entry that matches the picked model but has no `required_env`
+    (or an empty one) falls back to the top-level list. This protects
+    against partially-specified template entries — many templates list
+    a `name`/`description` per model without enumerating env vars when
+    the auth is identical across the family."""
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-test")
+
+    config = make_config(
+        runtime="claude-code",
+        runtime_config=RuntimeConfig(
+            model="sonnet",
+            required_env=["CLAUDE_CODE_OAUTH_TOKEN"],
+            models=[
+                {"id": "sonnet", "name": "Claude Sonnet"},  # no required_env
+            ],
+        ),
+    )
+
+    report = run_preflight(config, str(tmp_path))
+
+    assert report.ok is True
+    assert not any(issue.title == "Required env" for issue in report.failures)
+
+
 # ---------- Legacy auth_token_file backward compat ----------
 
 

@@ -100,6 +100,16 @@ class RuntimeConfig:
                                # "minimax"). Falls back to the top-level resolved
                                # provider when empty. Adapters (hermes, claude-code,
                                # codex) prefer this over slug-parsing the model name.
+    # Per-model entries surfaced in the canvas Model dropdown. Each entry is a
+    # raw dict with at least ``id``; ``required_env`` is the per-model auth
+    # list (e.g. ``{"id": "MiniMax-M2.7", "required_env": ["MINIMAX_API_KEY"]}``).
+    # Preflight prefers an entry's ``required_env`` over the top-level
+    # ``required_env`` when the picked ``model`` matches an entry's ``id``
+    # (case-insensitive). The top-level list remains the fallback so single-
+    # model templates need not migrate. Surfaced 2026-05-02 after a user
+    # picked MiniMax in canvas, set MINIMAX_API_KEY, and still got booted
+    # into a CLAUDE_CODE_OAUTH_TOKEN preflight failure.
+    models: list[dict] = field(default_factory=list)
     # Deprecated — use required_env + secrets API instead. Kept for backward compat.
     auth_token_env: str = ""
     auth_token_file: str = ""
@@ -426,25 +436,36 @@ def load_config(config_path: Optional[str] = None) -> WorkspaceConfig:
             args=runtime_raw.get("args", []),
             required_env=runtime_raw.get("required_env", []),
             timeout=runtime_raw.get("timeout", 0),
-            # Fall back to top-level resolved `model` (which already honors
-            # MODEL_PROVIDER env override, line 277) when YAML doesn't carry
-            # runtime_config.model.  Without this fallback, SaaS workspaces
-            # silently boot with the adapter's hard-coded default —
-            # claude-code-default reads `runtime_config.model or "sonnet"`,
-            # so a user who picks Opus in the canvas Config tab gets Sonnet
-            # on the next CP-driven restart. Root cause: the CP user-data
-            # script regenerates /configs/config.yaml at every boot with
-            # only `name`, `runtime`, `a2a` keys (intentionally minimal so
-            # it doesn't carry stale state), losing runtime_config.model.
-            # MODEL_PROVIDER is plumbed as an env var, so picking it up via
-            # the top-level resolved model keeps the selection sticky.
-            model=runtime_raw.get("model") or model,
+            # Picked-model precedence (priority order):
+            #   1. MODEL_PROVIDER env var — canvas-picked model, plumbed via
+            #      workspace-server's secret-mint path or the universal
+            #      MODEL/MODEL_PROVIDER env from applyRuntimeModelEnv. The
+            #      operator's canvas selection MUST win over the template's
+            #      baked-in default; previously the template's
+            #      `runtime_config.model: sonnet` always won and the picked
+            #      MiniMax/GLM/etc model was silently dropped (Bug B,
+            #      surfaced 2026-05-02 during E2E).
+            #   2. runtime_raw.model — explicit YAML override in the
+            #      template's runtime_config.
+            #   3. top-level `model` — already honors MODEL_PROVIDER (line
+            #      359) but only when YAML lacks a top-level `model:`. This
+            #      is the SaaS restart case (CP regenerates a minimal
+            #      config.yaml on every boot, dropping runtime_config.model).
+            # Centralising here means EVERY adapter gets the override for
+            # free — no per-adapter env-reading code required.
+            model=os.environ.get("MODEL_PROVIDER") or runtime_raw.get("model") or model,
             # Same fallback shape as ``model`` above: an explicit
             # ``runtime_config.provider`` wins; otherwise inherit the
             # top-level resolved provider so adapters see a single
             # consistent choice without each one re-implementing
             # env/YAML/slug-prefix resolution.
             provider=runtime_raw.get("provider") or provider,
+            # Per-model entries (canvas Model dropdown source). Pass through
+            # raw dicts so the schema can grow without a parser change. Only
+            # entries that are dicts are kept — a malformed YAML element
+            # (string, list, None) is silently dropped rather than raising,
+            # matching the rest of this parser's lenient defaults.
+            models=[m for m in (runtime_raw.get("models") or []) if isinstance(m, dict)],
             # Deprecated fields — kept for backward compat
             auth_token_env=runtime_raw.get("auth_token_env", ""),
             auth_token_file=runtime_raw.get("auth_token_file", ""),
