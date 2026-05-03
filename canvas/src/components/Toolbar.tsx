@@ -154,10 +154,10 @@ export function Toolbar() {
         {counts.failed > 0 && (
           <StatusPill color={statusDotClass("failed")} count={counts.failed} label="failed" />
         )}
-        <span className="text-ink-soft" aria-hidden="true">·</span>
-        <span className="text-[10px] text-ink-soft whitespace-nowrap">
+        <span className="text-ink-mid" aria-hidden="true">·</span>
+        <span className="text-[10px] text-ink-mid whitespace-nowrap">
           {counts.roots} workspace{counts.roots !== 1 ? "s" : ""}
-          {counts.children > 0 && <span className="text-ink-soft"> + {counts.children} sub</span>}
+          {counts.children > 0 && <span className="text-ink-mid"> + {counts.children} sub</span>}
         </span>
       </div>
 
@@ -172,7 +172,7 @@ export function Toolbar() {
           type="button"
           onClick={stopAll}
           disabled={stopping}
-          className="flex items-center gap-1.5 px-2.5 py-1 bg-red-950/50 hover:bg-red-900/60 border border-red-800/40 rounded-lg transition-colors disabled:opacity-50"
+          className="flex items-center gap-1.5 px-2.5 py-1 bg-bad/10 hover:bg-bad/20 border border-bad/40 rounded-lg transition-colors disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-bad/40"
           title={`Stop all running tasks (${counts.activeTasks} active)`}
           aria-label={stopping ? "Stopping all running tasks" : `Stop all running tasks (${counts.activeTasks} active)`}
         >
@@ -191,7 +191,7 @@ export function Toolbar() {
           type="button"
           onClick={() => setRestartConfirmOpen(true)}
           disabled={restartingAll}
-          className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-950/40 hover:bg-amber-900/50 border border-amber-800/40 rounded-lg transition-colors disabled:opacity-50"
+          className="flex items-center gap-1.5 px-2.5 py-1 bg-warm/10 hover:bg-warm/20 border border-warm/40 rounded-lg transition-colors disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-warm/40"
           title={`Restart ${needsRestartNodes.length} workspace${needsRestartNodes.length === 1 ? "" : "s"} that need to pick up config or secret changes`}
           aria-label={restartingAll ? "Restarting workspaces" : `Restart ${needsRestartNodes.length} workspace${needsRestartNodes.length === 1 ? "" : "s"} pending config or secret changes`}
         >
@@ -216,10 +216,10 @@ export function Toolbar() {
         aria-pressed={showA2AEdges}
         aria-label={showA2AEdges ? "Hide A2A edges" : "Show A2A edges"}
         title={showA2AEdges ? "Hide A2A delegation edges" : "Show A2A delegation edges (last 60 min)"}
-        className={`flex items-center justify-center w-7 h-7 border rounded-lg transition-colors ${
+        className={`flex items-center justify-center w-7 h-7 border rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
           showA2AEdges
-            ? "bg-blue-950/50 hover:bg-blue-900/50 border-blue-800/40 text-accent"
-            : "bg-surface-card/50 hover:bg-surface-card/50 border-line/40 text-ink-soft hover:text-ink-mid"
+            ? "bg-accent/15 hover:bg-accent/25 border-accent/50 text-accent"
+            : "bg-surface-card hover:bg-surface-card/70 border-line text-ink-mid hover:text-ink"
         }`}
       >
         {/* Mesh / network icon */}
@@ -255,7 +255,7 @@ export function Toolbar() {
         }}
         aria-label="Open audit trail for selected workspace"
         title="Audit — view ledger for the selected workspace"
-        className="flex items-center justify-center w-7 h-7 bg-surface-card/50 hover:bg-surface-card/50 border border-line/40 rounded-lg transition-colors text-ink-soft hover:text-ink-mid"
+        className="flex items-center justify-center w-7 h-7 bg-surface-card hover:bg-surface-card/70 border border-line rounded-lg transition-colors text-ink-mid hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
       >
         {/* Scroll / ledger icon */}
         <svg
@@ -277,7 +277,7 @@ export function Toolbar() {
         onClick={() => useCanvasStore.getState().setSearchOpen(true)}
         aria-label="Search workspaces"
         title="Search (⌘K)"
-        className="flex items-center justify-center w-7 h-7 bg-surface-card/50 hover:bg-surface-card/50 border border-line/40 rounded-lg transition-colors text-ink-soft hover:text-ink-mid"
+        className="flex items-center justify-center w-7 h-7 bg-surface-card hover:bg-surface-card/70 border border-line rounded-lg transition-colors text-ink-mid hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
       >
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.5" />
@@ -290,7 +290,7 @@ export function Toolbar() {
         <button
           type="button"
           onClick={() => setHelpOpen((open) => !open)}
-          className="flex items-center justify-center w-7 h-7 bg-surface-card/50 hover:bg-surface-card/50 border border-line/40 rounded-lg transition-colors text-ink-soft hover:text-ink-mid"
+          className="flex items-center justify-center w-7 h-7 bg-surface-card hover:bg-surface-card/70 border border-line rounded-lg transition-colors text-ink-mid hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           aria-expanded={helpOpen}
           aria-label="Open quick help"
           title="Help — shortcuts & quick start"
@@ -308,7 +308,7 @@ export function Toolbar() {
               <button
                 type="button"
                 onClick={() => setHelpOpen(false)}
-                className="text-[10px] text-ink-soft hover:text-ink-mid transition-colors"
+                className="text-[10px] text-ink-mid hover:text-ink transition-colors focus:outline-none focus-visible:underline"
               >
                 Close
               </button>
@@ -358,7 +358,7 @@ function WsStatusPill({ status }: { status: "connected" | "connecting" | "discon
     return (
       <div className="flex items-center gap-1.5" title="Real-time updates: connected" aria-label="Real-time updates: connected">
         <div className={`w-1.5 h-1.5 rounded-full ${statusDotClass("online")}`} aria-hidden="true" />
-        <span className="text-[10px] text-ink-soft" aria-hidden="true">Live</span>
+        <span className="text-[10px] text-ink-mid" aria-hidden="true">Live</span>
       </div>
     );
   }
@@ -366,14 +366,14 @@ function WsStatusPill({ status }: { status: "connected" | "connecting" | "discon
     return (
       <div className="flex items-center gap-1.5" title="Real-time updates: reconnecting…" aria-label="Real-time updates: reconnecting">
         <div className="w-1.5 h-1.5 rounded-full bg-amber-400 motion-safe:animate-pulse" aria-hidden="true" />
-        <span className="text-[10px] text-ink-soft" aria-hidden="true">Reconnecting</span>
+        <span className="text-[10px] text-warm" aria-hidden="true">Reconnecting</span>
       </div>
     );
   }
   return (
     <div className="flex items-center gap-1.5" title="Real-time updates: disconnected" aria-label="Real-time updates: disconnected">
       <div className={`w-1.5 h-1.5 rounded-full ${statusDotClass("failed")}`} aria-hidden="true" />
-      <span className="text-[10px] text-ink-soft" aria-hidden="true">Offline</span>
+      <span className="text-[10px] text-bad" aria-hidden="true">Offline</span>
     </div>
   );
 }
@@ -384,7 +384,7 @@ function HelpRow({ shortcut, text }: { shortcut: string; text: string }) {
       <span className="shrink-0 rounded-md border border-line/60 bg-surface/70 px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.18em] text-ink-mid">
         {shortcut}
       </span>
-      <p className="text-[11px] leading-relaxed text-ink-soft">{text}</p>
+      <p className="text-[11px] leading-relaxed text-ink-mid">{text}</p>
     </div>
   );
 }
