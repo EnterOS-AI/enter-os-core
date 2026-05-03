@@ -215,12 +215,27 @@ describe("ConfigTab — Save persists model under runtime_config.model (2026-04-
       ).toBe("hermes"),
     );
 
-    // The model input is a free-text input wired to a datalist of suggestions.
-    const modelInput = (await waitFor(() =>
-      screen.getByPlaceholderText(/anthropic:claude-sonnet/i),
-    )) as HTMLInputElement;
-
-    fireEvent.change(modelInput, {
+    // With models[] present, the new ProviderModelSelector renders a
+    // provider+model dropdown pair instead of free-text inputs. Pick
+    // the provider first (single vendor here = minimax) so the model
+    // dropdown appears, then pick the model. The selector emits
+    // {providerId, model, envVars}, ConfigTab mirrors model into
+    // config.runtime_config.model, and the Save handler PUTs /model.
+    const providerSelect = (await waitFor(() =>
+      screen.getByTestId("provider-select"),
+    )) as HTMLSelectElement;
+    const minimaxId = Array.from(providerSelect.options).find((o) =>
+      o.text.startsWith("MiniMax"),
+    )?.value;
+    expect(minimaxId).toBeTruthy();
+    fireEvent.change(providerSelect, { target: { value: minimaxId! } });
+    // After picking provider, the selector defaults model to the
+    // first concrete entry. We explicitly pick the same model to
+    // exercise the model-change path.
+    const modelSelect = (await waitFor(() =>
+      screen.getByTestId("model-select"),
+    )) as HTMLSelectElement;
+    fireEvent.change(modelSelect, {
       target: { value: "minimax/MiniMax-M2.7-highspeed" },
     });
 

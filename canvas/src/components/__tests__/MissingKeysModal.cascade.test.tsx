@@ -1,34 +1,24 @@
 // @vitest-environment jsdom
 /**
- * Provider→model cascade in the deploy modal (sibling of the ConfigTab
- * cascade fix shipped in PR #2516, task #236).
+ * Provider→model cascade in the deploy modal.
  *
- * The user-reported bug (2026-05-02 hongming Hermes Agent):
+ * Original bug (2026-05-02 hongming Hermes Agent):
+ *   1. Modal pre-fills MODEL with template default (e.g. MiniMax-M2.7-highspeed)
+ *   2. Provider radio defaults to providers[0] (Anthropic) — wrong vendor
+ *   3. ENV-VAR input shows ANTHROPIC_API_KEY
+ *   4. User pastes a key, deploys
+ *   5. Workspace boots with model=MiniMax + ANTHROPIC_API_KEY → adapter
+ *      crashes before /registry/register → WORKSPACE_PROVISION_FAILED.
  *
- *   1. User opens TemplatePalette → Deploy on a hermes template.
- *   2. Modal shows MODEL field pre-filled with template default
- *      (e.g. "MiniMax-M2.7-highspeed") AND a list of provider radios
- *      (Anthropic, OpenRouter, MiniMax, …).
- *   3. The provider radio defaults to whichever entry was first in
- *      `preflight.providers` (Anthropic in the hermes case).
- *   4. The env-var input below shows ANTHROPIC_API_KEY.
- *   5. User pastes whatever key they have, clicks Deploy.
- *   6. Workspace is created with model=MiniMax-M2.7-highspeed +
- *      ANTHROPIC_API_KEY → hermes adapter tries to call Anthropic
- *      with a MiniMax model id → crashes before /registry/register
- *      → workspace ends in WORKSPACE_PROVISION_FAILED with
- *      "container started but never called /registry/register".
- *
- * Fix: when the model resolves to a known provider via its
- * `required_env`, snap the radio so the env-var fields below match
- * the model the user picked. Free-text models not in `models` (or
- * models without required_env) leave the radio alone — the user can
- * still manually pick a provider.
+ * Fix: pre-deploy modal back-derives provider from initialModel and pins
+ * the selector to the matching vendor. The dropdown UI (replacing the
+ * old radios in PR shipped 2026-05-02) keeps the same invariant.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 
 import { MissingKeysModal, providerIdForModel } from "../MissingKeysModal";
+import { buildProviderCatalog } from "../ProviderModelSelector";
 import type { ModelSpec, ProviderChoice } from "@/lib/deploy-preflight";
 
 vi.mock("@/lib/api", () => ({
@@ -73,7 +63,17 @@ const HERMES_MODELS: ModelSpec[] = [
   { id: "local-llama3", required_env: [] },
 ];
 
-describe("providerIdForModel", () => {
+/** Resolve the selector option-value for a given vendor against the
+ *  vendor-aware catalog. Catalog ids are `${vendor}|${sortedEnv}`, so
+ *  test code shouldn't hard-code them. */
+function providerIdForVendor(vendor: string): string {
+  const catalog = buildProviderCatalog(HERMES_MODELS);
+  const entry = catalog.find((p) => p.vendor === vendor);
+  if (!entry) throw new Error(`vendor "${vendor}" not in catalog`);
+  return entry.id;
+}
+
+describe("providerIdForModel (legacy helper, still exported for tests)", () => {
   it("returns the provider id (sorted+joined required_env) for a known model", () => {
     expect(providerIdForModel("MiniMax-M2.7-highspeed", HERMES_MODELS)).toBe(
       "MINIMAX_API_KEY",
@@ -83,9 +83,6 @@ describe("providerIdForModel", () => {
     );
   });
 
-  // The id formula sorts envVars before joining. A model that needs
-  // two keys together (rare today, but the shape supports it) maps
-  // to a deterministic id regardless of the order in required_env.
   it("sorts required_env so the id matches providersFromTemplate's formula", () => {
     const models: ModelSpec[] = [
       { id: "weird", required_env: ["Z_KEY", "A_KEY"] },
@@ -117,14 +114,14 @@ describe("providerIdForModel", () => {
   });
 });
 
-describe("ProviderPickerModal — model→provider cascade", () => {
+describe("ProviderPickerModal — model→provider cascade (dropdown UI)", () => {
   afterEach(() => cleanup());
 
   // The headline bug: opening the modal with the MiniMax default
-  // pre-filled should NOT leave the radio on Anthropic just because
-  // Anthropic was first in providers[]. The cascade snaps the radio
-  // to MINIMAX_API_KEY on first paint.
-  it("snaps provider radio to MiniMax when initialModel is a MiniMax model", () => {
+  // pre-filled should NOT leave the selector on Anthropic just because
+  // Anthropic was first in providers[]. Back-derivation snaps it on
+  // first paint to the MiniMax vendor entry.
+  it("snaps provider selector to MiniMax when initialModel is a MiniMax model", () => {
     render(
       <MissingKeysModal
         open
@@ -138,28 +135,22 @@ describe("ProviderPickerModal — model→provider cascade", () => {
         onCancel={vi.fn()}
       />,
     );
-    const minimaxRadio = screen.getByRole("radio", {
-      name: /MiniMax \(2 models\)/i,
-    }) as HTMLInputElement;
-    expect(minimaxRadio.checked).toBe(true);
+    const providerSelect = screen.getByTestId("provider-select") as HTMLSelectElement;
+    expect(providerSelect.value).toBe(providerIdForVendor("minimax"));
     // The env-var input underneath should be for MINIMAX_API_KEY,
     // not ANTHROPIC_API_KEY — that's the load-bearing UX win. The
     // entry uses a password input with a fixed "sk-..." placeholder
     // when the key name contains "API_KEY"; assert exactly ONE such
     // input exists, which proves only the selected provider's envVars
-    // were rendered into entries[]. (The provider-radio subtitles
-    // also mention each envVar name as Mono text — that's why we
-    // can't use getByText("MINIMAX_API_KEY") here, it would match
-    // both the radio label and the entry label.)
+    // were rendered into entries[].
     const apiKeyInputs = screen.getAllByPlaceholderText("sk-...");
     expect(apiKeyInputs).toHaveLength(1);
   });
 
-  // Mid-flow change: user starts with the pre-filled MiniMax model,
-  // edits it to a Claude model, the radio re-snaps to Anthropic. This
-  // matches user expectation — picking a different model shouldn't
-  // leave the wrong env-var input showing.
-  it("re-snaps when the user edits the model field to a different provider's model", () => {
+  // Mid-flow change: user starts with the pre-filled MiniMax model and
+  // switches the provider dropdown to Anthropic. Env-var rows below
+  // re-render to show ANTHROPIC_API_KEY only. Same shape-pin as above.
+  it("re-renders credential entries when provider is switched", () => {
     render(
       <MissingKeysModal
         open
@@ -173,60 +164,21 @@ describe("ProviderPickerModal — model→provider cascade", () => {
         onCancel={vi.fn()}
       />,
     );
-    const modelInput = screen.getByLabelText(/Model slug/i) as HTMLInputElement;
-    fireEvent.change(modelInput, { target: { value: "claude-opus-4-7" } });
-    const anthropicRadio = screen.getByRole("radio", {
-      name: /Anthropic \(8 models\)/i,
-    }) as HTMLInputElement;
-    expect(anthropicRadio.checked).toBe(true);
-    // Same shape-pin as the previous test — exactly one
-    // password input means only the selected provider's envVars
-    // landed in entries[].
+    const providerSelect = screen.getByTestId("provider-select") as HTMLSelectElement;
+    fireEvent.change(providerSelect, {
+      target: { value: providerIdForVendor("anthropic") },
+    });
+    expect(providerSelect.value).toBe(providerIdForVendor("anthropic"));
+    // Exactly one password input means only the selected provider's
+    // envVars landed in entries[].
     expect(screen.getAllByPlaceholderText("sk-...")).toHaveLength(1);
   });
 
-  // Free-text models (typed slug not in the registry) should NOT
-  // change the radio — the user may know about a model the template
-  // doesn't list. Falling back to the previously-selected provider
-  // keeps the form in a usable state.
-  it("leaves the radio alone when the typed model is not in the registry", () => {
-    render(
-      <MissingKeysModal
-        open
-        missingKeys={["ANTHROPIC_API_KEY", "MINIMAX_API_KEY", "OPENROUTER_API_KEY"]}
-        providers={HERMES_PROVIDERS}
-        runtime="hermes"
-        modelSuggestions={HERMES_MODELS.map((m) => m.id)}
-        models={HERMES_MODELS}
-        initialModel="MiniMax-M2.7-highspeed"
-        onKeysAdded={vi.fn()}
-        onCancel={vi.fn()}
-      />,
-    );
-    // Snapped to MiniMax by initial cascade.
-    expect(
-      (screen.getByRole("radio", {
-        name: /MiniMax \(2 models\)/i,
-      }) as HTMLInputElement).checked,
-    ).toBe(true);
-
-    // Type something the registry doesn't know — radio stays on MiniMax.
-    const modelInput = screen.getByLabelText(/Model slug/i) as HTMLInputElement;
-    fireEvent.change(modelInput, {
-      target: { value: "some-future-model-not-in-registry" },
-    });
-    expect(
-      (screen.getByRole("radio", {
-        name: /MiniMax \(2 models\)/i,
-      }) as HTMLInputElement).checked,
-    ).toBe(true);
-  });
-
   // Backwards-compat: callers that don't pass `models` (legacy
-  // call sites) keep the pre-cascade behavior — radio defaults to
-  // providers[0] (or to a satisfied configuredKeys match). The
-  // cascade is purely additive.
-  it("falls back to providers[0] when models prop is omitted", () => {
+  // call sites) fall back to a synthesized catalog from `providers`
+  // — selector still works, but vendor split is degraded to env-tuple
+  // grouping (one entry per ProviderChoice).
+  it("falls back to providers[] when models prop is omitted", () => {
     render(
       <MissingKeysModal
         open
@@ -235,35 +187,33 @@ describe("ProviderPickerModal — model→provider cascade", () => {
         runtime="hermes"
         modelSuggestions={HERMES_MODELS.map((m) => m.id)}
         // models intentionally omitted — legacy caller shape.
-        initialModel="MiniMax-M2.7-highspeed"
         onKeysAdded={vi.fn()}
         onCancel={vi.fn()}
       />,
     );
-    // Without `models`, no cascade: radio sits on providers[0]
-    // (Anthropic), reproducing the bug the cascade fixes. Pinned
-    // here so anyone removing the `models` prop sees the regression.
-    expect(
-      (screen.getByRole("radio", {
-        name: /Anthropic \(8 models\)/i,
-      }) as HTMLInputElement).checked,
-    ).toBe(true);
+    // Without `models`, no back-derivation: selector defaults to
+    // providers[0] (Anthropic). Dropdown still populated with all 3
+    // entries — synthesized catalog uses `${vendor}|${envTuple}` ids
+    // (matching the selector's own catalog shape), so the value is
+    // "anthropic|ANTHROPIC_API_KEY", not the raw "ANTHROPIC_API_KEY".
+    const providerSelect = screen.getByTestId("provider-select") as HTMLSelectElement;
+    expect(providerSelect.value).toBe("anthropic|ANTHROPIC_API_KEY");
+    expect(providerSelect.options.length).toBeGreaterThanOrEqual(4); // 3 providers + the disabled placeholder
   });
 
   // configuredKeys interaction: when a provider's keys are already
   // saved globally, the picker pre-selects that satisfied provider.
-  // The model cascade should still override — the user explicitly
-  // picked a model that needs a different provider, that intent
-  // wins over "you already have this key".
-  it("model cascade beats configuredKeys-satisfied default", () => {
+  // BUT the model-derived snap still wins — the user explicitly
+  // picked a model, that intent overrides "you already have this key".
+  it("model-derived selection beats configuredKeys-satisfied default", () => {
     render(
       <MissingKeysModal
         open
         missingKeys={["ANTHROPIC_API_KEY", "MINIMAX_API_KEY", "OPENROUTER_API_KEY"]}
         providers={HERMES_PROVIDERS}
         runtime="hermes"
-        // User has Anthropic globally. Without the cascade, radio
-        // would snap to Anthropic. WITH the cascade, the typed
+        // User has Anthropic globally. Without back-derivation,
+        // selector would land on Anthropic. WITH it, the typed
         // MiniMax model wins.
         configuredKeys={new Set(["ANTHROPIC_API_KEY"])}
         modelSuggestions={HERMES_MODELS.map((m) => m.id)}
@@ -273,10 +223,7 @@ describe("ProviderPickerModal — model→provider cascade", () => {
         onCancel={vi.fn()}
       />,
     );
-    expect(
-      (screen.getByRole("radio", {
-        name: /MiniMax \(2 models\)/i,
-      }) as HTMLInputElement).checked,
-    ).toBe(true);
+    const providerSelect = screen.getByTestId("provider-select") as HTMLSelectElement;
+    expect(providerSelect.value).toBe(providerIdForVendor("minimax"));
   });
 });

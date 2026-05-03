@@ -262,10 +262,10 @@ describe("ConfigTab — Provider override (Option B PR-5)", () => {
   // prefixes. Still adapter-driven (the slugs come from the template's
   // `models:` list), just inferred. This keeps existing templates
   // working while the platform team migrates them one at a time.
-  it("falls back to model-slug prefixes when the runtime ships no providers list", async () => {
+  it("renders vendor-grouped provider dropdown when template ships models", async () => {
     wireApi({
       workspaceRuntime: "hermes",
-      workspaceModel: "anthropic:claude-opus-4-7",
+      workspaceModel: "anthropic/claude-opus-4-7",
       configYamlContent: "name: ws\nruntime: hermes\n",
       providerValue: "",
       templates: [
@@ -274,28 +274,32 @@ describe("ConfigTab — Provider override (Option B PR-5)", () => {
           name: "Hermes",
           runtime: "hermes",
           models: [
-            { id: "anthropic:claude-opus-4-7" },
-            { id: "openai:gpt-4o" },
-            { id: "anthropic:claude-sonnet-4-5" }, // dup vendor — must dedupe
-            { id: "nousresearch/hermes-4-70b" },   // "/" separator
+            { id: "anthropic/claude-opus-4-7", required_env: ["ANTHROPIC_API_KEY"] },
+            { id: "openai/gpt-4o", required_env: ["OPENROUTER_API_KEY"] },
+            { id: "anthropic/claude-sonnet-4-5", required_env: ["ANTHROPIC_API_KEY"] }, // dup vendor — must dedupe
+            { id: "nousresearch/hermes-4-70b", required_env: ["HERMES_API_KEY"] },
           ],
-          // No `providers:` field → fallback derivation kicks in.
+          // No `providers:` field → ProviderModelSelector derives vendors
+          // from model id prefixes via its own buildProviderCatalog.
         },
       ],
     });
 
     render(<ConfigTab workspaceId="ws-test" />);
-    const input = await screen.findByTestId("provider-input");
-    const listId = (input as HTMLInputElement).getAttribute("list");
-    expect(listId).toBeTruthy();
+    // With models present, the new vendor-aware dropdown renders.
+    // Provider entries dedupe by vendor → 3 unique vendors here
+    // (anthropic, openai, nousresearch).
+    const select = await screen.findByTestId("provider-select") as HTMLSelectElement;
     await waitFor(() => {
-      const datalist = document.getElementById(listId!);
-      const optionValues = Array.from(datalist!.querySelectorAll("option")).map(
-        (o) => (o as HTMLOptionElement).value,
-      );
-      // Order = first-appearance from models[]; dedup keeps anthropic
-      // once even though two model slugs use it.
-      expect(optionValues).toEqual(["anthropic", "openai", "nousresearch"]);
+      const optionTexts = Array.from(select.options)
+        .map((o) => o.text)
+        .filter((t) => !t.startsWith("—")); // strip placeholder
+      // Labels are vendor display names, but vendor identity is what
+      // matters for dedupe. Assert each expected vendor surfaces once.
+      expect(optionTexts.some((t) => t.startsWith("Anthropic API"))).toBe(true);
+      expect(optionTexts.some((t) => t.startsWith("OpenAI"))).toBe(true);
+      expect(optionTexts.some((t) => t.startsWith("Nous Research"))).toBe(true);
+      expect(optionTexts.length).toBe(3); // dedupe pin
     });
   });
 
