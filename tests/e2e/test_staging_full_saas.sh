@@ -429,6 +429,42 @@ for wid in $WS_TO_CHECK; do
   ok "    $wid online"
 done
 
+# ─── 7b. Canvas-terminal diagnose (EIC chain probe) ────────────────────
+# This step exists because the canvas-terminal failure of 2026-05-03
+# was structurally invisible to local-dev (handleLocalConnect uses
+# docker exec; handleRemoteConnect uses EIC + ssh). The CP provisioner
+# shipped without the tcp/22 EIC ingress rule for ~6 months and nobody
+# noticed until a paying tenant clicked Terminal in canvas. Probing the
+# diagnose endpoint here at synth-E2E time means a regression in
+#   - tenantIngressRules / workspaceIngressRules (CP)
+#   - eicSSHIngressRule helper (CP)
+#   - AuthorizeIngress source-group support (CP awsapi)
+#   - EIC_ENDPOINT_SG_ID Railway env
+#   - handleRemoteConnect's send-ssh-public-key/open-tunnel/ssh chain
+# surfaces within ~20 min of merge instead of waiting for a user report.
+#
+# The diagnose endpoint runs the full EIC + ssh probe from inside the
+# tenant's workspace-server (which already has AWS creds via its IAM
+# profile) and reports per-step status. We only need to call it as the
+# tenant — no AWS creds needed on the GHA runner. Returns
+# {"ok": bool, "first_failure": "name", "steps": [...]}.
+#
+# Local-docker workspaces (instance_id NULL) get diagnoseLocal which
+# probes docker.Ping + container exec; we still expect ok=true there
+# since local-docker is the alternative production path.
+log "7b/11 Canvas-terminal EIC diagnose probe..."
+for wid in $WS_TO_CHECK; do
+  DIAG_JSON=$(tenant_call GET "/workspaces/$wid/terminal/diagnose" 2>/dev/null || echo '{}')
+  DIAG_OK=$(echo "$DIAG_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); print('true' if d.get('ok') else 'false')" 2>/dev/null || echo "false")
+  if [ "$DIAG_OK" = "true" ]; then
+    ok "    $wid terminal-reachable (canvas terminal will work)"
+  else
+    DIAG_FAIL=$(echo "$DIAG_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('first_failure','unknown'))" 2>/dev/null || echo "unknown")
+    DIAG_DETAIL=$(echo "$DIAG_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); s=[x for x in d.get('steps',[]) if not x.get('ok')]; print(s[0].get('error','') if s else '')" 2>/dev/null || echo "")
+    fail "Workspace $wid terminal diagnose failed at step '$DIAG_FAIL': $DIAG_DETAIL — check tenant SG has tcp/22 from EIC endpoint SG (sg-0785d5c6138220523), EIC_ENDPOINT_SG_ID set in Railway, and EIC endpoint health"
+  fi
+done
+
 # ─── 8. A2A round-trip on parent ───────────────────────────────────────
 log "8/11 Sending A2A message to parent — expecting agent response..."
 # Smoke prompt phrasing — DO NOT trim back to the bare "Reply with exactly: PONG"
