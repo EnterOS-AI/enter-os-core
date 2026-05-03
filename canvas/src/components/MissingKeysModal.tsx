@@ -8,6 +8,12 @@ import {
   type ModelSpec,
   type ProviderChoice,
 } from "@/lib/deploy-preflight";
+import {
+  ProviderModelSelector,
+  buildProviderCatalog,
+  findProviderForModel,
+  type SelectorValue,
+} from "./ProviderModelSelector";
 
 interface Props {
   open: boolean;
@@ -190,63 +196,82 @@ function ProviderPickerModal({
   title?: string;
   description?: string;
 }) {
-  // Prefer the first provider whose env vars are already satisfied by
-  // the configured set — pre-selecting "the option the user already has
-  // keys for" matches expected UX. Falls back to providers[0] otherwise.
-  const initialSelected = useMemo(() => {
+  // Single model source: `models` from caller when present, else
+  // synthesize a stub list from the legacy `providers` shape so older
+  // callers (pre-PR-2534) still drive the picker. ProviderModelSelector
+  // and findProviderForModel BOTH consume this list — passing the same
+  // shape to both keeps ids identical, so back-derivation matches the
+  // dropdown's option values.
+  const selectorModels = useMemo(() => {
+    if (models && models.length > 0) return models;
+    return providers.map((p) => ({
+      id: p.id,
+      name: p.label,
+      required_env: p.envVars,
+    }));
+  }, [models, providers]);
+
+  const catalog = useMemo(() => buildProviderCatalog(selectorModels), [selectorModels]);
+
+  // Initial selector value: prefer back-derivation from initialModel
+  // (template-deploy passes the template default), then the first
+  // provider already satisfied by configuredKeys, then catalog[0].
+  const initial = useMemo<SelectorValue>(() => {
+    if (initialModel) {
+      const matched = findProviderForModel(catalog, initialModel);
+      if (matched) {
+        return {
+          providerId: matched.id,
+          model: initialModel,
+          envVars: matched.envVars,
+        };
+      }
+    }
     if (configuredKeys) {
-      const satisfied = providers.find((p) =>
+      const satisfied = catalog.find((p) =>
         p.envVars.every((k) => configuredKeys.has(k)),
       );
-      if (satisfied) return satisfied.id;
+      if (satisfied) {
+        return {
+          providerId: satisfied.id,
+          model: satisfied.wildcard ? "" : satisfied.models[0]?.id ?? "",
+          envVars: satisfied.envVars,
+        };
+      }
     }
-    return providers[0].id;
-  }, [providers, configuredKeys]);
+    const first = catalog[0];
+    if (!first) return { providerId: "", model: "", envVars: [] };
+    return {
+      providerId: first.id,
+      model: first.wildcard ? "" : first.models[0]?.id ?? "",
+      envVars: first.envVars,
+    };
+  }, [catalog, initialModel, configuredKeys]);
 
-  const [selectedId, setSelectedId] = useState(initialSelected);
+  const [selectorValue, setSelectorValue] = useState<SelectorValue>(initial);
   const [entries, setEntries] = useState<KeyEntry[]>([]);
-  const [model, setModel] = useState(initialModel ?? "");
   const firstInputRef = useRef<HTMLInputElement>(null);
 
+  // Legacy compat: map the selector value back into the old `selected`/
+  // `model` shape for the rest of the modal body (footer copy, etc.).
   const selected = useMemo(
-    () => providers.find((p) => p.id === selectedId) ?? providers[0],
-    [providers, selectedId],
+    () =>
+      providers.find((p) => p.id === selectorValue.providerId) ??
+      providers[0],
+    [providers, selectorValue.providerId],
   );
-
-  const showModelInput = (modelSuggestions?.length ?? 0) > 0 || initialModel !== undefined;
+  const model = selectorValue.model;
+  const showModelInput = catalog.length > 0;
 
   useEffect(() => {
     if (!open) return;
-    setSelectedId(initialSelected);
-    setModel(initialModel ?? "");
-  }, [open, initialSelected, initialModel]);
-
-  // Cascade: when the model resolves to a known provider via its
-  // required_env, snap the radio so the env-var fields below match
-  // the model the user picked. Without this, picking
-  // "MiniMax-M2.7-highspeed" leaves the radio on whatever default
-  // was first (e.g. Anthropic) and surfaces ANTHROPIC_API_KEY as
-  // the required key — saving that and deploying produces a
-  // workspace with model=MiniMax + ANTHROPIC_API_KEY which then
-  // fails to call /registry/register and times out. Caught
-  // 2026-05-02 on hongming/Hermes Agent (workspace
-  // 95ed3ff2-… ended in WORKSPACE_PROVISION_FAILED).
-  // Free-text models not in `models` (or models without
-  // required_env) fall through and leave the radio alone.
-  useEffect(() => {
-    if (!open) return;
-    const targetId = providerIdForModel(model, models);
-    if (!targetId) return;
-    const matching = providers.find((p) => p.id === targetId);
-    if (matching && matching.id !== selectedId) {
-      setSelectedId(matching.id);
-    }
-  }, [open, model, models, providers, selectedId]);
+    setSelectorValue(initial);
+  }, [open, initial]);
 
   useEffect(() => {
     if (!open) return;
     setEntries(
-      selected.envVars.map((key) => ({
+      selectorValue.envVars.map((key) => ({
         key,
         value: "",
         // Pre-mark as saved when the key is already in the configured
@@ -257,13 +282,13 @@ function ProviderPickerModal({
         error: null,
       })),
     );
-  }, [open, selected, configuredKeys]);
+  }, [open, selectorValue.envVars, configuredKeys]);
 
   useEffect(() => {
     if (!open) return;
     const raf = requestAnimationFrame(() => firstInputRef.current?.focus());
     return () => cancelAnimationFrame(raf);
-  }, [open, selectedId]);
+  }, [open, selectorValue.providerId]);
 
   useEffect(() => {
     if (!open) return;
@@ -372,73 +397,18 @@ function ProviderPickerModal({
         </div>
 
         <div className="px-5 py-4 space-y-3">
-          {showModelInput && (
-            <div>
-              <label
-                htmlFor="provider-picker-model-input"
-                className="text-[10px] uppercase tracking-wide text-zinc-500 font-semibold mb-1.5 block"
-              >
-                Model{" "}
-                <span aria-hidden="true" className="text-red-400">*</span>
-                <span className="sr-only"> (required)</span>
-              </label>
-              <input
-                id="provider-picker-model-input"
-                type="text"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder="e.g. minimax/MiniMax-M2.7"
-                aria-label="Model slug"
-                autoComplete="off"
-                spellCheck={false}
-                list="provider-picker-model-suggestions"
-                className="w-full bg-zinc-900 border border-zinc-600 rounded px-2 py-1.5 text-[11px] text-zinc-100 font-mono focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20 transition-colors"
-              />
-              <datalist id="provider-picker-model-suggestions">
-                {modelSuggestions?.map((m) => (
-                  <option key={m} value={m} />
-                ))}
-              </datalist>
-              <p className="text-[9px] text-zinc-500 mt-1 leading-relaxed">
-                Slug determines provider routing at install time.
-              </p>
-            </div>
-          )}
-          <fieldset className="space-y-1.5">
-            <legend className="text-[10px] uppercase tracking-wide text-zinc-500 font-semibold mb-1.5">
-              Provider
-            </legend>
-            {providers.map((p) => (
-              <label
-                key={p.id}
-                className={`flex items-start gap-2.5 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
-                  selectedId === p.id
-                    ? "bg-blue-600/15 border-blue-500/50"
-                    : "bg-zinc-800/40 border-zinc-700/50 hover:border-zinc-600"
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="provider"
-                  value={p.id}
-                  checked={selectedId === p.id}
-                  onChange={() => setSelectedId(p.id)}
-                  className="mt-0.5 accent-blue-500"
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="text-[12px] text-zinc-100 font-medium">{p.label}</div>
-                  <div className="text-[10px] font-mono text-zinc-500">
-                    {p.envVars.join(", ")}
-                  </div>
-                  {p.note && (
-                    <div className="text-[10px] text-zinc-500 mt-1 leading-relaxed">
-                      {p.note}
-                    </div>
-                  )}
-                </div>
-              </label>
-            ))}
-          </fieldset>
+          {/* Shared provider→model selector. Source of truth for provider
+              taxonomy + model filtering. Same component is used in
+              ConfigTab so behavior + vendor split is identical across
+              all 3 deploy surfaces (modal here, settings tab, template
+              palette flow). */}
+          <ProviderModelSelector
+            models={selectorModels}
+            value={selectorValue}
+            onChange={setSelectorValue}
+            variant="stack"
+            idPrefix="provider-picker"
+          />
 
           <div className="space-y-2">
             {entries.map((entry, index) => (
@@ -519,6 +489,7 @@ function ProviderPickerModal({
               disabled={
                 !allSaved ||
                 anySaving ||
+                !selectorValue.providerId ||
                 (showModelInput && model.trim() === "")
               }
               className="px-3.5 py-1.5 text-[12px] bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-40"
