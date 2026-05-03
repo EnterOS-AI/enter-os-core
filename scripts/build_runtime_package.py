@@ -62,6 +62,7 @@ TOP_LEVEL_MODULES = {
     "configs_dir",
     "consolidation",
     "coordinator",
+    "event_log",
     "events",
     "executor_helpers",
     "heartbeat",
