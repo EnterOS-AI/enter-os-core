@@ -796,12 +796,14 @@ function MyChatPanel({ workspaceId, data }: Props) {
                   className={`prose prose-sm max-w-none [&>p]:mb-1 [&>p:last-child]:mb-0 ${
                     msg.role === "user"
                       ? "prose-invert"
-                      // Agent bubbles use bg-zinc-700 in dark mode; without
-                      // prose-invert the Tailwind Typography plugin keeps
-                      // its default DARK body color → unreadable dark-on-dark.
-                      // Light mode keeps default prose colors against the
-                      // warm surface-card bg.
-                      : "dark:prose-invert"
+                      // Agent bubbles in dark mode: invert prose AND brighten
+                      // the body/heading/bold/code tokens. prose-invert's
+                      // default `--tw-prose-invert-body: zinc-300` lands at
+                      // ~5.3:1 against bg-zinc-700 — passes AA but reads
+                      // washed out next to the user bubble's crisp
+                      // white-on-blue (~10:1). Push body to zinc-100 so the
+                      // agent text matches that crispness.
+                      : "dark:prose-invert dark:[--tw-prose-invert-body:theme(colors.zinc.100)] dark:[--tw-prose-invert-headings:theme(colors.white)] dark:[--tw-prose-invert-bold:theme(colors.white)] dark:[--tw-prose-invert-code:theme(colors.zinc.100)]"
                   }`}
                 >
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
