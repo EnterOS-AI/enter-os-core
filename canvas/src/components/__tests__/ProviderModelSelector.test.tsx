@@ -182,15 +182,38 @@ describe("<ProviderModelSelector>", () => {
     expect(modelSelect.disabled).toBe(true);
   });
 
-  it("picking provider emits onChange with default model + envVars", () => {
+  it("picking a multi-model provider emits onChange with empty model (forces explicit pick)", () => {
     const { onChange } = setup();
     const providerSelect = screen.getByTestId("provider-select");
     const catalog = buildProviderCatalog(CLAUDE_CODE_MODELS);
     const minimax = catalog.find((p) => p.vendor === "minimax")!;
+    // MiniMax bucket holds 2 models (MiniMax-M2 + MiniMax-M2.7). Auto-
+    // picking the first one used to bite a real user (2026-05-03):
+    // they wanted M2.7 but the silent default put M2 in the deploy
+    // payload. Now the model field must come back empty so the next
+    // dropdown is required-empty and Save/Deploy stay disabled until
+    // the user picks.
     fireEvent.change(providerSelect, { target: { value: minimax.id } });
     expect(onChange).toHaveBeenCalledWith({
       providerId: minimax.id,
-      model: "MiniMax-M2",
+      model: "",
+      envVars: ["ANTHROPIC_AUTH_TOKEN"],
+    });
+  });
+
+  it("picking a single-model provider auto-fills the model (no choice to make)", () => {
+    const { onChange } = setup();
+    const providerSelect = screen.getByTestId("provider-select");
+    const catalog = buildProviderCatalog(CLAUDE_CODE_MODELS);
+    // GLM-4.6 is the only model under the zai vendor in the fixture —
+    // a "0 vs many" boundary check. With only one option, forcing the
+    // user to re-pick adds friction without preventing any error.
+    const zai = catalog.find((p) => p.vendor === "zai")!;
+    expect(zai.models.length).toBe(1);
+    fireEvent.change(providerSelect, { target: { value: zai.id } });
+    expect(onChange).toHaveBeenCalledWith({
+      providerId: zai.id,
+      model: "GLM-4.6",
       envVars: ["ANTHROPIC_AUTH_TOKEN"],
     });
   });
@@ -250,7 +273,7 @@ describe("<ProviderModelSelector>", () => {
     expect(screen.getByText(/requires:/).textContent).toMatch(/CLAUDE_CODE_OAUTH_TOKEN/);
   });
 
-  it("switching provider resets model to first concrete option", () => {
+  it("switching to a multi-model provider clears the stale model id", () => {
     const catalog = buildProviderCatalog(CLAUDE_CODE_MODELS);
     const oauth = catalog.find((p) => p.vendor === "anthropic-oauth")!;
     const minimax = catalog.find((p) => p.vendor === "minimax")!;
@@ -260,9 +283,11 @@ describe("<ProviderModelSelector>", () => {
       onChange,
     });
     fireEvent.change(screen.getByTestId("provider-select"), { target: { value: minimax.id } });
+    // Empty rather than auto-picked — see "picking a multi-model
+    // provider …" test above for the user-facing rationale.
     expect(onChange).toHaveBeenCalledWith({
       providerId: minimax.id,
-      model: "MiniMax-M2",
+      model: "",
       envVars: ["ANTHROPIC_AUTH_TOKEN"],
     });
   });

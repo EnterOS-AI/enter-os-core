@@ -38,10 +38,15 @@ vi.mock("@/lib/api", () => ({
   },
 }));
 
+// Shared store stub — `updateNodeData` is exposed so a test can assert the
+// node-data flush happens after a successful PATCH (regression: previously
+// the DB updated but the canvas badge stayed stale until full hydrate).
+const storeUpdateNodeData = vi.fn();
+const storeRestartWorkspace = vi.fn();
 vi.mock("@/store/canvas", () => ({
   useCanvasStore: Object.assign(
-    (selector: (s: unknown) => unknown) => selector({ restartWorkspace: vi.fn(), updateNodeData: vi.fn() }),
-    { getState: () => ({ restartWorkspace: vi.fn(), updateNodeData: vi.fn() }) },
+    (selector: (s: unknown) => unknown) => selector({ restartWorkspace: storeRestartWorkspace, updateNodeData: storeUpdateNodeData }),
+    { getState: () => ({ restartWorkspace: storeRestartWorkspace, updateNodeData: storeUpdateNodeData }) },
   ),
 }));
 
@@ -90,6 +95,8 @@ beforeEach(() => {
   apiGet.mockReset();
   apiPatch.mockReset();
   apiPut.mockReset();
+  storeUpdateNodeData.mockReset();
+  storeRestartWorkspace.mockReset();
 });
 
 describe("ConfigTab — Provider override (Option B PR-5)", () => {
@@ -332,5 +339,236 @@ describe("ConfigTab — Provider override (Option B PR-5)", () => {
       expect(providerCalls.length).toBe(1);
       expect(providerCalls[0][1]).toEqual({ provider: "" });
     });
+  });
+
+  // Display-vs-storage drift regression (2026-05-03 incident, workspace
+  // e13aebd8…). User deployed claude-code with MiniMax-M2 stored in
+  // MODEL_PROVIDER. The container env (MODEL=MiniMax-M2) and chat
+  // worked correctly, but the Config tab showed "Claude Code
+  // subscription / Claude Sonnet (OAuth)" — i.e. the template's
+  // runtime_config.model: sonnet default — because currentModelId
+  // reads runtime_config.model first and loadConfig was overriding
+  // only the top-level config.model field. The merged shape was:
+  //   { model: "MiniMax-M2", runtime_config: { model: "sonnet" } }
+  // and currentModelId picked "sonnet". Fix: loadConfig propagates
+  // wsMetadataModel into BOTH places so the form is a single source
+  // of truth (DB-backed MODEL_PROVIDER). Pinning the merged-path
+  // branch with the exact reproducing shape: claude-code template
+  // YAML has runtime_config.model: sonnet; live workspace's
+  // MODEL_PROVIDER is MiniMax-M2; tab must show the latter.
+  it("prefers MODEL_PROVIDER over the template's runtime_config.model on load", async () => {
+    wireApi({
+      workspaceRuntime: "claude-code",
+      workspaceModel: "MiniMax-M2",
+      configYamlContent: "name: ws\nruntime: claude-code\nruntime_config:\n  model: sonnet\n",
+      providerValue: "",
+      templates: [
+        {
+          id: "claude-code-default",
+          name: "Claude Code",
+          runtime: "claude-code",
+          models: [
+            { id: "sonnet", name: "Claude Sonnet (OAuth)", required_env: ["CLAUDE_CODE_OAUTH_TOKEN"] },
+            { id: "MiniMax-M2", name: "MiniMax M2", required_env: ["MINIMAX_API_KEY"] },
+            { id: "MiniMax-M2.7", name: "MiniMax M2.7", required_env: ["MINIMAX_API_KEY"] },
+          ],
+        },
+      ],
+    });
+
+    render(<ConfigTab workspaceId="ws-test" />);
+    const modelSelect = (await screen.findByTestId("model-select")) as HTMLSelectElement;
+    await waitFor(() => expect(modelSelect.value).toBe("MiniMax-M2"));
+
+    // Provider dropdown should also reflect MiniMax (back-derived from
+    // the model slug since LLM_PROVIDER is unset). Without the fix,
+    // the selector falls back to the first catalog entry whose first
+    // model matches "sonnet" → anthropic-oauth bucket → "Claude Code
+    // subscription".
+    const providerSelect = screen.getByTestId("provider-select") as HTMLSelectElement;
+    const selectedOption = providerSelect.options[providerSelect.selectedIndex];
+    expect(selectedOption.textContent ?? "").toMatch(/MiniMax/);
+  });
+
+  // Sibling pin to the display-fix above. The display fix mirrors
+  // wsMetadataModel into runtime_config.model so the selector renders
+  // the live value; that mirror means handleSave's old YAML-vs-form
+  // diff would always be non-zero on a no-op save (YAML default
+  // "sonnet" vs. mirrored "MiniMax-M2") and PUT /model — which
+  // server-side SetModel chains into an auto-restart. handleSave now
+  // diffs against the loaded MODEL_PROVIDER instead. Pin: an
+  // unrelated edit (tier change) must NOT touch /model when the
+  // model itself didn't change.
+  it("does not PUT /model on a no-op save when only an unrelated field changed", async () => {
+    wireApi({
+      workspaceRuntime: "claude-code",
+      workspaceModel: "MiniMax-M2",
+      configYamlContent: "name: ws\nruntime: claude-code\ntier: 2\nruntime_config:\n  model: sonnet\n",
+      providerValue: "",
+      templates: [
+        {
+          id: "claude-code-default",
+          name: "Claude Code",
+          runtime: "claude-code",
+          models: [
+            { id: "sonnet", name: "Claude Sonnet", required_env: ["CLAUDE_CODE_OAUTH_TOKEN"] },
+            { id: "MiniMax-M2", name: "MiniMax M2", required_env: ["MINIMAX_API_KEY"] },
+          ],
+        },
+      ],
+    });
+    apiPut.mockResolvedValue({});
+    apiPatch.mockResolvedValue({});
+
+    render(<ConfigTab workspaceId="ws-test" />);
+    const tierSelect = (await screen.findByLabelText(/tier/i)) as HTMLSelectElement;
+    fireEvent.change(tierSelect, { target: { value: "3" } });
+
+    const saveBtn = screen.getByRole("button", { name: /^save$/i });
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      const tierPatches = apiPatch.mock.calls.filter(([path, body]) =>
+        path === "/workspaces/ws-test" && (body as { tier?: number }).tier === 3,
+      );
+      expect(tierPatches.length).toBe(1);
+    });
+    // Spurious /model PUT would fire here without the originalModel
+    // diff baseline. The model itself didn't change, so /model must
+    // stay untouched (otherwise SetModel auto-restarts).
+    const modelPuts = apiPut.mock.calls.filter(([path]) => path === "/workspaces/ws-test/model");
+    expect(modelPuts.length).toBe(0);
+  });
+
+  // Save-then-stale-badge regression (2026-05-03 incident). User
+  // selected T3 in the Tier dropdown, hit Save & Restart, the workspace
+  // PATCH succeeded (`tier: 3` in DB), but the canvas header pill kept
+  // showing "TIER T2" until a full hydrate. Root cause: handleSave
+  // sent the PATCH to workspace-server but never pushed the same
+  // change into useCanvasStore.updateNodeData, so every UI surface
+  // reading from the store kept its stale value. Pin: a successful
+  // tier PATCH must mirror into the store so the badge updates
+  // synchronously with the response.
+  it("flushes the dbPatch into useCanvasStore.updateNodeData after a successful PATCH", async () => {
+    wireApi({
+      workspaceRuntime: "claude-code",
+      workspaceModel: "MiniMax-M2",
+      configYamlContent: "name: ws\nruntime: claude-code\ntier: 2\nruntime_config:\n  model: sonnet\n",
+      providerValue: "",
+      templates: [
+        {
+          id: "claude-code-default",
+          name: "Claude Code",
+          runtime: "claude-code",
+          models: [{ id: "sonnet", name: "Sonnet", required_env: ["CLAUDE_CODE_OAUTH_TOKEN"] }],
+        },
+      ],
+    });
+    apiPatch.mockResolvedValue({ status: "updated" });
+
+    render(<ConfigTab workspaceId="ws-test" />);
+    const tierSelect = (await screen.findByLabelText(/tier/i)) as HTMLSelectElement;
+    fireEvent.change(tierSelect, { target: { value: "3" } });
+
+    const saveBtn = screen.getByRole("button", { name: /^save$/i });
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(apiPatch.mock.calls.some(([p]) => p === "/workspaces/ws-test")).toBe(true);
+    });
+    // Without the store flush, the badge would keep reading tier=2
+    // from useCanvasStore.nodes until a full hydrate. Pin: handleSave
+    // pushes the same fields it PATCHed.
+    expect(storeUpdateNodeData).toHaveBeenCalledWith(
+      "ws-test",
+      expect.objectContaining({ tier: 3 }),
+    );
+  });
+
+  // Failure-gating sibling pin to the store-flush test above. The
+  // production code places `updateNodeData` AFTER `await api.patch(...)`
+  // inside the same `if (Object.keys(dbPatch).length > 0)` block, so a
+  // PATCH rejection should throw before the store call. Without this
+  // pin, a future refactor that wraps the PATCH in try/catch and
+  // unconditionally calls updateNodeData would ship green — and then
+  // the badge would lie when the server actually rejected the change.
+  // Codified review feedback from PR #2545 (Agent 2).
+  it("does NOT flush into useCanvasStore.updateNodeData when the PATCH rejects", async () => {
+    wireApi({
+      workspaceRuntime: "claude-code",
+      workspaceModel: "MiniMax-M2",
+      configYamlContent: "name: ws\nruntime: claude-code\ntier: 2\nruntime_config:\n  model: sonnet\n",
+      providerValue: "",
+      templates: [
+        {
+          id: "claude-code-default",
+          name: "Claude Code",
+          runtime: "claude-code",
+          models: [{ id: "sonnet", name: "Sonnet", required_env: ["CLAUDE_CODE_OAUTH_TOKEN"] }],
+        },
+      ],
+    });
+    apiPatch.mockRejectedValue(new Error("500 from workspace-server"));
+
+    render(<ConfigTab workspaceId="ws-test" />);
+    const tierSelect = (await screen.findByLabelText(/tier/i)) as HTMLSelectElement;
+    fireEvent.change(tierSelect, { target: { value: "3" } });
+
+    const saveBtn = screen.getByRole("button", { name: /^save$/i });
+    fireEvent.click(saveBtn);
+
+    // Wait for handleSave to settle (succeeds-or-fails). PATCH must
+    // have been attempted; the error swallow inside handleSave keeps
+    // saving=false in finally.
+    await waitFor(() => {
+      expect(apiPatch.mock.calls.some(([p]) => p === "/workspaces/ws-test")).toBe(true);
+    });
+    // Critically: the store must NOT have been told about the failed
+    // change. Otherwise the badge would lie about a write the server
+    // rejected.
+    const tierFlushes = storeUpdateNodeData.mock.calls.filter(([, body]) =>
+      typeof (body as { tier?: number }).tier === "number",
+    );
+    expect(tierFlushes.length).toBe(0);
+  });
+
+  // Pin the hermes/pre-#240 edge case: workspace where MODEL_PROVIDER
+  // was never written but YAML has runtime_config.model: "something".
+  // originalModel must reflect the rendered baseline (the YAML value),
+  // not the empty MODEL_PROVIDER, so an unrelated save (tier change)
+  // doesn't fire a /model PUT and trigger an auto-restart. Codified
+  // review feedback from PR #2545 (Agent 1, "Important").
+  it("does not PUT /model when MODEL_PROVIDER is empty and the user only edited an unrelated field", async () => {
+    wireApi({
+      workspaceRuntime: "hermes",
+      workspaceModel: "", // legacy workspace — never went through the picker
+      configYamlContent:
+        "name: ws\nruntime: hermes\ntier: 2\nruntime_config:\n  model: nousresearch/hermes-4-70b\n",
+      providerValue: "",
+      templates: [
+        {
+          id: "hermes",
+          name: "Hermes",
+          runtime: "hermes",
+          models: [{ id: "nousresearch/hermes-4-70b", name: "Hermes 4 70B", required_env: ["HERMES_API_KEY"] }],
+          providers: ["nous"],
+        },
+      ],
+    });
+    apiPut.mockResolvedValue({});
+    apiPatch.mockResolvedValue({});
+
+    render(<ConfigTab workspaceId="ws-test" />);
+    const tierSelect = (await screen.findByLabelText(/tier/i)) as HTMLSelectElement;
+    fireEvent.change(tierSelect, { target: { value: "3" } });
+
+    const saveBtn = screen.getByRole("button", { name: /^save$/i });
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(apiPatch.mock.calls.some(([p]) => p === "/workspaces/ws-test")).toBe(true);
+    });
+    const modelPuts = apiPut.mock.calls.filter(([path]) => path === "/workspaces/ws-test/model");
+    expect(modelPuts.length).toBe(0);
   });
 });

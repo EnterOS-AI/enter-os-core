@@ -191,6 +191,25 @@ export function ConfigTab({ workspaceId }: Props) {
   // data, written into /configs/config.yaml on next provision too).
   const [provider, setProvider] = useState("");
   const [originalProvider, setOriginalProvider] = useState("");
+  // Track the model the form first rendered, so handleSave can detect
+  // whether the user actually changed it (vs. only edited tier/skills/etc).
+  // Two field sources contribute:
+  //   1. wsMetadataModel — workspace_secrets.MODEL_PROVIDER (DB)
+  //   2. parsed.runtime_config.model — the template's YAML default
+  // Whichever was the live runtime value at load time is what currentModelId
+  // will display, and it's the value Save must diff against.
+  //
+  // Why not just diff the YAML directly: after loadConfig mirrors
+  // wsMetadataModel into runtime_config.model for display, the YAML diff
+  // is always non-zero on a no-op save, fires PUT /model, and triggers
+  // an auto-restart for unrelated edits. Why not diff against
+  // wsMetadataModel alone: on a hermes workspace where MODEL_PROVIDER
+  // was never set (pre-#240 workspaces, or workspaces created via direct
+  // API without going through the picker), wsMetadataModel="" but the
+  // form shows the YAML default — diffing against "" makes any first
+  // save propagate-and-restart even when the user didn't touch the model.
+  // Capturing the actual rendered value covers both.
+  const [originalModel, setOriginalModel] = useState("");
   const successTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
@@ -220,6 +239,11 @@ export function ConfigTab({ workspaceId }: Props) {
       const m = await api.get<{ model?: string }>(`/workspaces/${workspaceId}/model`);
       wsMetadataModel = (m.model || "").trim();
     } catch { /* non-fatal */ }
+    // originalModel is set further down once the YAML has been parsed —
+    // we want it to reflect what the form ACTUALLY rendered, which may
+    // be the YAML's runtime_config.model fallback when MODEL_PROVIDER
+    // is empty. Setting it here from wsMetadataModel alone would be
+    // wrong for hermes/pre-#240 workspaces.
 
     // Load explicit provider override (Option B PR-5). Endpoint returns
     // {provider: "", source: "default"} when no override is set, so the
@@ -249,8 +273,24 @@ export function ConfigTab({ workspaceId }: Props) {
       // form doesn't contradict the node badge (issue: badge=T3, form=T2).
       const merged = { ...DEFAULT_CONFIG, ...parsed } as ConfigData;
       if (wsMetadataRuntime) merged.runtime = wsMetadataRuntime;
-      if (wsMetadataModel) merged.model = wsMetadataModel;
+      if (wsMetadataModel) {
+        // Single source of truth: MODEL_PROVIDER (DB) is the live runtime
+        // value. Override BOTH top-level + nested runtime_config.model so
+        // currentModelId (which reads runtime_config.model first) doesn't
+        // silently fall through to the template default. Without the
+        // nested override, a workspace deployed with `MiniMax-M2` shows
+        // the template's `runtime_config.model: sonnet` in the UI even
+        // though the container env (and chat) actually use MiniMax-M2.
+        merged.model = wsMetadataModel;
+        merged.runtime_config = { ...(merged.runtime_config ?? {}), model: wsMetadataModel };
+      }
       if (wsMetadataTier !== null) merged.tier = wsMetadataTier;
+      // Snapshot the rendered model so handleSave's diff stays scoped to
+      // user-initiated changes. mirrors the read precedence in
+      // currentModelId so an unrelated save (tier change) doesn't fire
+      // a /model PUT just because MODEL_PROVIDER was empty and the form
+      // showed the YAML default.
+      setOriginalModel(merged.runtime_config?.model || merged.model || "");
       setConfig(merged);
     } catch {
       // No platform-managed config.yaml. Some runtimes (hermes, external)
@@ -265,8 +305,17 @@ export function ConfigTab({ workspaceId }: Props) {
         ...DEFAULT_CONFIG,
         runtime: wsMetadataRuntime,
         model: wsMetadataModel,
+        // Mirror the merged-path fix above — keep top-level + nested in
+        // sync so currentModelId picks up wsMetadataModel even when the
+        // form falls into the no-config.yaml branch (hermes/external).
+        ...(wsMetadataModel ? { runtime_config: { model: wsMetadataModel } } : {}),
         ...(wsMetadataTier !== null ? { tier: wsMetadataTier } : {}),
       } as ConfigData);
+      // Same snapshot as the merged-path branch above. Falls back to
+      // empty string when neither MODEL_PROVIDER nor a YAML model was
+      // present; handleSave's `nextModel && ...` guard then skips the
+      // PUT correctly.
+      setOriginalModel(wsMetadataModel);
     } finally {
       setLoading(false);
     }
@@ -415,6 +464,15 @@ export function ConfigTab({ workspaceId }: Props) {
       }
       if (Object.keys(dbPatch).length > 0) {
         await api.patch(`/workspaces/${workspaceId}`, dbPatch);
+        // Mirror the DB write into the canvas store node data so the
+        // header pill (TIER T2/T3, RUNTIME claude-code/hermes) and the
+        // node card update immediately. Without this push, the workspace
+        // row reflects the new tier but every UI surface that reads from
+        // useCanvasStore.nodes (header badge, ContextMenu, etc.) keeps
+        // showing the stale value until the next full hydrate. Bug
+        // surfaced 2026-05-03 — user picked T3, hit Save & Restart,
+        // database said tier=3, badge still said T2.
+        useCanvasStore.getState().updateNodeData(workspaceId, dbPatch);
       }
 
       // Model has its own endpoint (separate from the general workspace
@@ -436,21 +494,26 @@ export function ConfigTab({ workspaceId }: Props) {
       // configured" error in the chat. Caught 2026-04-30 on hongmingwang
       // hermes workspace 32993ee7-…cb9d75d112a5.
       const nextModelRaw = (nextSource.runtime_config as Record<string, unknown> | undefined)?.model;
-      const oldModelRaw = (oldParsed.runtime_config as Record<string, unknown> | undefined)?.model;
       const nextModel =
         typeof nextModelRaw === "string" && nextModelRaw
           ? nextModelRaw
           : typeof nextSource.model === "string"
             ? nextSource.model
             : "";
-      const oldModel =
-        typeof oldModelRaw === "string" && oldModelRaw
-          ? oldModelRaw
-          : (oldParsed.model as string) || "";
+      // Diff against the loaded MODEL_PROVIDER (the runtime source of
+      // truth), not the YAML's runtime_config.model. After loadConfig
+      // mirrors wsMetadataModel into runtime_config.model for display,
+      // nextModel always equals the loaded value on a no-op save —
+      // diffing against oldModelRaw (the unmirrored YAML default) would
+      // make every Save fire a /model PUT and trigger an auto-restart,
+      // even when the user only changed an unrelated field. Comparing
+      // against `originalModel` keeps the PUT scoped to actual user
+      // intent.
       let modelSaveError: string | null = null;
-      if (nextModel && nextModel !== oldModel) {
+      if (nextModel && nextModel !== originalModel) {
         try {
           await api.put(`/workspaces/${workspaceId}/model`, { model: nextModel });
+          setOriginalModel(nextModel);
         } catch (e) {
           modelSaveError = e instanceof Error ? e.message : "Model update was rejected";
         }

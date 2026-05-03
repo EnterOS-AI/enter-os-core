@@ -310,12 +310,26 @@ export function ProviderModelSelector({
       onChange({ providerId: "", model: "", envVars: [] });
       return;
     }
-    // When switching providers, default the model to the first concrete
-    // entry in that provider (or empty if wildcard). Avoids showing a
-    // stale model id from the previous provider.
+    // When switching providers:
+    //   - wildcard provider → empty (free-text input takes over)
+    //   - exactly 1 concrete model → auto-pick (no choice to make)
+    //   - 2+ concrete models → leave empty so the operator MUST pick
+    //
+    // Background: previously this defaulted to `next.models[0]` for any
+    // non-wildcard provider, which silently set the alphabetically-first
+    // model in the bucket. Bit a real user on 2026-05-03 — they picked
+    // the MiniMax provider intending `MiniMax-M2.7` but the form silently
+    // set `MiniMax-M2` (first in the list). They never saw the model
+    // dropdown change because the provider+model widgets are visually
+    // distinct, and the workspace deployed with the wrong model. Caller
+    // already disables Deploy/Save while `model.trim() === ""`, so the
+    // empty default forces an explicit pick without loosening any other
+    // gate.
     const defaultModel = next.wildcard
       ? ""
-      : next.models[0]?.id ?? "";
+      : next.models.length === 1
+        ? next.models[0]?.id ?? ""
+        : "";
     onChange({
       providerId: next.id,
       model: defaultModel,
