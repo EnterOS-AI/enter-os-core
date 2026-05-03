@@ -229,13 +229,19 @@ export MOLECULE_PLATFORM_URL={{PLATFORM_URL}}
 export MOLECULE_WORKSPACE_TOKEN="<paste from create response>"
 export MOLECULE_ORG_ID="<your org id>"
 
-# 3. Enable the platform in ~/.hermes/config.yaml. Add (or merge):
-cat >> ~/.hermes/config.yaml <<'EOF'
-gateway:
-  plugin_platforms:
-    molecule:
-      enabled: true
-EOF
+# 3. Edit ~/.hermes/config.yaml — under your existing top-level
+#    gateway: block, add a plugin_platforms entry:
+#
+#      gateway:
+#        # ...your existing gateway settings...
+#        plugin_platforms:
+#          molecule:
+#            enabled: true
+#
+#    If you don't yet have a gateway: block, create one with just
+#    that plugin_platforms entry. Don't append blindly — YAML
+#    rejects duplicate top-level keys, so a second gateway: block
+#    will silently break hermes config loading.
 
 # 4. Restart the hermes gateway:
 hermes gateway --replace
@@ -278,23 +284,29 @@ const externalCodexTemplate = `# Codex MCP config — outbound tool path. For op
 npm install -g @openai/codex@^0.57
 pip install molecule-ai-workspace-runtime
 
-# 2. Add the molecule MCP server to codex's config. {{PLATFORM_URL}}
-# and {{WORKSPACE_ID}} are stamped server-side; paste the auth token
-# for MOLECULE_WORKSPACE_TOKEN before saving.
-mkdir -p ~/.codex
-cat >> ~/.codex/config.toml <<'EOF'
-[mcp_servers.molecule]
-command = "python3"
-args = ["-m", "molecule_runtime.a2a_mcp_server"]
-startup_timeout_sec = 30
-env_vars = ["MOLECULE_INBOUND_SECRET", "PYTHONPATH"]
+# 2. Edit ~/.codex/config.toml and add the block below. {{PLATFORM_URL}}
+#    and {{WORKSPACE_ID}} are stamped server-side; paste your auth
+#    token for MOLECULE_WORKSPACE_TOKEN before saving.
+#
+#    Don't append blindly — TOML rejects duplicate
+#    [mcp_servers.molecule] tables, so re-running on an existing
+#    config will break codex parsing. If [mcp_servers.molecule]
+#    already exists (e.g. you set this up before), replace the
+#    existing block instead of appending.
 
-[mcp_servers.molecule.env]
-WORKSPACE_ID = "{{WORKSPACE_ID}}"
-PLATFORM_URL = "{{PLATFORM_URL}}"
-MOLECULE_WORKSPACE_TOKEN = "<paste from create response>"
-MOLECULE_ORG_ID = "<your org id>"
-EOF
+mkdir -p ~/.codex
+# (then open ~/.codex/config.toml in your editor and paste:)
+#
+# [mcp_servers.molecule]
+# command = "python3"
+# args = ["-m", "molecule_runtime.a2a_mcp_server"]
+# startup_timeout_sec = 30
+#
+# [mcp_servers.molecule.env]
+# WORKSPACE_ID = "{{WORKSPACE_ID}}"
+# PLATFORM_URL = "{{PLATFORM_URL}}"
+# MOLECULE_WORKSPACE_TOKEN = "<paste from create response>"
+# MOLECULE_ORG_ID = "<your org id>"
 
 # 3. Run codex — the molecule tools are now available to the agent:
 codex
@@ -324,9 +336,14 @@ const externalOpenClawTemplate = `# OpenClaw MCP config — outbound tool path. 
 npm install -g openclaw@latest
 pip install molecule-ai-workspace-runtime
 
-# 2. Onboard openclaw against your provider (sets up auth-profiles +
-# the workspace dir). Skip if already done on this host.
-openclaw onboard --non-interactive
+# 2. Onboard openclaw against your model provider (one-time setup).
+#    --non-interactive needs an explicit --provider + --model so it
+#    doesn't prompt; pick what matches your API key. Skip step 2 if
+#    you've already onboarded on this host.
+#
+#    openclaw onboard --non-interactive \
+#      --provider openai \
+#      --model gpt-5
 
 # 3. Wire the molecule MCP server. {{WORKSPACE_ID}} + {{PLATFORM_URL}}
 # are stamped server-side; paste the auth token before running.
@@ -346,8 +363,13 @@ openclaw mcp set molecule "$(cat <<EOF
 EOF
 )"
 
-# 4. Start the openclaw gateway (loopback-bound; no pairing required):
-openclaw gateway --dev --port 18789 --bind loopback &
+# 4. Start the openclaw gateway as a durable background process.
+#    A bare '&' dies when the terminal closes; nohup + log file keeps
+#    the gateway alive across logout. For systemd-managed hosts,
+#    register a unit instead.
+nohup openclaw gateway --dev --port 18789 --bind loopback \
+  > ~/.openclaw/gateway.log 2>&1 &
+disown
 
 # 5. Run an agent turn — molecule tools are now available:
 openclaw agent --message "list my peers"
