@@ -177,10 +177,10 @@ export function ChatTab({ workspaceId, data }: Props) {
           aria-controls="chat-panel-my-chat"
           tabIndex={subTab === "my-chat" ? 0 : -1}
           onClick={() => setSubTab("my-chat")}
-          className={`px-3 py-1.5 text-[10px] font-medium transition-colors ${
+          className={`px-3 py-1.5 text-[10px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
             subTab === "my-chat"
               ? "text-ink border-b-2 border-accent"
-              : "text-ink-soft hover:text-ink-mid"
+              : "text-ink-mid hover:text-ink"
           }`}
         >
           My Chat
@@ -192,10 +192,10 @@ export function ChatTab({ workspaceId, data }: Props) {
           aria-controls="chat-panel-agent-comms"
           tabIndex={subTab === "agent-comms" ? 0 : -1}
           onClick={() => setSubTab("agent-comms")}
-          className={`px-3 py-1.5 text-[10px] font-medium transition-colors ${
+          className={`px-3 py-1.5 text-[10px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
             subTab === "agent-comms"
               ? "text-ink border-b-2 border-accent"
-              : "text-ink-soft hover:text-ink-mid"
+              : "text-ink-mid hover:text-ink"
           }`}
         >
           Agent Comms
@@ -773,10 +773,22 @@ function MyChatPanel({ workspaceId, data }: Props) {
             <div
               className={`max-w-[85%] rounded-lg px-3 py-2 text-xs ${
                 msg.role === "user"
-                  ? "bg-accent text-white border border-accent-strong"
+                  // Solid blue-600 in both modes — `bg-accent` themes
+                  // lighter in dark, dropping white-text contrast to
+                  // ~3:1 (fails AA). blue-600 keeps ~5:1 against white
+                  // on both warm-paper and dark-slate panels.
+                  ? "bg-blue-600 text-white border border-blue-700 dark:bg-blue-500 dark:border-blue-400 shadow-sm"
                   : msg.role === "system"
-                    ? "bg-bad/10 text-bad border border-bad/40"
-                    : "bg-surface-card text-ink border border-line"
+                    // Bump the system bubble's opacity in dark — /10
+                    // overlay was nearly invisible against the dark
+                    // panel bg.
+                    ? "bg-bad/10 text-bad border border-bad/40 dark:bg-bad/25 dark:text-bad dark:border-bad/60"
+                    // Agent bubble in dark: surface-card (#1a1d23) is
+                    // only ~7% lighter than the panel bg-surface
+                    // (#0e1014). Bump to zinc-700 for a clearly
+                    // elevated bubble; light mode keeps the warm
+                    // surface-card tint.
+                    : "bg-surface-card text-ink border border-line dark:bg-zinc-700 dark:text-zinc-100 dark:border-zinc-600 shadow-sm"
               }`}
             >
               {msg.content && (
@@ -896,7 +908,7 @@ function MyChatPanel({ workspaceId, data }: Props) {
             placeholder={agentReachable ? "Send a message... (Shift+Enter for new line, paste images to attach)" : `Agent is ${data.status}`}
             disabled={!agentReachable || sending}
             rows={1}
-            className="flex-1 bg-surface-card border border-line rounded-lg px-3 py-2 text-xs text-ink placeholder-zinc-500 focus:outline-none focus:border-accent resize-none disabled:opacity-50"
+            className="flex-1 bg-surface-card border border-line rounded-lg px-3 py-2 text-xs text-ink placeholder-ink-soft dark:bg-zinc-800 dark:border-zinc-600 dark:placeholder-zinc-500 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 resize-none disabled:opacity-50"
           />
           <button
             onClick={sendMessage}
