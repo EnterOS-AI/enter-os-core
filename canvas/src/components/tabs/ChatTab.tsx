@@ -792,7 +792,18 @@ function MyChatPanel({ workspaceId, data }: Props) {
               }`}
             >
               {msg.content && (
-                <div className={`prose prose-sm max-w-none [&>p]:mb-1 [&>p:last-child]:mb-0 ${msg.role === "user" ? "prose-invert" : ""}`}>
+                <div
+                  className={`prose prose-sm max-w-none [&>p]:mb-1 [&>p:last-child]:mb-0 ${
+                    msg.role === "user"
+                      ? "prose-invert"
+                      // Agent bubbles use bg-zinc-700 in dark mode; without
+                      // prose-invert the Tailwind Typography plugin keeps
+                      // its default DARK body color → unreadable dark-on-dark.
+                      // Light mode keeps default prose colors against the
+                      // warm surface-card bg.
+                      : "dark:prose-invert"
+                  }`}
+                >
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                 </div>
               )}
