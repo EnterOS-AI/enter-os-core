@@ -352,15 +352,42 @@ print(json.dumps({
 ")
 fi
 
-# Model slug MUST be provider-prefixed for hermes — the template's
-# derive-provider.sh parses the slug prefix (`openai/…`, `anthropic/…`,
-# `minimax/…`) to set HERMES_INFERENCE_PROVIDER at install time. A bare
-# "gpt-4o" has no prefix → provider falls back to hermes auto-detect →
-# picks Anthropic default → tries Anthropic API with the OpenAI key →
-# 401 on A2A. Same trap that trapped prod users in PR #1714. We pin
-# "openai/gpt-4o" here because the E2E's secret is always the OpenAI
-# key; non-hermes runtimes ignore the prefix.
-MODEL_SLUG="openai/gpt-4o"
+# Model slug format depends on the runtime — different model resolvers
+# parse it differently:
+#
+#   hermes      → "openai/gpt-4o"  (slash-form: derive-provider.sh splits
+#                                    on the prefix to set
+#                                    HERMES_INFERENCE_PROVIDER. Bare
+#                                    "gpt-4o" falls through to Anthropic
+#                                    default + 401, see PR #1714.)
+#
+#   langgraph   → "openai:gpt-4o"  (colon-form: langchain init_chat_model
+#                                    requires "<provider>:<model>".
+#                                    Slash-form was misinterpreted as
+#                                    OpenRouter routing → fell through
+#                                    without auth, surfaced 2026-05-03
+#                                    after the a2a-sdk v1 contract bugs
+#                                    PR #2558+#2563+#2567 cleared the
+#                                    masking layers.)
+#
+#   claude-code → "sonnet"         (entry-id form: claude-code template's
+#                                    config.yaml uses bare model names,
+#                                    auth comes via CLAUDE_CODE_OAUTH_TOKEN
+#                                    or ANTHROPIC_API_KEY rather than the
+#                                    slug.)
+#
+# When E2E_MODEL_SLUG is set, it overrides this dispatch — useful when an
+# operator dispatches the workflow to test a specific slug.
+if [ -n "${E2E_MODEL_SLUG:-}" ]; then
+  MODEL_SLUG="$E2E_MODEL_SLUG"
+else
+  case "$RUNTIME" in
+    hermes)      MODEL_SLUG="openai/gpt-4o" ;;
+    langgraph)   MODEL_SLUG="openai:gpt-4o" ;;
+    claude-code) MODEL_SLUG="sonnet" ;;
+    *)           MODEL_SLUG="openai/gpt-4o" ;;  # safest fallback (matches hermes)
+  esac
+fi
 
 log "5/11 Provisioning parent workspace (runtime=$RUNTIME)..."
 PARENT_RESP=$(tenant_call POST /workspaces \
