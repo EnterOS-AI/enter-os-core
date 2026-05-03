@@ -98,9 +98,17 @@ export function CookieConsent() {
   };
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
+    // role="region" + aria-label, NOT role="dialog" + aria-modal. The
+    // banner is informational — it never blocks the page, never traps
+    // focus, and the user can keep using the canvas while it's up.
+    // Claiming aria-modal="true" without a focus trap is genuinely
+    // harmful for screen-reader users: they get told the rest of the
+    // page is inert, jump into the banner, and then can't escape.
+    // Region semantics let assistive tech navigate around it normally.
+    // (Also: forcing a modal cookie banner would be a dark pattern —
+    // GDPR explicitly discourages it.)
+    <section
+      role="region"
       aria-labelledby="cookie-consent-title"
       aria-describedby="cookie-consent-body"
       className="fixed bottom-0 left-0 right-0 z-[9999] border-t border-line bg-surface/95 backdrop-blur-sm p-4 shadow-[0_-4px_12px_rgba(0,0,0,0.4)]"
@@ -117,7 +125,7 @@ export function CookieConsent() {
             workspaces). See our{" "}
             <a
               href="https://moleculesai.app/legal/privacy"
-              className="text-accent underline hover:text-accent"
+              className="text-accent underline underline-offset-2 hover:text-accent-strong focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 rounded-sm"
               target="_blank"
               rel="noreferrer"
             >
@@ -130,20 +138,20 @@ export function CookieConsent() {
           <button
             type="button"
             onClick={() => decide("rejected")}
-            className="rounded border border-line bg-surface-sunken px-4 py-2 text-sm text-ink hover:bg-surface-card"
+            className="rounded border border-line bg-surface-sunken px-4 py-2 text-sm text-ink hover:bg-surface-card focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
           >
             Necessary only
           </button>
           <button
             type="button"
             onClick={() => decide("accepted")}
-            className="rounded border border-accent bg-accent-strong px-4 py-2 text-sm font-medium text-white hover:bg-accent"
+            className="rounded border border-accent bg-accent-strong px-4 py-2 text-sm font-medium text-white hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
           >
             Accept all
           </button>
         </div>
       </div>
-    </div>
+    </section>
   );
 }
 
