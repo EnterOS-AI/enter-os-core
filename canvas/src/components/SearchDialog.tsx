@@ -36,11 +36,6 @@ export function SearchDialog() {
     }
   }, [open]);
 
-  // Reset focused index when query changes
-  useEffect(() => {
-    setFocusedIndex(-1);
-  }, [query]);
-
   const filtered = nodes.filter((n) => {
     if (!query) return true;
     const q = query.toLowerCase();
@@ -50,6 +45,18 @@ export function SearchDialog() {
       n.data.status.toLowerCase().includes(q)
     );
   });
+
+  // Auto-highlight the first match while the user is typing, so Enter
+  // selects something instead of being a no-op. With an empty query we
+  // keep -1 so opening the dialog (which shows ALL workspaces) doesn't
+  // visually pin one row arbitrarily — only commit a highlight once the
+  // user has narrowed the list.
+  useEffect(() => {
+    setFocusedIndex(query && filtered.length > 0 ? 0 : -1);
+    // Re-running on filtered.length keeps the highlight pinned to the
+    // first row while the result set shrinks/grows; the effect handler
+    // above already short-circuits to -1 when results disappear.
+  }, [query, filtered.length]);
 
   const handleSelect = useCallback(
     (nodeId: string) => {
@@ -113,7 +120,7 @@ export function SearchDialog() {
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleInputKeyDown}
             placeholder="Search workspaces..."
-            className="flex-1 bg-transparent text-sm text-ink placeholder-zinc-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus:outline-none rounded"
+            className="flex-1 bg-transparent text-sm text-ink placeholder-ink-soft focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
           />
           <kbd className="text-[9px] text-ink-mid bg-surface-card/60 px-1.5 py-0.5 rounded border border-line/40">ESC</kbd>
         </div>
