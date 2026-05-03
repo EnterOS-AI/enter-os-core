@@ -320,29 +320,39 @@ tenant_call() {
 }
 
 # ─── 5. Provision parent workspace ─────────────────────────────────────
-# Runtimes like hermes crash at boot with "No provider API key found"
-# if nothing in the standard env-var list is set. Inject the API key
-# from E2E_OPENAI_API_KEY so the runtime can actually start — it's
-# per-workspace secret, so it's persisted as a workspace_secret and
-# materialized into the container env. Missing key falls through to
-# an empty secrets map; workspace will still fail but the error is
-# expected and actionable.
+# Inject the LLM provider key so the runtime can authenticate at boot.
+# Branch by which secret is set so the script supports both paths
+# without forcing every dispatch to ship both keys:
+#
+#   E2E_MINIMAX_API_KEY → claude-code MiniMax path. Cheapest, default
+#     for the cron canary post-2026-05-03. Routes via the claude-code
+#     template's `minimax` provider (workspace-configs-templates/
+#     claude-code-default/config.yaml:64-69) which sets
+#     ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic at boot.
+#     MINIMAX_API_KEY is the vendor-specific env name the adapter
+#     reads (PR #244 — per-vendor envs prevent ANTHROPIC_AUTH_TOKEN
+#     collisions when a user runs MiniMax + Z.ai workspaces side-by-
+#     side).
+#
+#   E2E_OPENAI_API_KEY → langgraph + hermes paths. Kept as fallback
+#     for operator dispatches that explicitly want to exercise the
+#     OpenAI path. The HERMES_* fields pin hermes-agent's bridge to
+#     api.openai.com (template-hermes' derive-provider.sh otherwise
+#     resolves openai/* → openrouter.ai and 401s). MODEL_PROVIDER
+#     follows workspace/config.py:258's 'provider:model' format.
+#
+# Both empty → '{}' (workspace will fail at first turn with an
+# expected, actionable auth error rather than masking the test).
 SECRETS_JSON='{}'
-if [ -n "${E2E_OPENAI_API_KEY:-}" ]; then
-  # MODEL_PROVIDER is a full model slug in 'provider:model' format per
-  # workspace/config.py:258. Using just "openai" gets parsed as the
-  # model name → 404 model_not_found. Also set OPENAI_BASE_URL to
-  # OpenAI's own endpoint — default is openrouter.ai which would need
-  # a different key format.
-  #
-  # The HERMES_* fields below bypass template-hermes/scripts/derive-provider.sh
-  # — verified 2026-04-24 that even with template-hermes#19's fix in main,
-  # staging tenants sometimes resolve openai/* to PROVIDER=openrouter and
-  # emit {'message':'Missing Authentication header','code':401} (OpenRouter's
-  # shape) in the A2A reply. Setting HERMES_INFERENCE_PROVIDER=custom +
-  # HERMES_CUSTOM_{BASE_URL,API_KEY,API_MODE} pins the bridge deterministically
-  # so the test doesn't depend on every tenant EC2 having a freshly-cloned
-  # template-hermes.
+if [ -n "${E2E_MINIMAX_API_KEY:-}" ]; then
+  SECRETS_JSON=$(python3 -c "
+import json, os
+k = os.environ['E2E_MINIMAX_API_KEY']
+print(json.dumps({
+    'MINIMAX_API_KEY': k,
+}))
+")
+elif [ -n "${E2E_OPENAI_API_KEY:-}" ]; then
   SECRETS_JSON=$(python3 -c "
 import json, os
 k = os.environ['E2E_OPENAI_API_KEY']
