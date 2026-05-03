@@ -137,7 +137,7 @@ export function SidePanel() {
 
   return (
     <div
-      className="fixed top-0 right-0 h-full bg-zinc-950/95 backdrop-blur-xl border-l border-zinc-800/50 flex flex-col z-50 shadow-2xl shadow-black/50 animate-in slide-in-from-right duration-200"
+      className="fixed top-0 right-0 h-full bg-surface/95 backdrop-blur-xl border-l border-line/50 flex flex-col z-50 shadow-2xl shadow-black/50 animate-in slide-in-from-right duration-200"
       style={{ width }}
     >
       {/* Resize handle */}
@@ -151,26 +151,26 @@ export function SidePanel() {
         tabIndex={0}
         onMouseDown={onMouseDown}
         onKeyDown={onResizeKeyDown}
-        className="absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-blue-500/30 active:bg-blue-500/50 transition-colors z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset"
+        className="absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-accent/30 active:bg-accent/50 transition-colors z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-inset"
       />
       {/* Header */}
-      <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-800/40 bg-zinc-900/30">
+      <div className="flex items-center justify-between px-5 py-4 border-b border-line/40 bg-surface-sunken/30">
         <div className="flex items-center gap-3 min-w-0">
           <div className="relative">
             <StatusDot status={node.data.status} size="md" />
           </div>
           <div className="min-w-0">
-            <h2 className="text-[14px] font-semibold text-zinc-100 truncate leading-tight">
+            <h2 className="text-[14px] font-semibold text-ink truncate leading-tight">
               {node.data.name}
             </h2>
             <div className="flex items-center gap-2 mt-0.5">
               {node.data.role && (
-                <span className="text-[10px] text-zinc-500 truncate">
+                <span className="text-[10px] text-ink-soft truncate">
                   {node.data.role}
                 </span>
               )}
               <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-mono ${
-                isOnline ? "text-emerald-400 bg-emerald-950/30" : "text-zinc-500 bg-zinc-800/50"
+                isOnline ? "text-good bg-emerald-950/30" : "text-ink-soft bg-surface-card/50"
               }`}>
                 T{node.data.tier}
               </span>
@@ -181,7 +181,7 @@ export function SidePanel() {
           type="button"
           onClick={() => selectNode(null)}
           aria-label="Close workspace panel"
-          className="w-7 h-7 flex items-center justify-center rounded-lg text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800/60 transition-colors"
+          className="w-7 h-7 flex items-center justify-center rounded-lg text-ink-soft hover:text-ink hover:bg-surface-card/60 transition-colors"
         >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
             <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -190,7 +190,7 @@ export function SidePanel() {
       </div>
 
       {/* Capability summary */}
-      <div className="px-5 py-3 border-b border-zinc-800/40 bg-zinc-900/20">
+      <div className="px-5 py-3 border-b border-line/40 bg-surface-sunken/20">
         <div className="flex flex-wrap gap-2">
           <MetaPill label="Tier" value={`T${node.data.tier}`} />
           <MetaPill label="Runtime" value={capability.runtime || "unknown"} />
@@ -200,13 +200,13 @@ export function SidePanel() {
       </div>
 
       {/* Tabs — relative wrapper lets the fade gradient position against the scroll container */}
-      <div className="relative border-b border-zinc-800/40">
+      <div className="relative border-b border-line/40">
         {/* Right-edge fade: signals more tabs are hidden off-screen when the bar overflows */}
         <div className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-zinc-950 to-transparent z-10" aria-hidden="true" />
       <div
         role="tablist"
         aria-label="Workspace panel tabs"
-        className="flex overflow-x-auto bg-zinc-900/20 px-1"
+        className="flex overflow-x-auto bg-surface-sunken/20 px-1"
         onKeyDown={(e) => {
           const idx = TABS.findIndex((t) => t.id === panelTab);
           let next: number | null = null;
@@ -230,10 +230,10 @@ export function SidePanel() {
             aria-controls={`panel-${tab.id}`}
             tabIndex={panelTab === tab.id ? 0 : -1}
             onClick={() => setPanelTab(tab.id)}
-            className={`shrink-0 px-3 py-2.5 text-[10px] font-medium tracking-wide transition-all rounded-t-lg mx-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 ${
+            className={`shrink-0 px-3 py-2.5 text-[10px] font-medium tracking-wide transition-all rounded-t-lg mx-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 ${
               panelTab === tab.id
-                ? "text-zinc-100 bg-zinc-800/40 border-b-2 border-blue-500"
-                : "text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800/40"
+                ? "text-ink bg-surface-card/40 border-b-2 border-accent"
+                : "text-ink-soft hover:text-ink hover:bg-surface-card/40"
             }`}
           >
             <span className="mr-1 opacity-50" aria-hidden="true">{tab.icon}</span>
@@ -264,7 +264,7 @@ export function SidePanel() {
         <Tooltip text={node.data.currentTask as string}>
           <div className="px-4 py-2 bg-amber-950/20 border-b border-amber-800/20 flex items-center gap-2 cursor-default">
             <div className="w-1.5 h-1.5 rounded-full bg-amber-400 motion-safe:animate-pulse shrink-0" />
-            <span className="text-[10px] text-amber-300/90 truncate">
+            <span className="text-[10px] text-warm/90 truncate">
               {node.data.currentTask}
             </span>
           </div>
@@ -295,8 +295,8 @@ export function SidePanel() {
       </div>
 
       {/* Footer — workspace ID */}
-      <div className="px-5 py-2 border-t border-zinc-800/40 bg-zinc-900/20">
-        <span className="text-[9px] font-mono text-zinc-500 select-all">
+      <div className="px-5 py-2 border-t border-line/40 bg-surface-sunken/20">
+        <span className="text-[9px] font-mono text-ink-soft select-all">
           {selectedNodeId}
         </span>
       </div>
@@ -306,9 +306,9 @@ export function SidePanel() {
 
 function MetaPill({ label, value, tone = "zinc" }: { label: string; value: string; tone?: "zinc" | "emerald" | "amber" }) {
   const toneClasses = {
-    zinc: "border-zinc-700/50 bg-zinc-900/70 text-zinc-400",
-    emerald: "border-emerald-500/20 bg-emerald-950/20 text-emerald-300",
-    amber: "border-amber-500/20 bg-amber-950/20 text-amber-300",
+    zinc: "border-line/50 bg-surface-sunken/70 text-ink-mid",
+    emerald: "border-emerald-500/20 bg-emerald-950/20 text-good",
+    amber: "border-amber-500/20 bg-amber-950/20 text-warm",
   }[tone];
 
   return (

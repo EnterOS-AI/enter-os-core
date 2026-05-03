@@ -58,20 +58,20 @@ function TreeItem({
     return (
       <div>
         <div
-          className="group w-full flex items-center gap-1 px-2 py-0.5 text-left hover:bg-zinc-800/40 transition-colors cursor-pointer"
+          className="group w-full flex items-center gap-1 px-2 py-0.5 text-left hover:bg-surface-card/40 transition-colors cursor-pointer"
           style={{ paddingLeft: `${depth * 12 + 8}px` }}
           onClick={() => onToggleDir(node.path)}
         >
-          <span className="text-[9px] text-zinc-500 w-3">{isLoading ? "…" : expanded ? "▼" : "▶"}</span>
+          <span className="text-[9px] text-ink-soft w-3">{isLoading ? "…" : expanded ? "▼" : "▶"}</span>
           <span className="text-[10px]">📁</span>
-          <span className="text-[10px] text-zinc-400 flex-1">{node.name}</span>
+          <span className="text-[10px] text-ink-mid flex-1">{node.name}</span>
           <button
             aria-label={`Delete ${node.name}`}
             onClick={(e) => {
               e.stopPropagation();
               onDelete(node.path);
             }}
-            className="text-[9px] text-red-400/0 group-hover:text-red-400/60 hover:!text-red-400 transition-colors"
+            className="text-[9px] text-bad/0 group-hover:text-bad/60 hover:!text-bad transition-colors"
           >
             ✕
           </button>
@@ -95,7 +95,7 @@ function TreeItem({
   return (
     <div
       className={`group flex items-center gap-1 px-2 py-0.5 cursor-pointer transition-colors ${
-        isSelected ? "bg-blue-900/30 text-zinc-100" : "hover:bg-zinc-800/40 text-zinc-400"
+        isSelected ? "bg-blue-900/30 text-ink" : "hover:bg-surface-card/40 text-ink-mid"
       }`}
       style={{ paddingLeft: `${depth * 12 + 20}px` }}
       onClick={() => onSelect(node.path)}
@@ -108,7 +108,7 @@ function TreeItem({
           e.stopPropagation();
           onDelete(node.path);
         }}
-        className="text-[9px] text-red-400/0 group-hover:text-red-400/60 hover:!text-red-400 transition-colors"
+        className="text-[9px] text-bad/0 group-hover:text-bad/60 hover:!text-bad transition-colors"
       >
         ✕
       </button>

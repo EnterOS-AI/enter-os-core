@@ -19,17 +19,17 @@ export const metadata = {
 
 export default function PricingPage() {
   return (
-    <main className="min-h-screen bg-zinc-950 text-zinc-100">
+    <main className="min-h-screen bg-surface text-ink">
       <div className="mx-auto max-w-5xl px-6 pt-20 pb-8 text-center">
-        <h1 className="text-5xl font-bold tracking-tight text-white md:text-6xl">
+        <h1 className="text-5xl font-bold tracking-tight text-ink md:text-6xl">
           Pricing
         </h1>
-        <p className="mx-auto mt-4 max-w-2xl text-lg text-zinc-300">
+        <p className="mx-auto mt-4 max-w-2xl text-lg text-ink-mid">
           One flat price per org — not per seat. Every paid tier includes the
           full runtime stack. You upgrade for scale, support, and dedicated
           infrastructure.
         </p>
-        <p className="mx-auto mt-2 max-w-xl text-sm text-zinc-400">
+        <p className="mx-auto mt-2 max-w-xl text-sm text-ink-mid">
           5-person team? You pay $29/month — not $200. No seat math, ever.
         </p>
       </div>
@@ -37,42 +37,42 @@ export default function PricingPage() {
       <PricingTable />
 
       <section className="mx-auto mt-20 max-w-3xl px-6 text-center">
-        <h2 className="text-2xl font-semibold text-white">Questions?</h2>
-        <p className="mt-2 text-zinc-400">
+        <h2 className="text-2xl font-semibold text-ink">Questions?</h2>
+        <p className="mt-2 text-ink-mid">
           We publish the{" "}
           <a
             href="https://github.com/Molecule-AI/molecule-monorepo"
-            className="text-blue-400 underline hover:text-blue-300"
+            className="text-accent underline hover:text-accent"
           >
             full source on GitHub
           </a>
           {" "}— if something's ambiguous, file an issue or{" "}
           <a
             href="mailto:support@moleculesai.app"
-            className="text-blue-400 underline hover:text-blue-300"
+            className="text-accent underline hover:text-accent"
           >
             email support
           </a>
           .
         </p>
-        <p className="mt-6 text-sm text-zinc-500">
+        <p className="mt-6 text-sm text-ink-soft">
           Prices shown in USD. Flat-rate per org — no per-seat fees on any paid tier.
           Enterprise / self-hosted licensing available — contact us.
         </p>
       </section>
 
-      <footer className="mx-auto mt-20 max-w-5xl border-t border-zinc-800 px-6 py-6 text-center text-sm text-zinc-500">
+      <footer className="mx-auto mt-20 max-w-5xl border-t border-line px-6 py-6 text-center text-sm text-ink-soft">
         <p>
           © {new Date().getFullYear()} Molecule AI, Inc. ·{" "}
-          <a href="/legal/terms" className="hover:text-zinc-300">
+          <a href="/legal/terms" className="hover:text-ink-mid">
             Terms
           </a>
           {" "}·{" "}
-          <a href="/legal/privacy" className="hover:text-zinc-300">
+          <a href="/legal/privacy" className="hover:text-ink-mid">
             Privacy
           </a>
           {" "}·{" "}
-          <a href="/legal/dpa" className="hover:text-zinc-300">
+          <a href="/legal/dpa" className="hover:text-ink-mid">
             DPA
           </a>
         </p>

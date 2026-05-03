@@ -92,12 +92,12 @@ export function SearchDialog() {
         role="dialog"
         aria-modal="true"
         aria-label="Search workspaces"
-        className="w-[420px] bg-zinc-950/95 backdrop-blur-xl border border-zinc-800/60 rounded-2xl shadow-2xl shadow-black/50 overflow-hidden"
+        className="w-[420px] bg-surface/95 backdrop-blur-xl border border-line/60 rounded-2xl shadow-2xl shadow-black/50 overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Search input */}
-        <div className="flex items-center gap-3 px-4 py-3 border-b border-zinc-800/40">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="shrink-0 text-zinc-500" aria-hidden="true">
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-line/40">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="shrink-0 text-ink-soft" aria-hidden="true">
             <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.5" />
             <path d="M11 11l3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
           </svg>
@@ -113,9 +113,9 @@ export function SearchDialog() {
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleInputKeyDown}
             placeholder="Search workspaces..."
-            className="flex-1 bg-transparent text-sm text-zinc-100 placeholder-zinc-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus:outline-none rounded"
+            className="flex-1 bg-transparent text-sm text-ink placeholder-zinc-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus:outline-none rounded"
           />
-          <kbd className="text-[9px] text-zinc-400 bg-zinc-800/60 px-1.5 py-0.5 rounded border border-zinc-700/40">ESC</kbd>
+          <kbd className="text-[9px] text-ink-mid bg-surface-card/60 px-1.5 py-0.5 rounded border border-line/40">ESC</kbd>
         </div>
 
         {/* Results */}
@@ -126,7 +126,7 @@ export function SearchDialog() {
           className="max-h-[300px] overflow-y-auto py-1"
         >
           {filtered.length === 0 ? (
-            <div role="status" aria-live="polite" className="px-4 py-6 text-center text-xs text-zinc-400">
+            <div role="status" aria-live="polite" className="px-4 py-6 text-center text-xs text-ink-mid">
               {query ? "No workspaces match" : "No workspaces yet"}
             </div>
           ) : (
@@ -139,7 +139,7 @@ export function SearchDialog() {
                 aria-selected={index === focusedIndex}
                 onClick={() => handleSelect(node.id)}
                 className={`w-full px-4 py-2.5 flex items-center gap-3 text-left transition-colors ${
-                  index === focusedIndex ? "bg-zinc-800/60" : "hover:bg-zinc-800/40"
+                  index === focusedIndex ? "bg-surface-card/60" : "hover:bg-surface-card/40"
                 }`}
               >
                 <div
@@ -147,13 +147,13 @@ export function SearchDialog() {
                   className={`w-2 h-2 rounded-full shrink-0 ${statusDotClass(node.data.status)}`}
                 />
                 <div className="min-w-0 flex-1">
-                  <div className="text-sm text-zinc-200 truncate">{node.data.name}</div>
+                  <div className="text-sm text-ink truncate">{node.data.name}</div>
                   {node.data.role && (
-                    <div className="text-[10px] text-zinc-500 truncate">{node.data.role}</div>
+                    <div className="text-[10px] text-ink-soft truncate">{node.data.role}</div>
                   )}
                 </div>
                 <span
-                  className="text-[9px] font-mono text-zinc-400"
+                  className="text-[9px] font-mono text-ink-mid"
                   aria-label={`Tier ${node.data.tier}`}
                 >
                   T{node.data.tier}
@@ -164,11 +164,11 @@ export function SearchDialog() {
         </div>
 
         {/* Footer */}
-        <div className="px-4 py-2 border-t border-zinc-800/40 flex items-center justify-between">
-          <span className="text-[9px] text-zinc-400">{filtered.length} workspace{filtered.length !== 1 ? "s" : ""}</span>
+        <div className="px-4 py-2 border-t border-line/40 flex items-center justify-between">
+          <span className="text-[9px] text-ink-mid">{filtered.length} workspace{filtered.length !== 1 ? "s" : ""}</span>
           <div className="flex gap-2">
-            <kbd className="text-[9px] text-zinc-400 bg-zinc-800/60 px-1.5 py-0.5 rounded border border-zinc-700/40">↑↓ navigate</kbd>
-            <kbd className="text-[9px] text-zinc-400 bg-zinc-800/60 px-1.5 py-0.5 rounded border border-zinc-700/40">↵ select</kbd>
+            <kbd className="text-[9px] text-ink-mid bg-surface-card/60 px-1.5 py-0.5 rounded border border-line/40">↑↓ navigate</kbd>
+            <kbd className="text-[9px] text-ink-mid bg-surface-card/60 px-1.5 py-0.5 rounded border border-line/40">↵ select</kbd>
           </div>
         </div>
       </div>

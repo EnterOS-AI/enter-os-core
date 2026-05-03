@@ -52,7 +52,7 @@ export function TextInput({ label, value, onChange, placeholder, mono }: { label
   const id = `textinput-${label.toLowerCase().replace(/\s+/g, "-")}`;
   return (
     <div>
-      <label htmlFor={id} className="text-[10px] text-zinc-500 block mb-1">{label}</label>
+      <label htmlFor={id} className="text-[10px] text-ink-soft block mb-1">{label}</label>
       <input
         id={id}
         type="text"
@@ -60,7 +60,7 @@ export function TextInput({ label, value, onChange, placeholder, mono }: { label
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         aria-label={label}
-        className={`w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-blue-500 ${mono ? "font-mono" : ""}`}
+        className={`w-full bg-surface-card border border-line rounded px-2 py-1 text-xs text-ink focus:outline-none focus:border-accent ${mono ? "font-mono" : ""}`}
       />
     </div>
   );
@@ -70,7 +70,7 @@ export function NumberInput({ label, value, onChange, min, max }: { label: strin
   const id = `numberinput-${label.toLowerCase().replace(/\s+/g, "-")}`;
   return (
     <div>
-      <label htmlFor={id} className="text-[10px] text-zinc-500 block mb-1">{label}</label>
+      <label htmlFor={id} className="text-[10px] text-ink-soft block mb-1">{label}</label>
       <input
         id={id}
         type="number"
@@ -79,7 +79,7 @@ export function NumberInput({ label, value, onChange, min, max }: { label: strin
         min={min}
         max={max}
         aria-label={label}
-        className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-blue-500 font-mono"
+        className="w-full bg-surface-card border border-line rounded px-2 py-1 text-xs text-ink focus:outline-none focus:border-accent font-mono"
       />
     </div>
   );
@@ -89,7 +89,7 @@ export function Toggle({ label, checked, onChange }: { label: string; checked: b
   return (
     <label className="flex items-center gap-2 cursor-pointer">
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="accent-blue-500" />
-      <span className="text-[10px] text-zinc-400">{label}</span>
+      <span className="text-[10px] text-ink-mid">{label}</span>
     </label>
   );
 }
@@ -99,12 +99,12 @@ export function TagList({ label, values, onChange, placeholder }: { label: strin
   const [input, setInput] = useState("");
   return (
     <div>
-      <label htmlFor={id} className="text-[10px] text-zinc-500 block mb-1">{label}</label>
+      <label htmlFor={id} className="text-[10px] text-ink-soft block mb-1">{label}</label>
       <div className="flex flex-wrap gap-1 mb-1">
         {values.map((v, i) => (
-          <span key={i} className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 rounded text-[10px] text-zinc-300 font-mono">
+          <span key={i} className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-surface-card border border-line rounded text-[10px] text-ink-mid font-mono">
             {v}
-            <button type="button" aria-label={`Remove tag ${v}`} onClick={() => onChange(values.filter((_, j) => j !== i))} className="text-zinc-500 hover:text-red-400">×</button>
+            <button type="button" aria-label={`Remove tag ${v}`} onClick={() => onChange(values.filter((_, j) => j !== i))} className="text-ink-soft hover:text-bad">×</button>
           </span>
         ))}
       </div>
@@ -121,7 +121,7 @@ export function TagList({ label, values, onChange, placeholder }: { label: strin
         }}
         placeholder={placeholder || "Type and press Enter"}
         aria-label={label}
-        className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-[10px] text-zinc-200 focus:outline-none focus:border-blue-500 font-mono"
+        className="w-full bg-surface-card border border-line rounded px-2 py-1 text-[10px] text-ink focus:outline-none focus:border-accent font-mono"
       />
     </div>
   );
@@ -130,8 +130,8 @@ export function TagList({ label, values, onChange, placeholder }: { label: strin
 export function Section({ title, children, defaultOpen = true }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="border border-zinc-800 rounded mb-2">
-      <button type="button" onClick={() => setOpen(!open)} className="w-full flex items-center justify-between px-3 py-1.5 text-[10px] text-zinc-400 hover:text-zinc-200 bg-zinc-900/50">
+    <div className="border border-line rounded mb-2">
+      <button type="button" onClick={() => setOpen(!open)} className="w-full flex items-center justify-between px-3 py-1.5 text-[10px] text-ink-mid hover:text-ink bg-surface-sunken/50">
         <span className="font-medium uppercase tracking-wider">{title}</span>
         <span>{open ? "▾" : "▸"}</span>
       </button>

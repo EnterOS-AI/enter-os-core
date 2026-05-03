@@ -51,7 +51,7 @@ describe("AuthGate — loading state", () => {
       </AuthGate>
     );
 
-    const overlay = container.querySelector(".bg-zinc-950.fixed.inset-0");
+    const overlay = container.querySelector(".bg-surface.fixed.inset-0");
     expect(overlay).not.toBeNull();
     expect(overlay?.getAttribute("aria-hidden")).toBe("true");
   });

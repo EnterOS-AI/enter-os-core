@@ -32,7 +32,7 @@ export function pillTone(fields: CreditsFields): string {
   if (balance <= 0) return "bg-red-950 text-red-200 border-red-800";
   const ratio = monthly > 0 ? balance / monthly : 1;
   if (ratio < 0.1) return "bg-amber-950 text-amber-200 border-amber-800";
-  return "bg-zinc-800 text-zinc-200 border-zinc-700";
+  return "bg-surface-card text-ink border-line";
 }
 
 // bannerKind picks which (if any) banner to show under the balance

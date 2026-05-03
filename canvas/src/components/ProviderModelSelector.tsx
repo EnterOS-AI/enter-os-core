@@ -356,9 +356,9 @@ export function ProviderModelSelector({
       <div>
         <label
           htmlFor={providerSelectId}
-          className="text-[10px] uppercase tracking-wide text-zinc-500 font-semibold mb-1.5 block"
+          className="text-[10px] uppercase tracking-wide text-ink-soft font-semibold mb-1.5 block"
         >
-          Provider <span aria-hidden="true" className="text-red-400">*</span>
+          Provider <span aria-hidden="true" className="text-bad">*</span>
           <span className="sr-only"> (required)</span>
         </label>
         <select
@@ -368,7 +368,7 @@ export function ProviderModelSelector({
           disabled={disabled || catalog.length === 0}
           aria-describedby={selected?.tooltip ? `${providerSelectId}-help` : undefined}
           data-testid="provider-select"
-          className="w-full bg-zinc-900 border border-zinc-600 rounded px-2 py-1.5 text-[11px] text-zinc-100 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20 transition-colors disabled:opacity-50"
+          className="w-full bg-surface-sunken border border-line rounded px-2 py-1.5 text-[11px] text-ink focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/20 transition-colors disabled:opacity-50"
         >
           <option value="" disabled>
             — select provider —
@@ -382,13 +382,13 @@ export function ProviderModelSelector({
         {selected?.tooltip && (
           <p
             id={`${providerSelectId}-help`}
-            className="text-[9px] text-zinc-500 mt-1 leading-relaxed"
+            className="text-[9px] text-ink-soft mt-1 leading-relaxed"
           >
             {selected.tooltip}
           </p>
         )}
         {selected && selected.envVars.length > 0 && (
-          <p className="text-[9px] text-zinc-600 mt-0.5 font-mono">
+          <p className="text-[9px] text-ink-soft mt-0.5 font-mono">
             requires: {selected.envVars.join(", ")}
           </p>
         )}
@@ -397,9 +397,9 @@ export function ProviderModelSelector({
       <div>
         <label
           htmlFor={modelSelectId}
-          className="text-[10px] uppercase tracking-wide text-zinc-500 font-semibold mb-1.5 block"
+          className="text-[10px] uppercase tracking-wide text-ink-soft font-semibold mb-1.5 block"
         >
-          Model <span aria-hidden="true" className="text-red-400">*</span>
+          Model <span aria-hidden="true" className="text-bad">*</span>
           <span className="sr-only"> (required)</span>
         </label>
         {useTextInput ? (
@@ -420,9 +420,9 @@ export function ProviderModelSelector({
               spellCheck={false}
               autoComplete="off"
               data-testid="model-input"
-              className="w-full bg-zinc-900 border border-zinc-600 rounded px-2 py-1.5 text-[11px] text-zinc-100 font-mono focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20 transition-colors disabled:opacity-50"
+              className="w-full bg-surface-sunken border border-line rounded px-2 py-1.5 text-[11px] text-ink font-mono focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/20 transition-colors disabled:opacity-50"
             />
-            <p className="text-[9px] text-zinc-500 mt-1 leading-relaxed">
+            <p className="text-[9px] text-ink-soft mt-1 leading-relaxed">
               {selected?.wildcard
                 ? wildcardHelpText(selected)
                 : "Free-text model id. Make sure the provider can resolve it."}
@@ -437,7 +437,7 @@ export function ProviderModelSelector({
                     handleModelChange(selected.models[0]?.id ?? "");
                   }
                 }}
-                className="text-[9px] text-blue-400 hover:text-blue-300 mt-0.5"
+                className="text-[9px] text-accent hover:text-accent mt-0.5"
               >
                 ← back to model list
               </button>
@@ -460,7 +460,7 @@ export function ProviderModelSelector({
             }}
             disabled={disabled || !selected || selected.models.length === 0}
             data-testid="model-select"
-            className="w-full bg-zinc-900 border border-zinc-600 rounded px-2 py-1.5 text-[11px] text-zinc-100 font-mono focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20 transition-colors disabled:opacity-50"
+            className="w-full bg-surface-sunken border border-line rounded px-2 py-1.5 text-[11px] text-ink font-mono focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/20 transition-colors disabled:opacity-50"
           >
             <option value="" disabled>
               {selected ? "— select model —" : "— select provider first —"}

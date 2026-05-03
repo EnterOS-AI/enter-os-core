@@ -66,10 +66,10 @@ export function Tooltip({ text, children }: Props) {
         <div
           id={tooltipId.current}
           role="tooltip"
-          className="fixed z-[9999] max-w-[400px] max-h-[300px] overflow-y-auto px-3 py-2 bg-zinc-800 border border-zinc-600 rounded-lg shadow-2xl shadow-black/60 pointer-events-none"
+          className="fixed z-[9999] max-w-[400px] max-h-[300px] overflow-y-auto px-3 py-2 bg-surface-card border border-line rounded-lg shadow-2xl shadow-black/60 pointer-events-none"
           style={{ left: pos.x, top: Math.max(8, pos.y - 8), transform: "translateY(-100%)" }}
         >
-          <div className="text-[11px] text-zinc-200 whitespace-pre-wrap break-words leading-relaxed">
+          <div className="text-[11px] text-ink whitespace-pre-wrap break-words leading-relaxed">
             {text}
           </div>
         </div>,

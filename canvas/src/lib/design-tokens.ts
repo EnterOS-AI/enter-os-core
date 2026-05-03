@@ -12,10 +12,10 @@ export function statusDotClass(status: string): string {
 }
 
 export const TIER_CONFIG: Record<number, { label: string; color: string; border: string }> = {
-  1: { label: "T1", color: "text-zinc-500 bg-zinc-800/80", border: "text-zinc-400 border-zinc-700/60" },
+  1: { label: "T1", color: "text-ink-soft bg-surface-card/80", border: "text-ink-mid border-line/60" },
   2: { label: "T2", color: "text-sky-400 bg-sky-950/50", border: "text-sky-400 border-sky-500/30" },
   3: { label: "T3", color: "text-violet-400 bg-violet-950/50", border: "text-violet-400 border-violet-500/30" },
-  4: { label: "T4", color: "text-amber-400 bg-amber-950/50", border: "text-amber-400 border-amber-500/30" },
+  4: { label: "T4", color: "text-warm bg-amber-950/50", border: "text-warm border-amber-500/30" },
 };
 
 export const COMM_TYPE_LABELS: Record<string, string> = {

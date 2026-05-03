@@ -244,11 +244,11 @@ function CanvasInner() {
     <>
       <a
         href="#canvas-main"
-        className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:px-4 focus:py-2 focus:bg-zinc-900 focus:text-zinc-100 focus:rounded-lg focus:border focus:border-zinc-700"
+        className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:px-4 focus:py-2 focus:bg-surface-sunken focus:text-ink focus:rounded-lg focus:border focus:border-line"
       >
         Skip to canvas
       </a>
-      <main id="canvas-main" className="w-screen h-screen bg-zinc-950">
+      <main id="canvas-main" className="w-screen h-screen bg-surface">
         <ReactFlow
           colorMode="dark"
           nodes={nodes}
@@ -276,11 +276,11 @@ function CanvasInner() {
             color="#27272a"
           />
           <Controls
-            className="!bg-zinc-900/90 !border-zinc-700/50 !rounded-lg !shadow-xl !shadow-black/20 [&>button]:!bg-zinc-800 [&>button]:!border-zinc-700/50 [&>button]:!text-zinc-400 [&>button:hover]:!bg-zinc-700 [&>button:hover]:!text-zinc-200"
+            className="!bg-surface-sunken/90 !border-line/50 !rounded-lg !shadow-xl !shadow-black/20 [&>button]:!bg-surface-card [&>button]:!border-line/50 [&>button]:!text-ink-mid [&>button:hover]:!bg-surface-card [&>button:hover]:!text-ink"
             showInteractive={false}
           />
           <MiniMap
-            className="!bg-zinc-900/90 !border-zinc-700/50 !rounded-lg !shadow-xl !shadow-black/20"
+            className="!bg-surface-sunken/90 !border-line/50 !rounded-lg !shadow-xl !shadow-black/20"
             maskColor="rgba(0, 0, 0, 0.7)"
             nodeColor={(node) => {
               // Parents show as a filled region — hierarchy visible at

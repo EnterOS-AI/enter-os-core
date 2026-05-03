@@ -102,7 +102,7 @@ export function CommunicationOverlay() {
         type="button"
         onClick={() => setVisible(true)}
         aria-label="Show communications panel"
-        className="fixed top-16 right-4 z-30 px-3 py-1.5 bg-zinc-900/90 border border-zinc-700/50 rounded-lg text-[10px] text-zinc-400 hover:text-zinc-200 transition-colors"
+        className="fixed top-16 right-4 z-30 px-3 py-1.5 bg-surface-sunken/90 border border-line/50 rounded-lg text-[10px] text-ink-mid hover:text-ink transition-colors"
       >
         <span aria-hidden="true">↗↙ </span>{comms.length > 0 ? `${comms.length} comms` : "Communications"}
       </button>
@@ -110,16 +110,16 @@ export function CommunicationOverlay() {
   }
 
   return (
-    <div className="fixed top-16 right-4 z-30 w-[320px] max-h-[400px] bg-zinc-900/95 border border-zinc-700/50 rounded-xl shadow-xl shadow-black/30 backdrop-blur-sm overflow-hidden">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-800/60">
-        <div className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">
+    <div className="fixed top-16 right-4 z-30 w-[320px] max-h-[400px] bg-surface-sunken/95 border border-line/50 rounded-xl shadow-xl shadow-black/30 backdrop-blur-sm overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-line/60">
+        <div className="text-[10px] font-semibold text-ink-mid uppercase tracking-wider">
           <span aria-hidden="true">↗↙ </span>Communications ({comms.length})
         </div>
         <button
           type="button"
           onClick={() => setVisible(false)}
           aria-label="Close communications panel"
-          className="text-zinc-500 hover:text-zinc-300 text-xs"
+          className="text-ink-soft hover:text-ink-mid text-xs"
         >
           <span aria-hidden="true">✕</span>
         </button>
@@ -128,10 +128,10 @@ export function CommunicationOverlay() {
       <div className="overflow-y-auto max-h-[350px] p-2 space-y-1">
         {comms.map((c) => {
           const isSelected = selectedNodeId === c.sourceId || selectedNodeId === c.targetId;
-          const typeColor = c.type === "a2a_send" ? "text-cyan-400" : c.type === "a2a_receive" ? "text-blue-400" : "text-amber-400";
+          const typeColor = c.type === "a2a_send" ? "text-cyan-400" : c.type === "a2a_receive" ? "text-accent" : "text-warm";
           const typeIcon = c.type === "a2a_send" ? "↗" : c.type === "a2a_receive" ? "↙" : "◆";
           const statusIcon = c.status === "ok" ? "✓" : c.status === "error" ? "✕" : "⏱";
-          const statusColor = c.status === "ok" ? "text-emerald-400" : c.status === "error" ? "text-red-400" : "text-amber-400";
+          const statusColor = c.status === "ok" ? "text-good" : c.status === "error" ? "text-bad" : "text-warm";
           const age = formatAge(c.timestamp);
 
           return (
@@ -140,31 +140,31 @@ export function CommunicationOverlay() {
               className={`rounded-lg px-2.5 py-1.5 text-[9px] border transition-all ${
                 isSelected
                   ? "bg-blue-950/30 border-blue-800/40"
-                  : "bg-zinc-800/30 border-zinc-700/20 hover:bg-zinc-800/50"
+                  : "bg-surface-card/30 border-line/20 hover:bg-surface-card/50"
               }`}
             >
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-1.5 min-w-0">
                   <span className={typeColor} aria-hidden="true">{typeIcon}</span>
                   <span className="sr-only">{COMM_TYPE_LABELS[c.type] ?? c.type}</span>
-                  <span className="text-zinc-300 font-medium truncate">
+                  <span className="text-ink-mid font-medium truncate">
                     {c.sourceName}
                   </span>
-                  <span className="text-zinc-400" aria-hidden="true">→</span>
+                  <span className="text-ink-mid" aria-hidden="true">→</span>
                   <span className="sr-only">to</span>
-                  <span className="text-zinc-300 truncate">{c.targetName}</span>
+                  <span className="text-ink-mid truncate">{c.targetName}</span>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
                   <span className={statusColor} aria-hidden="true">{statusIcon}</span>
                   <span className="sr-only">{c.status}</span>
-                  <span className="text-zinc-400">{age}</span>
+                  <span className="text-ink-mid">{age}</span>
                 </div>
               </div>
               {c.summary && (
-                <div className="text-zinc-500 truncate mt-0.5 pl-4">{c.summary}</div>
+                <div className="text-ink-soft truncate mt-0.5 pl-4">{c.summary}</div>
               )}
               {c.durationMs && (
-                <div className="text-zinc-400 pl-4">{c.durationMs}ms</div>
+                <div className="text-ink-mid pl-4">{c.durationMs}ms</div>
               )}
             </div>
           );

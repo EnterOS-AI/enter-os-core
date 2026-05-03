@@ -363,15 +363,15 @@ export function AgentCommsPanel({ workspaceId }: { workspaceId: string }) {
   }, [messages]);
 
   if (loading) {
-    return <div className="text-xs text-zinc-500 text-center py-8">Loading agent communications...</div>;
+    return <div className="text-xs text-ink-soft text-center py-8">Loading agent communications...</div>;
   }
 
   if (messages.length === 0) {
     return (
-      <div className="text-xs text-zinc-500 text-center py-8">
+      <div className="text-xs text-ink-soft text-center py-8">
         No agent-to-agent communications yet.
         <br />
-        <span className="text-zinc-600">Delegations and peer messages will appear here.</span>
+        <span className="text-ink-soft">Delegations and peer messages will appear here.</span>
       </div>
     );
   }
@@ -500,7 +500,7 @@ function PeerTabs({
     <div
       role="tablist"
       aria-label="Peer threads"
-      className="flex border-b border-zinc-800/40 bg-zinc-900/30 px-2 shrink-0 overflow-x-auto"
+      className="flex border-b border-line/40 bg-surface-sunken/30 px-2 shrink-0 overflow-x-auto"
       onKeyDown={(e) => {
         const idx = ids.indexOf(selectedPeerId);
         if (idx < 0) return;
@@ -552,10 +552,10 @@ function PeerTabButton({
       className={`shrink-0 px-3 py-1.5 text-[10px] font-medium transition-colors whitespace-nowrap ${
         active
           ? "border-b-2 border-cyan-500 text-cyan-200"
-          : "border-b-2 border-transparent text-zinc-500 hover:text-zinc-300"
+          : "border-b-2 border-transparent text-ink-soft hover:text-ink-mid"
       }`}
     >
-      {label} <span className="text-[9px] text-zinc-500">({count})</span>
+      {label} <span className="text-[9px] text-ink-soft">({count})</span>
     </button>
   );
 }
@@ -567,23 +567,23 @@ function NormalMessage({ msg }: { msg: CommMessage }) {
         className={`max-w-[85%] rounded-lg px-3 py-2 text-xs ${
           msg.flow === "out"
             ? "bg-cyan-900/30 text-cyan-100 border border-cyan-700/20"
-            : "bg-zinc-800/80 text-zinc-200 border border-zinc-700/30"
+            : "bg-surface-card/80 text-ink border border-line/30"
         }`}
       >
-        <div className="text-[9px] text-zinc-500 mb-1">
+        <div className="text-[9px] text-ink-soft mb-1">
           {msg.flow === "out" ? `→ To ${msg.peerName}` : `← From ${msg.peerName}`}
         </div>
         {msg.text ? (
-          <MarkdownBody className="text-zinc-300">{msg.text}</MarkdownBody>
+          <MarkdownBody className="text-ink-mid">{msg.text}</MarkdownBody>
         ) : (
-          <div className="text-zinc-300">(no message text)</div>
+          <div className="text-ink-mid">(no message text)</div>
         )}
         {msg.responseText && (
-          <MarkdownBody className="mt-1.5 pt-1.5 border-t border-zinc-700/30 text-zinc-400">
+          <MarkdownBody className="mt-1.5 pt-1.5 border-t border-line/30 text-ink-mid">
             {msg.responseText}
           </MarkdownBody>
         )}
-        <div className="text-[9px] text-zinc-500 mt-1">
+        <div className="text-[9px] text-ink-soft mt-1">
           {new Date(msg.timestamp).toLocaleTimeString()}
         </div>
       </div>
@@ -648,7 +648,7 @@ function ErrorMessage({ msg }: { msg: CommMessage }) {
   return (
     <div className={`flex ${msg.flow === "out" ? "justify-end" : "justify-start"}`}>
       <div className="max-w-[85%] rounded-lg border border-red-800/50 bg-red-950/30 px-3 py-2 text-xs">
-        <div className="flex items-center gap-1.5 text-[10px] text-red-300 font-semibold uppercase tracking-wide mb-1.5">
+        <div className="flex items-center gap-1.5 text-[10px] text-bad font-semibold uppercase tracking-wide mb-1.5">
           <span aria-hidden="true">⚠</span>
           {msg.flow === "out"
             ? `Failed to deliver to ${msg.peerName}`
@@ -656,14 +656,14 @@ function ErrorMessage({ msg }: { msg: CommMessage }) {
         </div>
 
         {msg.text && (
-          <div className="text-[10px] text-zinc-500 mb-1.5">
+          <div className="text-[10px] text-ink-soft mb-1.5">
             <span className="uppercase tracking-wide">Task</span>
-            <MarkdownBody className="text-zinc-400">{msg.text}</MarkdownBody>
+            <MarkdownBody className="text-ink-mid">{msg.text}</MarkdownBody>
           </div>
         )}
 
-        <div className="rounded bg-zinc-950/60 border border-red-900/40 px-2 py-1.5 mb-1.5">
-          <div className="text-[9px] uppercase tracking-wide text-red-400 mb-0.5">
+        <div className="rounded bg-surface/60 border border-red-900/40 px-2 py-1.5 mb-1.5">
+          <div className="text-[9px] uppercase tracking-wide text-bad mb-0.5">
             Underlying error
           </div>
           <code className="text-[11px] font-mono text-red-200 whitespace-pre-wrap break-words">
@@ -671,7 +671,7 @@ function ErrorMessage({ msg }: { msg: CommMessage }) {
           </code>
         </div>
 
-        <p className="text-[10px] text-zinc-400 leading-snug mb-2">{hint}</p>
+        <p className="text-[10px] text-ink-mid leading-snug mb-2">{hint}</p>
 
         {msg.peerId && (
           <div className="flex flex-wrap items-center gap-1.5">
@@ -686,14 +686,14 @@ function ErrorMessage({ msg }: { msg: CommMessage }) {
             <button
               type="button"
               onClick={handleOpen}
-              className="px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 border border-zinc-700/50 text-[10px] text-zinc-300 transition-colors"
+              className="px-2 py-0.5 rounded bg-surface-card hover:bg-surface-card border border-line/50 text-[10px] text-ink-mid transition-colors"
             >
               Open {msg.peerName}
             </button>
           </div>
         )}
 
-        <div className="text-[9px] text-zinc-500 mt-1.5">
+        <div className="text-[9px] text-ink-soft mt-1.5">
           {new Date(msg.timestamp).toLocaleTimeString()}
         </div>
       </div>

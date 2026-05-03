@@ -61,26 +61,26 @@ export function ApprovalBanner() {
         >
           <div className="flex items-start gap-3">
             <div className="w-8 h-8 rounded-lg bg-amber-800/40 flex items-center justify-center shrink-0 mt-0.5">
-              <span className="text-amber-300 text-lg" aria-hidden="true">⚠</span>
+              <span className="text-warm text-lg" aria-hidden="true">⚠</span>
             </div>
             <div className="flex-1 min-w-0">
               <div className="text-xs text-amber-200 font-semibold">{approval.workspace_name} needs approval</div>
               <div className="text-sm text-amber-100 mt-0.5 font-medium">{approval.action}</div>
               {approval.reason && (
-                <div className="text-xs text-amber-300/70 mt-1">{approval.reason}</div>
+                <div className="text-xs text-warm/70 mt-1">{approval.reason}</div>
               )}
               <div className="flex gap-2 mt-3">
                 <button
                   type="button"
                   onClick={() => handleDecide(approval, "approved")}
-                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-xs rounded-lg text-white font-medium transition-colors"
+                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-xs rounded-lg text-ink font-medium transition-colors"
                 >
                   Approve
                 </button>
                 <button
                   type="button"
                   onClick={() => handleDecide(approval, "denied")}
-                  className="px-3 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-xs rounded-lg text-zinc-300 transition-colors"
+                  className="px-3 py-1.5 bg-surface-card hover:bg-zinc-600 text-xs rounded-lg text-ink-mid transition-colors"
                 >
                   Deny
                 </button>
