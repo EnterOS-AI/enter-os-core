@@ -574,12 +574,22 @@ function NormalMessage({ msg }: { msg: CommMessage }) {
           {msg.flow === "out" ? `→ To ${msg.peerName}` : `← From ${msg.peerName}`}
         </div>
         {msg.text ? (
-          <MarkdownBody className="text-ink-mid">{msg.text}</MarkdownBody>
+          // Outgoing bubble (cyan-900) is dark in both themes → prose-invert default.
+          // Incoming bubble (surface-card) themes light → only invert in dark.
+          <MarkdownBody
+            className="text-ink-mid"
+            invert={msg.flow === "out" ? "always" : "dark-only"}
+          >
+            {msg.text}
+          </MarkdownBody>
         ) : (
           <div className="text-ink-mid">(no message text)</div>
         )}
         {msg.responseText && (
-          <MarkdownBody className="mt-1.5 pt-1.5 border-t border-line/30 text-ink-mid">
+          <MarkdownBody
+            className="mt-1.5 pt-1.5 border-t border-line/30 text-ink-mid"
+            invert={msg.flow === "out" ? "always" : "dark-only"}
+          >
             {msg.responseText}
           </MarkdownBody>
         )}
@@ -706,17 +716,29 @@ function ErrorMessage({ msg }: { msg: CommMessage }) {
  *  prose tweaks that keep paragraphs tight inside a small bubble.
  *  Code blocks get an `overflow-x-auto` so a long line of code doesn't
  *  blow out the bubble's max-width — agent-to-agent replies routinely
- *  ship code samples and JSON. */
+ *  ship code samples and JSON.
+ *
+ *  `invert` controls the prose color flip:
+ *  - "always": container bg is dark in BOTH themes (cyan-900, red-950),
+ *    so prose always wants light body text.
+ *  - "dark-only": container bg uses a theming token that goes light in
+ *    light mode (e.g. bg-surface-card). Prose only inverts in dark
+ *    mode; light mode keeps default dark prose colors against the
+ *    light bg. Without this, light mode rendered light text on light
+ *    bg = invisible markdown. */
 function MarkdownBody({
   children,
   className,
+  invert = "always",
 }: {
   children: string;
   className?: string;
+  invert?: "always" | "dark-only";
 }) {
+  const proseInvert = invert === "always" ? "prose-invert" : "dark:prose-invert";
   return (
     <div
-      className={`prose prose-sm prose-invert max-w-none [&>p]:mb-1 [&>p:last-child]:mb-0 [&_pre]:overflow-x-auto [&_table]:block [&_table]:overflow-x-auto ${className ?? ""}`}
+      className={`prose prose-sm ${proseInvert} max-w-none [&>p]:mb-1 [&>p:last-child]:mb-0 [&_pre]:overflow-x-auto [&_table]:block [&_table]:overflow-x-auto ${className ?? ""}`}
     >
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>
     </div>
