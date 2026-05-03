@@ -88,6 +88,15 @@ jobs:
       E2E_KEEP_ORG: ${{ github.event.inputs.keep_org == 'true' && '1' || '' }}
       MOLECULE_CP_URL: ${{ vars.STAGING_CP_URL || 'https://staging-api.moleculesai.app' }}
       MOLECULE_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+      # Provisioned tenant's default model (langgraph: openai:gpt-4.1-mini)
+      # needs OPENAI_API_KEY at first call. Sibling workflows
+      # e2e-staging-saas.yml + canary-staging.yml use the same secret;
+      # without this wire-up the tenant boots, accepts a2a messages,
+      # then returns "Could not resolve authentication method" — masked
+      # earlier by the a2a-sdk task-mode contract bugs PR #2558+#2563
+      # fixed. tests/e2e/test_staging_full_saas.sh:325 reads this and
+      # persists it as a workspace_secret on tenant create.
+      E2E_OPENAI_API_KEY: ${{ secrets.MOLECULE_STAGING_OPENAI_KEY }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
