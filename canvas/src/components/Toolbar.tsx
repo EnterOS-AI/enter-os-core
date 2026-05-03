@@ -7,6 +7,7 @@ import { SettingsButton } from "@/components/settings/SettingsButton";
 import { settingsGearRef } from "@/components/settings/SettingsPanel";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { showToast } from "@/components/Toaster";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { statusDotClass } from "@/lib/design-tokens";
 
 export function Toolbar() {
@@ -128,13 +129,13 @@ export function Toolbar() {
 
   return (
     <div
-      className="fixed top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 bg-zinc-900/80 backdrop-blur-md border border-zinc-800/60 rounded-xl px-4 py-2 shadow-xl shadow-black/20 transition-[margin-left] duration-200"
+      className="fixed top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 bg-surface-sunken/80 backdrop-blur-md border border-line/60 rounded-xl px-4 py-2 shadow-xl shadow-black/20 transition-[margin-left] duration-200"
       style={toolbarOffsetStyle}
     >
       {/* Logo / Title */}
-      <div className="flex items-center gap-2 pr-3 border-r border-zinc-800/60">
+      <div className="flex items-center gap-2 pr-3 border-r border-line/60">
         <img src="/molecule-icon.png" alt="Molecule AI" className="w-5 h-5" />
-        <span className="text-[11px] font-semibold text-zinc-300 tracking-wide">Molecule AI</span>
+        <span className="text-[11px] font-semibold text-ink-mid tracking-wide">Molecule AI</span>
       </div>
 
       {/* Status pills + workspace total in one segment — previously two
@@ -153,15 +154,15 @@ export function Toolbar() {
         {counts.failed > 0 && (
           <StatusPill color={statusDotClass("failed")} count={counts.failed} label="failed" />
         )}
-        <span className="text-zinc-700" aria-hidden="true">·</span>
-        <span className="text-[10px] text-zinc-500 whitespace-nowrap">
+        <span className="text-ink-soft" aria-hidden="true">·</span>
+        <span className="text-[10px] text-ink-soft whitespace-nowrap">
           {counts.roots} workspace{counts.roots !== 1 ? "s" : ""}
-          {counts.children > 0 && <span className="text-zinc-600"> + {counts.children} sub</span>}
+          {counts.children > 0 && <span className="text-ink-soft"> + {counts.children} sub</span>}
         </span>
       </div>
 
       {/* WebSocket connection status */}
-      <div className="pl-3 border-l border-zinc-800/60">
+      <div className="pl-3 border-l border-line/60">
         <WsStatusPill status={wsStatus} />
       </div>
 
@@ -175,10 +176,10 @@ export function Toolbar() {
           title={`Stop all running tasks (${counts.activeTasks} active)`}
           aria-label={stopping ? "Stopping all running tasks" : `Stop all running tasks (${counts.activeTasks} active)`}
         >
-          <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" className="text-red-400" aria-hidden="true">
+          <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" className="text-bad" aria-hidden="true">
             <rect x="2" y="2" width="12" height="12" rx="2" />
           </svg>
-          <span className="text-[10px] text-red-300 font-medium">
+          <span className="text-[10px] text-bad font-medium">
             {stopping ? "Stopping..." : `Stop All (${counts.activeTasks})`}
           </span>
         </button>
@@ -194,10 +195,10 @@ export function Toolbar() {
           title={`Restart ${needsRestartNodes.length} workspace${needsRestartNodes.length === 1 ? "" : "s"} that need to pick up config or secret changes`}
           aria-label={restartingAll ? "Restarting workspaces" : `Restart ${needsRestartNodes.length} workspace${needsRestartNodes.length === 1 ? "" : "s"} pending config or secret changes`}
         >
-          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" className="text-amber-400" aria-hidden="true">
+          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" className="text-warm" aria-hidden="true">
             <path d="M2 8a6 6 0 1 1 1.76 4.24M2 13v-3h3" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
-          <span className="text-[10px] text-amber-300 font-medium">
+          <span className="text-[10px] text-warm font-medium">
             {restartingAll ? "Restarting..." : `Restart Pending (${needsRestartNodes.length})`}
           </span>
         </button>
@@ -217,8 +218,8 @@ export function Toolbar() {
         title={showA2AEdges ? "Hide A2A delegation edges" : "Show A2A delegation edges (last 60 min)"}
         className={`flex items-center justify-center w-7 h-7 border rounded-lg transition-colors ${
           showA2AEdges
-            ? "bg-blue-950/50 hover:bg-blue-900/50 border-blue-800/40 text-blue-300"
-            : "bg-zinc-800/50 hover:bg-zinc-700/50 border-zinc-700/40 text-zinc-500 hover:text-zinc-300"
+            ? "bg-blue-950/50 hover:bg-blue-900/50 border-blue-800/40 text-accent"
+            : "bg-surface-card/50 hover:bg-surface-card/50 border-line/40 text-ink-soft hover:text-ink-mid"
         }`}
       >
         {/* Mesh / network icon */}
@@ -254,7 +255,7 @@ export function Toolbar() {
         }}
         aria-label="Open audit trail for selected workspace"
         title="Audit — view ledger for the selected workspace"
-        className="flex items-center justify-center w-7 h-7 bg-zinc-800/50 hover:bg-zinc-700/50 border border-zinc-700/40 rounded-lg transition-colors text-zinc-500 hover:text-zinc-300"
+        className="flex items-center justify-center w-7 h-7 bg-surface-card/50 hover:bg-surface-card/50 border border-line/40 rounded-lg transition-colors text-ink-soft hover:text-ink-mid"
       >
         {/* Scroll / ledger icon */}
         <svg
@@ -276,7 +277,7 @@ export function Toolbar() {
         onClick={() => useCanvasStore.getState().setSearchOpen(true)}
         aria-label="Search workspaces"
         title="Search (⌘K)"
-        className="flex items-center justify-center w-7 h-7 bg-zinc-800/50 hover:bg-zinc-700/50 border border-zinc-700/40 rounded-lg transition-colors text-zinc-500 hover:text-zinc-300"
+        className="flex items-center justify-center w-7 h-7 bg-surface-card/50 hover:bg-surface-card/50 border border-line/40 rounded-lg transition-colors text-ink-soft hover:text-ink-mid"
       >
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.5" />
@@ -289,7 +290,7 @@ export function Toolbar() {
         <button
           type="button"
           onClick={() => setHelpOpen((open) => !open)}
-          className="flex items-center justify-center w-7 h-7 bg-zinc-800/50 hover:bg-zinc-700/50 border border-zinc-700/40 rounded-lg transition-colors text-zinc-500 hover:text-zinc-300"
+          className="flex items-center justify-center w-7 h-7 bg-surface-card/50 hover:bg-surface-card/50 border border-line/40 rounded-lg transition-colors text-ink-soft hover:text-ink-mid"
           aria-expanded={helpOpen}
           aria-label="Open quick help"
           title="Help — shortcuts & quick start"
@@ -301,13 +302,13 @@ export function Toolbar() {
         </button>
 
         {helpOpen && (
-          <div className="absolute right-0 top-full mt-2 w-72 rounded-xl border border-zinc-700/60 bg-zinc-950/95 p-3 shadow-2xl shadow-black/50 backdrop-blur-md">
+          <div className="absolute right-0 top-full mt-2 w-72 rounded-xl border border-line/60 bg-surface/95 p-3 shadow-2xl shadow-black/50 backdrop-blur-md">
             <div className="mb-2 flex items-center justify-between">
-              <span className="text-[10px] font-semibold uppercase tracking-[0.24em] text-zinc-400">Quick start</span>
+              <span className="text-[10px] font-semibold uppercase tracking-[0.24em] text-ink-mid">Quick start</span>
               <button
                 type="button"
                 onClick={() => setHelpOpen(false)}
-                className="text-[10px] text-zinc-600 hover:text-zinc-300 transition-colors"
+                className="text-[10px] text-ink-soft hover:text-ink-mid transition-colors"
               >
                 Close
               </button>
@@ -323,6 +324,9 @@ export function Toolbar() {
           </div>
         )}
       </div>
+
+      {/* Theme picker — System / Light / Dark */}
+      <ThemeToggle />
 
       {/* Settings gear icon */}
       <SettingsButton ref={settingsGearRef} />
@@ -344,7 +348,7 @@ function StatusPill({ color, count, label }: { color: string; count: number; lab
   return (
     <div className="flex items-center gap-1.5" title={`${count} ${label}`} aria-label={`${count} ${label}`}>
       <div className={`w-1.5 h-1.5 rounded-full ${color}`} aria-hidden="true" />
-      <span className="text-[10px] text-zinc-400 tabular-nums" aria-hidden="true">{count}</span>
+      <span className="text-[10px] text-ink-mid tabular-nums" aria-hidden="true">{count}</span>
     </div>
   );
 }
@@ -354,7 +358,7 @@ function WsStatusPill({ status }: { status: "connected" | "connecting" | "discon
     return (
       <div className="flex items-center gap-1.5" title="Real-time updates: connected" aria-label="Real-time updates: connected">
         <div className={`w-1.5 h-1.5 rounded-full ${statusDotClass("online")}`} aria-hidden="true" />
-        <span className="text-[10px] text-zinc-500" aria-hidden="true">Live</span>
+        <span className="text-[10px] text-ink-soft" aria-hidden="true">Live</span>
       </div>
     );
   }
@@ -362,25 +366,25 @@ function WsStatusPill({ status }: { status: "connected" | "connecting" | "discon
     return (
       <div className="flex items-center gap-1.5" title="Real-time updates: reconnecting…" aria-label="Real-time updates: reconnecting">
         <div className="w-1.5 h-1.5 rounded-full bg-amber-400 motion-safe:animate-pulse" aria-hidden="true" />
-        <span className="text-[10px] text-zinc-500" aria-hidden="true">Reconnecting</span>
+        <span className="text-[10px] text-ink-soft" aria-hidden="true">Reconnecting</span>
       </div>
     );
   }
   return (
     <div className="flex items-center gap-1.5" title="Real-time updates: disconnected" aria-label="Real-time updates: disconnected">
       <div className={`w-1.5 h-1.5 rounded-full ${statusDotClass("failed")}`} aria-hidden="true" />
-      <span className="text-[10px] text-zinc-500" aria-hidden="true">Offline</span>
+      <span className="text-[10px] text-ink-soft" aria-hidden="true">Offline</span>
     </div>
   );
 }
 
 function HelpRow({ shortcut, text }: { shortcut: string; text: string }) {
   return (
-    <div className="flex items-start gap-3 rounded-lg border border-zinc-800/70 bg-zinc-900/45 px-3 py-2">
-      <span className="shrink-0 rounded-md border border-zinc-700/60 bg-zinc-950/70 px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.18em] text-zinc-400">
+    <div className="flex items-start gap-3 rounded-lg border border-line/70 bg-surface-sunken/45 px-3 py-2">
+      <span className="shrink-0 rounded-md border border-line/60 bg-surface/70 px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.18em] text-ink-mid">
         {shortcut}
       </span>
-      <p className="text-[11px] leading-relaxed text-zinc-500">{text}</p>
+      <p className="text-[11px] leading-relaxed text-ink-soft">{text}</p>
     </div>
   );
 }

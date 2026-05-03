@@ -44,7 +44,7 @@ export function Toaster() {
         ? "bg-emerald-950/90 border border-emerald-700/40 text-emerald-200"
         : type === "error"
         ? "bg-red-950/90 border border-red-700/40 text-red-200"
-        : "bg-zinc-900/90 border border-zinc-700/40 text-zinc-200"
+        : "bg-surface-sunken/90 border border-line/40 text-ink"
     }`;
 
   const pos =
@@ -66,7 +66,7 @@ export function Toaster() {
                 type="button"
                 onClick={() => dismiss(toast.id)}
                 aria-label="Dismiss notification"
-                className="ml-1 p-1 rounded hover:bg-zinc-700/50 transition-colors opacity-70 hover:opacity-100 shrink-0"
+                className="ml-1 p-1 rounded hover:bg-surface-card/50 transition-colors opacity-70 hover:opacity-100 shrink-0"
               >
                 ×
               </button>
@@ -94,7 +94,7 @@ export function Toaster() {
                 type="button"
                 onClick={() => dismiss(toast.id)}
                 aria-label="Dismiss notification"
-                className="ml-1 p-1 rounded hover:bg-zinc-700/50 transition-colors opacity-70 hover:opacity-100 shrink-0"
+                className="ml-1 p-1 rounded hover:bg-surface-card/50 transition-colors opacity-70 hover:opacity-100 shrink-0"
               >
                 ×
               </button>

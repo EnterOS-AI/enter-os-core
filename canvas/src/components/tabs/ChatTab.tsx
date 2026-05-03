@@ -162,7 +162,7 @@ export function ChatTab({ workspaceId, data }: Props) {
       {/* Sub-tab bar — role="tablist" so screen readers expose tab context */}
       <div
         role="tablist"
-        className="flex border-b border-zinc-800/40 bg-zinc-900/30 px-2 shrink-0"
+        className="flex border-b border-line/40 bg-surface-sunken/30 px-2 shrink-0"
         onKeyDown={(e) => {
           const tabs: ChatSubTab[] = ["my-chat", "agent-comms"];
           const idx = tabs.indexOf(subTab);
@@ -179,8 +179,8 @@ export function ChatTab({ workspaceId, data }: Props) {
           onClick={() => setSubTab("my-chat")}
           className={`px-3 py-1.5 text-[10px] font-medium transition-colors ${
             subTab === "my-chat"
-              ? "text-zinc-200 border-b-2 border-blue-500"
-              : "text-zinc-500 hover:text-zinc-300"
+              ? "text-ink border-b-2 border-accent"
+              : "text-ink-soft hover:text-ink-mid"
           }`}
         >
           My Chat
@@ -194,8 +194,8 @@ export function ChatTab({ workspaceId, data }: Props) {
           onClick={() => setSubTab("agent-comms")}
           className={`px-3 py-1.5 text-[10px] font-medium transition-colors ${
             subTab === "agent-comms"
-              ? "text-zinc-200 border-b-2 border-blue-500"
-              : "text-zinc-500 hover:text-zinc-300"
+              ? "text-ink border-b-2 border-accent"
+              : "text-ink-soft hover:text-ink-mid"
           }`}
         >
           Agent Comms
@@ -726,10 +726,10 @@ function MyChatPanel({ workspaceId, data }: Props) {
     >
       {dragOver && (
         <div
-          className="absolute inset-0 z-20 flex items-center justify-center bg-blue-500/10 border-2 border-dashed border-blue-400 rounded pointer-events-none"
+          className="absolute inset-0 z-20 flex items-center justify-center bg-accent/10 border-2 border-dashed border-blue-400 rounded pointer-events-none"
           aria-live="polite"
         >
-          <div className="bg-zinc-900/90 border border-blue-400/50 rounded-lg px-4 py-2 text-xs text-blue-200">
+          <div className="bg-surface-sunken/90 border border-blue-400/50 rounded-lg px-4 py-2 text-xs text-blue-200">
             Drop to attach
           </div>
         </div>
@@ -737,14 +737,14 @@ function MyChatPanel({ workspaceId, data }: Props) {
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-3 space-y-3">
         {loading && (
-          <div className="text-xs text-zinc-500 text-center py-4">Loading chat history...</div>
+          <div className="text-xs text-ink-soft text-center py-4">Loading chat history...</div>
         )}
         {!loading && loadError !== null && messages.length === 0 && (
           <div
             role="alert"
             className="mx-2 mt-2 rounded-lg border border-red-800/50 bg-red-950/30 px-3 py-2.5"
           >
-            <p className="text-[11px] text-red-400 mb-1.5">
+            <p className="text-[11px] text-bad mb-1.5">
               Failed to load chat history: {loadError}
             </p>
             <button
@@ -757,14 +757,14 @@ function MyChatPanel({ workspaceId, data }: Props) {
                   setLoading(false);
                 });
               }}
-              className="text-[10px] px-2 py-0.5 rounded bg-red-800/40 text-red-300 hover:bg-red-700/50 transition-colors"
+              className="text-[10px] px-2 py-0.5 rounded bg-red-800/40 text-bad hover:bg-red-700/50 transition-colors"
             >
               Retry
             </button>
           </div>
         )}
         {!loading && loadError === null && messages.length === 0 && (
-          <div className="text-xs text-zinc-500 text-center py-8">
+          <div className="text-xs text-ink-soft text-center py-8">
             No messages yet. Send a message to start chatting with this agent.
           </div>
         )}
@@ -773,10 +773,10 @@ function MyChatPanel({ workspaceId, data }: Props) {
             <div
               className={`max-w-[85%] rounded-lg px-3 py-2 text-xs ${
                 msg.role === "user"
-                  ? "bg-blue-600/30 text-blue-100 border border-blue-500/20"
+                  ? "bg-accent-strong/30 text-blue-100 border border-accent/20"
                   : msg.role === "system"
                     ? "bg-red-900/30 text-red-200 border border-red-800/30"
-                    : "bg-zinc-800/80 text-zinc-200 border border-zinc-700/30"
+                    : "bg-surface-card/80 text-ink border border-line/30"
               }`}
             >
               {msg.content && (
@@ -796,7 +796,7 @@ function MyChatPanel({ workspaceId, data }: Props) {
                   ))}
                 </div>
               )}
-              <div className="text-[9px] text-zinc-500 mt-1">
+              <div className="text-[9px] text-ink-soft mt-1">
                 {new Date(msg.timestamp).toLocaleTimeString()}
               </div>
             </div>
@@ -809,8 +809,8 @@ function MyChatPanel({ workspaceId, data }: Props) {
            without locking the Send button on a stale currentTask). */}
         {(sending || !!data.currentTask) && (
           <div className="flex justify-start">
-            <div className="bg-zinc-800/50 border border-zinc-700/30 rounded-lg px-3 py-2 max-w-[85%]">
-              <div className="flex items-center gap-2 text-xs text-zinc-400">
+            <div className="bg-surface-card/50 border border-line/30 rounded-lg px-3 py-2 max-w-[85%]">
+              <div className="flex items-center gap-2 text-xs text-ink-mid">
                 <span className="flex gap-0.5">
                   <span className="w-1.5 h-1.5 bg-zinc-500 rounded-full motion-safe:animate-bounce" style={{ animationDelay: "0ms" }} />
                   <span className="w-1.5 h-1.5 bg-zinc-500 rounded-full motion-safe:animate-bounce" style={{ animationDelay: "150ms" }} />
@@ -819,10 +819,10 @@ function MyChatPanel({ workspaceId, data }: Props) {
                 {thinkingElapsed}s
               </div>
               {activityLog.length > 0 && (
-                <div className="mt-1.5 text-[9px] text-zinc-500 space-y-0.5">
-                  <div className="text-zinc-400">Processing with {runtimeDisplayName(data.runtime)}...</div>
+                <div className="mt-1.5 text-[9px] text-ink-soft space-y-0.5">
+                  <div className="text-ink-mid">Processing with {runtimeDisplayName(data.runtime)}...</div>
                   {activityLog.map((line, i) => (
-                    <div key={line + i} className="pl-2 border-l border-zinc-700">◇ {line}</div>
+                    <div key={line + i} className="pl-2 border-l border-line">◇ {line}</div>
                   ))}
                 </div>
               )}
@@ -836,11 +836,11 @@ function MyChatPanel({ workspaceId, data }: Props) {
       {error && (
         <div className="px-3 py-2 bg-red-900/20 border-t border-red-800/30">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-red-400">{error}</span>
+            <span className="text-[10px] text-bad">{error}</span>
             {!isOnline && (
               <button
                 onClick={() => setConfirmRestart(true)}
-                className="text-[11px] px-2 py-0.5 bg-red-800/40 text-red-300 rounded hover:bg-red-700/50"
+                className="text-[11px] px-2 py-0.5 bg-red-800/40 text-bad rounded hover:bg-red-700/50"
               >
                 Restart
               </button>
@@ -850,7 +850,7 @@ function MyChatPanel({ workspaceId, data }: Props) {
       )}
 
       {/* Input */}
-      <div className="p-3 border-t border-zinc-800">
+      <div className="p-3 border-t border-line">
         {pendingFiles.length > 0 && (
           <div className="flex flex-wrap gap-1.5 mb-2">
             {pendingFiles.map((f, i) => (
@@ -876,7 +876,7 @@ function MyChatPanel({ workspaceId, data }: Props) {
             disabled={!agentReachable || sending || uploading}
             aria-label="Attach file"
             title="Attach file"
-            className="p-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-zinc-400 hover:text-zinc-200 transition-colors shrink-0 disabled:opacity-40"
+            className="p-2 bg-surface-card hover:bg-surface-card border border-line rounded-lg text-ink-mid hover:text-ink transition-colors shrink-0 disabled:opacity-40"
           >
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
               <path d="M11 6.5 7 10.5a2 2 0 1 0 2.8 2.8l4-4a3.5 3.5 0 0 0-5-5l-4.5 4.5a5 5 0 0 0 7 7l4-4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
@@ -896,12 +896,12 @@ function MyChatPanel({ workspaceId, data }: Props) {
             placeholder={agentReachable ? "Send a message... (Shift+Enter for new line, paste images to attach)" : `Agent is ${data.status}`}
             disabled={!agentReachable || sending}
             rows={1}
-            className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-blue-500 resize-none disabled:opacity-50"
+            className="flex-1 bg-surface-card border border-line rounded-lg px-3 py-2 text-xs text-ink placeholder-zinc-500 focus:outline-none focus:border-accent resize-none disabled:opacity-50"
           />
           <button
             onClick={sendMessage}
             disabled={(!input.trim() && pendingFiles.length === 0) || !agentReachable || sending || uploading}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-xs font-medium rounded-lg text-white disabled:opacity-30 transition-colors shrink-0"
+            className="px-4 py-2 bg-accent-strong hover:bg-accent text-xs font-medium rounded-lg text-white disabled:opacity-30 transition-colors shrink-0"
           >
             {uploading ? "Uploading…" : "Send"}
           </button>

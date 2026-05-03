@@ -240,14 +240,14 @@ export function OrgImportPreflightModal({
       onClick={onCancel}
     >
       <div
-        className="w-[560px] max-h-[80vh] overflow-auto rounded-xl bg-zinc-900 border border-zinc-700 shadow-2xl"
+        className="w-[560px] max-h-[80vh] overflow-auto rounded-xl bg-surface-sunken border border-line shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <header className="px-5 py-4 border-b border-zinc-800">
-          <h2 id="org-preflight-title" className="text-sm font-semibold text-zinc-100">
+        <header className="px-5 py-4 border-b border-line">
+          <h2 id="org-preflight-title" className="text-sm font-semibold text-ink">
             Deploy {orgName}
           </h2>
-          <p className="mt-0.5 text-[11px] text-zinc-500">
+          <p className="mt-0.5 text-[11px] text-ink-soft">
             {workspaceCount} workspace{workspaceCount === 1 ? "" : "s"}.
             Review the credentials needed before import.
           </p>
@@ -283,23 +283,23 @@ export function OrgImportPreflightModal({
             />
           )}
           {requiredEnv.length === 0 && recommendedEnv.length === 0 && (
-            <p className="text-[12px] text-zinc-400">
+            <p className="text-[12px] text-ink-mid">
               No additional credentials required for this template.
             </p>
           )}
         </section>
 
-        <footer className="px-5 py-3 border-t border-zinc-800 flex items-center justify-between">
+        <footer className="px-5 py-3 border-t border-line flex items-center justify-between">
           <button
             type="button"
             onClick={onCancel}
-            className="px-3 py-1.5 text-[11px] rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
+            className="px-3 py-1.5 text-[11px] rounded bg-surface-card hover:bg-surface-card text-ink-mid"
           >
             Cancel
           </button>
           <div className="flex items-center gap-2">
             {missingRecommended.length > 0 && canProceed && (
-              <span className="text-[10px] text-amber-400/90">
+              <span className="text-[10px] text-warm/90">
                 {missingRecommended.length} recommended key
                 {missingRecommended.length === 1 ? "" : "s"} still unset
               </span>
@@ -308,7 +308,7 @@ export function OrgImportPreflightModal({
               type="button"
               onClick={onProceed}
               disabled={!canProceed}
-              className="px-4 py-1.5 text-[11px] font-semibold rounded bg-blue-600 hover:bg-blue-500 text-white disabled:bg-zinc-700 disabled:text-zinc-500 disabled:cursor-not-allowed"
+              className="px-4 py-1.5 text-[11px] font-semibold rounded bg-accent-strong hover:bg-accent text-white disabled:bg-surface-card disabled:text-white-soft disabled:cursor-not-allowed"
             >
               Import
             </button>
@@ -346,14 +346,14 @@ function EnvList({
       ? "border-red-800/60 bg-red-950/20"
       : "border-amber-800/50 bg-amber-950/15";
   const headerColor =
-    tone === "required" ? "text-red-300" : "text-amber-300";
+    tone === "required" ? "text-bad" : "text-warm";
 
   return (
     <div className={`rounded-lg border ${accent} p-3`}>
       <h3 className={`text-[11px] font-semibold uppercase tracking-wide ${headerColor}`}>
         {title}
       </h3>
-      <p className="mt-0.5 mb-2 text-[10px] text-zinc-400">{subtitle}</p>
+      <p className="mt-0.5 mb-2 text-[10px] text-ink-mid">{subtitle}</p>
       <ul className="space-y-2">
         {entries.map((entry) =>
           typeof entry === "string" ? (
@@ -397,16 +397,16 @@ function StrictEnvRow({
   onSave,
 }: StrictEnvRowProps) {
   return (
-    <li className="flex items-center gap-2 rounded bg-zinc-900/70 border border-zinc-800 px-2 py-1.5">
+    <li className="flex items-center gap-2 rounded bg-surface-sunken/70 border border-line px-2 py-1.5">
       <code
         className={`text-[11px] font-mono flex-1 ${
-          configured ? "text-zinc-500 line-through" : "text-zinc-200"
+          configured ? "text-ink-soft line-through" : "text-ink"
         }`}
       >
         {envKey}
       </code>
       {configured ? (
-        <span className="text-[10px] text-emerald-400">✓ set</span>
+        <span className="text-[10px] text-good">✓ set</span>
       ) : (
         <>
           <input
@@ -422,20 +422,20 @@ function StrictEnvRow({
               }
             }}
             disabled={d?.saving}
-            className="flex-1 px-2 py-1 rounded bg-zinc-800 border border-zinc-700 text-[11px] text-zinc-200 focus:outline-none focus:border-blue-500 disabled:opacity-50"
+            className="flex-1 px-2 py-1 rounded bg-surface-card border border-line text-[11px] text-ink focus:outline-none focus:border-accent disabled:opacity-50"
           />
           <button
             type="button"
             onClick={() => onSave(envKey)}
             disabled={d?.saving || !d?.value.trim()}
-            className="px-2 py-1 text-[10px] rounded bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+            className="px-2 py-1 text-[10px] rounded bg-accent-strong hover:bg-accent text-white disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {d?.saving ? "…" : "Save"}
           </button>
         </>
       )}
       {d?.error && (
-        <span className="text-[9px] text-red-400 basis-full pl-1">
+        <span className="text-[9px] text-bad basis-full pl-1">
           {d.error}
         </span>
       )}
@@ -467,13 +467,13 @@ function AnyOfEnvGroup({
 }: AnyOfEnvGroupProps) {
   const satisfiedBy = members.find((m) => configuredKeys.has(m));
   return (
-    <li className="rounded border border-zinc-800 bg-zinc-900/50 px-2.5 py-2">
+    <li className="rounded border border-line bg-surface-sunken/50 px-2.5 py-2">
       <div className="flex items-center justify-between mb-1.5">
-        <span className="text-[10px] uppercase tracking-wide text-zinc-400">
+        <span className="text-[10px] uppercase tracking-wide text-ink-mid">
           Configure any one
         </span>
         {satisfiedBy && (
-          <span className="text-[10px] text-emerald-400">
+          <span className="text-[10px] text-good">
             ✓ using <code className="font-mono">{satisfiedBy}</code>
           </span>
         )}
@@ -486,19 +486,19 @@ function AnyOfEnvGroup({
           return (
             <li
               key={m}
-              className={`flex items-center gap-2 rounded bg-zinc-900/70 border border-zinc-800 px-2 py-1 ${
+              className={`flex items-center gap-2 rounded bg-surface-sunken/70 border border-line px-2 py-1 ${
                 dimmed ? "opacity-50" : ""
               }`}
             >
               <code
                 className={`text-[11px] font-mono flex-1 ${
-                  isConfigured ? "text-zinc-500 line-through" : "text-zinc-200"
+                  isConfigured ? "text-ink-soft line-through" : "text-ink"
                 }`}
               >
                 {m}
               </code>
               {isConfigured ? (
-                <span className="text-[10px] text-emerald-400">✓ set</span>
+                <span className="text-[10px] text-good">✓ set</span>
               ) : (
                 <>
                   <input
@@ -514,20 +514,20 @@ function AnyOfEnvGroup({
                       }
                     }}
                     disabled={d?.saving}
-                    className="flex-1 px-2 py-1 rounded bg-zinc-800 border border-zinc-700 text-[11px] text-zinc-200 focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                    className="flex-1 px-2 py-1 rounded bg-surface-card border border-line text-[11px] text-ink focus:outline-none focus:border-accent disabled:opacity-50"
                   />
                   <button
                     type="button"
                     onClick={() => onSave(m)}
                     disabled={d?.saving || !d?.value.trim()}
-                    className="px-2 py-1 text-[10px] rounded bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="px-2 py-1 text-[10px] rounded bg-accent-strong hover:bg-accent text-white disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     {d?.saving ? "…" : "Save"}
                   </button>
                 </>
               )}
               {d?.error && (
-                <span className="text-[9px] text-red-400 basis-full pl-1">
+                <span className="text-[9px] text-bad basis-full pl-1">
                   {d.error}
                 </span>
               )}

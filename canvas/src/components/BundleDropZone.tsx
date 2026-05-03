@@ -112,7 +112,7 @@ export function BundleDropZone() {
         onClick={() => fileInputRef.current?.click()}
         aria-label="Import bundle file"
         aria-controls="bundle-file-input"
-        className="sr-only focus:not-sr-only fixed bottom-20 right-4 z-30 px-3 py-1.5 bg-zinc-900/90 border border-zinc-700/50 rounded-lg text-[10px] text-zinc-400 hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 transition-colors"
+        className="sr-only focus:not-sr-only fixed bottom-20 right-4 z-30 px-3 py-1.5 bg-surface-sunken/90 border border-line/50 rounded-lg text-[10px] text-ink-mid hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent transition-colors"
       >
         📦 Import bundle
       </button>
@@ -120,19 +120,19 @@ export function BundleDropZone() {
       {/* Visual overlay when dragging */}
       {isDragging && (
         <div className="fixed inset-0 z-20 flex items-center justify-center bg-blue-950/40 backdrop-blur-sm border-2 border-dashed border-blue-400/50 pointer-events-none">
-          <div className="bg-zinc-900/95 border border-blue-500/50 rounded-2xl px-8 py-6 shadow-2xl text-center">
+          <div className="bg-surface-sunken/95 border border-accent/50 rounded-2xl px-8 py-6 shadow-2xl text-center">
             <div className="text-3xl mb-2" aria-hidden="true">📦</div>
-            <div className="text-sm font-semibold text-zinc-100">Drop Bundle to Import</div>
-            <div className="text-xs text-zinc-500 mt-1">.bundle.json files only</div>
+            <div className="text-sm font-semibold text-ink">Drop Bundle to Import</div>
+            <div className="text-xs text-ink-soft mt-1">.bundle.json files only</div>
           </div>
         </div>
       )}
 
       {/* Importing spinner */}
       {importing && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-zinc-900/95 border border-zinc-700/60 rounded-xl px-5 py-3 shadow-2xl flex items-center gap-3">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-surface-sunken/95 border border-line/60 rounded-xl px-5 py-3 shadow-2xl flex items-center gap-3">
           <div className="w-4 h-4 border-2 border-sky-400 border-t-transparent rounded-full animate-spin" />
-          <span className="text-sm text-zinc-200">Importing bundle...</span>
+          <span className="text-sm text-ink">Importing bundle...</span>
         </div>
       )}
 

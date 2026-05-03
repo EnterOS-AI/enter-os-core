@@ -54,13 +54,13 @@ function MemorySkeletonRows() {
       {Array.from({ length: 3 }).map((_, i) => (
         <div
           key={i}
-          className="rounded-lg border border-zinc-800/60 bg-zinc-900/50 px-3 py-3 animate-pulse"
+          className="rounded-lg border border-line/60 bg-surface-sunken/50 px-3 py-3 animate-pulse"
         >
           <div className="flex items-center gap-2">
-            <div className="h-2 rounded bg-zinc-700/50 flex-1" />
-            <div className="h-2 rounded bg-zinc-700/50 w-8" />
-            <div className="h-2 rounded bg-zinc-700/50 w-6" />
-            <div className="h-2 rounded bg-zinc-700/50 w-10" />
+            <div className="h-2 rounded bg-surface-card/50 flex-1" />
+            <div className="h-2 rounded bg-surface-card/50 w-8" />
+            <div className="h-2 rounded bg-surface-card/50 w-6" />
+            <div className="h-2 rounded bg-surface-card/50 w-10" />
           </div>
         </div>
       ))}
@@ -148,7 +148,7 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
   if (loading && entries.length === 0 && !error) {
     return (
       <div className="flex items-center justify-center h-32">
-        <span className="text-xs text-zinc-500">Loading memories…</span>
+        <span className="text-xs text-ink-soft">Loading memories…</span>
       </div>
     );
   }
@@ -156,7 +156,7 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
   return (
     <div className="flex flex-col h-full">
       {/* Scope tabs */}
-      <div className="px-4 pt-3 pb-2 border-b border-zinc-800/40 shrink-0">
+      <div className="px-4 pt-3 pb-2 border-b border-line/40 shrink-0">
         <div className="flex items-center gap-1">
           {SCOPES.map((scope) => (
             <button
@@ -167,8 +167,8 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
               className={[
                 "px-3 py-1 text-[11px] rounded transition-colors",
                 activeScope === scope
-                  ? "bg-blue-600 text-white"
-                  : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200",
+                  ? "bg-accent-strong text-white"
+                  : "bg-surface-card text-ink-mid hover:bg-surface-card hover:text-ink",
               ].join(" ")}
             >
               {scope}
@@ -178,7 +178,7 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
       </div>
 
       {/* Search bar + namespace filter */}
-      <div className="px-4 pt-3 pb-2 border-b border-zinc-800/40 shrink-0 space-y-2">
+      <div className="px-4 pt-3 pb-2 border-b border-line/40 shrink-0 space-y-2">
         <div className="relative flex items-center">
           {/* Magnifying glass icon */}
           <svg
@@ -186,7 +186,7 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
             height="12"
             viewBox="0 0 16 16"
             fill="none"
-            className="absolute left-2.5 text-zinc-500 pointer-events-none shrink-0"
+            className="absolute left-2.5 text-ink-soft pointer-events-none shrink-0"
             aria-hidden="true"
           >
             <circle cx="7" cy="7" r="4.5" stroke="currentColor" strokeWidth="1.5" />
@@ -198,7 +198,7 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Semantic search…"
             aria-label="Search memories"
-            className="w-full bg-zinc-900 border border-zinc-700/60 focus:border-blue-500/60 rounded-lg pl-8 pr-7 py-1.5 text-[11px] text-zinc-200 placeholder-zinc-600 focus:outline-none transition-colors"
+            className="w-full bg-surface-sunken border border-line/60 focus:border-accent/60 rounded-lg pl-8 pr-7 py-1.5 text-[11px] text-ink placeholder-zinc-600 focus:outline-none transition-colors"
           />
           {searchQuery && (
             <button
@@ -208,7 +208,7 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
                 setDebouncedQuery("");
               }}
               aria-label="Clear search"
-              className="absolute right-2 text-zinc-500 hover:text-zinc-200 transition-colors text-sm leading-none"
+              className="absolute right-2 text-ink-soft hover:text-ink transition-colors text-sm leading-none"
             >
               ×
             </button>
@@ -217,7 +217,7 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
 
         {/* Namespace filter */}
         <div className="flex items-center gap-2">
-          <label htmlFor="namespace-filter" className="text-[10px] text-zinc-500 shrink-0">
+          <label htmlFor="namespace-filter" className="text-[10px] text-ink-soft shrink-0">
             Namespace:
           </label>
           <input
@@ -227,14 +227,14 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
             onChange={(e) => setActiveNamespace(e.target.value)}
             placeholder="all namespaces"
             aria-label="Filter by namespace"
-            className="flex-1 bg-zinc-900 border border-zinc-700/60 focus:border-blue-500/60 rounded px-2 py-1 text-[11px] text-zinc-200 placeholder-zinc-600 focus:outline-none transition-colors min-w-0"
+            className="flex-1 bg-surface-sunken border border-line/60 focus:border-accent/60 rounded px-2 py-1 text-[11px] text-ink placeholder-zinc-600 focus:outline-none transition-colors min-w-0"
           />
         </div>
       </div>
 
       {/* Toolbar */}
-      <div className="px-4 py-2.5 border-b border-zinc-800/40 flex items-center justify-between shrink-0">
-        <span className="text-[11px] text-zinc-500">
+      <div className="px-4 py-2.5 border-b border-line/40 flex items-center justify-between shrink-0">
+        <span className="text-[11px] text-ink-soft">
           {debouncedQuery
             ? `${entries.length} result${entries.length !== 1 ? "s" : ""}`
             : entries.length === 1
@@ -244,7 +244,7 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
         <button
           type="button"
           onClick={loadEntries}
-          className="px-2 py-1 text-[11px] bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded transition-colors"
+          className="px-2 py-1 text-[11px] bg-surface-card hover:bg-surface-card text-ink-mid rounded transition-colors"
           aria-label="Refresh memories"
         >
           ↻ Refresh
@@ -256,7 +256,7 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
         <div
           role="alert"
           aria-live="assertive"
-          className="mx-4 mt-3 px-3 py-2 bg-red-950/30 border border-red-800/40 rounded text-xs text-red-400 shrink-0"
+          className="mx-4 mt-3 px-3 py-2 bg-red-950/30 border border-red-800/40 rounded text-xs text-bad shrink-0"
         >
           {error}
         </div>
@@ -269,11 +269,11 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
         ) : entries.length === 0 ? (
           debouncedQuery ? (
             <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
-              <span className="text-4xl text-zinc-700" aria-hidden="true">◇</span>
-              <p className="text-sm font-medium text-zinc-400">
+              <span className="text-4xl text-ink-soft" aria-hidden="true">◇</span>
+              <p className="text-sm font-medium text-ink-mid">
                 No memories match your search
               </p>
-              <p className="text-[11px] text-zinc-600 max-w-[200px] leading-relaxed">
+              <p className="text-[11px] text-ink-soft max-w-[200px] leading-relaxed">
                 Try a different query or{" "}
                 <button
                   type="button"
@@ -281,7 +281,7 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
                     setSearchQuery("");
                     setDebouncedQuery("");
                   }}
-                  className="text-blue-500 hover:text-blue-400 underline transition-colors"
+                  className="text-accent hover:text-accent underline transition-colors"
                 >
                   clear the search
                 </button>
@@ -290,9 +290,9 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
             </div>
           ) : (
             <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
-              <span className="text-4xl text-zinc-700" aria-hidden="true">◇</span>
-              <p className="text-sm font-medium text-zinc-400">No {activeScope} memories</p>
-              <p className="text-[11px] text-zinc-600 max-w-[200px] leading-relaxed">
+              <span className="text-4xl text-ink-soft" aria-hidden="true">◇</span>
+              <p className="text-sm font-medium text-ink-mid">No {activeScope} memories</p>
+              <p className="text-[11px] text-ink-soft max-w-[200px] leading-relaxed">
                 {activeScope === "LOCAL"
                   ? "This workspace has not written any local memories yet."
                   : activeScope === "TEAM"
@@ -340,11 +340,11 @@ function MemoryEntryRow({ entry, onDelete }: MemoryEntryRowProps) {
   const bodyId = `mem-body-${sanitizeId(entry.id)}`;
 
   return (
-    <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/50 overflow-hidden">
+    <div className="rounded-lg border border-line/60 bg-surface-sunken/50 overflow-hidden">
       {/* Header row */}
       <button
         type="button"
-        className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-zinc-800/30 transition-colors"
+        className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-surface-card/30 transition-colors"
         onClick={() => setExpanded((prev) => !prev)}
         aria-expanded={expanded}
         aria-controls={bodyId}
@@ -354,9 +354,9 @@ function MemoryEntryRow({ entry, onDelete }: MemoryEntryRowProps) {
           className={[
             "text-[9px] shrink-0 font-mono px-1 py-0.5 rounded",
             entry.scope === "LOCAL"
-              ? "bg-zinc-700 text-zinc-400"
+              ? "bg-surface-card text-ink-mid"
               : entry.scope === "TEAM"
-              ? "bg-blue-950 text-blue-400"
+              ? "bg-blue-950 text-accent"
               : "bg-violet-950 text-violet-400",
           ].join(" ")}
           title={`Scope: ${entry.scope}`}
@@ -365,12 +365,12 @@ function MemoryEntryRow({ entry, onDelete }: MemoryEntryRowProps) {
         </span>
 
         {/* Namespace tag */}
-        <span className="text-[9px] shrink-0 font-mono text-zinc-500 truncate max-w-[80px]" title={entry.namespace}>
+        <span className="text-[9px] shrink-0 font-mono text-ink-soft truncate max-w-[80px]" title={entry.namespace}>
           {entry.namespace}
         </span>
 
         {/* Content preview */}
-        <span className="flex-1 min-w-0 text-[10px] font-mono text-zinc-300 truncate text-left">
+        <span className="flex-1 min-w-0 text-[10px] font-mono text-ink-mid truncate text-left">
           {entry.content.length > 60 ? entry.content.slice(0, 60) + "…" : entry.content}
         </span>
 
@@ -380,8 +380,8 @@ function MemoryEntryRow({ entry, onDelete }: MemoryEntryRowProps) {
             className={[
               "text-[9px] shrink-0 font-mono tabular-nums",
               entry.similarity_score >= 0.8
-                ? "text-blue-500"
-                : "text-zinc-400",
+                ? "text-accent"
+                : "text-ink-mid",
             ].join(" ")}
             title={`Similarity: ${(entry.similarity_score * 100).toFixed(1)}%`}
             data-testid="similarity-badge"
@@ -390,10 +390,10 @@ function MemoryEntryRow({ entry, onDelete }: MemoryEntryRowProps) {
           </span>
         )}
 
-        <span className="text-[9px] text-zinc-600 shrink-0">
+        <span className="text-[9px] text-ink-soft shrink-0">
           {formatRelativeTime(entry.created_at)}
         </span>
-        <span className="text-[9px] text-zinc-500 shrink-0" aria-hidden="true">
+        <span className="text-[9px] text-ink-soft shrink-0" aria-hidden="true">
           {expanded ? "▼" : "▶"}
         </span>
       </button>
@@ -404,13 +404,13 @@ function MemoryEntryRow({ entry, onDelete }: MemoryEntryRowProps) {
           id={bodyId}
           role="region"
           aria-label="Memory details"
-          className="border-t border-zinc-800/50 px-3 pb-3 pt-2 space-y-2"
+          className="border-t border-line/50 px-3 pb-3 pt-2 space-y-2"
         >
-          <pre className="text-[10px] font-mono text-zinc-300 bg-zinc-950 rounded p-2 overflow-x-auto max-h-48 whitespace-pre-wrap break-all">
+          <pre className="text-[10px] font-mono text-ink-mid bg-surface rounded p-2 overflow-x-auto max-h-48 whitespace-pre-wrap break-all">
             {entry.content}
           </pre>
           <div className="flex items-center justify-between gap-2">
-            <span className="text-[9px] text-zinc-600">
+            <span className="text-[9px] text-ink-soft">
               Created: {new Date(entry.created_at).toLocaleString()}
             </span>
             <button
@@ -420,7 +420,7 @@ function MemoryEntryRow({ entry, onDelete }: MemoryEntryRowProps) {
                 onDelete();
               }}
               aria-label="Delete memory"
-              className="text-[10px] px-2 py-0.5 bg-red-950/40 hover:bg-red-900/50 border border-red-900/30 rounded text-red-400 transition-colors shrink-0"
+              className="text-[10px] px-2 py-0.5 bg-red-950/40 hover:bg-red-900/50 border border-red-900/30 rounded text-bad transition-colors shrink-0"
             >
               Delete
             </button>

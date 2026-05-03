@@ -168,7 +168,10 @@ describe("A2AEdge — render", () => {
       />,
     );
     const btn = screen.getByRole("button");
-    expect(btn.className).toContain("border-blue-500/60");
+    // Warm-paper migration: blue-500 border was mapped to the semantic
+    // accent token; the text-blue-200 literal is intentionally retained
+    // because tinted-state pill text reads in both themes.
+    expect(btn.className).toContain("border-accent/60");
     expect(btn.className).toContain("text-blue-200");
   });
 

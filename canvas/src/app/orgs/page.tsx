@@ -110,15 +110,15 @@ export default function OrgsPage() {
   }, []);
 
   if (session === "loading" || (orgs === null && error === null)) {
-    return <Shell><p className="text-zinc-400">Loading…</p></Shell>;
+    return <Shell><p className="text-ink-mid">Loading…</p></Shell>;
   }
   if (error) {
     return (
       <Shell>
-        <p role="alert" className="text-red-400">Error: {error}</p>
+        <p role="alert" className="text-bad">Error: {error}</p>
         <button
           onClick={() => window.location.reload()}
-          className="mt-4 rounded bg-zinc-800 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700"
+          className="mt-4 rounded bg-surface-card px-4 py-2 text-sm text-ink hover:bg-surface-card"
         >
           Retry
         </button>
@@ -136,7 +136,7 @@ export default function OrgsPage() {
           <OrgRow key={o.id} org={o} />
         ))}
       </ul>
-      <div className="mt-8 border-t border-zinc-800 pt-6">
+      <div className="mt-8 border-t border-line pt-6">
         <CreateOrgForm
           onCreated={(slug) => {
             // Refresh the list so the new org appears + its CTA fires.
@@ -162,11 +162,11 @@ function CheckoutBanner() {
 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <main className="min-h-screen bg-zinc-950 text-zinc-100">
+    <main className="min-h-screen bg-surface text-ink">
       <TermsGate>
         <div className="mx-auto max-w-2xl px-6 pt-20 pb-12">
-          <h1 className="text-3xl font-bold text-white">Your organizations</h1>
-          <p className="mt-2 text-zinc-400">
+          <h1 className="text-3xl font-bold text-ink">Your organizations</h1>
+          <p className="mt-2 text-ink-mid">
             Each org is an isolated Molecule workspace.
           </p>
           <DataResidencyNotice />
@@ -184,7 +184,7 @@ function Shell({ children }: { children: React.ReactNode }) {
 // region dropdown.
 function DataResidencyNotice() {
   return (
-    <p className="mt-3 rounded border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-xs text-zinc-400">
+    <p className="mt-3 rounded border border-line bg-surface-sunken/60 px-3 py-2 text-xs text-ink-mid">
       Workspaces run in AWS us-east-2 (Ohio, United States). EU region support is on the roadmap — reach out to
       {" "}
       <a href="mailto:support@moleculesai.app" className="underline">
@@ -197,11 +197,11 @@ function DataResidencyNotice() {
 
 function OrgRow({ org }: { org: Org }) {
   return (
-    <li className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
+    <li className="rounded-lg border border-line bg-surface-sunken p-4">
       <div className="flex items-center justify-between">
         <div>
-          <div className="font-medium text-white">{org.name}</div>
-          <div className="text-sm text-zinc-400">
+          <div className="font-medium text-ink">{org.name}</div>
+          <div className="text-sm text-ink-mid">
             {org.slug} · <StatusLabel status={org.status} /> · {org.plan || "free"}
           </div>
           <div className="mt-2 flex items-center gap-2">
@@ -237,21 +237,21 @@ function LowCreditsBanner({ org }: { org: Org }) {
   if (kind === "overage") {
     const used = (org.overage_used_credits ?? 0).toLocaleString();
     return (
-      <span className="text-xs text-amber-300">
+      <span className="text-xs text-warm">
         overage active · {used} used
       </span>
     );
   }
   if (kind === "out-of-credits") {
     return (
-      <a href={`/pricing?org=${encodeURIComponent(org.slug)}`} className="text-xs text-red-300 underline">
+      <a href={`/pricing?org=${encodeURIComponent(org.slug)}`} className="text-xs text-bad underline">
         out of credits — upgrade to keep running
       </a>
     );
   }
   // trial-tail
   return (
-    <a href={`/pricing?org=${encodeURIComponent(org.slug)}`} className="text-xs text-amber-300 underline">
+    <a href={`/pricing?org=${encodeURIComponent(org.slug)}`} className="text-xs text-warm underline">
       trial almost out
     </a>
   );
@@ -260,11 +260,11 @@ function LowCreditsBanner({ org }: { org: Org }) {
 function StatusLabel({ status }: { status: OrgStatus }) {
   const cls =
     status === "running"
-      ? "text-emerald-400"
+      ? "text-good"
       : status === "awaiting_payment"
-      ? "text-amber-400"
+      ? "text-warm"
       : status === "failed"
-      ? "text-red-400"
+      ? "text-bad"
       : "text-sky-400";
   const label =
     status === "awaiting_payment"
@@ -303,21 +303,21 @@ function OrgCTA({ org }: { org: Org }) {
     return (
       <a
         href="mailto:support@moleculesai.app"
-        className="rounded bg-zinc-700 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-zinc-600"
+        className="rounded bg-surface-card px-4 py-2 text-sm font-medium text-ink hover:bg-surface-card"
       >
         Contact support
       </a>
     );
   }
   // provisioning / unknown — non-interactive
-  return <span className="text-sm text-zinc-500">{org.status}…</span>;
+  return <span className="text-sm text-ink-soft">{org.status}…</span>;
 }
 
 function EmptyState({ banner }: { banner?: React.ReactNode }) {
   return (
     <Shell>
       {banner}
-      <p className="text-zinc-300">
+      <p className="text-ink-mid">
         You don't have any organizations yet. Create one to get started — your
         workspace spins up automatically once billing is set up.
       </p>
@@ -365,7 +365,7 @@ function CreateOrgForm({ onCreated }: { onCreated: (slug: string) => void }) {
   return (
     <form onSubmit={submit} className="space-y-3">
       <div>
-        <label htmlFor="org-slug" className="block text-sm text-zinc-300">Slug (URL)</label>
+        <label htmlFor="org-slug" className="block text-sm text-ink-mid">Slug (URL)</label>
         <input
           id="org-slug"
           value={slug}
@@ -374,28 +374,28 @@ function CreateOrgForm({ onCreated }: { onCreated: (slug: string) => void }) {
           placeholder="acme"
           required
           aria-describedby="org-slug-hint"
-          className="mt-1 w-full rounded border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100"
+          className="mt-1 w-full rounded border border-line bg-surface-card px-3 py-2 text-sm text-ink"
         />
-        <p id="org-slug-hint" className="mt-1 text-xs text-zinc-500">
+        <p id="org-slug-hint" className="mt-1 text-xs text-ink-soft">
           Lowercase letters, numbers, and hyphens only. Cannot be changed later.
         </p>
       </div>
       <div>
-        <label htmlFor="org-name" className="block text-sm text-zinc-300">Display name</label>
+        <label htmlFor="org-name" className="block text-sm text-ink-mid">Display name</label>
         <input
           id="org-name"
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Acme Corp"
           required
-          className="mt-1 w-full rounded border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100"
+          className="mt-1 w-full rounded border border-line bg-surface-card px-3 py-2 text-sm text-ink"
         />
       </div>
-      {err && <p role="alert" className="text-sm text-red-400">{err}</p>}
+      {err && <p role="alert" className="text-sm text-bad">{err}</p>}
       <button
         type="submit"
         disabled={submitting}
-        className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+        className="rounded bg-accent-strong px-4 py-2 text-sm font-medium text-white hover:bg-accent disabled:opacity-50"
       >
         {submitting ? "Creating…" : "Create organization"}
       </button>

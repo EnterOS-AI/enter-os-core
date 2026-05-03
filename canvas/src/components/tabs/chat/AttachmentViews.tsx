@@ -26,14 +26,14 @@ export function PendingAttachmentPill({
   onRemove: () => void;
 }) {
   return (
-    <div className="flex items-center gap-1.5 rounded-md border border-zinc-700/60 bg-zinc-800/80 px-2 py-1 text-[10px] text-zinc-300 max-w-[200px]">
-      <FileGlyph className="text-zinc-400 shrink-0" />
+    <div className="flex items-center gap-1.5 rounded-md border border-line/60 bg-surface-card/80 px-2 py-1 text-[10px] text-ink-mid max-w-[200px]">
+      <FileGlyph className="text-ink-mid shrink-0" />
       <span className="truncate" title={file.name}>{file.name}</span>
-      <span className="text-zinc-500 shrink-0 tabular-nums">{formatSize(file.size)}</span>
+      <span className="text-ink-soft shrink-0 tabular-nums">{formatSize(file.size)}</span>
       <button
         onClick={onRemove}
         aria-label={`Remove ${file.name}`}
-        className="ml-0.5 text-zinc-500 hover:text-zinc-200 transition-colors shrink-0"
+        className="ml-0.5 text-ink-soft hover:text-ink transition-colors shrink-0"
       >
         <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
@@ -57,8 +57,8 @@ export function AttachmentChip({
 }) {
   const toneClasses =
     tone === "user"
-      ? "border-blue-400/30 bg-blue-600/20 hover:bg-blue-600/30 text-blue-100"
-      : "border-zinc-600/50 bg-zinc-700/40 hover:bg-zinc-600/50 text-zinc-100";
+      ? "border-blue-400/30 bg-accent-strong/20 hover:bg-accent-strong/30 text-blue-100"
+      : "border-line/50 bg-surface-card/40 hover:bg-surface-card/50 text-ink";
   return (
     <button
       onClick={() => onDownload(attachment)}

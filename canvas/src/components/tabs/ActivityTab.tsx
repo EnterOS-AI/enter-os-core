@@ -24,18 +24,18 @@ const FILTERS: { id: FilterType; label: string; icon: string }[] = [
 ];
 
 const TYPE_COLORS: Record<string, { text: string; bg: string; border: string }> = {
-  a2a_receive: { text: "text-blue-400", bg: "bg-blue-950/30", border: "border-blue-800/30" },
+  a2a_receive: { text: "text-accent", bg: "bg-blue-950/30", border: "border-blue-800/30" },
   a2a_send: { text: "text-cyan-400", bg: "bg-cyan-950/30", border: "border-cyan-800/30" },
-  task_update: { text: "text-amber-400", bg: "bg-amber-950/30", border: "border-amber-800/30" },
+  task_update: { text: "text-warm", bg: "bg-amber-950/30", border: "border-amber-800/30" },
   skill_promotion: { text: "text-violet-300", bg: "bg-violet-950/30", border: "border-violet-800/30" },
-  agent_log: { text: "text-zinc-400", bg: "bg-zinc-800/30", border: "border-zinc-700/30" },
-  error: { text: "text-red-400", bg: "bg-red-950/30", border: "border-red-800/30" },
+  agent_log: { text: "text-ink-mid", bg: "bg-surface-card/30", border: "border-line/30" },
+  error: { text: "text-bad", bg: "bg-red-950/30", border: "border-red-800/30" },
 };
 
 const STATUS_ICONS: Record<string, { icon: string; color: string }> = {
-  ok: { icon: "✓", color: "text-emerald-400" },
-  error: { icon: "✕", color: "text-red-400" },
-  timeout: { icon: "⏱", color: "text-amber-400" },
+  ok: { icon: "✓", color: "text-good" },
+  error: { icon: "✕", color: "text-bad" },
+  timeout: { icon: "⏱", color: "text-warm" },
 };
 
 export function ActivityTab({ workspaceId }: Props) {
@@ -75,7 +75,7 @@ export function ActivityTab({ workspaceId }: Props) {
   return (
     <div className="flex flex-col h-full">
       {/* Filter bar */}
-      <div className="px-3 pt-3 pb-2 border-b border-zinc-800/40">
+      <div className="px-3 pt-3 pb-2 border-b border-line/40">
         <div className="flex items-center gap-1 flex-wrap">
           {FILTERS.map((f) => (
             <button
@@ -84,8 +84,8 @@ export function ActivityTab({ workspaceId }: Props) {
               aria-pressed={filter === f.id}
               className={`px-2 py-1 text-[11px] rounded-md font-medium transition-all ${
                 filter === f.id
-                  ? "bg-zinc-700 text-zinc-100 ring-1 ring-zinc-600"
-                  : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/60"
+                  ? "bg-surface-card text-ink ring-1 ring-zinc-600"
+                  : "text-ink-soft hover:text-ink-mid hover:bg-surface-card/60"
               }`}
             >
               <span className="mr-0.5 opacity-60">{f.icon}</span> {f.label}
@@ -96,7 +96,7 @@ export function ActivityTab({ workspaceId }: Props) {
               onClick={() => setAutoRefresh(!autoRefresh)}
               aria-pressed={autoRefresh}
               className={`text-[11px] px-1.5 py-0.5 rounded ${
-                autoRefresh ? "text-emerald-400 bg-emerald-950/30" : "text-zinc-500"
+                autoRefresh ? "text-good bg-emerald-950/30" : "text-ink-soft"
               }`}
               title={autoRefresh ? "Auto-refresh ON" : "Auto-refresh OFF"}
             >
@@ -104,20 +104,20 @@ export function ActivityTab({ workspaceId }: Props) {
             </button>
             <button
               onClick={() => setTraceOpen(true)}
-              className="px-2 py-1 bg-blue-900/40 hover:bg-blue-800/50 text-[11px] rounded text-blue-300 border border-blue-800/30"
+              className="px-2 py-1 bg-blue-900/40 hover:bg-blue-800/50 text-[11px] rounded text-accent border border-blue-800/30"
               title="View full conversation trace across all workspaces"
             >
               Full Trace
             </button>
             <button
               onClick={loadActivities}
-              className="px-2 py-1 bg-zinc-700 hover:bg-zinc-600 text-[11px] rounded text-zinc-300"
+              className="px-2 py-1 bg-surface-card hover:bg-surface-card text-[11px] rounded text-ink-mid"
             >
               Refresh
             </button>
           </div>
         </div>
-        <div className="mt-1.5 text-[10px] text-zinc-500">
+        <div className="mt-1.5 text-[10px] text-ink-soft">
           {activities.length} {filter === "all" ? "activities" : filter.replace("_", " ") + " entries"}
         </div>
       </div>
@@ -125,19 +125,19 @@ export function ActivityTab({ workspaceId }: Props) {
       {/* Activity list */}
       <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
         {loading && activities.length === 0 && (
-          <div className="text-xs text-zinc-500 text-center py-8">Loading activity...</div>
+          <div className="text-xs text-ink-soft text-center py-8">Loading activity...</div>
         )}
 
         {error && (
-          <div className="px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-red-400">
+          <div className="px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-bad">
             {error}
           </div>
         )}
 
         {!loading && !error && activities.length === 0 && (
           <div className="text-center py-8">
-            <div className="text-zinc-600 text-xs">No activity recorded yet</div>
-            <div className="text-zinc-700 text-[9px] mt-1">
+            <div className="text-ink-soft text-xs">No activity recorded yet</div>
+            <div className="text-ink-soft text-[9px] mt-1">
               Activity logs appear when agents communicate or perform tasks
             </div>
           </div>
@@ -184,7 +184,7 @@ function ActivityRow({
       className={`rounded-lg border transition-colors ${
         isError
           ? "bg-red-950/20 border-red-900/30"
-          : "bg-zinc-800/60 border-zinc-700/40"
+          : "bg-surface-card/60 border-line/40"
       }`}
     >
       <button type="button" onClick={onToggle} className="w-full text-left px-3 py-2">
@@ -195,7 +195,7 @@ function ActivityRow({
           </span>
 
           {entry.method && (
-            <span className="text-[10px] font-mono text-zinc-300 truncate">
+            <span className="text-[10px] font-mono text-ink-mid truncate">
               {entry.method}
             </span>
           )}
@@ -205,23 +205,23 @@ function ActivityRow({
           </span>
 
           {entry.duration_ms != null && (
-            <span className="text-[8px] text-zinc-500 font-mono tabular-nums shrink-0">
+            <span className="text-[8px] text-ink-soft font-mono tabular-nums shrink-0">
               {entry.duration_ms}ms
             </span>
           )}
 
-          <span className="text-[8px] text-zinc-500 shrink-0">
+          <span className="text-[8px] text-ink-soft shrink-0">
             {formatTime(entry.created_at)}
           </span>
 
-          <span className="text-[9px] text-zinc-500">
+          <span className="text-[9px] text-ink-soft">
             {expanded ? "▼" : "▶"}
           </span>
         </div>
 
         {/* Summary — replace raw IDs with workspace names */}
         {entry.summary && (
-          <div className="text-[10px] text-zinc-400 mt-1 truncate">
+          <div className="text-[10px] text-ink-mid mt-1 truncate">
             {entry.summary
               .replace(entry.source_id || "", resolveName(entry.source_id))
               .replace(entry.target_id || "", resolveName(entry.target_id))}
@@ -236,9 +236,9 @@ function ActivityRow({
                 {resolveName(entry.source_id)}
               </span>
             )}
-            <span className="text-[9px] text-zinc-500">→</span>
+            <span className="text-[9px] text-ink-soft">→</span>
             {entry.target_id && (
-              <span className="text-[9px] text-blue-400/80 truncate max-w-[140px]" title={entry.target_id}>
+              <span className="text-[9px] text-accent/80 truncate max-w-[140px]" title={entry.target_id}>
                 {resolveName(entry.target_id)}
               </span>
             )}
@@ -247,7 +247,7 @@ function ActivityRow({
 
         {/* Error detail */}
         {isError && entry.error_detail && (
-          <div className="text-[9px] text-red-400/80 mt-1 truncate">
+          <div className="text-[9px] text-bad/80 mt-1 truncate">
             {entry.error_detail}
           </div>
         )}
@@ -255,7 +255,7 @@ function ActivityRow({
 
       {/* Expanded details */}
       {expanded && (
-        <div className="px-3 pb-3 space-y-2 border-t border-zinc-700/30 mt-1 pt-2">
+        <div className="px-3 pb-3 space-y-2 border-t border-line/30 mt-1 pt-2">
           {entry.source_id && (
             <Detail label="Source" value={`${resolveName(entry.source_id)} (${entry.source_id.slice(0, 8)})`} />
           )}
@@ -278,7 +278,7 @@ function ActivityRow({
           {entry.response_body && (
             <JsonBlock label="Response" data={entry.response_body} />
           )}
-          <div className="text-[8px] text-zinc-500 font-mono select-all">
+          <div className="text-[8px] text-ink-soft font-mono select-all">
             ID: {entry.id}
           </div>
         </div>
@@ -298,10 +298,10 @@ function A2AErrorPreview({ label, raw }: { label: string; raw: string }) {
   const hint = inferA2AErrorHint(detail);
   return (
     <div>
-      <div className="text-[8px] text-red-400/80 uppercase tracking-wider mb-1">{label} — delivery failed</div>
-      <div className="text-[10px] text-red-300 bg-red-950/30 border border-red-800/40 rounded p-2 space-y-1.5">
+      <div className="text-[8px] text-bad/80 uppercase tracking-wider mb-1">{label} — delivery failed</div>
+      <div className="text-[10px] text-bad bg-red-950/30 border border-red-800/40 rounded p-2 space-y-1.5">
         <div className="font-mono whitespace-pre-wrap break-words max-h-32 overflow-y-auto">{detail}</div>
-        <div className="text-[9px] text-red-300/70 leading-relaxed border-t border-red-800/30 pt-1.5">{hint}</div>
+        <div className="text-[9px] text-bad/70 leading-relaxed border-t border-red-800/30 pt-1.5">{hint}</div>
       </div>
     </div>
   );
@@ -326,8 +326,8 @@ function MessagePreview({ label, body }: { label: string; body: Record<string, u
       }
       return (
         <div>
-          <div className="text-[8px] text-zinc-500 uppercase tracking-wider mb-1">{label}</div>
-          <div className="text-[10px] text-zinc-300 bg-zinc-900/60 rounded p-2 max-h-32 overflow-y-auto whitespace-pre-wrap break-words">
+          <div className="text-[8px] text-ink-soft uppercase tracking-wider mb-1">{label}</div>
+          <div className="text-[10px] text-ink-mid bg-surface-sunken/60 rounded p-2 max-h-32 overflow-y-auto whitespace-pre-wrap break-words">
             {text.slice(0, 2000)}
           </div>
         </div>
@@ -369,8 +369,8 @@ function MessagePreview({ label, body }: { label: string; body: Record<string, u
 
   return (
     <div>
-      <div className="text-[8px] text-zinc-500 uppercase tracking-wider mb-1">{label}</div>
-      <div className="text-[10px] text-zinc-300 bg-zinc-900/60 rounded p-2 max-h-32 overflow-y-auto whitespace-pre-wrap break-words">
+      <div className="text-[8px] text-ink-soft uppercase tracking-wider mb-1">{label}</div>
+      <div className="text-[10px] text-ink-mid bg-surface-sunken/60 rounded p-2 max-h-32 overflow-y-auto whitespace-pre-wrap break-words">
         {text.slice(0, 2000)}
       </div>
     </div>
@@ -380,8 +380,8 @@ function MessagePreview({ label, body }: { label: string; body: Record<string, u
 function Detail({ label, value, mono, error: isError }: { label: string; value: string; mono?: boolean; error?: boolean }) {
   return (
     <div className="flex items-start gap-2">
-      <span className="text-[8px] text-zinc-500 uppercase tracking-wider w-14 shrink-0 pt-0.5">{label}</span>
-      <span className={`text-[9px] break-all ${isError ? "text-red-400" : "text-zinc-300"} ${mono ? "font-mono" : ""}`}>
+      <span className="text-[8px] text-ink-soft uppercase tracking-wider w-14 shrink-0 pt-0.5">{label}</span>
+      <span className={`text-[9px] break-all ${isError ? "text-bad" : "text-ink-mid"} ${mono ? "font-mono" : ""}`}>
         {value}
       </span>
     </div>
@@ -391,8 +391,8 @@ function Detail({ label, value, mono, error: isError }: { label: string; value: 
 function JsonBlock({ label, data }: { label: string; data: Record<string, unknown> }) {
   return (
     <div>
-      <div className="text-[8px] text-zinc-500 uppercase tracking-wider mb-1">{label}</div>
-      <pre className="text-[9px] text-zinc-300 bg-zinc-900/80 rounded p-2 overflow-x-auto max-h-48 font-mono">
+      <div className="text-[8px] text-ink-soft uppercase tracking-wider mb-1">{label}</div>
+      <pre className="text-[9px] text-ink-mid bg-surface-sunken/80 rounded p-2 overflow-x-auto max-h-48 font-mono">
         {JSON.stringify(data, null, 2)}
       </pre>
     </div>

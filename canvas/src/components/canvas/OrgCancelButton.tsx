@@ -112,10 +112,10 @@ export function OrgCancelButton({ rootId, rootName, workspaceCount }: Props) {
   if (confirming) {
     return (
       <div
-        className="nodrag absolute -top-10 right-0 z-20 flex items-center gap-1.5 rounded-lg bg-zinc-900/95 px-2 py-1 shadow-lg border border-red-800/60"
+        className="nodrag absolute -top-10 right-0 z-20 flex items-center gap-1.5 rounded-lg bg-surface-sunken/95 px-2 py-1 shadow-lg border border-red-800/60"
         onClick={(e) => e.stopPropagation()}
       >
-        <span className="text-[10px] text-zinc-300">
+        <span className="text-[10px] text-ink-mid">
           Delete {workspaceCount} workspace{workspaceCount === 1 ? "" : "s"}?
         </span>
         <button
@@ -130,7 +130,7 @@ export function OrgCancelButton({ rootId, rootName, workspaceCount }: Props) {
           type="button"
           onClick={() => setConfirming(false)}
           disabled={submitting}
-          className="px-2 py-0.5 rounded bg-zinc-700/80 hover:bg-zinc-600 text-[10px] text-zinc-200"
+          className="px-2 py-0.5 rounded bg-surface-card/80 hover:bg-surface-card text-[10px] text-ink"
         >
           No
         </button>

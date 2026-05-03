@@ -242,7 +242,7 @@ export function ChannelsTab({ workspaceId }: Props) {
 
   if (loading) {
     return (
-      <div className="p-4 text-zinc-500 text-xs">Loading channels...</div>
+      <div className="p-4 text-ink-soft text-xs">Loading channels...</div>
     );
   }
 
@@ -250,33 +250,33 @@ export function ChannelsTab({ workspaceId }: Props) {
     <div className="p-4 space-y-4">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h3 className="text-xs font-semibold text-zinc-300 tracking-wide uppercase">
+        <h3 className="text-xs font-semibold text-ink-mid tracking-wide uppercase">
           Channels
         </h3>
         <button
           onClick={() => setShowForm(!showForm)}
-          className="text-[10px] px-2.5 py-1 rounded bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 transition"
+          className="text-[10px] px-2.5 py-1 rounded bg-accent-strong/20 text-accent hover:bg-accent-strong/30 transition"
         >
           {showForm ? "Cancel" : "+ Connect"}
         </button>
       </div>
 
       {error && (
-        <div className="px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-red-400">
+        <div className="px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-bad">
           {error}
         </div>
       )}
 
       {/* Create form — schema-driven */}
       {showForm && (
-        <div className="space-y-2 p-3 bg-zinc-800/40 rounded border border-zinc-700/50">
+        <div className="space-y-2 p-3 bg-surface-card/40 rounded border border-line/50">
           <div>
-            <label htmlFor={platformId} className="text-[10px] text-zinc-500 block mb-1">Platform</label>
+            <label htmlFor={platformId} className="text-[10px] text-ink-soft block mb-1">Platform</label>
             <select
               id={platformId}
               value={formType}
               onChange={(e) => setFormType(e.target.value)}
-              className="w-full text-xs bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-zinc-300"
+              className="w-full text-xs bg-surface-sunken border border-line rounded px-2 py-1.5 text-ink-mid"
             >
               {adapters.map((a) => (
                 <option key={a.type} value={a.type}>{a.display_name}</option>
@@ -308,7 +308,7 @@ export function ChannelsTab({ workspaceId }: Props) {
                             <button
                               onClick={handleDiscover}
                               disabled={discovering || !formValues["bot_token"]}
-                              className="text-[10px] px-2 py-0.5 rounded bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 transition disabled:opacity-40"
+                              className="text-[10px] px-2 py-0.5 rounded bg-accent-strong/20 text-accent hover:bg-accent-strong/30 transition disabled:opacity-40"
                             >
                               {discovering ? "Detecting..." : "Detect Chats"}
                             </button>
@@ -318,21 +318,21 @@ export function ChannelsTab({ workspaceId }: Props) {
                               {discoveredChats.map((chat) => (
                                 <label
                                   key={chat.chat_id}
-                                  className="flex items-center gap-2 px-2 py-1.5 bg-zinc-900/50 rounded border border-zinc-700/50 cursor-pointer hover:bg-zinc-800/50"
+                                  className="flex items-center gap-2 px-2 py-1.5 bg-surface-sunken/50 rounded border border-line/50 cursor-pointer hover:bg-surface-card/50"
                                 >
                                   <input
                                     type="checkbox"
                                     checked={selectedChats.has(chat.chat_id)}
                                     onChange={() => toggleChat(chat.chat_id)}
-                                    className="rounded border-zinc-600"
+                                    className="rounded border-line"
                                   />
-                                  <span className="text-xs text-zinc-300">{chat.name || "Unknown"}</span>
-                                  <span className="text-[10px] text-zinc-500 ml-auto">{chat.type} {chat.chat_id}</span>
+                                  <span className="text-xs text-ink-mid">{chat.name || "Unknown"}</span>
+                                  <span className="text-[10px] text-ink-soft ml-auto">{chat.type} {chat.chat_id}</span>
                                 </label>
                               ))}
                               <button
                                 onClick={() => setShowManualInput(!showManualInput)}
-                                className="text-[10px] text-blue-400 hover:underline"
+                                className="text-[10px] text-accent hover:underline"
                               >
                                 {showManualInput ? "hide manual input" : "edit manually"}
                               </button>
@@ -347,26 +347,26 @@ export function ChannelsTab({ workspaceId }: Props) {
           )}
 
           <div>
-            <label htmlFor={allowedUsersId} className="text-[10px] text-zinc-500 block mb-1">
-              Allowed Users <span className="text-zinc-600">(optional, comma-separated)</span>
+            <label htmlFor={allowedUsersId} className="text-[10px] text-ink-soft block mb-1">
+              Allowed Users <span className="text-ink-soft">(optional, comma-separated)</span>
             </label>
             <input
               id={allowedUsersId}
               value={formAllowedUsers}
               onChange={(e) => setFormAllowedUsers(e.target.value)}
               placeholder="123456789, 987654321"
-              className="w-full text-xs bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-zinc-300 placeholder-zinc-600"
+              className="w-full text-xs bg-surface-sunken border border-line rounded px-2 py-1.5 text-ink-mid placeholder-zinc-600"
             />
-            <p className="text-[11px] text-zinc-500 mt-0.5">
+            <p className="text-[11px] text-ink-soft mt-0.5">
               Platform-specific user IDs. Leave empty to allow everyone.
             </p>
           </div>
           {formError && (
-            <p className="text-[10px] text-red-400">{formError}</p>
+            <p className="text-[10px] text-bad">{formError}</p>
           )}
           <button
             onClick={handleCreate}
-            className="w-full text-xs py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white transition"
+            className="w-full text-xs py-1.5 rounded bg-accent-strong hover:bg-accent text-white transition"
           >
             Connect Channel
           </button>
@@ -376,8 +376,8 @@ export function ChannelsTab({ workspaceId }: Props) {
       {/* Channel list */}
       {channels.length === 0 && !showForm && (
         <div className="text-center py-8">
-          <p className="text-zinc-500 text-xs">No channels connected</p>
-          <p className="text-zinc-600 text-[10px] mt-1">
+          <p className="text-ink-soft text-xs">No channels connected</p>
+          <p className="text-ink-soft text-[10px] mt-1">
             Connect Telegram, Slack, Discord, or Lark / Feishu to chat with this agent from social platforms.
           </p>
         </div>
@@ -386,19 +386,19 @@ export function ChannelsTab({ workspaceId }: Props) {
       {channels.map((ch) => (
         <div
           key={ch.id}
-          className="p-3 bg-zinc-800/30 rounded border border-zinc-700/40 space-y-2"
+          className="p-3 bg-surface-card/30 rounded border border-line/40 space-y-2"
         >
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <span
                 className={`w-2 h-2 rounded-full ${
-                  ch.enabled ? "bg-emerald-500" : "bg-zinc-600"
+                  ch.enabled ? "bg-emerald-500" : "bg-surface-card"
                 }`}
               />
-              <span className="text-xs font-medium text-zinc-200">
+              <span className="text-xs font-medium text-ink">
                 {ch.channel_type.charAt(0).toUpperCase() + ch.channel_type.slice(1)}
               </span>
-              <span className="text-[10px] text-zinc-500">
+              <span className="text-[10px] text-ink-soft">
                 {ch.config.chat_id || ch.config.channel_id || ""}
               </span>
             </div>
@@ -406,7 +406,7 @@ export function ChannelsTab({ workspaceId }: Props) {
               <button
                 onClick={() => handleTest(ch)}
                 disabled={testing === ch.id}
-                className="text-[10px] px-2 py-0.5 rounded bg-zinc-700/50 text-zinc-400 hover:text-zinc-200 transition disabled:opacity-50"
+                className="text-[10px] px-2 py-0.5 rounded bg-surface-card/50 text-ink-mid hover:text-ink transition disabled:opacity-50"
               >
                 {testing === ch.id ? "Sent!" : "Test"}
               </button>
@@ -414,21 +414,21 @@ export function ChannelsTab({ workspaceId }: Props) {
                 onClick={() => handleToggle(ch)}
                 className={`text-[10px] px-2 py-0.5 rounded transition ${
                   ch.enabled
-                    ? "bg-emerald-900/30 text-emerald-400 hover:bg-emerald-900/50"
-                    : "bg-zinc-700/50 text-zinc-500 hover:text-zinc-300"
+                    ? "bg-emerald-900/30 text-good hover:bg-emerald-900/50"
+                    : "bg-surface-card/50 text-ink-soft hover:text-ink-mid"
                 }`}
               >
                 {ch.enabled ? "On" : "Off"}
               </button>
               <button
                 onClick={() => setPendingDelete(ch)}
-                className="text-[10px] px-2 py-0.5 rounded bg-red-900/20 text-red-400 hover:bg-red-900/40 transition"
+                className="text-[10px] px-2 py-0.5 rounded bg-red-900/20 text-bad hover:bg-red-900/40 transition"
               >
                 Remove
               </button>
             </div>
           </div>
-          <div className="flex items-center gap-4 text-[10px] text-zinc-500">
+          <div className="flex items-center gap-4 text-[10px] text-ink-soft">
             <span>{ch.message_count} messages</span>
             <span>Last: {relativeTime(ch.last_message_at)}</span>
             {ch.allowed_users.length > 0 && (
@@ -467,12 +467,12 @@ function SchemaField({
 }) {
   const inputId = useId();
   const common =
-    "w-full text-xs bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-zinc-300 placeholder-zinc-600";
+    "w-full text-xs bg-surface-sunken border border-line rounded px-2 py-1.5 text-ink-mid placeholder-zinc-600";
   return (
     <div>
-      <label htmlFor={inputId} className="text-[10px] text-zinc-500 block mb-1">
+      <label htmlFor={inputId} className="text-[10px] text-ink-soft block mb-1">
         {field.label}
-        {!field.required && <span className="text-zinc-600"> (optional)</span>}
+        {!field.required && <span className="text-ink-soft"> (optional)</span>}
       </label>
       {field.type === "textarea" ? (
         <textarea
@@ -495,7 +495,7 @@ function SchemaField({
       )}
       {renderExtras?.()}
       {field.help && (
-        <p className="text-[11px] text-zinc-500 mt-0.5">{field.help}</p>
+        <p className="text-[11px] text-ink-soft mt-0.5">{field.help}</p>
       )}
     </div>
   );

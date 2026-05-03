@@ -236,7 +236,7 @@ export function OrgTemplatesSection() {
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
           aria-controls="org-templates-body"
-          className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-zinc-500 hover:text-zinc-300 font-semibold transition-colors"
+          className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-ink-soft hover:text-ink-mid font-semibold transition-colors"
         >
           <span
             aria-hidden="true"
@@ -246,7 +246,7 @@ export function OrgTemplatesSection() {
           </span>
           Org Templates
           {orgs.length > 0 && (
-            <span className="text-zinc-600 normal-case tracking-normal">
+            <span className="text-ink-soft normal-case tracking-normal">
               ({orgs.length})
             </span>
           )}
@@ -255,7 +255,7 @@ export function OrgTemplatesSection() {
           type="button"
           onClick={loadOrgs}
           aria-label="Refresh org templates"
-          className="text-[10px] text-zinc-500 hover:text-zinc-300"
+          className="text-[10px] text-ink-soft hover:text-ink-mid"
         >
           ↻
         </button>
@@ -264,20 +264,20 @@ export function OrgTemplatesSection() {
       {expanded && (
         <div id="org-templates-body" className="space-y-2">
       {loading && (
-        <div role="status" aria-live="polite" className="flex items-center gap-1.5 text-[10px] text-zinc-500">
+        <div role="status" aria-live="polite" className="flex items-center gap-1.5 text-[10px] text-ink-soft">
           <Spinner size="sm" />
           Loading…
         </div>
       )}
 
       {!loading && orgs.length === 0 && (
-        <div className="text-[10px] text-zinc-500">
+        <div className="text-[10px] text-ink-soft">
           No org templates in <code>org-templates/</code>
         </div>
       )}
 
       {error && (
-        <div className="px-2 py-1 bg-red-950/40 border border-red-800/50 rounded text-[10px] text-red-400">
+        <div className="px-2 py-1 bg-red-950/40 border border-red-800/50 rounded text-[10px] text-bad">
           {error}
         </div>
       )}
@@ -287,10 +287,10 @@ export function OrgTemplatesSection() {
         return (
           <div
             key={o.dir}
-            className="bg-zinc-900/50 border border-zinc-800/60 rounded-xl p-3 hover:border-zinc-700/60 transition-all"
+            className="bg-surface-sunken/50 border border-line/60 rounded-xl p-3 hover:border-line/60 transition-all"
           >
             <div className="flex items-center justify-between mb-1">
-              <span className="text-[12px] font-semibold text-zinc-200 truncate">
+              <span className="text-[12px] font-semibold text-ink truncate">
                 {o.name || o.dir}
               </span>
               <span className="text-[9px] font-mono text-sky-400 bg-sky-950/40 px-1.5 py-0.5 rounded-md shrink-0">
@@ -298,7 +298,7 @@ export function OrgTemplatesSection() {
               </span>
             </div>
             {o.description && (
-              <p className="text-[10px] text-zinc-500 mb-2.5 line-clamp-2 leading-relaxed">
+              <p className="text-[10px] text-ink-soft mb-2.5 line-clamp-2 leading-relaxed">
                 {o.description}
               </p>
             )}
@@ -306,7 +306,7 @@ export function OrgTemplatesSection() {
               type="button"
               onClick={() => handleImport(o)}
               disabled={isImporting}
-              className="w-full px-2 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 rounded-lg text-[10px] text-blue-300 font-medium transition-colors disabled:opacity-50"
+              className="w-full px-2 py-1.5 bg-accent-strong/20 hover:bg-accent-strong/30 border border-accent/30 rounded-lg text-[10px] text-accent font-medium transition-colors disabled:opacity-50"
             >
               {isImporting ? "Importing…" : "Import org"}
             </button>
@@ -411,7 +411,7 @@ function ImportAgentButton({ onImported }: { onImported: () => void }) {
         type="button"
         onClick={() => fileInputRef.current?.click()}
         disabled={importing}
-        className="w-full px-3 py-2 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 rounded-lg text-[11px] text-blue-300 font-medium transition-colors disabled:opacity-50"
+        className="w-full px-3 py-2 bg-accent-strong/20 hover:bg-accent-strong/30 border border-accent/30 rounded-lg text-[11px] text-accent font-medium transition-colors disabled:opacity-50"
       >
         {importing ? "Importing..." : "Import Agent Folder"}
       </button>
@@ -476,8 +476,8 @@ export function TemplatePalette() {
         onClick={() => setOpen(!open)}
         className={`fixed top-4 left-4 z-40 w-9 h-9 flex items-center justify-center rounded-lg transition-colors ${
           open
-            ? "bg-blue-600 text-white"
-            : "bg-zinc-900/90 border border-zinc-700/50 text-zinc-400 hover:text-zinc-200 hover:border-zinc-600"
+            ? "bg-accent-strong text-white"
+            : "bg-surface-sunken/90 border border-line/50 text-ink-mid hover:text-ink hover:border-line"
         }`}
         title="Template Palette"
         aria-label={open ? "Close template palette" : "Open template palette"}
@@ -496,10 +496,10 @@ export function TemplatePalette() {
 
       {/* Sidebar */}
       {open && (
-        <div className="fixed top-0 left-0 h-full w-[280px] bg-zinc-900/95 backdrop-blur-md border-r border-zinc-800/60 z-30 flex flex-col shadow-2xl shadow-black/40">
-          <div className="px-4 pt-14 pb-3 border-b border-zinc-800/60">
-            <h2 className="text-sm font-semibold text-zinc-100">Templates</h2>
-            <p className="text-[10px] text-zinc-500 mt-0.5">Click to deploy a workspace</p>
+        <div className="fixed top-0 left-0 h-full w-[280px] bg-surface-sunken/95 backdrop-blur-md border-r border-line/60 z-30 flex flex-col shadow-2xl shadow-black/40">
+          <div className="px-4 pt-14 pb-3 border-b border-line/60">
+            <h2 className="text-sm font-semibold text-ink">Templates</h2>
+            <p className="text-[10px] text-ink-soft mt-0.5">Click to deploy a workspace</p>
           </div>
 
           <div className="flex-1 overflow-y-auto p-3 space-y-2">
@@ -509,20 +509,20 @@ export function TemplatePalette() {
             <OrgTemplatesSection />
 
             {loading && (
-              <div role="status" aria-live="polite" className="flex items-center justify-center gap-2 text-xs text-zinc-500 text-center py-8">
+              <div role="status" aria-live="polite" className="flex items-center justify-center gap-2 text-xs text-ink-soft text-center py-8">
                 <Spinner />
                 Loading…
               </div>
             )}
 
             {!loading && templates.length === 0 && (
-              <div role="status" aria-live="polite" className="text-xs text-zinc-500 text-center py-8">
+              <div role="status" aria-live="polite" className="text-xs text-ink-soft text-center py-8">
                 No templates found in<br />workspace-configs-templates/
               </div>
             )}
 
             {error && (
-              <div className="px-3 py-1.5 bg-red-950/40 border border-red-800/50 rounded-lg text-xs text-red-400">
+              <div className="px-3 py-1.5 bg-red-950/40 border border-red-800/50 rounded-lg text-xs text-bad">
                 {error}
               </div>
             )}
@@ -537,10 +537,10 @@ export function TemplatePalette() {
                   key={t.id}
                   onClick={() => void handleDeploy(t)}
                   disabled={isDeploying}
-                  className="w-full text-left bg-zinc-800/40 hover:bg-zinc-800/70 border border-zinc-700/40 hover:border-zinc-600/50 rounded-xl p-3 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-zinc-800/40 disabled:hover:border-zinc-700/40 group focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70"
+                  className="w-full text-left bg-surface-card/40 hover:bg-surface-card/70 border border-line/40 hover:border-line/50 rounded-xl p-3 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-surface-card/40 disabled:hover:border-line/40 group focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
                 >
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-[12px] font-semibold text-zinc-200 group-hover:text-zinc-100 truncate">
+                    <span className="text-[12px] font-semibold text-ink group-hover:text-ink truncate">
                       {t.name}
                     </span>
                     <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded-md shrink-0 ${tierCfg.color}`}>
@@ -549,7 +549,7 @@ export function TemplatePalette() {
                   </div>
 
                   {t.description && (
-                    <p className="text-[10px] text-zinc-500 mb-2 line-clamp-2 leading-relaxed">
+                    <p className="text-[10px] text-ink-soft mb-2 line-clamp-2 leading-relaxed">
                       {t.description}
                     </p>
                   )}
@@ -557,12 +557,12 @@ export function TemplatePalette() {
                   {t.skills?.length > 0 && (
                     <div className="flex flex-wrap gap-1">
                       {t.skills.slice(0, 3).map((s) => (
-                        <span key={s} className="text-[8px] text-zinc-400 bg-zinc-700/40 px-1.5 py-0.5 rounded">
+                        <span key={s} className="text-[8px] text-ink-mid bg-surface-card/40 px-1.5 py-0.5 rounded">
                           {s}
                         </span>
                       ))}
                       {t.skills.length > 3 && (
-                        <span className="text-[8px] text-zinc-500">+{t.skills.length - 3}</span>
+                        <span className="text-[8px] text-ink-soft">+{t.skills.length - 3}</span>
                       )}
                     </div>
                   )}
@@ -575,12 +575,12 @@ export function TemplatePalette() {
             })}
           </div>
 
-          <div className="px-4 py-3 border-t border-zinc-800/60 space-y-3">
+          <div className="px-4 py-3 border-t border-line/60 space-y-3">
             <ImportAgentButton onImported={loadTemplates} />
             <button
               type="button"
               onClick={loadTemplates}
-              className="text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors block"
+              className="text-[10px] text-ink-soft hover:text-ink-mid transition-colors block"
             >
               Refresh templates
             </button>

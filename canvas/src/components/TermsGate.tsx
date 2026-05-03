@@ -77,15 +77,15 @@ export function TermsGate({ children }: { children: React.ReactNode }) {
     <>
       {children}
       {status === "pending" && (
-        <div aria-hidden="true" className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/80 backdrop-blur-sm">
+        <div aria-hidden="true" className="fixed inset-0 z-50 flex items-center justify-center bg-surface/80 backdrop-blur-sm">
           <div
             role="dialog"
             aria-modal="true"
             aria-labelledby="terms-dialog-title"
-            className="mx-4 max-w-lg rounded-lg border border-zinc-700 bg-zinc-900 p-6 shadow-xl"
+            className="mx-4 max-w-lg rounded-lg border border-line bg-surface-sunken p-6 shadow-xl"
           >
-            <h2 id="terms-dialog-title" className="text-lg font-semibold text-white">Terms &amp; conditions</h2>
-            <p className="mt-3 text-sm text-zinc-300">
+            <h2 id="terms-dialog-title" className="text-lg font-semibold text-ink">Terms &amp; conditions</h2>
+            <p className="mt-3 text-sm text-ink-mid">
               Before you create an organization, please review our{" "}
               <a href="/legal/terms" className="text-sky-400 underline" target="_blank" rel="noreferrer">
                 Terms of Service
@@ -96,10 +96,10 @@ export function TermsGate({ children }: { children: React.ReactNode }) {
               </a>
               . Click agree to continue.
             </p>
-            <p className="mt-3 text-xs text-zinc-500">
+            <p className="mt-3 text-xs text-ink-soft">
               By agreeing you acknowledge that workspace data is stored in AWS us-east-2 (Ohio, United States).
             </p>
-            {error && <p role="alert" className="mt-3 text-sm text-red-400">{error}</p>}
+            {error && <p role="alert" className="mt-3 text-sm text-bad">{error}</p>}
             <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"

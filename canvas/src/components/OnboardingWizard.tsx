@@ -132,10 +132,10 @@ export function OnboardingWizard() {
     <div
       role="complementary"
       aria-label="Onboarding guide"
-      className="fixed bottom-20 left-4 z-50 w-80 rounded-2xl border border-zinc-700/60 bg-zinc-900/95 backdrop-blur-xl shadow-2xl shadow-black/40 overflow-hidden"
+      className="fixed bottom-20 left-4 z-50 w-80 rounded-2xl border border-line/60 bg-surface-sunken/95 backdrop-blur-xl shadow-2xl shadow-black/40 overflow-hidden"
     >
       {/* Progress bar */}
-      <div className="h-1 bg-zinc-800">
+      <div className="h-1 bg-surface-card">
         <div
           className="h-full bg-gradient-to-r from-blue-500 to-sky-400 transition-all duration-500"
           style={{ width: `${((currentStepIdx + 1) / STEPS.length) * 100}%` }}
@@ -162,17 +162,17 @@ export function OnboardingWizard() {
             type="button"
             onClick={dismiss}
             aria-label="Skip onboarding guide"
-            className="text-[10px] text-zinc-400 hover:text-zinc-200 transition-colors"
+            className="text-[10px] text-ink-mid hover:text-ink transition-colors"
           >
             Skip guide
           </button>
         </div>
 
         {/* Content */}
-        <h3 className="text-sm font-medium text-zinc-100 mb-1">
+        <h3 className="text-sm font-medium text-ink mb-1">
           {currentStep.title}
         </h3>
-        <p className="text-[11px] text-zinc-400 leading-relaxed mb-3">
+        <p className="text-[11px] text-ink-mid leading-relaxed mb-3">
           {currentStep.description}
         </p>
 
@@ -181,7 +181,7 @@ export function OnboardingWizard() {
           <button
             type="button"
             onClick={handleAction}
-            className="flex-1 px-3 py-1.5 bg-blue-600/90 hover:bg-blue-500 rounded-lg text-[11px] font-medium text-white transition-colors"
+            className="flex-1 px-3 py-1.5 bg-accent-strong/90 hover:bg-accent rounded-lg text-[11px] font-medium text-white transition-colors"
           >
             {step === "welcome"
               ? "Create Workspace"
@@ -199,7 +199,7 @@ export function OnboardingWizard() {
                 if (next) setStep(next.id);
                 else dismiss();
               }}
-              className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-[11px] text-zinc-400 transition-colors"
+              className="px-3 py-1.5 bg-surface-card hover:bg-surface-card rounded-lg text-[11px] text-ink-mid transition-colors"
             >
               Next
             </button>

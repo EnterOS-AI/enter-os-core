@@ -4,10 +4,9 @@
   "rsc": true,
   "tsx": true,
   "tailwind": {
-    "config": "tailwind.config.ts",
     "css": "src/app/globals.css",
-    "baseColor": "zinc",
-    "cssVariables": false
+    "baseColor": "neutral",
+    "cssVariables": true
   },
   "aliases": {
     "components": "@/components",

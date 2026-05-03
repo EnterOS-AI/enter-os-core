@@ -113,13 +113,13 @@ export function ExternalConnectModal({ info, onClose }: Props) {
     <Dialog.Root open onOpenChange={(o) => !o && onClose()}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 bg-black/60 z-50" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(720px,92vw)] -translate-x-1/2 -translate-y-1/2 rounded-xl bg-zinc-900 border border-zinc-700 p-6 shadow-2xl">
-          <Dialog.Title className="text-lg font-semibold text-white">
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(720px,92vw)] -translate-x-1/2 -translate-y-1/2 rounded-xl bg-surface-sunken border border-line p-6 shadow-2xl">
+          <Dialog.Title className="text-lg font-semibold text-ink">
             Connect your external agent
           </Dialog.Title>
-          <Dialog.Description className="mt-1 text-sm text-zinc-400">
+          <Dialog.Description className="mt-1 text-sm text-ink-mid">
             Paste the snippet below into your agent&apos;s deployment. The
-            auth token is shown <span className="text-amber-400">only once</span>
+            auth token is shown <span className="text-warm">only once</span>
             {" "}— save it somewhere safe before closing this dialog.
           </Dialog.Description>
 
@@ -127,7 +127,7 @@ export function ExternalConnectModal({ info, onClose }: Props) {
           <div
             role="tablist"
             aria-label="Connection snippet format"
-            className="mt-4 flex gap-1 border-b border-zinc-800"
+            className="mt-4 flex gap-1 border-b border-line"
           >
             {(() => {
               // Build the tab order dynamically. Claude Code first
@@ -150,8 +150,8 @@ export function ExternalConnectModal({ info, onClose }: Props) {
                 onClick={() => setTab(t)}
                 className={`px-3 py-2 text-sm border-b-2 -mb-px transition-colors ${
                   tab === t
-                    ? "border-blue-500 text-white"
-                    : "border-transparent text-zinc-500 hover:text-zinc-300"
+                    ? "border-accent text-ink"
+                    : "border-transparent text-ink-soft hover:text-ink-mid"
                 }`}
               >
                 {t === "claude"
@@ -226,7 +226,7 @@ export function ExternalConnectModal({ info, onClose }: Props) {
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-sm rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200"
+              className="px-4 py-2 text-sm rounded-lg bg-surface-card hover:bg-surface-card text-ink"
             >
               I&apos;ve saved it — close
             </button>
@@ -252,16 +252,16 @@ function SnippetBlock({
   return (
     <div>
       <div className="flex items-center justify-between pb-1">
-        <span className="text-xs text-zinc-500">{label}</span>
+        <span className="text-xs text-ink-soft">{label}</span>
         <button
           type="button"
           onClick={onCopy}
-          className="text-xs px-2 py-1 rounded bg-blue-600/80 hover:bg-blue-500 text-white"
+          className="text-xs px-2 py-1 rounded bg-accent-strong/80 hover:bg-accent text-white"
         >
           {copied ? "Copied!" : "Copy"}
         </button>
       </div>
-      <pre className="text-xs bg-zinc-950 border border-zinc-800 rounded-lg p-3 max-h-80 overflow-auto whitespace-pre-wrap break-all font-mono text-zinc-200">
+      <pre className="text-xs bg-surface border border-line rounded-lg p-3 max-h-80 overflow-auto whitespace-pre-wrap break-all font-mono text-ink">
         {value}
       </pre>
     </div>
@@ -283,9 +283,9 @@ function Field({
 }) {
   return (
     <div className="flex items-center gap-2">
-      <span className="text-xs text-zinc-500 w-36 shrink-0">{label}</span>
+      <span className="text-xs text-ink-soft w-36 shrink-0">{label}</span>
       <code
-        className={`flex-1 text-xs bg-zinc-950 border border-zinc-800 rounded px-2 py-1 text-zinc-200 break-all ${mono ? "font-mono" : ""}`}
+        className={`flex-1 text-xs bg-surface border border-line rounded px-2 py-1 text-ink break-all ${mono ? "font-mono" : ""}`}
       >
         {value || "(missing)"}
       </code>
@@ -293,7 +293,7 @@ function Field({
         type="button"
         onClick={onCopy}
         disabled={!value}
-        className="text-xs px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 disabled:opacity-40"
+        className="text-xs px-2 py-1 rounded bg-surface-card hover:bg-surface-card text-ink disabled:opacity-40"
       >
         {copied ? "Copied!" : "Copy"}
       </button>

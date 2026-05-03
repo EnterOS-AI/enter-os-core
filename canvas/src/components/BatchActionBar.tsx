@@ -80,14 +80,14 @@ export function BatchActionBar() {
     <div
       role="toolbar"
       aria-label="Batch workspace actions"
-      className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] flex items-center gap-3 px-4 py-2.5 rounded-2xl bg-zinc-900/95 border border-zinc-700/70 shadow-2xl shadow-black/50 backdrop-blur-md"
+      className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] flex items-center gap-3 px-4 py-2.5 rounded-2xl bg-surface-sunken/95 border border-line/70 shadow-2xl shadow-black/50 backdrop-blur-md"
     >
       {/* Selection count badge */}
-      <span className="text-[12px] font-semibold text-zinc-100 bg-blue-600/80 px-2.5 py-0.5 rounded-full tabular-nums">
+      <span className="text-[12px] font-semibold text-white bg-accent-strong/80 px-2.5 py-0.5 rounded-full tabular-nums">
         {count} selected
       </span>
 
-      <div className="w-px h-5 bg-zinc-700/60" aria-hidden="true" />
+      <div className="w-px h-5 bg-surface-card/60" aria-hidden="true" />
 
       {/* Action buttons */}
       <button
@@ -104,7 +104,7 @@ export function BatchActionBar() {
         type="button"
         disabled={busy}
         onClick={() => setPending("pause")}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium text-amber-300 bg-amber-900/30 hover:bg-amber-800/50 border border-amber-700/30 hover:border-amber-600/50 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/70"
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium text-warm bg-amber-900/30 hover:bg-amber-800/50 border border-amber-700/30 hover:border-amber-600/50 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/70"
       >
         <span aria-hidden="true">⏸</span>
         Pause All
@@ -114,13 +114,13 @@ export function BatchActionBar() {
         type="button"
         disabled={busy}
         onClick={() => setPending("delete")}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium text-red-300 bg-red-900/30 hover:bg-red-800/50 border border-red-700/30 hover:border-red-600/50 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/70"
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium text-bad bg-red-900/30 hover:bg-red-800/50 border border-red-700/30 hover:border-red-600/50 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/70"
       >
         <span aria-hidden="true">✕</span>
         Delete All
       </button>
 
-      <div className="w-px h-5 bg-zinc-700/60" aria-hidden="true" />
+      <div className="w-px h-5 bg-surface-card/60" aria-hidden="true" />
 
       {/* Deselect */}
       <button
@@ -129,7 +129,7 @@ export function BatchActionBar() {
         onClick={clearSelection}
         aria-label="Clear selection"
         title="Clear selection (Escape)"
-        className="p-1.5 rounded-lg text-[12px] text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/50 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500/70"
+        className="p-1.5 rounded-lg text-[12px] text-ink-mid hover:text-ink hover:bg-surface-card/50 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500/70"
       >
         ✕
       </button>

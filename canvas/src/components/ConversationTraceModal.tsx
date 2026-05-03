@@ -99,14 +99,14 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
           aria-label="Conversation trace"
         >
           {/* Modal panel */}
-          <div className="relative bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl max-w-[700px] w-full max-h-[85vh] flex flex-col overflow-hidden">
+          <div className="relative bg-surface-sunken border border-line rounded-xl shadow-2xl max-w-[700px] w-full max-h-[85vh] flex flex-col overflow-hidden">
             {/* Header */}
-            <div className="flex items-center justify-between px-5 py-3 border-b border-zinc-800">
+            <div className="flex items-center justify-between px-5 py-3 border-b border-line">
               <div>
-                <Dialog.Title className="text-sm font-semibold text-zinc-100">
+                <Dialog.Title className="text-sm font-semibold text-ink">
                   Conversation Trace
                 </Dialog.Title>
-                <p className="text-[10px] text-zinc-500 mt-0.5">
+                <p className="text-[10px] text-ink-soft mt-0.5">
                   {entries.length} events across all workspaces
                 </p>
               </div>
@@ -114,7 +114,7 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
                 <button
                   type="button"
                   aria-label="Close conversation trace"
-                  className="text-zinc-500 hover:text-zinc-300 text-lg px-2"
+                  className="text-ink-soft hover:text-ink-mid text-lg px-2"
                 >
                   ✕
                 </button>
@@ -124,13 +124,13 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
             {/* Timeline */}
             <div className="flex-1 overflow-y-auto px-5 py-4">
               {loading && (
-                <div className="text-xs text-zinc-500 text-center py-8">
+                <div className="text-xs text-ink-soft text-center py-8">
                   Loading trace from all workspaces...
                 </div>
               )}
 
               {!loading && entries.length === 0 && (
-                <div className="text-xs text-zinc-500 text-center py-8">
+                <div className="text-xs text-ink-soft text-center py-8">
                   No activity found
                 </div>
               )}
@@ -160,28 +160,28 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
                                 : isSend
                                 ? "bg-cyan-500"
                                 : isReceive
-                                ? "bg-blue-500"
-                                : "bg-zinc-600"
+                                ? "bg-accent"
+                                : "bg-surface-card"
                             }`}
                           />
-                          <div className="w-px flex-1 bg-zinc-800 min-h-[8px]" />
+                          <div className="w-px flex-1 bg-surface-card min-h-[8px]" />
                         </div>
 
                         {/* Content */}
                         <div className="flex-1 pb-3 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
-                            <span className="text-[9px] text-zinc-400 font-mono">
+                            <span className="text-[9px] text-ink-mid font-mono">
                               {time}
                             </span>
                             <span
                               className={`text-[9px] font-semibold px-1.5 py-0.5 rounded ${
                                 isError
-                                  ? "bg-red-950/50 text-red-400"
+                                  ? "bg-red-950/50 text-bad"
                                   : isSend
                                   ? "bg-cyan-950/50 text-cyan-400"
                                   : isReceive
-                                  ? "bg-blue-950/50 text-blue-400"
-                                  : "bg-zinc-800 text-zinc-400"
+                                  ? "bg-blue-950/50 text-accent"
+                                  : "bg-surface-card text-ink-mid"
                               }`}
                             >
                               {isSend
@@ -191,7 +191,7 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
                                 : entry.activity_type.toUpperCase()}
                             </span>
                             {entry.duration_ms != null && entry.duration_ms > 0 && (
-                              <span className="text-[9px] text-zinc-400">
+                              <span className="text-[9px] text-ink-mid">
                                 {entry.duration_ms > 1000
                                   ? `${Math.round(entry.duration_ms / 1000)}s`
                                   : `${entry.duration_ms}ms`}
@@ -207,19 +207,19 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
                                   <span className="text-cyan-400 font-medium">
                                     {sourceName || wsName}
                                   </span>
-                                  <span className="text-zinc-400"> → </span>
-                                  <span className="text-blue-400 font-medium">
+                                  <span className="text-ink-mid"> → </span>
+                                  <span className="text-accent font-medium">
                                     {targetName}
                                   </span>
                                 </span>
                               ) : (
                                 <span>
-                                  <span className="text-blue-400 font-medium">
+                                  <span className="text-accent font-medium">
                                     {targetName || wsName}
                                   </span>
                                   {sourceName && (
                                     <>
-                                      <span className="text-zinc-400">
+                                      <span className="text-ink-mid">
                                         {" "}← {" "}
                                       </span>
                                       <span className="text-cyan-400 font-medium">
@@ -234,40 +234,40 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
 
                           {/* Summary */}
                           {entry.summary && !isA2A(entry) && (
-                            <div className="text-[10px] text-zinc-400 mt-1">
-                              <span className="text-zinc-300 font-medium">{wsName}:</span>{" "}
+                            <div className="text-[10px] text-ink-mid mt-1">
+                              <span className="text-ink-mid font-medium">{wsName}:</span>{" "}
                               {entry.summary}
                             </div>
                           )}
 
                           {/* Error */}
                           {isError && entry.error_detail && (
-                            <div className="text-[10px] text-red-400/80 mt-1 truncate">
+                            <div className="text-[10px] text-bad/80 mt-1 truncate">
                               {entry.error_detail.slice(0, 200)}
                             </div>
                           )}
 
                           {/* Message content — show request and/or response */}
                           {requestText && (
-                            <div className="mt-1.5 bg-zinc-950/60 border border-zinc-800/50 rounded-lg px-3 py-2 max-h-32 overflow-y-auto">
-                              <div className="text-[8px] text-zinc-500 uppercase mb-1">
+                            <div className="mt-1.5 bg-surface/60 border border-line/50 rounded-lg px-3 py-2 max-h-32 overflow-y-auto">
+                              <div className="text-[8px] text-ink-soft uppercase mb-1">
                                 {isSend ? "Task" : "Request"}
                               </div>
-                              <div className="text-[10px] text-zinc-300 whitespace-pre-wrap break-words leading-relaxed">
+                              <div className="text-[10px] text-ink-mid whitespace-pre-wrap break-words leading-relaxed">
                                 {requestText.slice(0, 2000)}
                                 {requestText.length > 2000 && (
-                                  <span className="text-zinc-400"> ...({requestText.length} chars)</span>
+                                  <span className="text-ink-mid"> ...({requestText.length} chars)</span>
                                 )}
                               </div>
                             </div>
                           )}
                           {responseText && (
-                            <div className="mt-1 bg-zinc-950/60 border border-emerald-900/30 rounded-lg px-3 py-2 max-h-32 overflow-y-auto">
-                              <div className="text-[8px] text-emerald-500/60 uppercase mb-1">Response</div>
-                              <div className="text-[10px] text-zinc-300 whitespace-pre-wrap break-words leading-relaxed">
+                            <div className="mt-1 bg-surface/60 border border-emerald-900/30 rounded-lg px-3 py-2 max-h-32 overflow-y-auto">
+                              <div className="text-[8px] text-good/60 uppercase mb-1">Response</div>
+                              <div className="text-[10px] text-ink-mid whitespace-pre-wrap break-words leading-relaxed">
                                 {responseText.slice(0, 2000)}
                                 {responseText.length > 2000 && (
-                                  <span className="text-zinc-400"> ...({responseText.length} chars)</span>
+                                  <span className="text-ink-mid"> ...({responseText.length} chars)</span>
                                 )}
                               </div>
                             </div>
@@ -281,11 +281,11 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
             </div>
 
             {/* Footer */}
-            <div className="px-5 py-3 border-t border-zinc-800 bg-zinc-950/50 flex justify-end">
+            <div className="px-5 py-3 border-t border-line bg-surface/50 flex justify-end">
               <Dialog.Close asChild>
                 <button
                   type="button"
-                  className="px-4 py-1.5 text-[12px] bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg transition-colors"
+                  className="px-4 py-1.5 text-[12px] bg-surface-card hover:bg-surface-card text-ink-mid rounded-lg transition-colors"
                 >
                   Close
                 </button>

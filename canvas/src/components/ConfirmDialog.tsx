@@ -96,7 +96,7 @@ export function ConfirmDialog({
       ? "bg-red-600 hover:bg-red-500 text-white"
       : confirmVariant === "warning"
         ? "bg-amber-600 hover:bg-amber-500 text-white"
-        : "bg-blue-600 hover:bg-blue-500 text-white";
+        : "bg-accent-strong hover:bg-accent text-white";
 
   // Render via Portal so the fixed-position dialog escapes any containing block
   // (e.g. parents with transform, filter, will-change that break position:fixed).
@@ -111,19 +111,19 @@ export function ConfirmDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="confirm-dialog-title"
-        className="relative bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl shadow-black/50 max-w-[380px] w-full mx-4 overflow-hidden"
+        className="relative bg-surface-sunken border border-line rounded-xl shadow-2xl shadow-black/50 max-w-[380px] w-full mx-4 overflow-hidden"
       >
         <div className="px-5 py-4">
-          <h3 id="confirm-dialog-title" className="text-sm font-semibold text-zinc-100 mb-2">{title}</h3>
-          <p className="text-[13px] text-zinc-400 leading-relaxed">{message}</p>
+          <h3 id="confirm-dialog-title" className="text-sm font-semibold text-ink mb-2">{title}</h3>
+          <p className="text-[13px] text-ink-mid leading-relaxed">{message}</p>
         </div>
 
-        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-zinc-800 bg-zinc-950/50">
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-line bg-surface/50">
           {!singleButton && (
             <button
               type="button"
               onClick={onCancel}
-              className="px-3.5 py-1.5 text-[13px] text-zinc-400 hover:text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg transition-colors"
+              className="px-3.5 py-1.5 text-[13px] text-ink-mid hover:text-ink bg-surface-card hover:bg-surface-card border border-line rounded-lg transition-colors"
             >
               Cancel
             </button>

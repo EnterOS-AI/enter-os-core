@@ -133,7 +133,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
               <input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="w-full bg-zinc-800 border border-zinc-600 rounded px-2 py-1 text-sm text-zinc-100 focus:outline-none focus:border-blue-500"
+                className="w-full bg-surface-card border border-line rounded px-2 py-1 text-sm text-ink focus:outline-none focus:border-accent"
               />
             </Field>
             <Field label="Role">
@@ -141,14 +141,14 @@ export function DetailsTab({ workspaceId, data }: Props) {
                 value={role}
                 onChange={(e) => setRole(e.target.value)}
                 placeholder="e.g. SEO Specialist"
-                className="w-full bg-zinc-800 border border-zinc-600 rounded px-2 py-1 text-sm text-zinc-100 focus:outline-none focus:border-blue-500"
+                className="w-full bg-surface-card border border-line rounded px-2 py-1 text-sm text-ink focus:outline-none focus:border-accent"
               />
             </Field>
             <Field label="Tier">
               <select
                 value={tier}
                 onChange={(e) => setTier(Number(e.target.value))}
-                className="w-full bg-zinc-800 border border-zinc-600 rounded px-2 py-1 text-sm text-zinc-100 focus:outline-none focus:border-blue-500"
+                className="w-full bg-surface-card border border-line rounded px-2 py-1 text-sm text-ink focus:outline-none focus:border-accent"
               >
                 <option value={1}>Tier 1 — No privileges</option>
                 <option value={2}>Tier 2 — Browser</option>
@@ -157,7 +157,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
               </select>
             </Field>
             {saveError && (
-              <div className="px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-red-400">
+              <div className="px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-bad">
                 {saveError}
               </div>
             )}
@@ -166,7 +166,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
                 type="button"
                 onClick={handleSave}
                 disabled={saving}
-                className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-xs rounded text-white disabled:opacity-50"
+                className="px-3 py-1 bg-accent-strong hover:bg-accent text-xs rounded text-white disabled:opacity-50"
               >
                 {saving ? "Saving..." : "Save"}
               </button>
@@ -179,7 +179,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
                   setRole(data.role || "");
                   setTier(data.tier);
                 }}
-                className="px-3 py-1 bg-zinc-700 hover:bg-zinc-600 text-xs rounded text-zinc-300"
+                className="px-3 py-1 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid"
               >
                 Cancel
               </button>
@@ -200,7 +200,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
             {isRestartable && (
               <div className="pt-2">
                 {restartError && (
-                  <div className="mb-2 px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-red-400">
+                  <div className="mb-2 px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-bad">
                     {restartError}
                   </div>
                 )}
@@ -217,7 +217,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
             <button
               type="button"
               onClick={() => setEditing(true)}
-              className="mt-2 px-3 py-1 bg-zinc-700 hover:bg-zinc-600 text-xs rounded text-zinc-300"
+              className="mt-2 px-3 py-1 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid"
             >
               Edit
             </button>
@@ -234,17 +234,17 @@ export function DetailsTab({ workspaceId, data }: Props) {
           {data.lastSampleError ? (
             <pre
               data-testid="details-error-log"
-              className="text-[11px] text-red-300 font-mono whitespace-pre-wrap break-all bg-red-950/20 border border-red-900/40 rounded p-2 max-h-[240px] overflow-auto leading-tight"
+              className="text-[11px] text-bad font-mono whitespace-pre-wrap break-all bg-red-950/20 border border-red-900/40 rounded p-2 max-h-[240px] overflow-auto leading-tight"
             >
               {data.lastSampleError}
             </pre>
           ) : (
-            <p className="text-xs text-zinc-500">No error detail recorded.</p>
+            <p className="text-xs text-ink-soft">No error detail recorded.</p>
           )}
           <button
             type="button"
             onClick={() => setConsoleOpen(true)}
-            className="mt-2 px-3 py-1 bg-zinc-800 hover:bg-zinc-700 text-xs rounded text-zinc-300 border border-zinc-700"
+            className="mt-2 px-3 py-1 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid border border-line"
           >
             View console output
           </button>
@@ -263,9 +263,9 @@ export function DetailsTab({ workspaceId, data }: Props) {
           <div className="space-y-1">
             {skills.map((s) => (
               <div key={s.id} className="flex items-start gap-2">
-                <span className="text-xs text-blue-400 font-mono shrink-0">{s.id}</span>
+                <span className="text-xs text-accent font-mono shrink-0">{s.id}</span>
                 {s.description && (
-                  <span className="text-xs text-zinc-500">{s.description}</span>
+                  <span className="text-xs text-ink-soft">{s.description}</span>
                 )}
               </div>
             ))}
@@ -276,13 +276,13 @@ export function DetailsTab({ workspaceId, data }: Props) {
       {/* Peers */}
       <Section title={`Peers (${peers.length})`}>
         {peersError ? (
-          <p className="text-xs text-red-400">{peersError}</p>
+          <p className="text-xs text-bad">{peersError}</p>
         ) : peers.length === 0 && data.status !== "online" && data.status !== "degraded" ? (
-          <p className="text-xs text-zinc-500">
+          <p className="text-xs text-ink-soft">
             Peers are only discoverable while the workspace is online.
           </p>
         ) : peers.length === 0 ? (
-          <p className="text-xs text-zinc-500">No reachable peers</p>
+          <p className="text-xs text-ink-soft">No reachable peers</p>
         ) : (
           <div className="space-y-1">
             {peers.map((p) => (
@@ -290,11 +290,11 @@ export function DetailsTab({ workspaceId, data }: Props) {
                 key={p.id}
                 type="button"
                 onClick={() => selectNode(p.id)}
-                className="w-full flex items-center gap-2 px-2 py-1 rounded hover:bg-zinc-800 text-left"
+                className="w-full flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-card text-left"
               >
                 <StatusDot status={p.status} />
-                <span className="text-xs text-zinc-200">{p.name}</span>
-                {p.role && <span className="text-[10px] text-zinc-500">{p.role}</span>}
+                <span className="text-xs text-ink">{p.name}</span>
+                {p.role && <span className="text-[10px] text-ink-soft">{p.role}</span>}
               </button>
             ))}
           </div>
@@ -304,7 +304,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
       {/* Delete */}
       <Section title="Danger Zone">
         {deleteError && (
-          <div className="mb-2 px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-red-400">
+          <div className="mb-2 px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-bad">
             {deleteError}
           </div>
         )}
@@ -315,7 +315,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
             aria-labelledby="delete-confirm-title"
             className="space-y-2"
           >
-            <h3 id="delete-confirm-title" className="text-xs font-medium text-red-400">
+            <h3 id="delete-confirm-title" className="text-xs font-medium text-bad">
               Confirm deletion
             </h3>
             <div className="flex gap-2">
@@ -334,7 +334,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
                   // Return focus to the trigger so keyboard users aren't stranded
                   deleteButtonRef.current?.focus();
                 }}
-                className="px-3 py-1 bg-zinc-700 hover:bg-zinc-600 text-xs rounded text-zinc-300"
+                className="px-3 py-1 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid"
               >
                 Cancel
               </button>
@@ -345,7 +345,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
             type="button"
             ref={deleteButtonRef}
             onClick={() => setConfirmDelete(true)}
-            className="px-3 py-1 bg-zinc-800 hover:bg-red-900 border border-zinc-700 hover:border-red-700 text-xs rounded text-zinc-400 hover:text-red-400 transition-colors"
+            className="px-3 py-1 bg-surface-card hover:bg-red-900 border border-line hover:border-red-700 text-xs rounded text-ink-mid hover:text-bad transition-colors"
           >
             Delete Workspace
           </button>
@@ -367,7 +367,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
-      <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2">{title}</h3>
+      <h3 className="text-xs font-semibold text-ink-mid uppercase tracking-wider mb-2">{title}</h3>
       {children}
     </div>
   );
@@ -377,7 +377,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   const fieldId = useId();
   return (
     <div>
-      <label htmlFor={fieldId} className="text-[10px] text-zinc-500 block mb-0.5">{label}</label>
+      <label htmlFor={fieldId} className="text-[10px] text-ink-soft block mb-0.5">{label}</label>
       {cloneElement(children as ReactElement<{ id?: string }>, { id: fieldId })}
     </div>
   );
@@ -386,8 +386,8 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
     <div className="flex justify-between">
-      <span className="text-xs text-zinc-500">{label}</span>
-      <span className={`text-xs text-zinc-200 ${mono ? "font-mono" : ""} text-right max-w-[200px] truncate`}>
+      <span className="text-xs text-ink-soft">{label}</span>
+      <span className={`text-xs text-ink ${mono ? "font-mono" : ""} text-right max-w-[200px] truncate`}>
         {value}
       </span>
     </div>

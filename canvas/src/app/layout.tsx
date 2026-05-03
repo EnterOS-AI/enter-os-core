@@ -1,8 +1,14 @@
 import type { Metadata } from "next";
-import { headers } from "next/headers";
+import { cookies, headers } from "next/headers";
 import "./globals.css";
 import { AuthGate } from "@/components/AuthGate";
 import { CookieConsent } from "@/components/CookieConsent";
+import { ThemeProvider } from "@/lib/theme-provider";
+import {
+  THEME_COOKIE,
+  readThemeCookie,
+  themeBootScript,
+} from "@/lib/theme-cookie";
 
 export const metadata: Metadata = {
   title: "Molecule AI",
@@ -15,7 +21,7 @@ export default async function RootLayout({
   children: React.ReactNode;
 }) {
   // Read the per-request CSP nonce that middleware.ts sets via the
-  // `x-nonce` request header. This call is load-bearing for TWO
+  // `x-nonce` request header. This call is load-bearing for THREE
   // independent reasons:
   //
   //   1. It opts the root layout into dynamic rendering. Without a
@@ -31,22 +37,56 @@ export default async function RootLayout({
   //      is actually read via `headers()`. The header's existence on
   //      the request isn't enough — Next.js watches for the read.
   //
-  // Keeping the `nonce` variable unused is intentional: we don't need
-  // to pass it to any custom <Script nonce={...}> tags right now, the
-  // framework takes care of its own bootstrap scripts once the read
-  // happens. Destructuring via `await` + `.get()` is the minimum shape
-  // Next.js recognizes as "dynamic server-side access".
-  await headers();
+  //   3. We need the nonce to attach to the inline theme boot script
+  //      below, otherwise CSP rejects it in production where
+  //      script-src is `'self' 'nonce-{nonce}' 'strict-dynamic'`.
+  //      'strict-dynamic' propagates trust from a nonce'd script to
+  //      scripts it inserts, but does NOT forgive an un-nonce'd
+  //      sibling — the boot script must carry its own nonce.
+  const hdrs = await headers();
+  const nonce = hdrs.get("x-nonce") ?? undefined;
+
+  // SSR: read the user's saved preference. For light/dark we can stamp
+  // data-theme on <html> here so the very first paint matches; for
+  // "system" we leave the attribute off and let the inline boot script
+  // resolve from matchMedia before paint.
+  const cookieStore = await cookies();
+  const theme = readThemeCookie(cookieStore.get(THEME_COOKIE)?.value);
+  const initialDataTheme = theme === "system" ? undefined : theme;
 
   return (
-    <html lang="en">
-      <body className="bg-zinc-950 text-white">
-        {/* AuthGate is a client component; it checks the session on mount
-            and bounces anonymous users to the control plane's login page
-            when running on a tenant subdomain. Non-SaaS hosts (localhost,
-            vercel preview URL, apex) pass through unchanged. */}
-        <AuthGate>{children}</AuthGate>
-        <CookieConsent />
+    // suppressHydrationWarning on <html>: the inline boot script below
+    // mutates `data-theme` before React hydrates (system mode reads
+    // matchMedia + writes the attribute). That's the entire point of the
+    // script — eliminate the flash — and it's the documented escape hatch
+    // for "the server-rendered HTML is intentionally not what React would
+    // produce client-side at this exact attribute."
+    <html lang="en" data-theme={initialDataTheme} suppressHydrationWarning>
+      <head>
+        {/*
+         * Boot script: runs synchronously before the body paints, sets
+         * data-theme on <html> for "system" preference based on the OS
+         * media query. For explicit light/dark, SSR already set the
+         * attribute above and the script's write is a no-op.
+         *
+         * `nonce` comes from middleware's per-request CSP nonce — see
+         * the comment block above for why CSP requires this even though
+         * the page also has 'strict-dynamic'.
+         */}
+        <script
+          nonce={nonce}
+          dangerouslySetInnerHTML={{ __html: themeBootScript }}
+        />
+      </head>
+      <body className="bg-surface text-ink">
+        <ThemeProvider initialTheme={theme}>
+          {/* AuthGate is a client component; it checks the session on mount
+              and bounces anonymous users to the control plane's login page
+              when running on a tenant subdomain. Non-SaaS hosts (localhost,
+              vercel preview URL, apex) pass through unchanged. */}
+          <AuthGate>{children}</AuthGate>
+          <CookieConsent />
+        </ThemeProvider>
       </body>
     </html>
   );

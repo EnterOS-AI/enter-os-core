@@ -75,11 +75,11 @@ export function EmptyState() {
 
   return (
     <div className="absolute inset-0 flex items-start justify-center pointer-events-none z-[1] overflow-y-auto py-8">
-      <div className="relative max-w-2xl w-full rounded-3xl border border-zinc-800/70 bg-zinc-950/80 backdrop-blur-xl px-8 py-8 text-center shadow-2xl shadow-black/40 pointer-events-auto mx-4">
+      <div className="relative max-w-2xl w-full rounded-3xl border border-line/70 bg-surface/80 backdrop-blur-xl px-8 py-8 text-center shadow-2xl shadow-black/40 pointer-events-auto mx-4">
         <div className="absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-blue-500/50 to-transparent" />
 
         {/* Logo */}
-        <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-sky-500/20 via-blue-500/20 to-violet-500/20 border border-blue-500/20 flex items-center justify-center">
+        <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-sky-500/20 via-blue-500/20 to-violet-500/20 border border-accent/20 flex items-center justify-center">
           <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
             <rect x="3" y="3" width="10" height="10" rx="2" stroke="#60a5fa" strokeWidth="1.5" opacity="0.65" />
             <rect x="15" y="3" width="10" height="10" rx="2" stroke="#60a5fa" strokeWidth="1.5" opacity="0.65" />
@@ -91,16 +91,16 @@ export function EmptyState() {
         <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-sky-400/80 mb-2">
           Welcome to Molecule AI
         </p>
-        <h2 className="text-xl font-semibold text-zinc-100 mb-1">
+        <h2 className="text-xl font-semibold text-ink mb-1">
           Deploy your first agent
         </h2>
-        <p className="text-sm text-zinc-400 mb-6 leading-relaxed">
+        <p className="text-sm text-ink-mid mb-6 leading-relaxed">
           Pick a template to get started instantly, or create a blank workspace.
         </p>
 
         {/* Template grid */}
         {loading ? (
-          <div className="flex items-center justify-center gap-2 text-xs text-zinc-400 py-4">
+          <div className="flex items-center justify-center gap-2 text-xs text-ink-mid py-4">
             <Spinner />
             Loading templates...
           </div>
@@ -114,21 +114,21 @@ export function EmptyState() {
                   key={t.id}
                   onClick={() => void deploy(t)}
                   disabled={anyDeploying}
-                  className="group rounded-xl border border-zinc-800/60 bg-zinc-900/50 px-3.5 py-3 hover:border-blue-500/40 hover:bg-zinc-900/80 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-zinc-800/60 disabled:hover:bg-zinc-900/50 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70"
+                  className="group rounded-xl border border-line/60 bg-surface-sunken/50 px-3.5 py-3 hover:border-accent/40 hover:bg-surface-sunken/80 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-line/60 disabled:hover:bg-surface-sunken/50 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
                 >
                   <div className="flex items-center gap-2 mb-1">
-                    <span className="text-sm font-medium text-zinc-200 group-hover:text-zinc-100 truncate">
+                    <span className="text-sm font-medium text-ink group-hover:text-ink truncate">
                       {deploying === t.id ? "Deploying..." : t.name}
                     </span>
                     <span className={`text-[8px] font-mono font-semibold px-1.5 py-0.5 rounded-md border ${tierColor}`}>
                       T{t.tier}
                     </span>
                   </div>
-                  <p className="text-[11px] text-zinc-500 line-clamp-2 leading-relaxed">
+                  <p className="text-[11px] text-ink-soft line-clamp-2 leading-relaxed">
                     {t.description || "No description"}
                   </p>
                   {t.skill_count > 0 && (
-                    <p className="text-[9px] text-zinc-500 mt-1.5">
+                    <p className="text-[9px] text-ink-soft mt-1.5">
                       {t.skill_count} skill{t.skill_count !== 1 ? "s" : ""}
                       {t.model ? ` · ${t.model}` : ""}
                     </p>
@@ -144,18 +144,18 @@ export function EmptyState() {
           type="button"
           onClick={createBlank}
           disabled={anyDeploying}
-          className="w-full rounded-xl border border-dashed border-zinc-700/60 bg-zinc-900/30 px-4 py-3 text-sm text-zinc-400 hover:text-zinc-200 hover:border-zinc-600 hover:bg-zinc-900/50 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-zinc-400 disabled:hover:border-zinc-700/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70"
+          className="w-full rounded-xl border border-dashed border-line/60 bg-surface-sunken/30 px-4 py-3 text-sm text-ink-mid hover:text-ink hover:border-line hover:bg-surface-sunken/50 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-ink-mid disabled:hover:border-line/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
         >
           {blankCreating ? "Creating..." : "+ Create blank workspace"}
         </button>
 
         {/* Org templates — instantiate a whole team in one click */}
-        <div className="mt-4 pt-4 border-t border-zinc-800/50 text-left">
+        <div className="mt-4 pt-4 border-t border-line/50 text-left">
           <OrgTemplatesSection />
         </div>
 
         {displayError && (
-          <div role="alert" className="mt-3 px-3 py-2 bg-red-950/40 border border-red-800/50 rounded-lg text-xs text-red-400">
+          <div role="alert" className="mt-3 px-3 py-2 bg-red-950/40 border border-red-800/50 rounded-lg text-xs text-bad">
             {displayError}
           </div>
         )}
@@ -166,13 +166,13 @@ export function EmptyState() {
         {modal}
 
         {/* Tips */}
-        <div className="mt-5 pt-4 border-t border-zinc-800/50">
-          <div className="flex items-center justify-center gap-6 text-[10px] text-zinc-400">
+        <div className="mt-5 pt-4 border-t border-line/50">
+          <div className="flex items-center justify-center gap-6 text-[10px] text-ink-mid">
             <span>Drag to nest workspaces into teams</span>
-            <span className="text-zinc-700">|</span>
+            <span className="text-ink-soft">|</span>
             <span>Right-click for actions</span>
-            <span className="text-zinc-700">|</span>
-            <span>Press <kbd className="px-1 py-0.5 bg-zinc-800 rounded text-zinc-500 font-mono">&#8984;K</kbd> to search</span>
+            <span className="text-ink-soft">|</span>
+            <span>Press <kbd className="px-1 py-0.5 bg-surface-card rounded text-ink-soft font-mono">&#8984;K</kbd> to search</span>
           </div>
         </div>
       </div>

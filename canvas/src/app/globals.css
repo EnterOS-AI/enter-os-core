@@ -1,28 +1,130 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+/*
+ * Load order:
+ *   1. Tailwind core (v4) — provides preflight + utility generation.
+ *   2. xterm — overrides preflight on its own .xterm-* class names; must
+ *      load AFTER tailwind so its specificity wins.
+ *   3. theme-tokens.css — canvas-only motion + deploy animation vars
+ *      (--mol-duration-*, --mol-easing-*, --mol-deploy-*). NOT colour
+ *      tokens; the warm-paper @theme block below owns those.
+ *   4. settings-panel.css / org-deploy.css — feature stylesheets that
+ *      reference the variables above.
+ */
 @import "xterm/css/xterm.css";
-/* Theme tokens MUST load before any feature stylesheet that
-   references them so custom properties are in scope. */
 @import "../styles/theme-tokens.css";
 @import "../styles/settings-panel.css";
 @import "../styles/org-deploy.css";
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/*
+ * Warm-paper semantic tokens — light defaults via @theme, dark
+ * overrides via [data-theme="dark"]. Names are role-based
+ * (`bg-surface`, `text-ink`, `border-line`) not colour-based, so the
+ * same component classes work in either mode.
+ *
+ * Source of truth: molecule-app/app/globals.css. Keep aligned across
+ * surfaces (landing, market, app, canvas) so a token tweak ripples
+ * everywhere via a single PR per repo.
+ *
+ * Theme preference is persisted in the `mol_theme` cookie scoped to
+ * Domain=.moleculesai.app so the choice follows the user across
+ * subdomains. The inline boot script in app/layout.tsx applies it
+ * before paint to eliminate flash.
+ */
+@theme {
+  /* Surface — page / elevated card / sunken input / deep card */
+  --color-surface: #fafaf7;
+  --color-surface-elevated: #ffffff;
+  --color-surface-sunken: #f3f1ec;
+  --color-surface-card: #efece4;
+
+  /* Borders */
+  --color-line: #e6e2d8;
+  --color-line-soft: #efece4;
+
+  /* Text */
+  --color-ink: #15181c;
+  --color-ink-mid: #5a5e66;
+  --color-ink-soft: #8b8e95;
+
+  /* Brand + state */
+  --color-accent: #3b5bdb;
+  --color-accent-strong: #1a2f99;
+  --color-warm: #c0532b;
+  --color-good: #2f7a4d;
+  --color-bad: #b94e4a;
+}
+
+[data-theme="dark"] {
+  --color-surface: #0e1014;
+  --color-surface-elevated: #15181c;
+  --color-surface-sunken: #0a0b0e;
+  --color-surface-card: #1a1d23;
+
+  --color-line: #2a2f3a;
+  --color-line-soft: #1f2329;
+
+  --color-ink: #f4f1e9;
+  --color-ink-mid: #c8c2b4;
+  --color-ink-soft: #8d92a0;
+
+  /* Accents brighten slightly for AA contrast on dark backgrounds. */
+  --color-accent: #6883e8;
+  --color-accent-strong: #8aa1ee;
+  --color-warm: #d96f48;
+  --color-good: #4ca06e;
+  --color-bad: #d27773;
+}
+
+:root {
+  color-scheme: light;
+}
+[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+/*
+ * Always-dark surface tokens. Terminals (xterm), the console modal,
+ * and log streams stay dark in both modes — readable green-on-black
+ * code surfaces don't translate cleanly to a light theme. Components
+ * that should not light-flip use `bg-bg`, `bg-bg-elev`, `bg-bg-card`,
+ * `text-ink-mute`, `text-ink-dim`, `border-line-strong` instead of
+ * the warm-paper utilities above.
+ *
+ * Distinct names (bg-* / ink-mute / ink-dim / line-strong) so they
+ * don't collide with the warm-paper namespace (surface / ink /
+ * line). Both palettes coexist; the choice between them is per
+ * component, not per theme.
+ */
+@theme {
+  --color-bg: rgb(9 9 11);            /* zinc-950 */
+  --color-bg-elev: rgb(24 24 27);     /* zinc-900 */
+  --color-bg-card: rgb(39 39 42);     /* zinc-800 */
+  --color-line-strong: rgb(63 63 70); /* zinc-700 */
+  --color-ink-mute: rgb(161 161 170); /* zinc-400 */
+  --color-ink-dim: rgb(113 113 122);  /* zinc-500 */
+  --color-accent-dim: rgb(96 165 250);/* blue-400 */
+  --color-plasma: rgb(59 130 246);    /* blue-500 */
+  --color-warn: rgb(251 191 36);      /* amber-400 */
+}
 
 body {
   margin: 0;
   padding: 0;
   overflow: hidden;
-  background: #09090b;
-  color: #e4e4e7;
+  background-color: var(--color-surface);
+  color: var(--color-ink);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* React Flow overrides for dark theme */
+/* React Flow overrides for both themes. Edge stroke pulls from the
+   semantic line token so dark mode keeps its existing zinc-700 look
+   and light mode picks up the warm-paper line colour. */
 .react-flow__edge-path {
-  stroke: #3f3f46 !important;
+  stroke: var(--color-line) !important;
   stroke-width: 1.5 !important;
 }
 
@@ -58,7 +160,8 @@ body {
   transition: box-shadow var(--mol-duration-fast) ease;
 }
 
-/* Scrollbar styling */
+/* Scrollbar styling. Track + thumb pull from the surface tokens so
+   they feel native to either theme. */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -69,17 +172,17 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #3f3f46;
+  background: var(--color-line);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #52525b;
+  background: var(--color-line-strong, var(--color-ink-soft));
 }
 
 /* Selection */
 ::selection {
-  background: rgba(59, 130, 246, 0.3);
+  background: color-mix(in srgb, var(--color-accent) 30%, transparent);
 }
 
 /* Panel slide animation */

@@ -310,7 +310,7 @@ export function CreateWorkspaceButton() {
   return (
     <Dialog.Root open={open} onOpenChange={setOpen}>
       <Dialog.Trigger asChild>
-        <button type="button" className="fixed bottom-6 right-6 z-40 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-sm font-medium rounded-xl text-white shadow-lg shadow-blue-600/20 hover:shadow-xl hover:shadow-blue-500/30 transition-all duration-200 flex items-center gap-2">
+        <button type="button" className="fixed bottom-6 right-6 z-40 px-5 py-2.5 bg-accent-strong hover:bg-accent active:bg-accent-strong text-sm font-medium rounded-xl text-white shadow-lg shadow-blue-600/20 hover:shadow-xl hover:shadow-blue-500/30 transition-all duration-200 flex items-center gap-2">
           <svg
             width="14"
             height="14"
@@ -333,12 +333,12 @@ export function CreateWorkspaceButton() {
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm" />
         <Dialog.Content
-          className="fixed z-50 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-zinc-900 border border-zinc-700/60 rounded-2xl shadow-2xl shadow-black/40 w-[400px] max-h-[90vh] overflow-y-auto p-6"
+          className="fixed z-50 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-surface-sunken border border-line/60 rounded-2xl shadow-2xl shadow-black/40 w-[400px] max-h-[90vh] overflow-y-auto p-6"
         >
-          <Dialog.Title className="text-base font-semibold text-zinc-100 mb-1">
+          <Dialog.Title className="text-base font-semibold text-ink mb-1">
             Create Workspace
           </Dialog.Title>
-          <p className="text-xs text-zinc-500 mb-5">
+          <p className="text-xs text-ink-soft mb-5">
             Add a new workspace node to the canvas
           </p>
 
@@ -367,7 +367,7 @@ export function CreateWorkspaceButton() {
             {/* External toggle — when on, this workspace is BYO-compute:
                 no template, no model, no hermes provider fields. Backend
                 returns a copyable connection snippet via the modal. */}
-            <label className="flex items-start gap-2 rounded-lg border border-zinc-800 p-3 cursor-pointer hover:border-zinc-700 transition-colors">
+            <label className="flex items-start gap-2 rounded-lg border border-line p-3 cursor-pointer hover:border-line transition-colors">
               <input
                 type="checkbox"
                 checked={isExternal}
@@ -375,8 +375,8 @@ export function CreateWorkspaceButton() {
                 className="mt-0.5"
               />
               <div className="text-xs">
-                <div className="text-zinc-200 font-medium">External agent (bring your own compute)</div>
-                <div className="text-zinc-500 mt-0.5">
+                <div className="text-ink font-medium">External agent (bring your own compute)</div>
+                <div className="text-ink-soft mt-0.5">
                   Skip the container. We&apos;ll return a workspace_id + auth token + ready-to-paste snippet so an agent running on your laptop / server / CI can register via A2A.
                 </div>
               </div>
@@ -398,7 +398,7 @@ export function CreateWorkspaceButton() {
                 aria-label="Workspace tier"
                 className={`grid gap-1.5 ${isSaaS ? "grid-cols-1" : "grid-cols-4"}`}
               >
-                <div className={`text-[11px] text-zinc-400 mb-1 ${isSaaS ? "" : "col-span-4"}`}>
+                <div className={`text-[11px] text-ink-mid mb-1 ${isSaaS ? "" : "col-span-4"}`}>
                   Tier{isSaaS ? " — dedicated VM" : ""}
                 </div>
                 {TIERS.map((t, idx) => (
@@ -413,8 +413,8 @@ export function CreateWorkspaceButton() {
                     onKeyDown={(e) => handleRadioKeyDown(e, idx)}
                     className={`py-2 rounded-lg text-center transition-colors ${
                       tier === t.value
-                        ? "bg-blue-600/20 border border-blue-500/50 text-blue-300"
-                        : "bg-zinc-800/60 border border-zinc-700/40 text-zinc-400 hover:text-zinc-300 hover:border-zinc-600"
+                        ? "bg-accent-strong/20 border border-accent/50 text-accent"
+                        : "bg-surface-card/60 border border-line/40 text-ink-mid hover:text-ink-mid hover:border-line"
                     }`}
                   >
                     <div className="text-xs font-mono font-semibold">
@@ -429,13 +429,13 @@ export function CreateWorkspaceButton() {
             </div>
 
             <div>
-              <label className="text-[11px] text-zinc-400 block mb-1">
+              <label className="text-[11px] text-ink-mid block mb-1">
                 Parent Workspace
               </label>
               <select
                 value={parentId}
                 onChange={(e) => setParentId(e.target.value)}
-                className="w-full bg-zinc-800/60 border border-zinc-700/50 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:outline-none focus:border-blue-500/60 focus:ring-1 focus:ring-blue-500/20 transition-colors"
+                className="w-full bg-surface-card/60 border border-line/50 rounded-lg px-3 py-2 text-sm text-ink focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/20 transition-colors"
               >
                 <option value="">None (root level)</option>
                 {workspaces.map((ws) => (
@@ -456,7 +456,7 @@ export function CreateWorkspaceButton() {
               <p className="text-[11px] font-semibold text-violet-400 uppercase tracking-wide">
                 Hermes Provider
               </p>
-              <p className="text-[11px] text-zinc-500 -mt-1">
+              <p className="text-[11px] text-ink-soft -mt-1">
                 Choose the AI provider and paste your API key. The key is
                 stored as an encrypted workspace secret.
               </p>
@@ -464,7 +464,7 @@ export function CreateWorkspaceButton() {
               <div>
                 <label
                   htmlFor="hermes-provider-select"
-                  className="text-[11px] text-zinc-400 block mb-1"
+                  className="text-[11px] text-ink-mid block mb-1"
                 >
                   Provider
                 </label>
@@ -473,7 +473,7 @@ export function CreateWorkspaceButton() {
                   value={hermesProvider}
                   onChange={(e) => setHermesProvider(e.target.value)}
                   aria-label="Hermes provider"
-                  className="w-full bg-zinc-800/60 border border-zinc-700/50 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:outline-none focus:border-violet-500/60 focus:ring-1 focus:ring-violet-500/20 transition-colors"
+                  className="w-full bg-surface-card/60 border border-line/50 rounded-lg px-3 py-2 text-sm text-ink focus:outline-none focus:border-violet-500/60 focus:ring-1 focus:ring-violet-500/20 transition-colors"
                 >
                   {availableProviders.map((p) => (
                     <option key={p.id} value={p.id}>
@@ -486,10 +486,10 @@ export function CreateWorkspaceButton() {
               <div>
                 <label
                   htmlFor="hermes-api-key-input"
-                  className="text-[11px] text-zinc-400 block mb-1"
+                  className="text-[11px] text-ink-mid block mb-1"
                 >
                   API Key{" "}
-                  <span aria-hidden="true" className="text-red-400">
+                  <span aria-hidden="true" className="text-bad">
                     *
                   </span>
                   <span className="sr-only"> (required)</span>
@@ -502,17 +502,17 @@ export function CreateWorkspaceButton() {
                   placeholder="sk-…"
                   aria-label="Hermes API key"
                   autoComplete="off"
-                  className="w-full bg-zinc-800/60 border border-zinc-700/50 rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-violet-500/60 focus:ring-1 focus:ring-violet-500/20 transition-colors font-mono"
+                  className="w-full bg-surface-card/60 border border-line/50 rounded-lg px-3 py-2 text-sm text-ink placeholder-zinc-600 focus:outline-none focus:border-violet-500/60 focus:ring-1 focus:ring-violet-500/20 transition-colors font-mono"
                 />
               </div>
 
               <div>
                 <label
                   htmlFor="hermes-model-input"
-                  className="text-[11px] text-zinc-400 block mb-1"
+                  className="text-[11px] text-ink-mid block mb-1"
                 >
                   Model{" "}
-                  <span aria-hidden="true" className="text-red-400">
+                  <span aria-hidden="true" className="text-bad">
                     *
                   </span>
                   <span className="sr-only"> (required)</span>
@@ -527,14 +527,14 @@ export function CreateWorkspaceButton() {
                   autoComplete="off"
                   spellCheck={false}
                   list="hermes-model-suggestions"
-                  className="w-full bg-zinc-800/60 border border-zinc-700/50 rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-violet-500/60 focus:ring-1 focus:ring-violet-500/20 transition-colors font-mono"
+                  className="w-full bg-surface-card/60 border border-line/50 rounded-lg px-3 py-2 text-sm text-ink placeholder-zinc-600 focus:outline-none focus:border-violet-500/60 focus:ring-1 focus:ring-violet-500/20 transition-colors font-mono"
                 />
                 <datalist id="hermes-model-suggestions">
                   {HERMES_PROVIDERS.find((p) => p.id === hermesProvider)?.models.map(
                     (m) => <option key={m} value={m} />,
                   )}
                 </datalist>
-                <p className="text-[10px] text-zinc-500 mt-1">
+                <p className="text-[10px] text-ink-soft mt-1">
                   Slug determines which provider hermes routes to at install time.
                 </p>
               </div>
@@ -544,7 +544,7 @@ export function CreateWorkspaceButton() {
           {error && (
             <div
               role="alert"
-              className="mt-4 px-3 py-2 bg-red-950/40 border border-red-800/50 rounded-lg text-xs text-red-400"
+              className="mt-4 px-3 py-2 bg-red-950/40 border border-red-800/50 rounded-lg text-xs text-bad"
             >
               {error}
             </div>
@@ -552,7 +552,7 @@ export function CreateWorkspaceButton() {
 
           <div className="flex justify-end gap-2.5 mt-6">
             <Dialog.Close asChild>
-              <button type="button" className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-sm rounded-lg text-zinc-300 transition-colors">
+              <button type="button" className="px-4 py-2 bg-surface-card hover:bg-surface-card text-sm rounded-lg text-ink-mid transition-colors">
                 Cancel
               </button>
             </Dialog.Close>
@@ -560,7 +560,7 @@ export function CreateWorkspaceButton() {
               type="button"
               onClick={handleCreate}
               disabled={creating}
-              className="px-5 py-2 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-sm rounded-lg text-white disabled:opacity-50 transition-colors"
+              className="px-5 py-2 bg-accent-strong hover:bg-accent active:bg-accent-strong text-sm rounded-lg text-white disabled:opacity-50 transition-colors"
             >
               {creating ? "Creating..." : "Create"}
             </button>
@@ -604,11 +604,11 @@ function InputField({
 
   return (
     <div>
-      <label htmlFor={inputId} className="text-[11px] text-zinc-400 block mb-1">
+      <label htmlFor={inputId} className="text-[11px] text-ink-mid block mb-1">
         {label}{" "}
         {required && (
           <>
-            <span aria-hidden="true" className="text-red-400">
+            <span aria-hidden="true" className="text-bad">
               *
             </span>
             <span className="sr-only"> (required)</span>
@@ -623,10 +623,10 @@ function InputField({
         placeholder={placeholder}
         min={type === "number" ? "0" : undefined}
         step={type === "number" ? "0.01" : undefined}
-        className={`w-full bg-zinc-800/60 border border-zinc-700/50 rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-blue-500/60 focus:ring-1 focus:ring-blue-500/20 transition-colors ${mono ? "font-mono text-xs" : ""}`}
+        className={`w-full bg-surface-card/60 border border-line/50 rounded-lg px-3 py-2 text-sm text-ink placeholder-zinc-500 focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/20 transition-colors ${mono ? "font-mono text-xs" : ""}`}
       />
       {helper && (
-        <p className="mt-1 text-xs text-zinc-500">{helper}</p>
+        <p className="mt-1 text-xs text-ink-soft">{helper}</p>
       )}
     </div>
   );

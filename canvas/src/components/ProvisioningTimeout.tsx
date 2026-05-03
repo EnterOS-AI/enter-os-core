@@ -321,17 +321,17 @@ export function ProvisioningTimeout({
                     onClick={() => handleDismiss(entry.workspaceId)}
                     aria-label="Dismiss provisioning timeout warning"
                     title="Dismiss — keep this workspace running without the warning"
-                    className="shrink-0 text-amber-400/60 hover:text-amber-200 transition-colors -mr-1"
+                    className="shrink-0 text-warm/60 hover:text-amber-200 transition-colors -mr-1"
                   >
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                       <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
                     </svg>
                   </button>
                 </div>
-                <div className="text-[11px] text-amber-300/80 leading-relaxed">
+                <div className="text-[11px] text-warm/80 leading-relaxed">
                   <span className="font-medium text-amber-200">{entry.workspaceName}</span>{" "}
                   has been provisioning for{" "}
-                  <span className="font-mono text-amber-300">{formatDuration(elapsed)}</span>.
+                  <span className="font-mono text-warm">{formatDuration(elapsed)}</span>.
                   It may have encountered an issue.
                 </div>
 
@@ -349,14 +349,14 @@ export function ProvisioningTimeout({
                     type="button"
                     onClick={() => handleCancelRequest(entry.workspaceId)}
                     disabled={isRetrying || isCancelling}
-                    className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-[11px] text-zinc-300 rounded-lg border border-zinc-600 disabled:opacity-40 transition-colors"
+                    className="px-3 py-1.5 bg-surface-card hover:bg-surface-card text-[11px] text-ink-mid rounded-lg border border-line disabled:opacity-40 transition-colors"
                   >
                     {isCancelling ? "Cancelling..." : "Cancel"}
                   </button>
                   <button
                     type="button"
                     onClick={() => handleViewLogs(entry.workspaceId)}
-                    className="px-3 py-1.5 text-[11px] text-amber-400 hover:text-amber-300 transition-colors"
+                    className="px-3 py-1.5 text-[11px] text-warm hover:text-warm transition-colors"
                   >
                     View Logs
                   </button>
@@ -371,18 +371,18 @@ export function ProvisioningTimeout({
       {confirmingCancel && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div aria-hidden="true" className="absolute inset-0 bg-black/60" onClick={() => setConfirmingCancel(null)} />
-          <div className="relative bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl p-5 max-w-[340px] w-full mx-4">
-            <h3 className="text-sm font-semibold text-zinc-100 mb-2">
+          <div className="relative bg-surface-sunken border border-line rounded-xl shadow-2xl p-5 max-w-[340px] w-full mx-4">
+            <h3 className="text-sm font-semibold text-ink mb-2">
               Cancel deployment?
             </h3>
-            <p className="text-[12px] text-zinc-400 mb-4 leading-relaxed">
+            <p className="text-[12px] text-ink-mid mb-4 leading-relaxed">
               This will permanently remove the workspace. This action cannot be undone.
             </p>
             <div className="flex justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setConfirmingCancel(null)}
-                className="px-3.5 py-1.5 text-[12px] text-zinc-400 hover:text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg transition-colors"
+                className="px-3.5 py-1.5 text-[12px] text-ink-mid hover:text-ink bg-surface-card hover:bg-surface-card border border-line rounded-lg transition-colors"
               >
                 Keep
               </button>

@@ -89,7 +89,7 @@ function A2AEdgeImpl({
   // The edge stroke color matches what buildA2AEdges sets on the SVG
   // path style. Mirror it on the badge border so the visual identity
   // (hot=violet vs warm=blue) carries to the clickable label.
-  const accent = isHot ? "border-violet-500/60" : "border-blue-500/60";
+  const accent = isHot ? "border-violet-500/60" : "border-accent/60";
   const accentText = isHot ? "text-violet-200" : "text-blue-200";
   const ariaLabel = `${count} delegation${count === 1 ? "" : "s"} from ${
     edgeData.label?.split(" · ")[1] ?? "recent"
@@ -119,7 +119,7 @@ function A2AEdgeImpl({
               onClick={handleClick}
               aria-label={ariaLabel}
               title="Open source workspace's activity feed"
-              className={`px-2 py-0.5 rounded-full bg-zinc-900/95 border ${accent} ${accentText} text-[10px] font-medium shadow-md shadow-black/40 backdrop-blur-sm hover:bg-zinc-800 hover:border-opacity-100 transition-colors cursor-pointer`}
+              className={`px-2 py-0.5 rounded-full bg-surface-sunken/95 border ${accent} ${accentText} text-[10px] font-medium shadow-md shadow-black/40 backdrop-blur-sm hover:bg-surface-card hover:border-opacity-100 transition-colors cursor-pointer`}
             >
               {labelText}
             </button>

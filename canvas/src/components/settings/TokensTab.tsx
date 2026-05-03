@@ -80,15 +80,15 @@ export function TokensTab({ workspaceId }: TokensTabProps) {
     <div className="p-4 space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-sm font-semibold text-zinc-200">API Tokens</h3>
-          <p className="text-[10px] text-zinc-500 mt-0.5">
+          <h3 className="text-sm font-semibold text-ink">API Tokens</h3>
+          <p className="text-[10px] text-ink-soft mt-0.5">
             Bearer tokens for authenticating API calls to this workspace.
           </p>
         </div>
         <button
           onClick={handleCreate}
           disabled={creating}
-          className="px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 rounded-lg text-[11px] text-blue-300 font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+          className="px-3 py-1.5 bg-accent-strong/20 hover:bg-accent-strong/30 border border-accent/30 rounded-lg text-[11px] text-accent font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
         >
           {creating ? <><Spinner size="sm" /> Creating...</> : '+ New Token'}
         </button>
@@ -98,8 +98,8 @@ export function TokensTab({ workspaceId }: TokensTabProps) {
       {newToken && (
         <div className="bg-emerald-950/30 border border-emerald-800/40 rounded-lg p-3 space-y-2">
           <div className="flex items-center gap-2">
-            <span className="text-[10px] text-emerald-400 font-semibold uppercase tracking-wider">New Token Created</span>
-            <span className="text-[9px] text-emerald-500/70">Copy now — it won't be shown again</span>
+            <span className="text-[10px] text-good font-semibold uppercase tracking-wider">New Token Created</span>
+            <span className="text-[9px] text-good/70">Copy now — it won't be shown again</span>
           </div>
           <div className="flex items-center gap-2">
             <code className="flex-1 text-[11px] text-emerald-200 bg-emerald-950/50 px-2 py-1.5 rounded font-mono break-all select-all">
@@ -107,14 +107,14 @@ export function TokensTab({ workspaceId }: TokensTabProps) {
             </code>
             <button
               onClick={handleCopy}
-              className="shrink-0 px-2 py-1.5 bg-emerald-800/40 hover:bg-emerald-700/50 border border-emerald-700/40 rounded text-[10px] text-emerald-300 transition-colors"
+              className="shrink-0 px-2 py-1.5 bg-emerald-800/40 hover:bg-emerald-700/50 border border-emerald-700/40 rounded text-[10px] text-good transition-colors"
             >
               {copied ? 'Copied' : 'Copy'}
             </button>
           </div>
           <button
             onClick={() => setNewToken(null)}
-            className="text-[9px] text-emerald-500/60 hover:text-emerald-400 transition-colors"
+            className="text-[9px] text-good/60 hover:text-good transition-colors"
           >
             Dismiss
           </button>
@@ -122,20 +122,20 @@ export function TokensTab({ workspaceId }: TokensTabProps) {
       )}
 
       {error && (
-        <div className="px-3 py-2 bg-red-950/40 border border-red-800/50 rounded-lg text-[10px] text-red-400">
+        <div className="px-3 py-2 bg-red-950/40 border border-red-800/50 rounded-lg text-[10px] text-bad">
           {error}
         </div>
       )}
 
       {/* Token list */}
       {loading ? (
-        <div className="flex items-center justify-center gap-2 py-6 text-zinc-500 text-xs">
+        <div className="flex items-center justify-center gap-2 py-6 text-ink-soft text-xs">
           <Spinner /> Loading tokens...
         </div>
       ) : tokens.length === 0 ? (
         <div className="text-center py-6">
-          <p className="text-xs text-zinc-500">No active tokens</p>
-          <p className="text-[10px] text-zinc-600 mt-1">
+          <p className="text-xs text-ink-soft">No active tokens</p>
+          <p className="text-[10px] text-ink-soft mt-1">
             Create a token to authenticate API calls.
           </p>
         </div>
@@ -144,13 +144,13 @@ export function TokensTab({ workspaceId }: TokensTabProps) {
           {tokens.map((t) => (
             <div
               key={t.id}
-              className="flex items-center justify-between bg-zinc-800/40 border border-zinc-700/30 rounded-lg px-3 py-2"
+              className="flex items-center justify-between bg-surface-card/40 border border-line/30 rounded-lg px-3 py-2"
             >
               <div className="flex items-center gap-3 min-w-0">
-                <code className="text-[11px] font-mono text-zinc-300 bg-zinc-900/60 px-1.5 py-0.5 rounded">
+                <code className="text-[11px] font-mono text-ink-mid bg-surface-sunken/60 px-1.5 py-0.5 rounded">
                   {t.prefix}...
                 </code>
-                <div className="text-[9px] text-zinc-500 space-x-3">
+                <div className="text-[9px] text-ink-soft space-x-3">
                   <span>Created {formatAge(t.created_at)}</span>
                   {t.last_used_at && (
                     <span>Last used {formatAge(t.last_used_at)}</span>
@@ -159,7 +159,7 @@ export function TokensTab({ workspaceId }: TokensTabProps) {
               </div>
               <button
                 onClick={() => setRevokeTarget(t)}
-                className="text-[10px] text-red-400/70 hover:text-red-400 transition-colors px-2 py-1"
+                className="text-[10px] text-bad/70 hover:text-bad transition-colors px-2 py-1"
               >
                 Revoke
               </button>

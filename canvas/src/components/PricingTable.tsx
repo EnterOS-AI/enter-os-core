@@ -97,27 +97,27 @@ function PlanCard({
   onSelect: () => void;
 }) {
   const ring = plan.highlighted
-    ? "border-blue-600 ring-2 ring-blue-600/30"
-    : "border-zinc-800";
+    ? "border-accent ring-2 ring-blue-600/30"
+    : "border-line";
   return (
     <article
-      className={`flex flex-col rounded-lg border ${ring} bg-zinc-900/40 p-6`}
+      className={`flex flex-col rounded-lg border ${ring} bg-surface-sunken/40 p-6`}
       aria-labelledby={`plan-${plan.id}-name`}
     >
       {plan.highlighted && (
-        <span className="mb-3 inline-block rounded-full bg-blue-600/20 px-3 py-1 text-xs font-medium text-blue-300">
+        <span className="mb-3 inline-block rounded-full bg-accent-strong/20 px-3 py-1 text-xs font-medium text-accent">
           Most popular
         </span>
       )}
-      <h2 id={`plan-${plan.id}-name`} className="text-xl font-semibold text-white">
+      <h2 id={`plan-${plan.id}-name`} className="text-xl font-semibold text-ink">
         {plan.name}
       </h2>
-      <p className="mt-1 text-sm text-zinc-400">{plan.tagline}</p>
-      <p className="mt-4 text-3xl font-bold text-white">{plan.price}</p>
-      <ul className="mt-6 flex-1 space-y-2 text-sm text-zinc-300">
+      <p className="mt-1 text-sm text-ink-mid">{plan.tagline}</p>
+      <p className="mt-4 text-3xl font-bold text-ink">{plan.price}</p>
+      <ul className="mt-6 flex-1 space-y-2 text-sm text-ink-mid">
         {plan.features.map((f) => (
           <li key={f} className="flex items-start">
-            <span className="mr-2 text-blue-400" aria-hidden>
+            <span className="mr-2 text-accent" aria-hidden>
               ✓
             </span>
             {f}
@@ -130,8 +130,8 @@ function PlanCard({
         disabled={loading}
         className={`mt-6 rounded-lg px-4 py-3 text-sm font-medium ${
           plan.highlighted
-            ? "bg-blue-600 text-white hover:bg-blue-500 disabled:bg-blue-900"
-            : "border border-zinc-700 bg-zinc-900 text-zinc-100 hover:bg-zinc-800 disabled:opacity-50"
+            ? "bg-accent-strong text-white hover:bg-accent disabled:bg-blue-900"
+            : "border border-line bg-surface-sunken text-ink hover:bg-surface-card disabled:opacity-50"
         }`}
       >
         {loading ? "Opening checkout…" : plan.ctaLabel}

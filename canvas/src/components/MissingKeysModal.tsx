@@ -368,9 +368,9 @@ function ProviderPickerModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="missing-keys-title"
-        className="relative bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl shadow-black/50 max-w-[480px] w-full mx-4 max-h-[80vh] overflow-auto"
+        className="relative bg-surface-sunken border border-line rounded-xl shadow-2xl shadow-black/50 max-w-[480px] w-full mx-4 max-h-[80vh] overflow-auto"
       >
-        <div className="px-5 py-4 border-b border-zinc-800">
+        <div className="px-5 py-4 border-b border-line">
           <div className="flex items-center gap-2 mb-1">
             <div
               className="w-5 h-5 rounded-md bg-amber-600/20 border border-amber-500/30 flex items-center justify-center"
@@ -382,14 +382,14 @@ function ProviderPickerModal({
                 <circle cx="6" cy="8.5" r="0.5" fill="#fbbf24" />
               </svg>
             </div>
-            <h3 id="missing-keys-title" className="text-sm font-semibold text-zinc-100">
+            <h3 id="missing-keys-title" className="text-sm font-semibold text-ink">
               {title ?? "Missing API Keys"}
             </h3>
           </div>
-          <p className="text-[12px] text-zinc-400 leading-relaxed">
+          <p className="text-[12px] text-ink-mid leading-relaxed">
             {description ?? (
               <>
-                The <span className="text-amber-300 font-medium">{runtimeLabel}</span>{" "}
+                The <span className="text-warm font-medium">{runtimeLabel}</span>{" "}
                 runtime supports multiple providers. Pick one and paste its API key.
               </>
             )}
@@ -414,17 +414,17 @@ function ProviderPickerModal({
             {entries.map((entry, index) => (
               <div
                 key={entry.key}
-                className="bg-zinc-800/50 rounded-lg px-3 py-2.5 border border-zinc-700/50"
+                className="bg-surface-card/50 rounded-lg px-3 py-2.5 border border-line/50"
               >
                 <div className="flex items-center justify-between mb-1.5">
                   <div>
-                    <div className="text-[11px] text-zinc-300 font-medium">
+                    <div className="text-[11px] text-ink-mid font-medium">
                       {getKeyLabel(entry.key)}
                     </div>
-                    <div className="text-[9px] font-mono text-zinc-500">{entry.key}</div>
+                    <div className="text-[9px] font-mono text-ink-soft">{entry.key}</div>
                   </div>
                   {entry.saved && (
-                    <span className="text-[9px] text-emerald-400 bg-emerald-900/30 px-1.5 py-0.5 rounded flex items-center gap-1">
+                    <span className="text-[9px] text-good bg-emerald-900/30 px-1.5 py-0.5 rounded flex items-center gap-1">
                       <svg width="8" height="8" viewBox="0 0 8 8" fill="none" aria-hidden="true">
                         <path d="M1.5 4L3.5 6L6.5 2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
                       </svg>
@@ -446,12 +446,12 @@ function ProviderPickerModal({
                           handleSaveKey(index);
                         }
                       }}
-                      className="flex-1 bg-zinc-900 border border-zinc-600 rounded px-2 py-1.5 text-[11px] text-zinc-100 font-mono focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20 transition-colors"
+                      className="flex-1 bg-surface-sunken border border-line rounded px-2 py-1.5 text-[11px] text-ink font-mono focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/20 transition-colors"
                     />
                     <button
                       onClick={() => handleSaveKey(index)}
                       disabled={!entry.value.trim() || entry.saving}
-                      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-[11px] rounded text-white disabled:opacity-30 transition-colors shrink-0"
+                      className="px-3 py-1.5 bg-accent-strong hover:bg-accent text-[11px] rounded text-white disabled:opacity-30 transition-colors shrink-0"
                     >
                       {entry.saving ? "..." : "Save"}
                     </button>
@@ -459,19 +459,19 @@ function ProviderPickerModal({
                 )}
 
                 {entry.error && (
-                  <div className="mt-1.5 text-[10px] text-red-400">{entry.error}</div>
+                  <div className="mt-1.5 text-[10px] text-bad">{entry.error}</div>
                 )}
               </div>
             ))}
           </div>
         </div>
 
-        <div className="px-5 py-3 border-t border-zinc-800 bg-zinc-950/50 flex items-center justify-between gap-2">
+        <div className="px-5 py-3 border-t border-line bg-surface/50 flex items-center justify-between gap-2">
           <div>
             {onOpenSettings && (
               <button
                 onClick={onOpenSettings}
-                className="text-[11px] text-blue-400 hover:text-blue-300 transition-colors"
+                className="text-[11px] text-accent hover:text-accent transition-colors"
               >
                 Open Settings Panel
               </button>
@@ -480,7 +480,7 @@ function ProviderPickerModal({
           <div className="flex items-center gap-2">
             <button
               onClick={onCancel}
-              className="px-3.5 py-1.5 text-[12px] text-zinc-400 hover:text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg transition-colors"
+              className="px-3.5 py-1.5 text-[12px] text-ink-mid hover:text-ink bg-surface-card hover:bg-surface-card border border-line rounded-lg transition-colors"
             >
               Cancel Deploy
             </button>
@@ -492,7 +492,7 @@ function ProviderPickerModal({
                 !selectorValue.providerId ||
                 (showModelInput && model.trim() === "")
               }
-              className="px-3.5 py-1.5 text-[12px] bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-40"
+              className="px-3.5 py-1.5 text-[12px] bg-accent-strong hover:bg-accent text-white rounded-lg transition-colors disabled:opacity-40"
             >
               {allSaved ? "Deploy" : entries.length > 1 ? "Add Keys" : "Add Key"}
             </button>
@@ -640,9 +640,9 @@ function AllKeysModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="missing-keys-title"
-        className="relative bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl shadow-black/50 max-w-[440px] w-full mx-4 max-h-[80vh] overflow-auto"
+        className="relative bg-surface-sunken border border-line rounded-xl shadow-2xl shadow-black/50 max-w-[440px] w-full mx-4 max-h-[80vh] overflow-auto"
       >
-        <div className="px-5 py-4 border-b border-zinc-800">
+        <div className="px-5 py-4 border-b border-line">
           <div className="flex items-center gap-2 mb-1">
             <div
               className="w-5 h-5 rounded-md bg-amber-600/20 border border-amber-500/30 flex items-center justify-center"
@@ -654,12 +654,12 @@ function AllKeysModal({
                 <circle cx="6" cy="8.5" r="0.5" fill="#fbbf24" />
               </svg>
             </div>
-            <h3 id="missing-keys-title" className="text-sm font-semibold text-zinc-100">
+            <h3 id="missing-keys-title" className="text-sm font-semibold text-ink">
               Missing API Keys
             </h3>
           </div>
-          <p className="text-[12px] text-zinc-400 leading-relaxed">
-            The <span className="text-amber-300 font-medium">{runtimeLabel}</span>{" "}
+          <p className="text-[12px] text-ink-mid leading-relaxed">
+            The <span className="text-warm font-medium">{runtimeLabel}</span>{" "}
             runtime requires the following keys to be configured before deploying.
           </p>
         </div>
@@ -668,17 +668,17 @@ function AllKeysModal({
           {entries.map((entry, index) => (
             <div
               key={entry.key}
-              className="bg-zinc-800/50 rounded-lg px-3 py-2.5 border border-zinc-700/50"
+              className="bg-surface-card/50 rounded-lg px-3 py-2.5 border border-line/50"
             >
               <div className="flex items-center justify-between mb-1">
                 <div>
-                  <div className="text-[11px] text-zinc-300 font-medium">
+                  <div className="text-[11px] text-ink-mid font-medium">
                     {getKeyLabel(entry.key)}
                   </div>
-                  <div className="text-[9px] font-mono text-zinc-500">{entry.key}</div>
+                  <div className="text-[9px] font-mono text-ink-soft">{entry.key}</div>
                 </div>
                 {entry.saved && (
-                  <span className="text-[9px] text-emerald-400 bg-emerald-900/30 px-1.5 py-0.5 rounded flex items-center gap-1">
+                  <span className="text-[9px] text-good bg-emerald-900/30 px-1.5 py-0.5 rounded flex items-center gap-1">
                     <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
                       <path d="M1.5 4L3.5 6L6.5 2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
@@ -700,37 +700,37 @@ function AllKeysModal({
                         handleSaveKey(index);
                       }
                     }}
-                    className="flex-1 bg-zinc-900 border border-zinc-600 rounded px-2 py-1.5 text-[11px] text-zinc-100 font-mono focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20 transition-colors"
+                    className="flex-1 bg-surface-sunken border border-line rounded px-2 py-1.5 text-[11px] text-ink font-mono focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/20 transition-colors"
                   />
                   <button
                     type="button"
                     onClick={() => handleSaveKey(index)}
                     disabled={!entry.value.trim() || entry.saving}
-                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-[11px] rounded text-white disabled:opacity-30 transition-colors shrink-0"
+                    className="px-3 py-1.5 bg-accent-strong hover:bg-accent text-[11px] rounded text-white disabled:opacity-30 transition-colors shrink-0"
                   >
                     {entry.saving ? "..." : "Save"}
                   </button>
                 </div>
               )}
 
-              {entry.error && <div className="mt-1.5 text-[10px] text-red-400">{entry.error}</div>}
+              {entry.error && <div className="mt-1.5 text-[10px] text-bad">{entry.error}</div>}
             </div>
           ))}
 
           {globalError && (
-            <div className="px-3 py-2 bg-red-950/40 border border-red-800/50 rounded-lg text-[11px] text-red-400">
+            <div className="px-3 py-2 bg-red-950/40 border border-red-800/50 rounded-lg text-[11px] text-bad">
               {globalError}
             </div>
           )}
         </div>
 
-        <div className="px-5 py-3 border-t border-zinc-800 bg-zinc-950/50 flex items-center justify-between gap-2">
+        <div className="px-5 py-3 border-t border-line bg-surface/50 flex items-center justify-between gap-2">
           <div>
             {onOpenSettings && (
               <button
                 type="button"
                 onClick={onOpenSettings}
-                className="text-[11px] text-blue-400 hover:text-blue-300 transition-colors"
+                className="text-[11px] text-accent hover:text-accent transition-colors"
               >
                 Open Settings Panel
               </button>
@@ -740,7 +740,7 @@ function AllKeysModal({
             <button
               type="button"
               onClick={onCancel}
-              className="px-3.5 py-1.5 text-[12px] text-zinc-400 hover:text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg transition-colors"
+              className="px-3.5 py-1.5 text-[12px] text-ink-mid hover:text-ink bg-surface-card hover:bg-surface-card border border-line rounded-lg transition-colors"
             >
               Cancel Deploy
             </button>
@@ -748,7 +748,7 @@ function AllKeysModal({
               type="button"
               onClick={handleAddKeysAndDeploy}
               disabled={!allSaved || anySaving}
-              className="px-3.5 py-1.5 text-[12px] bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-40"
+              className="px-3.5 py-1.5 text-[12px] bg-accent-strong hover:bg-accent text-white rounded-lg transition-colors disabled:opacity-40"
             >
               {anySaving ? "Saving..." : allSaved ? "Deploy" : "Add Keys"}
             </button>

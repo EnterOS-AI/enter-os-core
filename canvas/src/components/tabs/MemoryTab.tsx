@@ -114,13 +114,13 @@ export function MemoryTab({ workspaceId }: Props) {
   };
 
   if (loading) {
-    return <div className="p-4 text-xs text-zinc-500">Loading memory...</div>;
+    return <div className="p-4 text-xs text-ink-soft">Loading memory...</div>;
   }
 
   return (
     <div className="p-4 space-y-4">
       {error && !showAdd && (
-        <div role="alert" className="px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-red-400">
+        <div role="alert" className="px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-bad">
           {error}
         </div>
       )}
@@ -128,8 +128,8 @@ export function MemoryTab({ workspaceId }: Props) {
       <section className="space-y-3">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <div className="text-xs font-medium text-zinc-200">Awareness dashboard</div>
-            <p className="text-[10px] text-zinc-500">
+            <div className="text-xs font-medium text-ink">Awareness dashboard</div>
+            <p className="text-[10px] text-ink-soft">
               Embedded view for the local Awareness memory UI. The current workspace id is appended to the URL for workspace-scoped routing or future filtering.
             </p>
           </div>
@@ -137,14 +137,14 @@ export function MemoryTab({ workspaceId }: Props) {
             <button
               type="button"
               onClick={() => setShowAwareness((prev) => !prev)}
-              className="shrink-0 px-2 py-1 bg-zinc-700 hover:bg-zinc-600 text-[10px] rounded text-zinc-200"
+              className="shrink-0 px-2 py-1 bg-surface-card hover:bg-surface-card text-[10px] rounded text-ink"
             >
               {showAwareness ? "Collapse" : "Expand"}
             </button>
             <button
               type="button"
               onClick={openAwareness}
-              className="shrink-0 px-2 py-1 bg-zinc-700 hover:bg-zinc-600 text-[10px] rounded text-zinc-200"
+              className="shrink-0 px-2 py-1 bg-surface-card hover:bg-surface-card text-[10px] rounded text-ink"
             >
               Open
             </button>
@@ -153,7 +153,7 @@ export function MemoryTab({ workspaceId }: Props) {
 
         {showAwareness ? (
           AWARENESS_BASE_URL ? (
-            <div className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/70 shadow-[0_0_0_1px_rgba(255,255,255,0.02)]">
+            <div className="overflow-hidden rounded-xl border border-line bg-surface-sunken/70 shadow-[0_0_0_1px_rgba(255,255,255,0.02)]">
               <iframe
                 title="Awareness dashboard"
                 src={awarenessUrl}
@@ -162,71 +162,71 @@ export function MemoryTab({ workspaceId }: Props) {
               />
             </div>
           ) : (
-            <div className="rounded-xl border border-dashed border-zinc-800 bg-zinc-900/40 p-4 text-xs text-zinc-500">
-              Set <code className="font-mono text-zinc-300">NEXT_PUBLIC_AWARENESS_URL</code> to embed the Awareness dashboard here.
+            <div className="rounded-xl border border-dashed border-line bg-surface-sunken/40 p-4 text-xs text-ink-soft">
+              Set <code className="font-mono text-ink-mid">NEXT_PUBLIC_AWARENESS_URL</code> to embed the Awareness dashboard here.
             </div>
           )
         ) : (
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 px-4 py-3 flex items-center justify-between gap-3">
+          <div className="rounded-xl border border-line bg-surface-sunken/50 px-4 py-3 flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-xs text-zinc-200">Awareness dashboard is collapsed</p>
-              <p className="text-[10px] text-zinc-500 truncate">
-                Workspace context stays linked through <span className="font-mono text-zinc-400">{workspaceId}</span>.
+              <p className="text-xs text-ink">Awareness dashboard is collapsed</p>
+              <p className="text-[10px] text-ink-soft truncate">
+                Workspace context stays linked through <span className="font-mono text-ink-mid">{workspaceId}</span>.
               </p>
             </div>
             <button
               type="button"
               onClick={() => setShowAwareness(true)}
-              className="shrink-0 px-2 py-1 bg-blue-600 hover:bg-blue-500 text-[10px] rounded text-white"
+              className="shrink-0 px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-white"
             >
               Expand
             </button>
           </div>
         )}
 
-        <div className="grid gap-2 rounded-xl border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-[10px] text-zinc-400 sm:grid-cols-3">
+        <div className="grid gap-2 rounded-xl border border-line bg-surface/40 px-3 py-2 text-[10px] text-ink-mid sm:grid-cols-3">
           <div className="flex items-center justify-between gap-2">
-            <span className="uppercase tracking-[0.18em] text-zinc-500">Status</span>
-            <span className="font-medium text-emerald-300">Connected</span>
+            <span className="uppercase tracking-[0.18em] text-ink-soft">Status</span>
+            <span className="font-medium text-good">Connected</span>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <span className="uppercase tracking-[0.18em] text-zinc-500">Mode</span>
-            <span className="font-medium text-zinc-200">{awarenessStatus}</span>
+            <span className="uppercase tracking-[0.18em] text-ink-soft">Mode</span>
+            <span className="font-medium text-ink">{awarenessStatus}</span>
           </div>
           <div className="flex items-center justify-between gap-2 min-w-0">
-            <span className="uppercase tracking-[0.18em] text-zinc-500">Workspace</span>
-            <span className="font-mono text-zinc-300 truncate">{workspaceId}</span>
+            <span className="uppercase tracking-[0.18em] text-ink-soft">Workspace</span>
+            <span className="font-mono text-ink-mid truncate">{workspaceId}</span>
           </div>
         </div>
       </section>
 
-      <section className="space-y-3 border-t border-zinc-800/60 pt-4">
+      <section className="space-y-3 border-t border-line/60 pt-4">
         <div className="flex items-center justify-between">
           <div>
-            <div className="text-xs font-medium text-zinc-200">Workspace KV memory</div>
-            <p className="text-[10px] text-zinc-500">
-              Native platform key-value memory for workspace <span className="font-mono text-zinc-400">{workspaceId}</span>.
+            <div className="text-xs font-medium text-ink">Workspace KV memory</div>
+            <p className="text-[10px] text-ink-soft">
+              Native platform key-value memory for workspace <span className="font-mono text-ink-mid">{workspaceId}</span>.
             </p>
           </div>
           <div className="flex gap-2">
             <button
               type="button"
               onClick={() => setShowAdvanced((prev) => !prev)}
-              className="px-2 py-1 bg-zinc-700 hover:bg-zinc-600 text-[10px] rounded text-zinc-300"
+              className="px-2 py-1 bg-surface-card hover:bg-surface-card text-[10px] rounded text-ink-mid"
             >
               {showAdvanced ? "Hide Advanced" : "Advanced"}
             </button>
             <button
               type="button"
               onClick={loadMemory}
-              className="px-2 py-1 bg-zinc-700 hover:bg-zinc-600 text-[10px] rounded text-zinc-300"
+              className="px-2 py-1 bg-surface-card hover:bg-surface-card text-[10px] rounded text-ink-mid"
             >
               Refresh
             </button>
             <button
               type="button"
               onClick={() => { setShowAdd(!showAdd); if (!showAdd) setShowAdvanced(true); }}
-              className="px-2 py-1 bg-blue-600 hover:bg-blue-500 text-[10px] rounded text-white"
+              className="px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-white"
             >
               + Add
             </button>
@@ -234,13 +234,13 @@ export function MemoryTab({ workspaceId }: Props) {
         </div>
 
         {showAdvanced && showAdd && (
-          <div className="bg-zinc-800 rounded p-3 space-y-2 border border-zinc-700">
+          <div className="bg-surface-card rounded p-3 space-y-2 border border-line">
             <input
               value={newKey}
               onChange={(e) => setNewKey(e.target.value)}
               placeholder="Key"
               aria-label="Memory key"
-              className="w-full bg-zinc-900 border border-zinc-600 rounded px-2 py-1 text-xs text-zinc-100 focus:outline-none focus:border-blue-500"
+              className="w-full bg-surface-sunken border border-line rounded px-2 py-1 text-xs text-ink focus:outline-none focus:border-accent"
             />
             <textarea
               value={newValue}
@@ -248,21 +248,21 @@ export function MemoryTab({ workspaceId }: Props) {
               placeholder='Value (JSON or plain text)'
               rows={3}
               aria-label="Memory value (JSON or plain text)"
-              className="w-full bg-zinc-900 border border-zinc-600 rounded px-2 py-1 text-xs font-mono text-zinc-100 focus:outline-none focus:border-blue-500 resize-none"
+              className="w-full bg-surface-sunken border border-line rounded px-2 py-1 text-xs font-mono text-ink focus:outline-none focus:border-accent resize-none"
             />
             <input
               value={newTTL}
               onChange={(e) => setNewTTL(e.target.value)}
               placeholder="TTL in seconds (optional)"
               aria-label="TTL in seconds (optional)"
-              className="w-full bg-zinc-900 border border-zinc-600 rounded px-2 py-1 text-xs text-zinc-100 focus:outline-none focus:border-blue-500"
+              className="w-full bg-surface-sunken border border-line rounded px-2 py-1 text-xs text-ink focus:outline-none focus:border-accent"
             />
-            {error && <div role="alert" className="text-xs text-red-400">{error}</div>}
+            {error && <div role="alert" className="text-xs text-bad">{error}</div>}
             <div className="flex gap-2">
               <button
                 type="button"
                 onClick={handleAdd}
-                className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-xs rounded text-white"
+                className="px-3 py-1 bg-accent-strong hover:bg-accent text-xs rounded text-white"
               >
                 Save
               </button>
@@ -272,7 +272,7 @@ export function MemoryTab({ workspaceId }: Props) {
                   setShowAdd(false);
                   setError(null);
                 }}
-                className="px-3 py-1 bg-zinc-700 hover:bg-zinc-600 text-xs rounded text-zinc-300"
+                className="px-3 py-1 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid"
               >
                 Cancel
               </button>
@@ -282,25 +282,25 @@ export function MemoryTab({ workspaceId }: Props) {
 
         {showAdvanced ? (
           entries.length === 0 ? (
-            <p className="text-xs text-zinc-500 text-center py-4">No memory entries</p>
+            <p className="text-xs text-ink-soft text-center py-4">No memory entries</p>
           ) : (
             <div className="space-y-1">
               {entries.map((entry) => (
-                <div key={entry.key} className="bg-zinc-800 rounded border border-zinc-700">
+                <div key={entry.key} className="bg-surface-card rounded border border-line">
                   <button
                     type="button"
                     onClick={() => setExpanded(expanded === entry.key ? null : entry.key)}
                     className="w-full flex items-center justify-between px-3 py-2 text-left"
                     aria-expanded={expanded === entry.key}
                   >
-                    <span className="text-xs font-mono text-blue-400">{entry.key}</span>
+                    <span className="text-xs font-mono text-accent">{entry.key}</span>
                     <div className="flex items-center gap-2">
                       {entry.expires_at && (
-                        <span className="text-[9px] text-zinc-500">
+                        <span className="text-[9px] text-ink-soft">
                           TTL {new Date(entry.expires_at).toLocaleString()}
                         </span>
                       )}
-                      <span className="text-[10px] text-zinc-500">
+                      <span className="text-[10px] text-ink-soft">
                         {expanded === entry.key ? "▼" : "▶"}
                       </span>
                     </div>
@@ -308,17 +308,17 @@ export function MemoryTab({ workspaceId }: Props) {
 
                   {expanded === entry.key && (
                     <div className="px-3 pb-2 space-y-2">
-                      <pre className="text-[10px] text-zinc-300 bg-zinc-900 rounded p-2 overflow-x-auto max-h-40">
+                      <pre className="text-[10px] text-ink-mid bg-surface-sunken rounded p-2 overflow-x-auto max-h-40">
                         {JSON.stringify(entry.value, null, 2)}
                       </pre>
                       <div className="flex items-center justify-between">
-                        <span className="text-[9px] text-zinc-500">
+                        <span className="text-[9px] text-ink-soft">
                           Updated: {new Date(entry.updated_at).toLocaleString()}
                         </span>
                         <button
                           type="button"
                           onClick={() => handleDelete(entry.key)}
-                          className="text-[10px] text-red-400 hover:text-red-300"
+                          className="text-[10px] text-bad hover:text-bad"
                         >
                           Delete
                         </button>
@@ -330,17 +330,17 @@ export function MemoryTab({ workspaceId }: Props) {
             </div>
           )
         ) : (
-          <div className="rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-3 flex items-center justify-between gap-3">
+          <div className="rounded-xl border border-line bg-surface/30 px-4 py-3 flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-xs text-zinc-200">Advanced workspace memory is hidden</p>
-              <p className="text-[10px] text-zinc-500 truncate">
+              <p className="text-xs text-ink">Advanced workspace memory is hidden</p>
+              <p className="text-[10px] text-ink-soft truncate">
                 KV entries remain available if you need the raw platform store.
               </p>
             </div>
             <button
               type="button"
               onClick={() => setShowAdvanced(true)}
-              className="shrink-0 px-2 py-1 bg-blue-600 hover:bg-blue-500 text-[10px] rounded text-white"
+              className="shrink-0 px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-white"
             >
               Show
             </button>

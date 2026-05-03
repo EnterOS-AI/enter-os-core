@@ -145,7 +145,7 @@ export function FilesTab({ workspaceId }: Props) {
   };
 
   if (loading) {
-    return <div className="p-4 text-xs text-zinc-500">Loading files...</div>;
+    return <div className="p-4 text-xs text-ink-soft">Loading files...</div>;
   }
 
   return (
@@ -163,34 +163,34 @@ export function FilesTab({ workspaceId }: Props) {
 
       {showDeleteAll && (
         <div className="mx-3 mt-2 px-3 py-2 bg-red-950/30 border border-red-800/40 rounded space-y-1.5">
-          <p className="text-xs text-red-300">Delete all {files.filter((f) => !f.dir).length} files? This cannot be undone.</p>
+          <p className="text-xs text-bad">Delete all {files.filter((f) => !f.dir).length} files? This cannot be undone.</p>
           <div className="flex gap-2">
             <button type="button" onClick={() => { handleDeleteAll(); setShowDeleteAll(false); }} className="px-2 py-0.5 bg-red-600 hover:bg-red-500 text-[10px] rounded text-white">Delete All</button>
-            <button type="button" onClick={() => setShowDeleteAll(false)} className="px-2 py-0.5 bg-zinc-700 hover:bg-zinc-600 text-[10px] rounded text-zinc-300">Cancel</button>
+            <button type="button" onClick={() => setShowDeleteAll(false)} className="px-2 py-0.5 bg-surface-card hover:bg-surface-card text-[10px] rounded text-ink-mid">Cancel</button>
           </div>
         </div>
       )}
 
       {error && (
-        <div className="mx-3 mt-2 px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-red-400">{error}</div>
+        <div className="mx-3 mt-2 px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-bad">{error}</div>
       )}
 
       {confirmDelete && (
         <div className="mx-3 mt-2 px-3 py-2 bg-amber-950/30 border border-amber-800/40 rounded space-y-1.5">
-          <p className="text-xs text-amber-300">Delete <span className="font-mono">{confirmDelete}</span>{files.find((f) => f.path === confirmDelete && f.dir) ? " and all its contents" : ""}?</p>
+          <p className="text-xs text-warm">Delete <span className="font-mono">{confirmDelete}</span>{files.find((f) => f.path === confirmDelete && f.dir) ? " and all its contents" : ""}?</p>
           <div className="flex gap-2">
             <button type="button" onClick={confirmDeleteFile} className="px-2 py-0.5 bg-red-600 hover:bg-red-500 text-[10px] rounded text-white">Delete</button>
-            <button type="button" onClick={() => setConfirmDelete(null)} className="px-2 py-0.5 bg-zinc-700 hover:bg-zinc-600 text-[10px] rounded text-zinc-300">Cancel</button>
+            <button type="button" onClick={() => setConfirmDelete(null)} className="px-2 py-0.5 bg-surface-card hover:bg-surface-card text-[10px] rounded text-ink-mid">Cancel</button>
           </div>
         </div>
       )}
 
       <div className="flex flex-1 min-h-0">
         {/* File tree */}
-        <div className="w-[180px] border-r border-zinc-800/40 overflow-y-auto shrink-0">
+        <div className="w-[180px] border-r border-line/40 overflow-y-auto shrink-0">
           {/* New file input */}
           {showNewFile && (
-            <div className="px-2 py-1 border-b border-zinc-800/40">
+            <div className="px-2 py-1 border-b border-line/40">
               <input
                 aria-label="New file path"
                 value={newFileName}
@@ -198,13 +198,13 @@ export function FilesTab({ workspaceId }: Props) {
                 onKeyDown={(e) => e.key === "Enter" && createFile()}
                 placeholder="path/file.md"
                 autoFocus
-                className="w-full bg-zinc-800 border border-zinc-600 rounded px-1.5 py-0.5 text-[10px] text-zinc-100 font-mono focus:outline-none focus:border-blue-500"
+                className="w-full bg-surface-card border border-line rounded px-1.5 py-0.5 text-[10px] text-ink font-mono focus:outline-none focus:border-accent"
               />
             </div>
           )}
 
           {files.length === 0 ? (
-            <div className="px-3 py-4 text-[10px] text-zinc-600 text-center">
+            <div className="px-3 py-4 text-[10px] text-ink-soft text-center">
               No config files yet
             </div>
           ) : (

@@ -180,19 +180,19 @@ export function ScheduleTab({ workspaceId }: Props) {
   };
 
   if (loading) {
-    return <div className="p-4 text-[10px] text-zinc-500">Loading schedules...</div>;
+    return <div className="p-4 text-[10px] text-ink-soft">Loading schedules...</div>;
   }
 
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-800/50">
-        <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-line/50">
+        <span className="text-[10px] font-semibold text-ink-mid uppercase tracking-wider">
           Schedules
         </span>
         <button
           onClick={() => { resetForm(); setShowForm(true); }}
-          className="text-[11px] px-2 py-0.5 bg-blue-600/20 text-blue-400 rounded hover:bg-blue-600/30 transition-colors"
+          className="text-[11px] px-2 py-0.5 bg-accent-strong/20 text-accent rounded hover:bg-accent-strong/30 transition-colors"
         >
           + Add Schedule
         </button>
@@ -200,36 +200,36 @@ export function ScheduleTab({ workspaceId }: Props) {
 
       {/* Create/Edit Form */}
       {showForm && (
-        <div className="p-3 border-b border-zinc-800/50 bg-zinc-900/50 space-y-2">
+        <div className="p-3 border-b border-line/50 bg-surface-sunken/50 space-y-2">
           <input
             type="text"
             aria-label="Schedule name"
             placeholder="Schedule name (e.g., Daily security scan)"
             value={formName}
             onChange={(e) => setFormName(e.target.value)}
-            className="w-full text-[10px] bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-zinc-200 placeholder:text-zinc-600"
+            className="w-full text-[10px] bg-surface-card border border-line rounded px-2 py-1 text-ink placeholder:text-ink-soft"
           />
           <div className="flex gap-2">
             <div className="flex-1">
-              <label htmlFor={cronId} className="text-[10px] text-zinc-500 block mb-0.5">Cron Expression</label>
+              <label htmlFor={cronId} className="text-[10px] text-ink-soft block mb-0.5">Cron Expression</label>
               <input
                 id={cronId}
                 type="text"
                 value={formCron}
                 onChange={(e) => setFormCron(e.target.value)}
-                className="w-full text-[10px] bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-zinc-200 font-mono"
+                className="w-full text-[10px] bg-surface-card border border-line rounded px-2 py-1 text-ink font-mono"
               />
-              <div className="text-[10px] text-zinc-600 mt-0.5">
+              <div className="text-[10px] text-ink-soft mt-0.5">
                 {cronToHuman(formCron)}
               </div>
             </div>
             <div className="w-24">
-              <label htmlFor={timezoneId} className="text-[10px] text-zinc-500 block mb-0.5">Timezone</label>
+              <label htmlFor={timezoneId} className="text-[10px] text-ink-soft block mb-0.5">Timezone</label>
               <select
                 id={timezoneId}
                 value={formTimezone}
                 onChange={(e) => setFormTimezone(e.target.value)}
-                className="w-full text-[10px] bg-zinc-800 border border-zinc-700 rounded px-1 py-1 text-zinc-200"
+                className="w-full text-[10px] bg-surface-card border border-line rounded px-1 py-1 text-ink"
               >
                 <option value="UTC">UTC</option>
                 <option value="America/New_York">US Eastern</option>
@@ -245,44 +245,44 @@ export function ScheduleTab({ workspaceId }: Props) {
             </div>
           </div>
           <div>
-            <label htmlFor={promptId} className="text-[10px] text-zinc-500 block mb-0.5">Prompt / Task</label>
+            <label htmlFor={promptId} className="text-[10px] text-ink-soft block mb-0.5">Prompt / Task</label>
             <textarea
               id={promptId}
               value={formPrompt}
               onChange={(e) => setFormPrompt(e.target.value)}
               placeholder="What should the agent do on this schedule?"
               rows={3}
-              className="w-full text-[10px] bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-zinc-200 placeholder:text-zinc-600 resize-y"
+              className="w-full text-[10px] bg-surface-card border border-line rounded px-2 py-1 text-ink placeholder:text-ink-soft resize-y"
             />
           </div>
           <div className="flex items-center gap-2">
-            <label className="flex items-center gap-1.5 text-[10px] text-zinc-400 cursor-pointer">
+            <label className="flex items-center gap-1.5 text-[10px] text-ink-mid cursor-pointer">
               <input
                 type="checkbox"
                 checked={formEnabled}
                 onChange={(e) => setFormEnabled(e.target.checked)}
-                className="rounded border-zinc-600"
+                className="rounded border-line"
               />
               Enabled
             </label>
           </div>
-          {error && <div className="text-[10px] text-red-400">{error}</div>}
+          {error && <div className="text-[10px] text-bad">{error}</div>}
           <div className="flex gap-2">
             <button
               onClick={handleSubmit}
               disabled={!formCron || !formPrompt}
-              className="text-[11px] px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-500 disabled:opacity-40 transition-colors"
+              className="text-[11px] px-3 py-1 bg-accent-strong text-white rounded hover:bg-accent disabled:opacity-40 transition-colors"
             >
               {editId ? "Update" : "Create"}
             </button>
             <button
               onClick={resetForm}
-              className="text-[11px] px-3 py-1 bg-zinc-800 text-zinc-400 rounded hover:bg-zinc-700 transition-colors"
+              className="text-[11px] px-3 py-1 bg-surface-card text-ink-mid rounded hover:bg-surface-card transition-colors"
             >
               Cancel
             </button>
           </div>
-          <div className="text-[10px] text-zinc-600 space-y-0.5">
+          <div className="text-[10px] text-ink-soft space-y-0.5">
             <div>Common patterns:</div>
             <div className="font-mono">{"0 9 * * *"} — Daily at 9:00 AM</div>
             <div className="font-mono">{"*/30 * * * *"} — Every 30 minutes</div>
@@ -297,8 +297,8 @@ export function ScheduleTab({ workspaceId }: Props) {
         {schedules.length === 0 && !showForm ? (
           <div className="p-6 text-center">
             <div className="text-2xl mb-2">⏲</div>
-            <div className="text-[10px] text-zinc-400 mb-1">No schedules yet</div>
-            <div className="text-[9px] text-zinc-500">
+            <div className="text-[10px] text-ink-mid mb-1">No schedules yet</div>
+            <div className="text-[9px] text-ink-soft">
               Add a schedule to run tasks automatically — daily scans, periodic reports, standup reminders.
             </div>
           </div>
@@ -306,7 +306,7 @@ export function ScheduleTab({ workspaceId }: Props) {
           schedules.map((sched) => (
             <div
               key={sched.id}
-              className={`px-3 py-2 border-b border-zinc-800/30 ${
+              className={`px-3 py-2 border-b border-line/30 ${
                 !sched.enabled ? "opacity-50" : ""
               }`}
             >
@@ -320,30 +320,30 @@ export function ScheduleTab({ workspaceId }: Props) {
                           ? "bg-red-400"
                           : sched.last_status === "ok"
                           ? "bg-emerald-400"
-                          : "bg-zinc-600"
+                          : "bg-surface-card"
                       }`}
                       title={sched.enabled ? "Click to disable" : "Click to enable"}
                     />
-                    <span className="text-[10px] font-medium text-zinc-200 truncate">
+                    <span className="text-[10px] font-medium text-ink truncate">
                       {sched.name || "Unnamed schedule"}
                     </span>
                   </div>
-                  <div className="text-[9px] text-zinc-500 mt-0.5 font-mono">
+                  <div className="text-[9px] text-ink-soft mt-0.5 font-mono">
                     {cronToHuman(sched.cron_expr)}
                     {sched.timezone !== "UTC" && (
-                      <span className="text-zinc-600"> ({sched.timezone})</span>
+                      <span className="text-ink-soft"> ({sched.timezone})</span>
                     )}
                   </div>
-                  <div className="text-[9px] text-zinc-500 mt-0.5 truncate">
+                  <div className="text-[9px] text-ink-soft mt-0.5 truncate">
                     {sched.prompt.slice(0, 80)}{sched.prompt.length > 80 ? "..." : ""}
                   </div>
-                  <div className="flex items-center gap-3 mt-1 text-[8px] text-zinc-500">
+                  <div className="flex items-center gap-3 mt-1 text-[8px] text-ink-soft">
                     <span>Last: {relativeTime(sched.last_run_at)}</span>
                     <span>Next: {relativeTime(sched.next_run_at)}</span>
                     <span>Runs: {sched.run_count}</span>
                   </div>
                   {sched.last_error && (
-                    <div className="text-[8px] text-red-400/70 mt-0.5 truncate">
+                    <div className="text-[8px] text-bad/70 mt-0.5 truncate">
                       Error: {sched.last_error}
                     </div>
                   )}
@@ -352,7 +352,7 @@ export function ScheduleTab({ workspaceId }: Props) {
                   <button
                     onClick={() => handleRunNow(sched)}
                     aria-label={`Run schedule ${sched.name} now`}
-                    className="text-[11px] px-1.5 py-0.5 text-blue-400 hover:bg-blue-600/20 rounded transition-colors"
+                    className="text-[11px] px-1.5 py-0.5 text-accent hover:bg-accent-strong/20 rounded transition-colors"
                     title="Run now"
                   >
                     ▶
@@ -360,7 +360,7 @@ export function ScheduleTab({ workspaceId }: Props) {
                   <button
                     onClick={() => handleEdit(sched)}
                     aria-label={`Edit schedule ${sched.name}`}
-                    className="text-[11px] px-1.5 py-0.5 text-zinc-400 hover:bg-zinc-700 rounded transition-colors"
+                    className="text-[11px] px-1.5 py-0.5 text-ink-mid hover:bg-surface-card rounded transition-colors"
                     title="Edit"
                   >
                     ✎
@@ -368,7 +368,7 @@ export function ScheduleTab({ workspaceId }: Props) {
                   <button
                     onClick={() => setPendingDelete({ id: sched.id, name: sched.name })}
                     aria-label={`Delete schedule ${sched.name}`}
-                    className="text-[11px] px-1.5 py-0.5 text-red-400 hover:bg-red-600/20 rounded transition-colors"
+                    className="text-[11px] px-1.5 py-0.5 text-bad hover:bg-red-600/20 rounded transition-colors"
                     title="Delete"
                   >
                     ✕

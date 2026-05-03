@@ -9,7 +9,7 @@ import type { AuditEntry, AuditResponse } from "@/types/audit";
 type EventFilter = "all" | AuditEntry["event_type"];
 
 const BADGE_COLORS: Record<AuditEntry["event_type"], { text: string; bg: string; border: string }> = {
-  delegation: { text: "text-blue-400",   bg: "bg-blue-950/40",   border: "border-blue-800/40" },
+  delegation: { text: "text-accent",   bg: "bg-blue-950/40",   border: "border-blue-800/40" },
   decision:   { text: "text-violet-400", bg: "bg-violet-950/40", border: "border-violet-800/40" },
   gate:       { text: "text-yellow-400", bg: "bg-yellow-950/40", border: "border-yellow-800/40" },
   hitl:       { text: "text-orange-400", bg: "bg-orange-950/40", border: "border-orange-800/40" },
@@ -127,7 +127,7 @@ export function AuditTrailPanel({ workspaceId }: Props) {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-32">
-        <span className="text-xs text-zinc-500">Loading audit trail…</span>
+        <span className="text-xs text-ink-soft">Loading audit trail…</span>
       </div>
     );
   }
@@ -135,7 +135,7 @@ export function AuditTrailPanel({ workspaceId }: Props) {
   return (
     <div className="flex flex-col h-full">
       {/* Filter bar */}
-      <div className="px-4 py-2.5 border-b border-zinc-800/40 flex items-center gap-1 overflow-x-auto shrink-0">
+      <div className="px-4 py-2.5 border-b border-line/40 flex items-center gap-1 overflow-x-auto shrink-0">
         {FILTERS.map((f) => (
           <button
             type="button"
@@ -144,8 +144,8 @@ export function AuditTrailPanel({ workspaceId }: Props) {
             aria-pressed={filter === f.id}
             className={`px-2 py-1 text-[10px] rounded-md font-medium transition-all shrink-0 ${
               filter === f.id
-                ? "bg-zinc-700 text-zinc-100 ring-1 ring-zinc-600"
-                : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/60"
+                ? "bg-surface-card text-ink ring-1 ring-zinc-600"
+                : "text-ink-soft hover:text-ink-mid hover:bg-surface-card/60"
             }`}
           >
             {f.label}
@@ -155,7 +155,7 @@ export function AuditTrailPanel({ workspaceId }: Props) {
         <button
           type="button"
           onClick={loadEntries}
-          className="px-2 py-1 text-[10px] bg-zinc-800 hover:bg-zinc-700 text-zinc-400 rounded transition-colors shrink-0"
+          className="px-2 py-1 text-[10px] bg-surface-card hover:bg-surface-card text-ink-mid rounded transition-colors shrink-0"
           aria-label="Refresh audit trail"
         >
           ↻
@@ -164,7 +164,7 @@ export function AuditTrailPanel({ workspaceId }: Props) {
 
       {/* Error banner */}
       {error && (
-        <div className="mx-4 mt-3 px-3 py-2 bg-red-950/30 border border-red-800/40 rounded text-xs text-red-400 shrink-0">
+        <div className="mx-4 mt-3 px-3 py-2 bg-red-950/30 border border-red-800/40 rounded text-xs text-bad shrink-0">
           {error}
         </div>
       )}
@@ -174,9 +174,9 @@ export function AuditTrailPanel({ workspaceId }: Props) {
         {entries.length === 0 ? (
           /* Empty state */
           <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
-            <span className="text-4xl text-zinc-700" aria-hidden="true">⊟</span>
-            <p className="text-sm font-medium text-zinc-400">No audit events yet</p>
-            <p className="text-[11px] text-zinc-600 max-w-[200px] leading-relaxed">
+            <span className="text-4xl text-ink-soft" aria-hidden="true">⊟</span>
+            <p className="text-sm font-medium text-ink-mid">No audit events yet</p>
+            <p className="text-[11px] text-ink-soft max-w-[200px] leading-relaxed">
               Delegation, decision, gate, and human-in-the-loop events will appear here.
             </p>
           </div>
@@ -195,7 +195,7 @@ export function AuditTrailPanel({ workspaceId }: Props) {
                   type="button"
                   onClick={loadMore}
                   disabled={loadingMore}
-                  className="px-4 py-2 text-[11px] bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 disabled:cursor-not-allowed text-zinc-300 rounded-lg transition-colors"
+                  className="px-4 py-2 text-[11px] bg-surface-card hover:bg-surface-card disabled:opacity-50 disabled:cursor-not-allowed text-ink-mid rounded-lg transition-colors"
                 >
                   {loadingMore ? "Loading…" : "Load more"}
                 </button>
@@ -203,7 +203,7 @@ export function AuditTrailPanel({ workspaceId }: Props) {
             )}
 
             {/* Entry count footer */}
-            <p className="mt-3 text-center text-[9px] text-zinc-600">
+            <p className="mt-3 text-center text-[9px] text-ink-soft">
               {entries.length} event{entries.length !== 1 ? "s" : ""} loaded
               {cursor ? " · more available" : " · all loaded"}
             </p>
@@ -227,15 +227,15 @@ export interface AuditEntryRowProps {
  */
 export function AuditEntryRow({ entry, now }: AuditEntryRowProps) {
   const badge = BADGE_COLORS[entry.event_type] ?? {
-    text: "text-zinc-400",
-    bg: "bg-zinc-800/40",
-    border: "border-zinc-700/40",
+    text: "text-ink-mid",
+    bg: "bg-surface-card/40",
+    border: "border-line/40",
   };
 
   return (
     <div
       role="listitem"
-      className="rounded-lg border border-zinc-800/60 bg-zinc-900/50 px-3 py-2.5 space-y-1.5"
+      className="rounded-lg border border-line/60 bg-surface-sunken/50 px-3 py-2.5 space-y-1.5"
     >
       {/* Header row: badge · actor · tamper flag · timestamp */}
       <div className="flex items-center gap-2">
@@ -248,14 +248,14 @@ export function AuditEntryRow({ entry, now }: AuditEntryRowProps) {
         </span>
 
         {/* Actor name */}
-        <span className="text-[10px] text-zinc-400 truncate flex-1 min-w-0 font-mono">
+        <span className="text-[10px] text-ink-mid truncate flex-1 min-w-0 font-mono">
           {entry.actor}
         </span>
 
         {/* Tamper warning — only rendered when chain is invalid */}
         {!entry.chain_valid && (
           <span
-            className="shrink-0 text-[11px] text-red-400 font-bold leading-none"
+            className="shrink-0 text-[11px] text-bad font-bold leading-none"
             title="Chain integrity check failed — this entry may have been tampered with"
             aria-label="Chain integrity warning: tampered entry"
             role="img"
@@ -265,13 +265,13 @@ export function AuditEntryRow({ entry, now }: AuditEntryRowProps) {
         )}
 
         {/* Relative timestamp */}
-        <span className="shrink-0 text-[9px] text-zinc-600">
+        <span className="shrink-0 text-[9px] text-ink-soft">
           {formatAuditRelativeTime(entry.created_at, now)}
         </span>
       </div>
 
       {/* Summary text */}
-      <p className="text-[11px] text-zinc-300 leading-relaxed break-words">
+      <p className="text-[11px] text-ink-mid leading-relaxed break-words">
         {entry.summary}
       </p>
     </div>

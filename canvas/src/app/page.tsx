@@ -53,10 +53,10 @@ export default function Home() {
 
   if (hydrating) {
     return (
-      <div className="fixed inset-0 flex items-center justify-center bg-zinc-950">
+      <div className="fixed inset-0 flex items-center justify-center bg-surface">
         <div className="flex flex-col items-center gap-3">
           <Spinner size="lg" />
-          <span className="text-xs text-zinc-500">Loading canvas...</span>
+          <span className="text-xs text-ink-soft">Loading canvas...</span>
         </div>
       </div>
     );
@@ -79,15 +79,15 @@ export default function Home() {
           // selector that's used by other transient toasts. Don't rename
           // without updating that spec.
           data-testid="hydration-error"
-          className="fixed inset-0 flex flex-col items-center justify-center bg-zinc-950 text-zinc-300 gap-4 z-[9999]"
+          className="fixed inset-0 flex flex-col items-center justify-center bg-surface text-ink-mid gap-4 z-[9999]"
         >
-          <p className="text-zinc-400 text-sm">{hydrationError}</p>
+          <p className="text-ink-mid text-sm">{hydrationError}</p>
           <button
             onClick={() => {
               setHydrationError(null);
               window.location.reload();
             }}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-md text-sm"
+            className="px-4 py-2 bg-accent-strong hover:bg-accent text-white rounded-md text-sm"
           >
             Retry
           </button>
@@ -108,28 +108,28 @@ function PlatformDownDiagnostic() {
   return (
     <div
       role="alert"
-      className="fixed inset-0 flex flex-col items-center justify-center bg-zinc-950 text-zinc-300 gap-5 z-[9999] px-6"
+      className="fixed inset-0 flex flex-col items-center justify-center bg-surface text-ink-mid gap-5 z-[9999] px-6"
     >
-      <div className="text-amber-400 text-sm font-semibold uppercase tracking-wider">
+      <div className="text-warm text-sm font-semibold uppercase tracking-wider">
         Platform infrastructure unreachable
       </div>
-      <p className="text-zinc-400 text-sm max-w-lg text-center leading-relaxed">
-        The platform server returned <code className="font-mono text-amber-300">503 platform_unavailable</code>.
+      <p className="text-ink-mid text-sm max-w-lg text-center leading-relaxed">
+        The platform server returned <code className="font-mono text-warm">503 platform_unavailable</code>.
         That means it can&apos;t reach Postgres or Redis to validate your session.
         Most common cause on a dev host: one of those services stopped.
       </p>
-      <div className="bg-zinc-900/80 border border-zinc-700/50 rounded-lg px-4 py-3 max-w-lg w-full">
-        <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-2">Try first</div>
-        <pre className="text-[12px] text-zinc-300 font-mono whitespace-pre-wrap leading-relaxed">{`brew services start postgresql@14
+      <div className="bg-surface-sunken/80 border border-line/50 rounded-lg px-4 py-3 max-w-lg w-full">
+        <div className="text-[10px] uppercase tracking-wider text-ink-soft mb-2">Try first</div>
+        <pre className="text-[12px] text-ink-mid font-mono whitespace-pre-wrap leading-relaxed">{`brew services start postgresql@14
 brew services start redis`}</pre>
       </div>
-      <p className="text-[11px] text-zinc-500 max-w-lg text-center">
+      <p className="text-[11px] text-ink-soft max-w-lg text-center">
         If both are running, check <code className="font-mono">/tmp/molecule-server.log</code> for
         the underlying error. If you&apos;re on hosted SaaS, this is a platform incident — try again in a moment.
       </p>
       <button
         onClick={() => window.location.reload()}
-        className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-md text-sm mt-2"
+        className="px-4 py-2 bg-accent-strong hover:bg-accent text-white rounded-md text-sm mt-2"
       >
         Reload
       </button>

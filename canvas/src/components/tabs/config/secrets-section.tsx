@@ -68,7 +68,7 @@ function labelForKey(key: string): string {
 
 function ScopeBadge({ scope }: { scope: "global" | "workspace" | "override" }) {
   if (scope === "global") {
-    return <span className="text-[8px] text-amber-400 bg-amber-900/30 px-1.5 py-0.5 rounded" title="Inherited from global secrets">Global</span>;
+    return <span className="text-[8px] text-warm bg-amber-900/30 px-1.5 py-0.5 rounded" title="Inherited from global secrets">Global</span>;
   }
   if (scope === "override") {
     return <span className="text-[8px] text-purple-400 bg-purple-900/30 px-1.5 py-0.5 rounded" title="Overrides global secret">Override</span>;
@@ -96,26 +96,26 @@ function SecretRow({ label, secretKey, isSet, scope, globalMode, onSave, onDelet
   const isPlaintext = secretKey === "MODEL_PROVIDER";
 
   return (
-    <div className="bg-zinc-800/50 rounded px-3 py-2 border border-zinc-700/50">
+    <div className="bg-surface-card/50 rounded px-3 py-2 border border-line/50">
       <div className="flex items-center justify-between">
         <div className="min-w-0">
-          <div className="text-[10px] text-zinc-300">{label}</div>
+          <div className="text-[10px] text-ink-mid">{label}</div>
           <div className="flex items-center gap-2 mt-0.5">
-            <span className="text-[9px] font-mono text-zinc-500">{secretKey}</span>
+            <span className="text-[9px] font-mono text-ink-soft">{secretKey}</span>
             {isSet && (
-              <span className="text-[9px] font-mono text-zinc-500 tracking-widest" title="Value is set (encrypted)">
+              <span className="text-[9px] font-mono text-ink-soft tracking-widest" title="Value is set (encrypted)">
                 •••••
               </span>
             )}
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {isSet && <span className="text-[10px] text-green-500 bg-green-900/30 px-1.5 py-0.5 rounded">Set</span>}
+          {isSet && <span className="text-[10px] text-good bg-green-900/30 px-1.5 py-0.5 rounded">Set</span>}
           {scope && <ScopeBadge scope={scope} />}
           {!editing && isSet && (globalMode || scope !== "global") && (
-            <button type="button" onClick={onDelete} className="text-[11px] text-red-400 hover:text-red-300">Remove</button>
+            <button type="button" onClick={onDelete} className="text-[11px] text-bad hover:text-bad">Remove</button>
           )}
-          <button type="button" onClick={() => setEditing(!editing)} className="text-[11px] text-blue-400 hover:text-blue-300">
+          <button type="button" onClick={() => setEditing(!editing)} className="text-[11px] text-accent hover:text-accent">
             {actionLabel()}
           </button>
         </div>
@@ -126,12 +126,12 @@ function SecretRow({ label, secretKey, isSet, scope, globalMode, onSave, onDelet
             value={value} onChange={(e) => setValue(e.target.value)}
             placeholder={isPlaintext ? "anthropic:claude-sonnet-4-6" : "sk-..."}
             type={isPlaintext ? "text" : "password"} autoFocus
-            className="flex-1 bg-zinc-900 border border-zinc-600 rounded px-2 py-1 text-[10px] text-zinc-100 font-mono focus:outline-none focus:border-blue-500"
+            className="flex-1 bg-surface-sunken border border-line rounded px-2 py-1 text-[10px] text-ink font-mono focus:outline-none focus:border-accent"
           />
           <button type="button"
             onClick={() => { onSave(value); setEditing(false); setValue(""); }}
             disabled={!value}
-            className="px-2 py-1 bg-blue-600 hover:bg-blue-500 text-[10px] rounded text-white disabled:opacity-30"
+            className="px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-white disabled:opacity-30"
           >Save</button>
         </div>
       )}
@@ -156,19 +156,19 @@ function CustomSecretRow({ secretKey, scope, globalMode, onSave, onDelete }: {
     <div className="py-1.5 px-2">
       <div className="flex items-center justify-between">
         <div className="min-w-0">
-          <span className={`text-[10px] font-mono ${globalMode ? "text-amber-400" : scope === "global" ? "text-zinc-400" : "text-blue-400"}`}>
+          <span className={`text-[10px] font-mono ${globalMode ? "text-warm" : scope === "global" ? "text-ink-mid" : "text-accent"}`}>
             {secretKey}
           </span>
-          <span className="text-[9px] font-mono text-zinc-500 tracking-widest ml-2">•••••</span>
+          <span className="text-[9px] font-mono text-ink-soft tracking-widest ml-2">•••••</span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <span className="text-[10px] text-green-500">Set</span>
+          <span className="text-[10px] text-good">Set</span>
           {!globalMode && <ScopeBadge scope={scope} />}
           {canDelete && !editing && (
-            <button type="button" onClick={onDelete} className="text-[11px] text-red-400 hover:text-red-300">Remove</button>
+            <button type="button" onClick={onDelete} className="text-[11px] text-bad hover:text-bad">Remove</button>
           )}
           {(canDelete || showOverride) && (
-            <button type="button" onClick={() => setEditing(!editing)} className="text-[11px] text-blue-400 hover:text-blue-300">
+            <button type="button" onClick={() => setEditing(!editing)} className="text-[11px] text-accent hover:text-accent">
               {editing ? "Cancel" : showOverride ? "Override" : "Update"}
             </button>
           )}
@@ -179,12 +179,12 @@ function CustomSecretRow({ secretKey, scope, globalMode, onSave, onDelete }: {
           <input
             value={value} onChange={(e) => setValue(e.target.value)}
             placeholder="New value" type="password" autoFocus
-            className="flex-1 bg-zinc-900 border border-zinc-600 rounded px-2 py-1 text-[10px] text-zinc-100 font-mono focus:outline-none focus:border-blue-500"
+            className="flex-1 bg-surface-sunken border border-line rounded px-2 py-1 text-[10px] text-ink font-mono focus:outline-none focus:border-accent"
           />
           <button type="button"
             onClick={() => { onSave(value); setEditing(false); setValue(""); }}
             disabled={!value}
-            className="px-2 py-1 bg-blue-600 hover:bg-blue-500 text-[10px] rounded text-white disabled:opacity-30"
+            className="px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-white disabled:opacity-30"
           >Save</button>
         </div>
       )}
@@ -288,17 +288,17 @@ export function SecretsSection({ workspaceId, requiredEnv }: { workspaceId: stri
   return (
     <Section title="Secrets & API Keys" defaultOpen={false}>
       {loading ? (
-        <div className="text-[10px] text-zinc-500">Loading secrets...</div>
+        <div className="text-[10px] text-ink-soft">Loading secrets...</div>
       ) : (
         <div className="space-y-2">
-          {error && <div className="px-2 py-1 bg-red-900/30 border border-red-800 rounded text-[10px] text-red-400">{error}</div>}
+          {error && <div className="px-2 py-1 bg-red-900/30 border border-red-800 rounded text-[10px] text-bad">{error}</div>}
 
           {/* Scope toggle */}
           <div className="flex items-center gap-2 pb-1">
             <button
               onClick={() => setGlobalMode(false)}
               className={`text-[10px] px-2 py-0.5 rounded transition-colors ${
-                !globalMode ? "bg-blue-600/20 text-blue-300 border border-blue-500/30" : "text-zinc-500 hover:text-zinc-300"
+                !globalMode ? "bg-accent-strong/20 text-accent border border-accent/30" : "text-white-soft hover:text-white-mid"
               }`}
             >
               This Workspace
@@ -306,7 +306,7 @@ export function SecretsSection({ workspaceId, requiredEnv }: { workspaceId: stri
             <button
               onClick={() => setGlobalMode(true)}
               className={`text-[10px] px-2 py-0.5 rounded transition-colors ${
-                globalMode ? "bg-amber-600/20 text-amber-300 border border-amber-500/30" : "text-zinc-500 hover:text-zinc-300"
+                globalMode ? "bg-amber-600/20 text-warm border border-amber-500/30" : "text-white-soft hover:text-white-mid"
               }`}
             >
               Global (All Workspaces)
@@ -314,7 +314,7 @@ export function SecretsSection({ workspaceId, requiredEnv }: { workspaceId: stri
           </div>
 
           {globalMode && (
-            <div className="px-2 py-1.5 bg-amber-950/20 border border-amber-800/30 rounded text-[10px] text-amber-400/80 leading-relaxed">
+            <div className="px-2 py-1.5 bg-amber-950/20 border border-amber-800/30 rounded text-[10px] text-warm/80 leading-relaxed">
               Global keys apply to all workspaces. Workspace-level keys override globals with the same name.
             </div>
           )}
@@ -349,27 +349,27 @@ export function SecretsSection({ workspaceId, requiredEnv }: { workspaceId: stri
 
           {/* Add new */}
           {showAdd ? (
-            <div className="bg-zinc-800/50 rounded p-2 space-y-1.5 border border-zinc-700/50">
+            <div className="bg-surface-card/50 rounded p-2 space-y-1.5 border border-line/50">
               <input value={newKey} onChange={(e) => setNewKey(e.target.value.toUpperCase())} placeholder="KEY_NAME"
-                className="w-full bg-zinc-900 border border-zinc-600 rounded px-2 py-1 text-[10px] font-mono text-zinc-100 focus:outline-none focus:border-blue-500" />
+                className="w-full bg-surface-sunken border border-line rounded px-2 py-1 text-[10px] font-mono text-ink focus:outline-none focus:border-accent" />
               <input value={newValue} onChange={(e) => setNewValue(e.target.value)} placeholder="Value" type="password"
-                className="w-full bg-zinc-900 border border-zinc-600 rounded px-2 py-1 text-[10px] text-zinc-100 focus:outline-none focus:border-blue-500" />
+                className="w-full bg-surface-sunken border border-line rounded px-2 py-1 text-[10px] text-ink focus:outline-none focus:border-accent" />
               <div className="flex gap-2">
                 <button type="button" onClick={() => { if (newKey && newValue) handleSave(newKey, newValue); }} disabled={!newKey || !newValue}
-                  className="px-2 py-1 bg-blue-600 hover:bg-blue-500 text-[10px] rounded text-white disabled:opacity-30">
+                  className="px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-white disabled:opacity-30">
                   Save{globalMode ? " (Global)" : ""}
                 </button>
                 <button type="button" onClick={() => { setShowAdd(false); setNewKey(""); setNewValue(""); }}
-                  className="px-2 py-1 bg-zinc-700 hover:bg-zinc-600 text-[10px] rounded text-zinc-300">Cancel</button>
+                  className="px-2 py-1 bg-surface-card hover:bg-surface-card text-[10px] rounded text-ink-mid">Cancel</button>
               </div>
             </div>
           ) : (
-            <button type="button" onClick={() => setShowAdd(true)} className="text-[10px] text-blue-400 hover:text-blue-300">
+            <button type="button" onClick={() => setShowAdd(true)} className="text-[10px] text-accent hover:text-accent">
               + Add {globalMode ? "Global " : ""}Variable
             </button>
           )}
 
-          <div className="text-[9px] text-zinc-500 pt-1">
+          <div className="text-[9px] text-ink-soft pt-1">
             Values are encrypted and never exposed to the browser.
             {globalMode
               ? " Global keys are shared across all workspaces. Restart workspaces to apply changes."

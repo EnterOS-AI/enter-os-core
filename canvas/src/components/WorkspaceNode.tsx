@@ -36,7 +36,7 @@ function EjectIcon(props: React.SVGProps<SVGSVGElement>) {
 
 export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) {
   const statusCfg = STATUS_CONFIG[data.status] || STATUS_CONFIG.offline;
-  const tierCfg = TIER_CONFIG[data.tier] || { label: `T${data.tier}`, color: "text-zinc-500 bg-zinc-800" };
+  const tierCfg = TIER_CONFIG[data.tier] || { label: `T${data.tier}`, color: "text-ink-soft bg-surface-card" };
   // Org-deploy context — four derived flags off one store subscription.
   // Drives the shimmer while provisioning, the dimmed/non-draggable
   // treatment on locked descendants, and the Cancel pill on the root.
@@ -69,8 +69,8 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
         isVisible={isSelected}
         minWidth={hasChildren ? 360 : 210}
         minHeight={hasChildren ? 200 : 110}
-        lineClassName="!border-blue-500/40"
-        handleClassName="!w-2 !h-2 !bg-blue-500 !border !border-blue-300"
+        lineClassName="!border-accent/40"
+        handleClassName="!w-2 !h-2 !bg-accent !border !border-blue-300"
       />
     <div
       role="button"
@@ -137,13 +137,13 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
         ${isDragTarget
           ? "bg-emerald-950/40 border-2 border-emerald-400/60 ring-2 ring-emerald-400/20 scale-[1.03]"
           : isBatchSelected
-          ? "bg-zinc-900/95 border-2 border-blue-500/80 ring-2 ring-blue-500/30 shadow-lg shadow-blue-500/15"
+          ? "bg-surface-sunken/95 border-2 border-accent/80 ring-2 ring-accent/30 shadow-lg shadow-blue-500/15"
           : isSelected
-          ? "bg-zinc-900/95 border border-blue-500/70 ring-1 ring-blue-500/30 shadow-lg shadow-blue-500/10"
-          : "bg-zinc-900/90 border border-zinc-700/80 hover:border-zinc-500/60 shadow-lg shadow-black/30 hover:shadow-xl hover:shadow-black/40"
+          ? "bg-surface-sunken/95 border border-accent/70 ring-1 ring-accent/30 shadow-lg shadow-blue-500/10"
+          : "bg-surface-sunken/90 border border-line/80 hover:border-zinc-500/60 shadow-lg shadow-black/30 hover:shadow-xl hover:shadow-black/40"
         }
         backdrop-blur-sm
-        focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-950
+        focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-950
         ${deploy.isActivelyProvisioning ? "mol-deploy-shimmer" : ""}
         ${deploy.isLockedChild ? "mol-deploy-locked" : ""}
       `}
@@ -165,7 +165,7 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
       <Handle
         type="target"
         position={Position.Top}
-        className="!w-2.5 !h-1 !rounded-full !bg-zinc-600/80 !border-0 !-top-0.5 hover:!bg-blue-400 hover:!h-1.5 transition-all"
+        className="!w-2.5 !h-1 !rounded-full !bg-surface-card/80 !border-0 !-top-0.5 hover:!bg-blue-400 hover:!h-1.5 transition-all"
       />
 
       <div className="relative px-3.5 py-2.5">
@@ -173,7 +173,7 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
         <div className="flex items-center justify-between gap-2 mb-1">
           <div className="flex items-center gap-2 min-w-0">
             <div className={`w-2 h-2 rounded-full shrink-0 ${statusCfg.dot} ${statusCfg.glow} shadow-sm`} />
-            <span className="text-[13px] font-semibold text-zinc-100 truncate leading-tight">
+            <span className="text-[13px] font-semibold text-ink truncate leading-tight">
               {data.name}
             </span>
           </div>
@@ -213,7 +213,7 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
                   ★ REMOTE
                 </span>
               ) : (
-                <span className="text-[7px] font-mono px-1.5 py-0.5 rounded-md text-zinc-400 bg-zinc-800/60 border border-zinc-700/30">
+                <span className="text-[7px] font-mono px-1.5 py-0.5 rounded-md text-ink-mid bg-surface-card/60 border border-line/30">
                   {runtime}
                 </span>
               )}
@@ -226,7 +226,7 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
          *  grow arbitrarily tall, which wrecks the grid-slot layout
          *  because siblings all plan for the same CHILD_DEFAULT_HEIGHT. */}
         {data.role && (
-          <div className="text-[10px] text-zinc-400 mb-1.5 leading-tight line-clamp-2">{data.role}</div>
+          <div className="text-[10px] text-ink-mid mb-1.5 leading-tight line-clamp-2">{data.role}</div>
         )}
 
         {/* Skills */}
@@ -237,15 +237,15 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
                 key={skill}
                 className={`text-[10px] px-1.5 py-0.5 rounded-md border ${
                   isOnline
-                    ? "text-emerald-300/80 bg-emerald-950/30 border-emerald-800/30"
-                    : "text-zinc-400 bg-zinc-800/60 border-zinc-700/40"
+                    ? "text-good/80 bg-emerald-950/30 border-emerald-800/30"
+                    : "text-ink-mid bg-surface-card/60 border-line/40"
                 }`}
               >
                 {skill}
               </span>
             ))}
             {skills.length > 4 && (
-              <span className="text-[10px] text-zinc-500 self-center">
+              <span className="text-[10px] text-ink-soft self-center">
                 +{skills.length - 4}
               </span>
             )}
@@ -261,7 +261,7 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
           <Tooltip text={String(data.currentTask)}>
             <div className="flex items-center gap-1.5 mt-1 bg-amber-950/20 px-2 py-1 rounded-md border border-amber-800/20 cursor-default">
               <div className="w-1.5 h-1.5 rounded-full bg-amber-400 motion-safe:animate-pulse shrink-0" />
-              <span className="text-[10px] text-amber-300/80 truncate">{data.currentTask}</span>
+              <span className="text-[10px] text-warm/80 truncate">{data.currentTask}</span>
             </div>
           </Tooltip>
         )}
@@ -274,7 +274,7 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
               e.stopPropagation();
               useCanvasStore.getState().restartWorkspace(id).catch(() => showToast("Restart failed", "error"));
             }}
-            className="flex items-center gap-1.5 mt-1 w-full bg-sky-950/30 px-2 py-1 rounded-md border border-sky-800/30 hover:bg-sky-900/40 transition-colors text-left focus-visible:ring-2 focus-visible:ring-blue-500/70 focus-visible:outline-none"
+            className="flex items-center gap-1.5 mt-1 w-full bg-sky-950/30 px-2 py-1 rounded-md border border-sky-800/30 hover:bg-sky-900/40 transition-colors text-left focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:outline-none"
           >
             <span className="text-[10px]">↻</span>
             <span className="text-[10px] text-sky-300/80">Restart to apply changes</span>
@@ -285,10 +285,10 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
         <div className="flex items-center justify-between mt-0.5">
           {data.status !== "online" ? (
             <div className={`text-[10px] uppercase tracking-widest font-medium ${
-              data.status === "failed" ? "text-red-400" :
-              data.status === "degraded" ? "text-amber-300" :
+              data.status === "failed" ? "text-bad" :
+              data.status === "degraded" ? "text-warm" :
               data.status === "provisioning" ? "text-sky-400" :
-              "text-zinc-500"
+              "text-ink-soft"
             }`}>
               {statusCfg.label}
             </div>
@@ -297,7 +297,7 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
           {data.activeTasks > 0 && (
             <div className="flex items-center gap-1">
               <div className="w-1 h-1 rounded-full bg-amber-400 motion-safe:animate-pulse" />
-              <span className="text-[10px] text-amber-300/80 tabular-nums">
+              <span className="text-[10px] text-warm/80 tabular-nums">
                 {data.activeTasks} task{data.activeTasks > 1 ? "s" : ""}
               </span>
             </div>
@@ -307,7 +307,7 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
         {/* Degraded error preview */}
         {data.status === "degraded" && data.lastSampleError && (
           <div
-            className="text-[10px] text-amber-300/60 truncate mt-1 bg-amber-950/20 px-1.5 py-0.5 rounded border border-amber-800/20"
+            className="text-[10px] text-warm/60 truncate mt-1 bg-amber-950/20 px-1.5 py-0.5 rounded border border-amber-800/20"
             title={data.lastSampleError}
           >
             {data.lastSampleError}
@@ -318,7 +318,7 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
       <Handle
         type="source"
         position={Position.Bottom}
-        className="!w-2.5 !h-1 !rounded-full !bg-zinc-600/80 !border-0 !-bottom-0.5 hover:!bg-blue-400 hover:!h-1.5 transition-all"
+        className="!w-2.5 !h-1 !rounded-full !bg-surface-card/80 !border-0 !-bottom-0.5 hover:!bg-blue-400 hover:!h-1.5 transition-all"
       />
     </div>
     </>
@@ -357,7 +357,7 @@ function TeamMemberChip({
 }) {
   const { data } = node;
   const statusCfg = STATUS_CONFIG[data.status] || STATUS_CONFIG.offline;
-  const tierCfg = TIER_CONFIG[data.tier] || { label: `T${data.tier}`, color: "text-zinc-500 bg-zinc-800" };
+  const tierCfg = TIER_CONFIG[data.tier] || { label: `T${data.tier}`, color: "text-ink-soft bg-surface-card" };
   const isOnline = data.status === "online";
   const skills = getSkillNames(data.agentCard);
 
@@ -376,7 +376,7 @@ function TeamMemberChip({
       role="button"
       tabIndex={0}
       aria-label={`Select ${data.name}`}
-      className="group/child relative rounded-lg bg-zinc-800/60 hover:bg-zinc-700/70 border border-zinc-700/30 hover:border-zinc-600/40 overflow-hidden transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70"
+      className="group/child relative rounded-lg bg-surface-card/60 hover:bg-surface-card/70 border border-line/30 hover:border-line/40 overflow-hidden transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
       onClick={(e) => {
         e.stopPropagation();
         onSelect(node.id);
@@ -402,7 +402,7 @@ function TeamMemberChip({
         <div className="flex items-center justify-between gap-1 mb-0.5">
           <div className="flex items-center gap-1.5 min-w-0">
             <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusCfg.dot}`} />
-            <span className="text-[10px] font-semibold text-zinc-200 truncate leading-tight">
+            <span className="text-[10px] font-semibold text-ink truncate leading-tight">
               {data.name}
             </span>
           </div>
@@ -423,7 +423,7 @@ function TeamMemberChip({
                 e.stopPropagation();
                 onExtract(node.id);
               }}
-              className="opacity-0 group-hover/child:opacity-100 text-zinc-500 hover:text-sky-400 transition-all focus-visible:ring-2 focus-visible:ring-blue-500/70 focus-visible:outline-none rounded"
+              className="opacity-0 group-hover/child:opacity-100 text-ink-soft hover:text-sky-400 transition-all focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:outline-none rounded"
             >
               <EjectIcon aria-hidden="true" />
             </button>
@@ -432,7 +432,7 @@ function TeamMemberChip({
 
         {/* Role */}
         {data.role && (
-          <div className="text-[10px] text-zinc-500 mb-1 leading-tight truncate">{data.role}</div>
+          <div className="text-[10px] text-ink-soft mb-1 leading-tight truncate">{data.role}</div>
         )}
 
         {/* Skills */}
@@ -443,15 +443,15 @@ function TeamMemberChip({
                 key={skill}
                 className={`text-[10px] px-1 py-0.5 rounded border ${
                   isOnline
-                    ? "text-emerald-300/70 bg-emerald-950/20 border-emerald-800/20"
-                    : "text-zinc-500 bg-zinc-800/40 border-zinc-700/30"
+                    ? "text-good/70 bg-emerald-950/20 border-emerald-800/20"
+                    : "text-ink-soft bg-surface-card/40 border-line/30"
                 }`}
               >
                 {skill}
               </span>
             ))}
             {skills.length > 3 && (
-              <span className="text-[10px] text-zinc-400 self-center">+{skills.length - 3}</span>
+              <span className="text-[10px] text-ink-mid self-center">+{skills.length - 3}</span>
             )}
           </div>
         )}
@@ -460,10 +460,10 @@ function TeamMemberChip({
         <div className="flex items-center justify-between">
           {data.status !== "online" ? (
             <span className={`text-[10px] uppercase tracking-widest font-medium ${
-              data.status === "failed" ? "text-red-400" :
-              data.status === "degraded" ? "text-amber-300" :
+              data.status === "failed" ? "text-bad" :
+              data.status === "degraded" ? "text-warm" :
               data.status === "provisioning" ? "text-sky-400" :
-              "text-zinc-500"
+              "text-ink-soft"
             }`}>
               {statusCfg.label}
             </span>
@@ -471,7 +471,7 @@ function TeamMemberChip({
           {data.activeTasks > 0 && (
             <div className="flex items-center gap-0.5">
               <div className="w-1 h-1 rounded-full bg-amber-400 motion-safe:animate-pulse" />
-              <span className="text-[10px] text-amber-300 tabular-nums">
+              <span className="text-[10px] text-warm tabular-nums">
                 {data.activeTasks}
               </span>
             </div>
@@ -483,15 +483,15 @@ function TeamMemberChip({
           <Tooltip text={String(data.currentTask)}>
             <div className="flex items-center gap-1 mt-0.5 px-1.5 py-0.5 bg-amber-950/20 rounded border border-amber-800/20 cursor-default">
               <div className="w-1 h-1 rounded-full bg-amber-400 motion-safe:animate-pulse shrink-0" />
-              <span className="text-[10px] text-amber-300 truncate">{data.currentTask}</span>
+              <span className="text-[10px] text-warm truncate">{data.currentTask}</span>
             </div>
           </Tooltip>
         )}
 
         {/* Recursive sub-children rendered inside this card */}
         {hasSubChildren && depth < MAX_NESTING_DEPTH && (
-          <div className="mt-1.5 pt-1.5 border-t border-zinc-700/20">
-            <div className="text-[10px] text-zinc-400 uppercase tracking-widest mb-1">Team</div>
+          <div className="mt-1.5 pt-1.5 border-t border-line/20">
+            <div className="text-[10px] text-ink-mid uppercase tracking-widest mb-1">Team</div>
             <div className={subChildren.length >= 2 ? "grid grid-cols-2 gap-1" : "space-y-1"}>
               {subChildren.map((sub) => (
                 <TeamMemberChip key={sub.id} node={sub} allNodes={allNodes} depth={depth + 1} onSelect={onSelect} onExtract={onExtract} />

@@ -116,10 +116,10 @@ export function BudgetSection({ workspaceId }: Props) {
     <div className="space-y-3" data-testid="budget-section">
       {/* Section header */}
       <div>
-        <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
+        <h3 className="text-xs font-semibold text-ink-mid uppercase tracking-wider">
           Budget
         </h3>
-        <p className="text-[11px] text-zinc-400 mt-0.5">
+        <p className="text-[11px] text-ink-mid mt-0.5">
           Limit total message credits for this workspace
         </p>
       </div>
@@ -129,7 +129,7 @@ export function BudgetSection({ workspaceId }: Props) {
         <div
           role="alert"
           data-testid="budget-exceeded-banner"
-          className="flex items-center gap-2 px-3 py-2 rounded-lg bg-zinc-950 border border-amber-700/50 text-amber-400 text-xs font-medium"
+          className="flex items-center gap-2 px-3 py-2 rounded-lg bg-surface border border-amber-700/50 text-warm text-xs font-medium"
         >
           <svg
             width="13"
@@ -158,21 +158,21 @@ export function BudgetSection({ workspaceId }: Props) {
 
       {/* Usage stats */}
       {loading ? (
-        <p className="text-xs text-zinc-500" data-testid="budget-loading">
+        <p className="text-xs text-ink-soft" data-testid="budget-loading">
           Loading…
         </p>
       ) : fetchError ? (
-        <p className="text-xs text-red-400" data-testid="budget-fetch-error">
+        <p className="text-xs text-bad" data-testid="budget-fetch-error">
           {fetchError}
         </p>
       ) : budget ? (
         <div className="space-y-2">
           {/* Stats row */}
           <div className="flex items-baseline justify-between" data-testid="budget-stats-row">
-            <span className="text-xs text-zinc-400">Credits used</span>
-            <span className="text-xs font-mono text-zinc-300">
+            <span className="text-xs text-ink-mid">Credits used</span>
+            <span className="text-xs font-mono text-ink-mid">
               <span data-testid="budget-used-value">{(budget.budget_used ?? 0).toLocaleString()}</span>
-              <span className="text-zinc-500 mx-1">/</span>
+              <span className="text-ink-soft mx-1">/</span>
               <span data-testid="budget-limit-value">
                 {budget.budget_limit != null
                   ? budget.budget_limit.toLocaleString()
@@ -189,11 +189,11 @@ export function BudgetSection({ workspaceId }: Props) {
               aria-valuenow={progressPct}
               aria-valuemin={0}
               aria-valuemax={100}
-              className="h-1.5 w-full rounded-full bg-zinc-800 overflow-hidden"
+              className="h-1.5 w-full rounded-full bg-surface-card overflow-hidden"
             >
               <div
                 data-testid="budget-progress-fill"
-                className="h-full rounded-full bg-blue-500 transition-all duration-300"
+                className="h-full rounded-full bg-accent transition-all duration-300"
                 style={{ width: `${progressPct}%` }}
               />
             </div>
@@ -201,7 +201,7 @@ export function BudgetSection({ workspaceId }: Props) {
 
           {/* Remaining credits */}
           {budget.budget_remaining != null && (
-            <p className="text-[11px] text-zinc-500" data-testid="budget-remaining">
+            <p className="text-[11px] text-ink-soft" data-testid="budget-remaining">
               {budget.budget_remaining.toLocaleString()} credits remaining
             </p>
           )}
@@ -212,7 +212,7 @@ export function BudgetSection({ workspaceId }: Props) {
       <div className="space-y-1.5 pt-1">
         <label
           htmlFor={`budget-limit-input-${workspaceId}`}
-          className="text-[11px] text-zinc-400 block"
+          className="text-[11px] text-ink-mid block"
         >
           Budget limit (credits)
         </label>
@@ -225,15 +225,15 @@ export function BudgetSection({ workspaceId }: Props) {
           onChange={(e) => setLimitInput(e.target.value)}
           placeholder="e.g. 1000 — blank for unlimited"
           data-testid="budget-limit-input"
-          className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300 placeholder-zinc-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-colors"
+          className="w-full bg-surface-card border border-line rounded-lg px-3 py-2 text-sm text-ink-mid placeholder-zinc-500 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors"
         />
-        <p className="text-xs text-zinc-500">Leave blank for unlimited</p>
+        <p className="text-xs text-ink-soft">Leave blank for unlimited</p>
 
         {saveError && (
           <div
             role="alert"
             data-testid="budget-save-error"
-            className="px-3 py-1.5 rounded-lg bg-red-950/40 border border-red-800/50 text-xs text-red-400"
+            className="px-3 py-1.5 rounded-lg bg-red-950/40 border border-red-800/50 text-xs text-bad"
           >
             {saveError}
           </div>
@@ -243,7 +243,7 @@ export function BudgetSection({ workspaceId }: Props) {
           onClick={handleSave}
           disabled={saving}
           data-testid="budget-save-btn"
-          className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 rounded-lg text-xs font-medium text-white disabled:opacity-50 transition-colors"
+          className="px-4 py-1.5 bg-accent-strong hover:bg-accent active:bg-accent-strong rounded-lg text-xs font-medium text-white disabled:opacity-50 transition-colors"
         >
           {saving ? "Saving…" : "Save"}
         </button>

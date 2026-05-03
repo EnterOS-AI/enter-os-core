@@ -103,21 +103,21 @@ export function CookieConsent() {
       aria-modal="true"
       aria-labelledby="cookie-consent-title"
       aria-describedby="cookie-consent-body"
-      className="fixed bottom-0 left-0 right-0 z-[9999] border-t border-zinc-800 bg-zinc-950/95 backdrop-blur-sm p-4 shadow-[0_-4px_12px_rgba(0,0,0,0.4)]"
+      className="fixed bottom-0 left-0 right-0 z-[9999] border-t border-line bg-surface/95 backdrop-blur-sm p-4 shadow-[0_-4px_12px_rgba(0,0,0,0.4)]"
     >
       <div className="mx-auto flex max-w-5xl flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div className="text-sm text-zinc-300">
-          <p id="cookie-consent-title" className="font-medium text-zinc-100">
+        <div className="text-sm text-ink-mid">
+          <p id="cookie-consent-title" className="font-medium text-ink">
             Cookies &amp; your privacy
           </p>
-          <p id="cookie-consent-body" className="mt-1 text-zinc-400">
+          <p id="cookie-consent-body" className="mt-1 text-ink-mid">
             We use strictly-necessary cookies for authentication and session
             continuity. Accept to also allow optional functional cookies that
             improve your canvas experience (layout preferences, recent
             workspaces). See our{" "}
             <a
               href="https://moleculesai.app/legal/privacy"
-              className="text-blue-400 underline hover:text-blue-300"
+              className="text-accent underline hover:text-accent"
               target="_blank"
               rel="noreferrer"
             >
@@ -130,14 +130,14 @@ export function CookieConsent() {
           <button
             type="button"
             onClick={() => decide("rejected")}
-            className="rounded border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800"
+            className="rounded border border-line bg-surface-sunken px-4 py-2 text-sm text-ink hover:bg-surface-card"
           >
             Necessary only
           </button>
           <button
             type="button"
             onClick={() => decide("accepted")}
-            className="rounded border border-blue-600 bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
+            className="rounded border border-accent bg-accent-strong px-4 py-2 text-sm font-medium text-white hover:bg-accent"
           >
             Accept all
           </button>

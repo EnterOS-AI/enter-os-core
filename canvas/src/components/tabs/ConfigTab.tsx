@@ -53,37 +53,37 @@ function AgentCardSection({ workspaceId }: { workspaceId: string }) {
   return (
     <Section title="Agent Card" defaultOpen={false}>
       {loading ? (
-        <div className="text-[10px] text-zinc-500">Loading...</div>
+        <div className="text-[10px] text-ink-soft">Loading...</div>
       ) : editing ? (
         <div className="space-y-2">
           <textarea
             aria-label="Agent card JSON editor"
             value={draft} onChange={(e) => setDraft(e.target.value)}
             spellCheck={false} rows={12}
-            className="w-full bg-zinc-800 border border-zinc-700 rounded p-2 text-[10px] font-mono text-zinc-200 focus:outline-none focus:border-blue-500 resize-none"
+            className="w-full bg-surface-card border border-line rounded p-2 text-[10px] font-mono text-ink focus:outline-none focus:border-accent resize-none"
           />
-          {error && <div className="px-2 py-1 bg-red-900/30 border border-red-800 rounded text-[10px] text-red-400">{error}</div>}
+          {error && <div className="px-2 py-1 bg-red-900/30 border border-red-800 rounded text-[10px] text-bad">{error}</div>}
           <div className="flex gap-2">
             <button type="button" onClick={handleSave} disabled={saving}
-              className="px-2 py-1 bg-blue-600 hover:bg-blue-500 text-[10px] rounded text-white disabled:opacity-50">
+              className="px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-white disabled:opacity-50">
               {saving ? "Saving..." : "Save"}
             </button>
             <button type="button" onClick={() => setEditing(false)}
-              className="px-2 py-1 bg-zinc-700 hover:bg-zinc-600 text-[10px] rounded text-zinc-300">Cancel</button>
+              className="px-2 py-1 bg-surface-card hover:bg-surface-card text-[10px] rounded text-ink-mid">Cancel</button>
           </div>
         </div>
       ) : (
         <div>
           {card ? (
-            <pre className="text-[9px] text-zinc-400 bg-zinc-800/50 rounded p-2 overflow-x-auto max-h-48 border border-zinc-700/50">
+            <pre className="text-[9px] text-ink-mid bg-surface-card/50 rounded p-2 overflow-x-auto max-h-48 border border-line/50">
               {JSON.stringify(card, null, 2)}
             </pre>
           ) : (
-            <div className="text-[10px] text-zinc-500">No agent card</div>
+            <div className="text-[10px] text-ink-soft">No agent card</div>
           )}
-          {success && <div className="mt-2 px-2 py-1 bg-green-900/30 border border-green-800 rounded text-[10px] text-green-400">Updated</div>}
+          {success && <div className="mt-2 px-2 py-1 bg-green-900/30 border border-green-800 rounded text-[10px] text-good">Updated</div>}
           <button type="button" onClick={() => { setDraft(JSON.stringify(card || {}, null, 2)); setEditing(true); setError(null); setSuccess(false); }}
-            className="mt-2 text-[10px] text-blue-400 hover:text-blue-300">Edit Agent Card</button>
+            className="mt-2 text-[10px] text-accent hover:text-accent">Edit Agent Card</button>
         </div>
       )}
     </Section>
@@ -592,16 +592,16 @@ export function ConfigTab({ workspaceId }: Props) {
   const isDirty = (rawMode ? rawDraft !== originalYaml : toYaml(config) !== originalYaml) || providerDirty;
 
   if (loading) {
-    return <div className="p-4 text-xs text-zinc-500">Loading config...</div>;
+    return <div className="p-4 text-xs text-ink-soft">Loading config...</div>;
   }
 
   return (
     <div className="flex flex-col h-full">
       {/* Mode toggle */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-zinc-800/40 bg-zinc-900/30">
-        <span className="text-[10px] text-zinc-500">config.yaml</span>
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-line/40 bg-surface-sunken/30">
+        <span className="text-[10px] text-ink-soft">config.yaml</span>
         <label className="flex items-center gap-1.5 cursor-pointer">
-          <span className="text-[9px] text-zinc-500">Raw YAML</span>
+          <span className="text-[9px] text-ink-soft">Raw YAML</span>
           <input
             type="checkbox"
             checked={rawMode}
@@ -626,7 +626,7 @@ export function ConfigTab({ workspaceId }: Props) {
             value={rawDraft}
             onChange={(e) => setRawDraft(e.target.value)}
             spellCheck={false}
-            className="w-full h-full min-h-[300px] bg-zinc-800 border border-zinc-700 rounded p-3 text-xs font-mono text-zinc-200 focus:outline-none focus:border-blue-500 resize-none"
+            className="w-full h-full min-h-[300px] bg-surface-card border border-line rounded p-3 text-xs font-mono text-ink focus:outline-none focus:border-accent resize-none"
           />
         </div>
       ) : (
@@ -634,24 +634,24 @@ export function ConfigTab({ workspaceId }: Props) {
           <Section title="General">
             <TextInput label="Name" value={config.name} onChange={(v) => update("name", v)} />
             <div>
-              <label htmlFor={descriptionId} className="text-[10px] text-zinc-500 block mb-1">Description</label>
+              <label htmlFor={descriptionId} className="text-[10px] text-ink-soft block mb-1">Description</label>
               <textarea
                 id={descriptionId}
                 value={config.description}
                 onChange={(e) => update("description", e.target.value)}
                 rows={3}
-                className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-blue-500 resize-none"
+                className="w-full bg-surface-card border border-line rounded px-2 py-1 text-xs text-ink focus:outline-none focus:border-accent resize-none"
               />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <TextInput label="Version" value={config.version} onChange={(v) => update("version", v)} mono />
               <div>
-                <label htmlFor={tierId} className="text-[10px] text-zinc-500 block mb-1">Tier</label>
+                <label htmlFor={tierId} className="text-[10px] text-ink-soft block mb-1">Tier</label>
                 <select
                   id={tierId}
                   value={config.tier}
                   onChange={(e) => update("tier", parseInt(e.target.value, 10))}
-                  className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-blue-500"
+                  className="w-full bg-surface-card border border-line rounded px-2 py-1 text-xs text-ink focus:outline-none focus:border-accent"
                 >
                   <option value={1}>T1 — Sandboxed</option>
                   <option value={2}>T2 — Standard</option>
@@ -663,12 +663,12 @@ export function ConfigTab({ workspaceId }: Props) {
 
           <Section title="Runtime">
             <div>
-              <label htmlFor={runtimeId} className="text-[10px] text-zinc-500 block mb-1">Runtime</label>
+              <label htmlFor={runtimeId} className="text-[10px] text-ink-soft block mb-1">Runtime</label>
               <select
                 id={runtimeId}
                 value={config.runtime || ""}
                 onChange={(e) => update("runtime", e.target.value)}
-                className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-blue-500"
+                className="w-full bg-surface-card border border-line rounded px-2 py-1 text-xs text-ink focus:outline-none focus:border-accent"
               >
                 {runtimeOptions.map((opt) => (
                   <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -747,7 +747,7 @@ export function ConfigTab({ workspaceId }: Props) {
               // workspace_secrets MODEL_PROVIDER override.
               <div className="space-y-3">
                 <div>
-                  <label className="text-[10px] text-zinc-500 block mb-1">Model</label>
+                  <label className="text-[10px] text-ink-soft block mb-1">Model</label>
                   <input
                     type="text"
                     value={currentModelId}
@@ -760,13 +760,13 @@ export function ConfigTab({ workspaceId }: Props) {
                       );
                     }}
                     placeholder="e.g. anthropic:claude-sonnet-4-6"
-                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 font-mono focus:outline-none focus:border-blue-500"
+                    className="w-full bg-surface-card border border-line rounded px-2 py-1 text-xs text-ink font-mono focus:outline-none focus:border-accent"
                   />
                 </div>
                 <div>
-                  <label htmlFor={`${runtimeId}-provider`} className="text-[10px] text-zinc-500 block mb-1">
+                  <label htmlFor={`${runtimeId}-provider`} className="text-[10px] text-ink-soft block mb-1">
                     Provider
-                    <span className="ml-1 text-zinc-600">
+                    <span className="ml-1 text-ink-soft">
                       (override — leave empty to auto-derive from model slug)
                     </span>
                   </label>
@@ -787,7 +787,7 @@ export function ConfigTab({ workspaceId }: Props) {
                     }
                     aria-label="LLM provider override"
                     data-testid="provider-input"
-                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 font-mono focus:outline-none focus:border-blue-500"
+                    className="w-full bg-surface-card border border-line rounded px-2 py-1 text-xs text-ink font-mono focus:outline-none focus:border-accent"
                   />
                   {providerSuggestionsList.length > 0 && (
                     <datalist id={`${runtimeId}-providers`}>
@@ -800,7 +800,7 @@ export function ConfigTab({ workspaceId }: Props) {
               </div>
             )}
             {provider && provider !== originalProvider && (
-              <p className="text-[10px] text-amber-500 mt-1">
+              <p className="text-[10px] text-warm mt-1">
                 Provider change → workspace will auto-restart on Save.
               </p>
             )}
@@ -815,7 +815,7 @@ export function ConfigTab({ workspaceId }: Props) {
               onChange={(v) => updateNested("runtime_config" as keyof ConfigData, "required_env", v)}
               placeholder="variable NAME (e.g. ANTHROPIC_API_KEY) — not the value"
             />
-            <p className="text-[10px] text-zinc-500 mt-1">
+            <p className="text-[10px] text-ink-soft mt-1">
               This declares which env var <em>names</em> the workspace needs.
               Set the actual values in the <strong>Secrets</strong> section
               below — those are encrypted and mounted into the container at
@@ -823,16 +823,16 @@ export function ConfigTab({ workspaceId }: Props) {
             </p>
             {currentModelSpec?.required_env?.length &&
               !arraysEqual(config.runtime_config?.required_env ?? [], currentModelSpec.required_env) && (
-              <div className="text-[10px] text-zinc-500 mt-1 flex items-center gap-2">
+              <div className="text-[10px] text-ink-soft mt-1 flex items-center gap-2">
                 <span>
                   Template suggests{" "}
-                  <code className="text-zinc-400">{currentModelSpec.required_env.join(", ")}</code>{" "}
-                  for <code className="text-zinc-400">{currentModelSpec.name || currentModelSpec.id}</code>.
+                  <code className="text-ink-mid">{currentModelSpec.required_env.join(", ")}</code>{" "}
+                  for <code className="text-ink-mid">{currentModelSpec.name || currentModelSpec.id}</code>.
                 </span>
                 <button
                   type="button"
                   onClick={() => updateNested("runtime_config" as keyof ConfigData, "required_env", currentModelSpec.required_env)}
-                  className="text-blue-400 hover:text-blue-300 underline"
+                  className="text-accent hover:text-accent underline"
                 >
                   Apply
                 </button>
@@ -846,15 +846,15 @@ export function ConfigTab({ workspaceId }: Props) {
             (config.runtime_config?.model || config.model || "").toLowerCase().includes("anthropic")) && (
             <Section title="Claude Settings" defaultOpen={false}>
               <div>
-                <label htmlFor={effortId} className="text-[10px] text-zinc-500 block mb-1">
+                <label htmlFor={effortId} className="text-[10px] text-ink-soft block mb-1">
                   Effort
-                  <span className="ml-1 text-zinc-600">(output_config.effort — Opus 4.7+)</span>
+                  <span className="ml-1 text-ink-soft">(output_config.effort — Opus 4.7+)</span>
                 </label>
                 <select
                   id={effortId}
                   value={config.effort || ""}
                   onChange={(e) => update("effort", e.target.value)}
-                  className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-blue-500"
+                  className="w-full bg-surface-card border border-line rounded px-2 py-1 text-xs text-ink focus:outline-none focus:border-accent"
                   data-testid="effort-select"
                 >
                   <option value="">— unset (model default) —</option>
@@ -866,9 +866,9 @@ export function ConfigTab({ workspaceId }: Props) {
                 </select>
               </div>
               <div>
-                <label htmlFor={taskBudgetId} className="text-[10px] text-zinc-500 block mb-1">
+                <label htmlFor={taskBudgetId} className="text-[10px] text-ink-soft block mb-1">
                   Task Budget (tokens)
-                  <span className="ml-1 text-zinc-600">(output_config.task_budget.total — 0 = unset)</span>
+                  <span className="ml-1 text-ink-soft">(output_config.task_budget.total — 0 = unset)</span>
                 </label>
                 <input
                   id={taskBudgetId}
@@ -878,7 +878,7 @@ export function ConfigTab({ workspaceId }: Props) {
                   value={config.task_budget ?? 0}
                   onChange={(e) => update("task_budget", parseInt(e.target.value, 10) || 0)}
                   placeholder="0"
-                  className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-blue-500 font-mono"
+                  className="w-full bg-surface-card border border-line rounded px-2 py-1 text-xs text-ink focus:outline-none focus:border-accent font-mono"
                   data-testid="task-budget-input"
                 />
               </div>
@@ -909,12 +909,12 @@ export function ConfigTab({ workspaceId }: Props) {
 
           <Section title="Sandbox" defaultOpen={false}>
             <div>
-              <label htmlFor={sandboxBackendId} className="text-[10px] text-zinc-500 block mb-1">Backend</label>
+              <label htmlFor={sandboxBackendId} className="text-[10px] text-ink-soft block mb-1">Backend</label>
               <select
                 id={sandboxBackendId}
                 value={config.sandbox?.backend || "docker"}
                 onChange={(e) => updateNested("sandbox" as keyof ConfigData, "backend", e.target.value)}
-                className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-blue-500"
+                className="w-full bg-surface-card border border-line rounded px-2 py-1 text-xs text-ink focus:outline-none focus:border-accent"
               >
                 <option value="subprocess">subprocess</option>
                 <option value="docker">docker</option>
@@ -937,25 +937,25 @@ export function ConfigTab({ workspaceId }: Props) {
       )}
 
       {error && (
-        <div className="mx-3 mb-2 px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-red-400">{error}</div>
+        <div className="mx-3 mb-2 px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-bad">{error}</div>
       )}
       {!error && RUNTIMES_WITH_OWN_CONFIG.has(config.runtime || "") && (
-        <div className="mx-3 mb-2 px-3 py-1.5 bg-zinc-900/50 border border-zinc-700 rounded text-xs text-zinc-400">
+        <div className="mx-3 mb-2 px-3 py-1.5 bg-surface-sunken/50 border border-line rounded text-xs text-ink-mid">
           {config.runtime === "hermes"
             ? "Hermes manages its own config at ~/.hermes/config.yaml on the workspace host. Edit it via the Terminal tab or the hermes CLI, not this form."
             : "This runtime manages its own config outside the platform template."}
         </div>
       )}
       {success && (
-        <div className="mx-3 mb-2 px-3 py-1.5 bg-green-900/30 border border-green-800 rounded text-xs text-green-400">Saved</div>
+        <div className="mx-3 mb-2 px-3 py-1.5 bg-green-900/30 border border-green-800 rounded text-xs text-good">Saved</div>
       )}
 
-      <div className="p-3 border-t border-zinc-800 flex gap-2">
+      <div className="p-3 border-t border-line flex gap-2">
         <button
           type="button"
           onClick={() => handleSave(true)}
           disabled={!isDirty || saving}
-          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-xs rounded text-white disabled:opacity-30 transition-colors"
+          className="px-3 py-1.5 bg-accent-strong hover:bg-accent text-xs rounded text-white disabled:opacity-30 transition-colors"
         >
           {saving ? "Restarting..." : "Save & Restart"}
         </button>
@@ -963,14 +963,14 @@ export function ConfigTab({ workspaceId }: Props) {
           type="button"
           onClick={() => handleSave(false)}
           disabled={!isDirty || saving}
-          className="px-3 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-xs rounded text-zinc-300 disabled:opacity-30 transition-colors"
+          className="px-3 py-1.5 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid disabled:opacity-30 transition-colors"
         >
           Save
         </button>
         <button
           type="button"
           onClick={loadConfig}
-          className="px-3 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-xs rounded text-zinc-300 ml-auto"
+          className="px-3 py-1.5 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid ml-auto"
         >
           Reload
         </button>

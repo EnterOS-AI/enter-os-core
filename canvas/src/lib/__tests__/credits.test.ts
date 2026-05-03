@@ -14,8 +14,8 @@ describe("formatCredits", () => {
 });
 
 describe("pillTone", () => {
-  it("zinc for healthy balance", () => {
-    expect(pillTone({ credits_balance: 5000, plan_monthly_credits: 9000 })).toContain("zinc");
+  it("neutral surface for healthy balance", () => {
+    expect(pillTone({ credits_balance: 5000, plan_monthly_credits: 9000 })).toContain("surface-card");
   });
   it("amber when under 10% of monthly", () => {
     expect(pillTone({ credits_balance: 500, plan_monthly_credits: 9000 })).toContain("amber");
@@ -26,7 +26,10 @@ describe("pillTone", () => {
   });
   it("trial (monthly=0) is healthy until balance hits zero", () => {
     // No paid plan → no ratio reference; only "0" means empty.
-    expect(pillTone({ credits_balance: 50, plan_monthly_credits: 0 })).toContain("zinc");
+    // Healthy pill resolves to the warm-paper neutral surface (was zinc
+    // pre-v4 migration); empty pill stays red because tinted state colours
+    // are kept literal so the warning reads in both themes.
+    expect(pillTone({ credits_balance: 50, plan_monthly_credits: 0 })).toContain("surface-card");
     expect(pillTone({ credits_balance: 0, plan_monthly_credits: 0 })).toContain("red");
   });
 });

@@ -95,15 +95,15 @@ export function ConsoleModal({ workspaceId, workspaceName, open, onClose }: Prop
         role="dialog"
         aria-modal="true"
         aria-labelledby="console-modal-title"
-        className="relative bg-zinc-950 border border-zinc-800 rounded-xl shadow-2xl w-[min(900px,90vw)] h-[min(70vh,700px)] flex flex-col overflow-hidden"
+        className="relative bg-surface border border-line rounded-xl shadow-2xl w-[min(900px,90vw)] h-[min(70vh,700px)] flex flex-col overflow-hidden"
       >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-line">
           <div>
-            <h3 id="console-modal-title" className="text-sm font-semibold text-zinc-100">
+            <h3 id="console-modal-title" className="text-sm font-semibold text-ink">
               EC2 console output
             </h3>
             {workspaceName && (
-              <div className="text-[11px] text-zinc-500 mt-0.5 truncate max-w-[600px]">
+              <div className="text-[11px] text-ink-soft mt-0.5 truncate max-w-[600px]">
                 {workspaceName}
               </div>
             )}
@@ -113,7 +113,7 @@ export function ConsoleModal({ workspaceId, workspaceName, open, onClose }: Prop
             ref={closeButtonRef}
             onClick={onClose}
             aria-label="Close"
-            className="text-zinc-400 hover:text-zinc-100 text-sm px-2"
+            className="text-ink-mid hover:text-ink text-sm px-2"
           >
             ✕
           </button>
@@ -121,14 +121,14 @@ export function ConsoleModal({ workspaceId, workspaceName, open, onClose }: Prop
 
         <div className="flex-1 overflow-auto bg-black/80 p-4">
           {loading && (
-            <div className="text-[12px] text-zinc-500" data-testid="console-loading">
+            <div className="text-[12px] text-ink-soft" data-testid="console-loading">
               Loading console output…
             </div>
           )}
           {!loading && error && (
             <div
               role="alert"
-              className="text-[12px] text-amber-300 bg-amber-950/30 border border-amber-900/40 rounded px-3 py-2"
+              className="text-[12px] text-warm bg-amber-950/30 border border-amber-900/40 rounded px-3 py-2"
               data-testid="console-error"
             >
               {error}
@@ -136,7 +136,7 @@ export function ConsoleModal({ workspaceId, workspaceName, open, onClose }: Prop
           )}
           {!loading && !error && output !== null && (
             <pre
-              className="text-[11px] text-zinc-300 font-mono whitespace-pre-wrap break-all leading-tight"
+              className="text-[11px] text-ink-mid font-mono whitespace-pre-wrap break-all leading-tight"
               data-testid="console-output"
             >
               {output || "(console output is empty — the instance may still be booting)"}
@@ -144,7 +144,7 @@ export function ConsoleModal({ workspaceId, workspaceName, open, onClose }: Prop
           )}
         </div>
 
-        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-zinc-800 bg-zinc-900/40">
+        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-line bg-surface-sunken/40">
           {output && (
             <button
               type="button"
@@ -155,7 +155,7 @@ export function ConsoleModal({ workspaceId, workspaceName, open, onClose }: Prop
                   showToast("Copy requires HTTPS — please select and copy manually", "info");
                 }
               }}
-              className="px-3 py-1.5 text-[11px] text-zinc-400 hover:text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg transition-colors"
+              className="px-3 py-1.5 text-[11px] text-ink-mid hover:text-ink bg-surface-card hover:bg-surface-card border border-line rounded-lg transition-colors"
             >
               Copy
             </button>
@@ -163,7 +163,7 @@ export function ConsoleModal({ workspaceId, workspaceName, open, onClose }: Prop
           <button
             type="button"
             onClick={onClose}
-            className="px-3 py-1.5 text-[11px] text-zinc-300 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg transition-colors"
+            className="px-3 py-1.5 text-[11px] text-ink-mid bg-surface-card hover:bg-surface-card border border-line rounded-lg transition-colors"
           >
             Close
           </button>
