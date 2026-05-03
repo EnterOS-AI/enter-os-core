@@ -35,27 +35,41 @@ def _make_a2a_mocks():
 
     events_mod.EventQueue = EventQueue
 
-    # a2a.server.tasks needs a TaskUpdater stub whose async methods are no-ops.
-    # In tests, TaskUpdater calls go to this stub rather than the real SDK so
-    # event_queue.enqueue_event is only called via explicit executor code paths.
+    # a2a.server.tasks needs a TaskUpdater stub whose async methods are no-ops
+    # for status transitions but ROUTE the terminal message back through
+    # event_queue.enqueue_event so legacy assertions on enqueue_event keep
+    # working. The wrapper preserves identity (the same Message object the
+    # executor passed in) so tests inspecting str(event_arg) still see the
+    # response text. complete()/failed() also record their last call on the
+    # event_queue itself (`_complete_calls`, `_failed_calls`) so the v1
+    # contract regression test (#262 follow-on to #2558) can pin the proper
+    # path was taken — raw enqueue from executor would NOT touch these.
     tasks_mod = ModuleType("a2a.server.tasks")
 
     class TaskUpdater:
-        """Stub TaskUpdater — no-op async methods for unit tests."""
+        """Stub TaskUpdater — terminal helpers route through event_queue."""
 
         def __init__(self, event_queue, task_id, context_id, *args, **kwargs):
             self.event_queue = event_queue
             self.task_id = task_id
             self.context_id = context_id
+            if not hasattr(event_queue, "_complete_calls"):
+                event_queue._complete_calls = []
+            if not hasattr(event_queue, "_failed_calls"):
+                event_queue._failed_calls = []
 
         async def start_work(self, message=None):
             pass
 
         async def complete(self, message=None):
-            pass
+            self.event_queue._complete_calls.append(message)
+            if message is not None:
+                await self.event_queue.enqueue_event(message)
 
         async def failed(self, message=None):
-            pass
+            self.event_queue._failed_calls.append(message)
+            if message is not None:
+                await self.event_queue.enqueue_event(message)
 
         async def add_artifact(
             self, parts, artifact_id=None, name=None, metadata=None,
