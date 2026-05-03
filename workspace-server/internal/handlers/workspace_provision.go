@@ -575,6 +575,104 @@ func (h *WorkspaceHandler) ensureDefaultConfig(workspaceID string, payload model
 	return files
 }
 
+// deriveProviderFromModelSlug maps a hermes-agent model slug prefix to
+// its provider name — a Go translation of the case statement in
+// workspace-configs-templates/hermes/scripts/derive-provider.sh that we
+// can run at provision time so LLM_PROVIDER lands in workspace_secrets
+// (and from there, into /configs/config.yaml via CP user-data) before
+// the container ever boots.
+//
+// Returns "" when the prefix isn't recognized OR when the runtime-only
+// override would be needed to pick a provider — the caller skips the
+// LLM_PROVIDER write in that case so derive-provider.sh keeps the final
+// say at boot. derive-provider.sh remains the source of truth: this is
+// strictly a *gating* hint that survives restarts and gives CP a YAML
+// field to populate. Without it, "Save+Restart" would lose the user's
+// provider choice every time CP regenerates the config.
+//
+// Two intentional differences from the shell version:
+//
+//  1. nousresearch/* and openai/* both return "openrouter" here. The
+//     shell script special-cases "prefer nous if HERMES_API_KEY set" /
+//     "prefer custom if OPENAI_API_KEY set", but those depend on
+//     runtime env that may not yet be loaded at provision time. We pick
+//     the safe default ("openrouter" reaches both Hermes 3 and OpenAI
+//     models without extra config); derive-provider.sh's runtime check
+//     can still upgrade to nous/custom when the keys are present.
+//
+//  2. Unknown prefixes return "" instead of "auto". Persisting "auto"
+//     would block a future "Save+Restart" with a known prefix from
+//     re-deriving — the CP YAML field is sticky once written. Returning
+//     "" means the caller skips the write and the runtime falls through
+//     to derive-provider.sh's *=auto branch on its own.
+//
+// Cover the same prefix list as derive-provider.sh's case statement;
+// keep both files in sync when a new provider is added (table-driven
+// test in workspace_provision_shared_test.go pins the mapping).
+func deriveProviderFromModelSlug(model string) string {
+	if model == "" {
+		return ""
+	}
+	idx := strings.Index(model, "/")
+	if idx <= 0 {
+		return ""
+	}
+	prefix := model[:idx]
+	switch prefix {
+	// Direct-SDK providers (clean 1:1 prefix→provider mapping).
+	case "minimax":
+		return "minimax"
+	case "minimax-cn":
+		return "minimax-cn"
+	case "anthropic":
+		return "anthropic"
+	case "gemini":
+		return "gemini"
+	case "deepseek":
+		return "deepseek"
+	case "zai":
+		return "zai"
+	case "kimi-coding":
+		return "kimi-coding"
+	case "kimi-coding-cn":
+		return "kimi-coding-cn"
+	case "alibaba", "dashscope", "qwen":
+		return "alibaba"
+	case "xiaomi", "mimo":
+		return "xiaomi"
+	case "arcee", "arcee-ai":
+		return "arcee"
+	case "nvidia", "nim":
+		return "nvidia"
+	case "ollama-cloud":
+		return "ollama-cloud"
+	case "huggingface", "hf":
+		return "huggingface"
+	case "ai-gateway", "aigateway":
+		return "ai-gateway"
+	case "kilocode":
+		return "kilocode"
+	case "opencode-zen":
+		return "opencode-zen"
+	case "opencode-go":
+		return "opencode-go"
+	// Aggregator + explicit catch-alls.
+	case "openrouter":
+		return "openrouter"
+	case "custom":
+		return "custom"
+	// Runtime-only override candidates. derive-provider.sh's
+	// HERMES_API_KEY / OPENAI_API_KEY checks happen at boot; we pick the
+	// safe default (openrouter reaches both Hermes 3 and OpenAI without
+	// extra config) and let the script upgrade to nous/custom at runtime.
+	case "nousresearch", "openai":
+		return "openrouter"
+	}
+	// Unknown prefix → don't persist a guess. derive-provider.sh's
+	// *=auto fallback handles it at runtime.
+	return ""
+}
+
 // applyRuntimeModelEnv exposes the workspace's selected model via an
 // env var the target runtime's install.sh / start.sh knows to read.
 // Each runtime owns its own env-var contract — the tenant just plumbs

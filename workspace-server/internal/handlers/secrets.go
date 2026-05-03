@@ -467,6 +467,35 @@ func (h *SecretsHandler) GetModel(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"model": string(decrypted), "source": "workspace_secrets"})
 }
 
+// setModelSecret writes (or clears, when value=="") the MODEL_PROVIDER
+// workspace secret. Extracted from SetModel so non-handler call sites
+// (notably WorkspaceHandler.Create — first-deploy path that persists the
+// canvas-selected model so applyRuntimeModelEnv's restart fallback finds
+// it) can reuse the encryption + upsert logic without inlining the SQL.
+//
+// Returns nil on success. Caller is responsible for any restart trigger;
+// the gin handler re-adds that after a successful write.
+func setModelSecret(ctx context.Context, workspaceID, model string) error {
+	if model == "" {
+		_, err := db.DB.ExecContext(ctx,
+			`DELETE FROM workspace_secrets WHERE workspace_id = $1 AND key = 'MODEL_PROVIDER'`,
+			workspaceID)
+		return err
+	}
+	encrypted, err := crypto.Encrypt([]byte(model))
+	if err != nil {
+		return err
+	}
+	version := crypto.CurrentEncryptionVersion()
+	_, err = db.DB.ExecContext(ctx, `
+		INSERT INTO workspace_secrets (workspace_id, key, encrypted_value, encryption_version)
+		VALUES ($1, 'MODEL_PROVIDER', $2, $3)
+		ON CONFLICT (workspace_id, key) DO UPDATE
+			SET encrypted_value = $2, encryption_version = $3, updated_at = now()
+	`, workspaceID, encrypted, version)
+	return err
+}
+
 // SetModel handles PUT /workspaces/:id/model — writes the model slug
 // into workspace_secrets as MODEL_PROVIDER (the key GetModel reads).
 // For hermes, the value is a hermes-native slug like "minimax/MiniMax-M2.7";
@@ -494,42 +523,22 @@ func (h *SecretsHandler) SetModel(c *gin.Context) {
 		return
 	}
 
-	if body.Model == "" {
-		if _, err := db.DB.ExecContext(ctx,
-			`DELETE FROM workspace_secrets WHERE workspace_id = $1 AND key = 'MODEL_PROVIDER'`,
-			workspaceID); err != nil {
-			log.Printf("SetModel delete error: %v", err)
+	if err := setModelSecret(ctx, workspaceID, body.Model); err != nil {
+		log.Printf("SetModel error: %v", err)
+		if body.Model == "" {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to clear model"})
-			return
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save model"})
 		}
-		if h.restartFunc != nil {
-			go h.restartFunc(workspaceID)
-		}
-		c.JSON(http.StatusOK, gin.H{"status": "cleared"})
-		return
-	}
-
-	encrypted, err := crypto.Encrypt([]byte(body.Model))
-	if err != nil {
-		log.Printf("SetModel encrypt error: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt model"})
-		return
-	}
-	version := crypto.CurrentEncryptionVersion()
-	_, err = db.DB.ExecContext(ctx, `
-		INSERT INTO workspace_secrets (workspace_id, key, encrypted_value, encryption_version)
-		VALUES ($1, 'MODEL_PROVIDER', $2, $3)
-		ON CONFLICT (workspace_id, key) DO UPDATE
-			SET encrypted_value = $2, encryption_version = $3, updated_at = now()
-	`, workspaceID, encrypted, version)
-	if err != nil {
-		log.Printf("SetModel upsert error: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save model"})
 		return
 	}
 
 	if h.restartFunc != nil {
 		go h.restartFunc(workspaceID)
+	}
+	if body.Model == "" {
+		c.JSON(http.StatusOK, gin.H{"status": "cleared"})
+		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "saved", "model": body.Model})
 }
@@ -573,6 +582,37 @@ func (h *SecretsHandler) GetProvider(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"provider": string(decrypted), "source": "workspace_secrets"})
 }
 
+// setProviderSecret writes (or clears, when value=="") the LLM_PROVIDER
+// workspace secret. Extracted from SetProvider so non-handler call sites
+// (notably WorkspaceHandler.Create — first-deploy path that derives
+// LLM_PROVIDER from the canvas-selected model slug so CP user-data picks
+// it up as a YAML field in /configs/config.yaml AND it survives across
+// restarts when CP regenerates the config) can reuse the encryption +
+// upsert logic without inlining the SQL.
+//
+// Returns nil on success. Caller is responsible for any restart trigger;
+// the gin handler re-adds that after a successful write.
+func setProviderSecret(ctx context.Context, workspaceID, provider string) error {
+	if provider == "" {
+		_, err := db.DB.ExecContext(ctx,
+			`DELETE FROM workspace_secrets WHERE workspace_id = $1 AND key = 'LLM_PROVIDER'`,
+			workspaceID)
+		return err
+	}
+	encrypted, err := crypto.Encrypt([]byte(provider))
+	if err != nil {
+		return err
+	}
+	version := crypto.CurrentEncryptionVersion()
+	_, err = db.DB.ExecContext(ctx, `
+		INSERT INTO workspace_secrets (workspace_id, key, encrypted_value, encryption_version)
+		VALUES ($1, 'LLM_PROVIDER', $2, $3)
+		ON CONFLICT (workspace_id, key) DO UPDATE
+			SET encrypted_value = $2, encryption_version = $3, updated_at = now()
+	`, workspaceID, encrypted, version)
+	return err
+}
+
 // SetProvider handles PUT /workspaces/:id/provider — writes the provider
 // slug into workspace_secrets as LLM_PROVIDER. Empty string clears the
 // override. Triggers auto-restart so the new env is in effect on the
@@ -600,42 +640,22 @@ func (h *SecretsHandler) SetProvider(c *gin.Context) {
 		return
 	}
 
-	if body.Provider == "" {
-		if _, err := db.DB.ExecContext(ctx,
-			`DELETE FROM workspace_secrets WHERE workspace_id = $1 AND key = 'LLM_PROVIDER'`,
-			workspaceID); err != nil {
-			log.Printf("SetProvider delete error: %v", err)
+	if err := setProviderSecret(ctx, workspaceID, body.Provider); err != nil {
+		log.Printf("SetProvider error: %v", err)
+		if body.Provider == "" {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to clear provider"})
-			return
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save provider"})
 		}
-		if h.restartFunc != nil {
-			go h.restartFunc(workspaceID)
-		}
-		c.JSON(http.StatusOK, gin.H{"status": "cleared"})
-		return
-	}
-
-	encrypted, err := crypto.Encrypt([]byte(body.Provider))
-	if err != nil {
-		log.Printf("SetProvider encrypt error: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt provider"})
-		return
-	}
-	version := crypto.CurrentEncryptionVersion()
-	_, err = db.DB.ExecContext(ctx, `
-		INSERT INTO workspace_secrets (workspace_id, key, encrypted_value, encryption_version)
-		VALUES ($1, 'LLM_PROVIDER', $2, $3)
-		ON CONFLICT (workspace_id, key) DO UPDATE
-			SET encrypted_value = $2, encryption_version = $3, updated_at = now()
-	`, workspaceID, encrypted, version)
-	if err != nil {
-		log.Printf("SetProvider upsert error: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save provider"})
 		return
 	}
 
 	if h.restartFunc != nil {
 		go h.restartFunc(workspaceID)
+	}
+	if body.Provider == "" {
+		c.JSON(http.StatusOK, gin.H{"status": "cleared"})
+		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "saved", "provider": body.Provider})
 }

@@ -299,6 +299,36 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 		return
 	}
 
+	// Persist canvas-selected model + derived provider as workspace
+	// secrets so they survive restart and are picked up by CP user-data
+	// when regenerating /configs/config.yaml. Without this, the
+	// applyRuntimeModelEnv fallback chain (workspace_provision.go)
+	// cannot recover the user's choice on a Restart payload (which
+	// rebuilds from the workspaces row, where there is no model column),
+	// and hermes silently boots with the template-default model. See
+	// failed-workspace 95ed3ff2 (2026-05-02): canvas POSTed
+	// minimax/MiniMax-M2.7-highspeed, MODEL_PROVIDER was never written,
+	// container fell through to nousresearch/hermes-4-70b, derive-
+	// provider.sh produced the wrong provider, hermes gateway 401'd,
+	// /health poll failed, molecule-runtime never registered.
+	//
+	// Both writes are non-fatal: a failure here logs and continues so
+	// the workspace row stays consistent. The runtime can still boot
+	// (with the template default) and a later Save+Restart will re-
+	// persist via the SecretsHandler endpoints. The DB error path here
+	// is rare (the same DB just committed a workspace row a microsecond
+	// ago) so failing the create response would be unfriendly.
+	if payload.Model != "" {
+		if err := setModelSecret(ctx, id, payload.Model); err != nil {
+			log.Printf("Create workspace %s: failed to persist MODEL_PROVIDER %q: %v (non-fatal)", id, payload.Model, err)
+		}
+		if derived := deriveProviderFromModelSlug(payload.Model); derived != "" {
+			if err := setProviderSecret(ctx, id, derived); err != nil {
+				log.Printf("Create workspace %s: failed to persist LLM_PROVIDER %q: %v (non-fatal)", id, derived, err)
+			}
+		}
+	}
+
 	// Insert canvas layout — non-fatal: workspace can be dragged into position later
 	if _, err := db.DB.ExecContext(ctx, `
 		INSERT INTO canvas_layouts (workspace_id, x, y) VALUES ($1, $2, $3)
