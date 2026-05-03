@@ -462,6 +462,68 @@ def test_envelope_enrichment_negative_caches_network_exception(_reset_peer_metad
     assert cached[1] is None
 
 
+def test_envelope_enrichment_negative_caches_non_json_200(_reset_peer_metadata_cache):
+    """HTTP 200 but the body isn't JSON (registry returns HTML, an empty
+    string, or a partial response): ``response.json()`` raises. The
+    enrichment block must absorb the exception, write the negative-cache
+    entry, and never re-fetch this peer until TTL elapses.
+
+    Without this contract a registry that mistakenly returns a non-JSON
+    200 (proxy injecting an HTML error page; partial response from a
+    flapping pod) would re-fire the 2s-bounded GET on every push for
+    that peer — same DoS-on-self pattern the 5xx negative-cache test
+    pins. #2483.
+    """
+    import json as _json
+
+    import a2a_client
+    from a2a_mcp_server import _build_channel_notification
+
+    # 200 OK shape but .json() raises. side_effect overrides the
+    # _make_httpx_response default of `return_value` so the helper can
+    # stay shape-stable for callers that DO want a JSON body.
+    resp = _make_httpx_response(200, {})
+    resp.json.side_effect = _json.JSONDecodeError("not json", "<html>", 0)
+    p, client = _patch_httpx_client(resp)
+    with p:
+        _build_channel_notification({"peer_id": _PEER_UUID, "kind": "peer_agent", "text": "first"})
+        _build_channel_notification({"peer_id": _PEER_UUID, "kind": "peer_agent", "text": "second"})
+
+    assert client.get.call_count == 1, (
+        f"non-JSON 200 must be negative-cached, got {client.get.call_count} GETs"
+    )
+    cached = a2a_client._peer_metadata[_PEER_UUID]
+    assert cached[1] is None, "negative cache stores None as the record"
+
+
+def test_envelope_enrichment_negative_caches_non_dict_json_200(_reset_peer_metadata_cache):
+    """HTTP 200, valid JSON, but the body is a list / string / number /
+    null instead of the expected dict. ``isinstance(record, dict)``
+    skips enrichment but the call must still write to the negative
+    cache so a second push doesn't re-fetch.
+
+    Pins behaviour for a registry that mistakenly returns
+    ``[{"id": ...}, ...]`` (collection shape) or just ``null`` (no-record
+    sentinel) — both should land at the same negative-cache outcome as a
+    5xx or a non-JSON 200. #2483.
+    """
+    import a2a_client
+    from a2a_mcp_server import _build_channel_notification
+
+    p, client = _patch_httpx_client(
+        _make_httpx_response(200, ["not", "a", "dict"]),
+    )
+    with p:
+        _build_channel_notification({"peer_id": _PEER_UUID, "kind": "peer_agent", "text": "first"})
+        _build_channel_notification({"peer_id": _PEER_UUID, "kind": "peer_agent", "text": "second"})
+
+    assert client.get.call_count == 1, (
+        f"non-dict JSON 200 must be negative-cached, got {client.get.call_count} GETs"
+    )
+    cached = a2a_client._peer_metadata[_PEER_UUID]
+    assert cached[1] is None, "negative cache stores None as the record"
+
+
 def test_envelope_enrichment_re_fetches_after_ttl(_reset_peer_metadata_cache):
     """Cached entry past TTL: registry is hit again. Pin the TTL
     behaviour so a future caller bumping ``_PEER_METADATA_TTL_SECONDS``
