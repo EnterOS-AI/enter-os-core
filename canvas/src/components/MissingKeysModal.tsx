@@ -3,7 +3,11 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { api } from "@/lib/api";
-import { getKeyLabel, type ProviderChoice } from "@/lib/deploy-preflight";
+import {
+  getKeyLabel,
+  type ModelSpec,
+  type ProviderChoice,
+} from "@/lib/deploy-preflight";
 
 interface Props {
   open: boolean;
@@ -38,6 +42,14 @@ interface Props {
    *  the API-key fields. The picker passes the entered slug back via
    *  onKeysAdded. */
   modelSuggestions?: string[];
+  /** Full model specs from the template (with required_env per model).
+   *  When provided, the picker auto-snaps the provider radio to the
+   *  matching provider as the user changes the model — fixes the
+   *  "type MiniMax model, see ANTHROPIC_API_KEY field" cascade bug
+   *  (sibling of the ConfigTab cascade fix in #2516). Optional so
+   *  callers without model→provider mapping data can still use the
+   *  picker as-is. */
+  models?: ModelSpec[];
   /** Pre-fill the model input. */
   initialModel?: string;
   /** Override the modal's title + description copy. The default
@@ -83,6 +95,7 @@ export function MissingKeysModal({
   workspaceId,
   configuredKeys,
   modelSuggestions,
+  models,
   initialModel,
   title,
   description,
@@ -102,6 +115,7 @@ export function MissingKeysModal({
         workspaceId={workspaceId}
         configuredKeys={configuredKeys}
         modelSuggestions={modelSuggestions}
+        models={models}
         initialModel={initialModel}
         title={title}
         description={description}
@@ -131,6 +145,22 @@ export function MissingKeysModal({
 // Provider-picker mode — choose one option, save its env var(s), deploy.
 // -----------------------------------------------------------------------------
 
+/** Provider id derived from a model spec — sorted+joined required_env,
+ *  matching the formula in providersFromTemplate(). When the model has
+ *  no required_env (local/self-hosted endpoints) returns null, since
+ *  there's no provider option the radio could snap to. Exported for
+ *  the cascade-snap test. */
+export function providerIdForModel(
+  modelId: string,
+  models: ModelSpec[] | undefined,
+): string | null {
+  const trimmed = modelId.trim();
+  if (!trimmed || !models) return null;
+  const m = models.find((x) => x.id === trimmed);
+  if (!m?.required_env || m.required_env.length === 0) return null;
+  return [...m.required_env].sort().join("|");
+}
+
 function ProviderPickerModal({
   open,
   providers,
@@ -141,6 +171,7 @@ function ProviderPickerModal({
   workspaceId,
   configuredKeys,
   modelSuggestions,
+  models,
   initialModel,
   title,
   description,
@@ -154,6 +185,7 @@ function ProviderPickerModal({
   workspaceId?: string;
   configuredKeys?: Set<string>;
   modelSuggestions?: string[];
+  models?: ModelSpec[];
   initialModel?: string;
   title?: string;
   description?: string;
@@ -188,6 +220,28 @@ function ProviderPickerModal({
     setSelectedId(initialSelected);
     setModel(initialModel ?? "");
   }, [open, initialSelected, initialModel]);
+
+  // Cascade: when the model resolves to a known provider via its
+  // required_env, snap the radio so the env-var fields below match
+  // the model the user picked. Without this, picking
+  // "MiniMax-M2.7-highspeed" leaves the radio on whatever default
+  // was first (e.g. Anthropic) and surfaces ANTHROPIC_API_KEY as
+  // the required key — saving that and deploying produces a
+  // workspace with model=MiniMax + ANTHROPIC_API_KEY which then
+  // fails to call /registry/register and times out. Caught
+  // 2026-05-02 on hongming/Hermes Agent (workspace
+  // 95ed3ff2-… ended in WORKSPACE_PROVISION_FAILED).
+  // Free-text models not in `models` (or models without
+  // required_env) fall through and leave the radio alone.
+  useEffect(() => {
+    if (!open) return;
+    const targetId = providerIdForModel(model, models);
+    if (!targetId) return;
+    const matching = providers.find((p) => p.id === targetId);
+    if (matching && matching.id !== selectedId) {
+      setSelectedId(matching.id);
+    }
+  }, [open, model, models, providers, selectedId]);
 
   useEffect(() => {
     if (!open) return;

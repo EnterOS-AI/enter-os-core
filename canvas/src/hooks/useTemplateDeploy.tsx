@@ -197,6 +197,12 @@ export function useTemplateDeploy(
       runtime={missingKeysInfo?.preflight.runtime ?? ""}
       configuredKeys={missingKeysInfo?.preflight.configuredKeys}
       modelSuggestions={isMultiProvider ? modelSuggestions : undefined}
+      // Pass full model specs (id + required_env) so the picker can
+      // auto-snap the provider radio when the user picks a model — fixes
+      // the "type MiniMax model, see ANTHROPIC_API_KEY" cascade bug.
+      // Only relevant in multi-provider mode where the model field is
+      // shown.
+      models={isMultiProvider ? missingKeysInfo?.template.models : undefined}
       initialModel={isMultiProvider ? initialModel : undefined}
       title={modalTitle}
       description={modalDescription}
