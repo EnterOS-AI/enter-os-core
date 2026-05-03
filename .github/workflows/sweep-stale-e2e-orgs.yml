@@ -87,20 +87,28 @@ jobs:
             > orgs.json
 
           # Filter:
-          #   1. slug starts with 'e2e-' (covers e2e-, e2e-canary-,
-          #      e2e-canvas-* — all variants the test scripts mint)
+          #   1. slug starts with one of the ephemeral test prefixes:
+          #        - 'e2e-'    — covers e2e-canary-, e2e-canvas-*, etc.
+          #        - 'rt-e2e-' — runtime-test harness fixtures (RFC #2251);
+          #                      missing this prefix left two such tenants
+          #                      orphaned 8h on staging (2026-05-03), then
+          #                      hard-failed redeploy-tenants-on-staging
+          #                      and broke the staging→main auto-promote
+          #                      chain. Kept in sync with the EPHEMERAL_PREFIX_RE
+          #                      regex in redeploy-tenants-on-staging.yml.
           #   2. created_at is older than MAX_AGE_MINUTES ago
           # Output one slug per line to a file the next step reads.
           python3 > stale_slugs.txt <<'PY'
           import json, os
           from datetime import datetime, timezone, timedelta
+          EPHEMERAL_PREFIXES = ("e2e-", "rt-e2e-")
           with open("orgs.json") as f:
               data = json.load(f)
           max_age = int(os.environ["MAX_AGE_MINUTES"])
           cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age)
           for o in data.get("orgs", []):
               slug = o.get("slug", "")
-              if not slug.startswith("e2e-"):
+              if not slug.startswith(EPHEMERAL_PREFIXES):
                   continue
               created = o.get("created_at")
               if not created:

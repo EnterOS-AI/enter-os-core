@@ -176,35 +176,41 @@ jobs:
           #
           # CP returns HTTP 500 + ok=false whenever ANY tenant in the
           # fleet failed SSM or healthz. In practice the recurring source
-          # of these is ephemeral e2e-* tenants (saas/canvas/ext) being
-          # torn down by their parent E2E run mid-redeploy: the EC2 dies →
-          # SSM exit=2 or healthz timeout → CP marks the fleet failed →
-          # this workflow goes red even though every operator-facing
-          # tenant rolled fine.
+          # of these is ephemeral test tenants being torn down by their
+          # parent E2E run mid-redeploy: the EC2 dies → SSM exit=2 or
+          # healthz timeout → CP marks the fleet failed → this workflow
+          # goes red even though every operator-facing tenant rolled fine.
           #
-          # Filter: if HTTP=500/ok=false AND every failed slug matches
-          # ^e2e-, treat as soft-warn and let the verify step downstream
-          # handle the unreachable-vs-stale distinction (it already knows
-          # the difference per #2402). Any non-e2e-* failure or a non-500
-          # HTTP response remains a hard failure.
+          # Ephemeral slug prefixes (kept in sync with sweep-stale-e2e-orgs.yml
+          # — see that file for the source-of-truth list and rationale):
+          #   - e2e-*       — canvas/saas/ext E2E suites
+          #   - rt-e2e-*    — runtime-test harness fixtures (RFC #2251)
+          # Long-lived prefixes that are NOT ephemeral and MUST hard-fail:
+          # demo-prep, dryrun-*, dryrun2-*, plus all human tenant slugs.
+          #
+          # Filter: if HTTP=500/ok=false AND every failed slug matches an
+          # ephemeral prefix, treat as soft-warn and let the verify step
+          # downstream handle unreachable-vs-stale (#2402). Any non-ephemeral
+          # failure or a non-500 HTTP response remains a hard failure.
           OK=$(jq -r '.ok // "false"' "$HTTP_RESPONSE")
           FAILED_SLUGS=$(jq -r '
             .results[]?
             | select((.healthz_ok != true) or (.ssm_status != "Success"))
             | .slug' "$HTTP_RESPONSE" 2>/dev/null || true)
-          NON_E2E_FAILED=$(printf '%s\n' "$FAILED_SLUGS" | grep -v '^$' | grep -v '^e2e-' || true)
+          EPHEMERAL_PREFIX_RE='^(e2e-|rt-e2e-)'
+          NON_EPHEMERAL_FAILED=$(printf '%s\n' "$FAILED_SLUGS" | grep -v '^$' | grep -Ev "$EPHEMERAL_PREFIX_RE" || true)
 
           if [ "$HTTP_CODE" = "200" ] && [ "$OK" = "true" ]; then
             : # happy path — fall through to verification
-          elif [ "$HTTP_CODE" = "500" ] && [ -z "$NON_E2E_FAILED" ] && [ -n "$FAILED_SLUGS" ]; then
-            COUNT=$(printf '%s\n' "$FAILED_SLUGS" | grep -c '^e2e-' || true)
-            echo "::warning::redeploy-fleet returned HTTP 500 but every failed tenant ($COUNT) is e2e-* ephemeral — treating as teardown race, soft-warning."
+          elif [ "$HTTP_CODE" = "500" ] && [ -z "$NON_EPHEMERAL_FAILED" ] && [ -n "$FAILED_SLUGS" ]; then
+            COUNT=$(printf '%s\n' "$FAILED_SLUGS" | grep -Ec "$EPHEMERAL_PREFIX_RE" || true)
+            echo "::warning::redeploy-fleet returned HTTP 500 but every failed tenant ($COUNT) is ephemeral (e2e-*/rt-e2e-*) — treating as teardown race, soft-warning."
             printf '%s\n' "$FAILED_SLUGS" | sed 's/^/::warning::  failed: /'
           elif [ "$HTTP_CODE" != "200" ]; then
             echo "::error::redeploy-fleet returned HTTP $HTTP_CODE"
-            if [ -n "$NON_E2E_FAILED" ]; then
-              echo "::error::non-e2e tenant(s) failed:"
-              printf '%s\n' "$NON_E2E_FAILED" | sed 's/^/::error::  /'
+            if [ -n "$NON_EPHEMERAL_FAILED" ]; then
+              echo "::error::non-ephemeral tenant(s) failed:"
+              printf '%s\n' "$NON_EPHEMERAL_FAILED" | sed 's/^/::error::  /'
             fi
             exit 1
           else
