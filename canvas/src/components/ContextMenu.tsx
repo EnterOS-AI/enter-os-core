@@ -29,15 +29,38 @@ export function ContextMenu() {
   const setPendingDelete = useCanvasStore((s) => s.setPendingDelete);
   const ref = useRef<HTMLDivElement>(null);
   const [actionLoading, setActionLoading] = useState(false);
+  // Clamped position — (left, top) from contextMenu may overflow when the
+  // user right-clicks near the right/bottom viewport edge. We measure the
+  // rendered menu and shift it back inside on the same frame the cursor
+  // opens it, so it never visibly clips. Falls back to the raw cursor
+  // coords until the rAF runs.
+  const [clamped, setClamped] = useState<{ x: number; y: number } | null>(null);
 
-  // Auto-focus first enabled item when menu opens
+  // Auto-focus first enabled item when menu opens, AND clamp position.
+  // Both run together in a single rAF so we avoid two synchronous layout
+  // reads + a paint between them.
   useEffect(() => {
     if (!contextMenu) return;
-    requestAnimationFrame(() => {
-      const first = ref.current?.querySelector<HTMLButtonElement>("button:not(:disabled)");
+    setClamped(null);
+    const raf = requestAnimationFrame(() => {
+      const node = ref.current;
+      if (!node) return;
+      const first = node.querySelector<HTMLButtonElement>("button:not(:disabled)");
       first?.focus();
+      // 8px viewport margin so the menu doesn't kiss the edge — matches
+      // the floating-tooltip top-edge clamp in Tooltip.tsx.
+      const margin = 8;
+      const rect = node.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      let x = contextMenu.x;
+      let y = contextMenu.y;
+      if (x + rect.width + margin > vw) x = Math.max(margin, vw - rect.width - margin);
+      if (y + rect.height + margin > vh) y = Math.max(margin, vh - rect.height - margin);
+      if (x !== contextMenu.x || y !== contextMenu.y) setClamped({ x, y });
     });
-  }, [contextMenu?.nodeId]);
+    return () => cancelAnimationFrame(raf);
+  }, [contextMenu?.nodeId, contextMenu?.x, contextMenu?.y]);
 
   // Close on click outside or Escape
   useEffect(() => {
@@ -288,7 +311,7 @@ export function ContextMenu() {
       aria-label={`Actions for ${contextMenu.nodeData.name}`}
       onKeyDown={handleMenuKeyDown}
       className="fixed z-[60] min-w-[200px] bg-surface/95 backdrop-blur-xl border border-line/60 rounded-xl shadow-2xl shadow-black/60 py-1 overflow-hidden"
-      style={{ left: contextMenu.x, top: contextMenu.y }}
+      style={{ left: clamped?.x ?? contextMenu.x, top: clamped?.y ?? contextMenu.y }}
     >
       {/* Header */}
       <div className="px-3.5 py-2 border-b border-line/40 mb-0.5">
@@ -314,7 +337,7 @@ export function ContextMenu() {
             onClick={item.action}
             disabled={item.disabled}
             aria-disabled={item.disabled}
-            className={`w-full px-3.5 py-1.5 flex items-center gap-2.5 text-left text-[11px] transition-colors focus:outline-none focus:ring-1 focus:ring-inset focus:ring-zinc-600 disabled:opacity-25 disabled:cursor-not-allowed ${
+            className={`w-full px-3.5 py-1.5 flex items-center gap-2.5 text-left text-[11px] transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/50 disabled:opacity-25 disabled:cursor-not-allowed ${
               item.danger
                 ? "text-bad hover:bg-red-950/40 hover:text-bad"
                 : "text-ink-mid hover:bg-surface-card/40 hover:text-ink"
