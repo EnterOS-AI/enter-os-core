@@ -9,6 +9,7 @@ from config import (
     A2AConfig,
     ComplianceConfig,
     DelegationConfig,
+    EventLogConfig,
     ObservabilityConfig,
     SandboxConfig,
     WorkspaceConfig,
@@ -672,3 +673,135 @@ def test_observability_log_level_uppercased(tmp_path):
 
     cfg = load_config(str(tmp_path))
     assert cfg.observability.log_level == "DEBUG"
+
+
+# ---------------------------------------------------------------------------
+# EventLogConfig (#119 PR-2) — schema-only parser tests. The runtime is
+# exercised separately in test_event_log.py; these tests pin the YAML→
+# dataclass contract for ObservabilityConfig.event_log so the wire shape
+# stays stable as backends are added in PR-3.
+# ---------------------------------------------------------------------------
+
+
+def test_event_log_dataclass_default():
+    """EventLogConfig() — no args — yields the documented defaults."""
+    cfg = EventLogConfig()
+    assert cfg.backend == "memory"
+    assert cfg.ttl_seconds == 3600
+    assert cfg.max_entries == 10_000
+
+
+def test_event_log_default_when_yaml_omits_block(tmp_path):
+    """No ``observability.event_log`` key → dataclass defaults."""
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(yaml.dump({}))
+
+    cfg = load_config(str(tmp_path))
+    assert cfg.observability.event_log.backend == "memory"
+    assert cfg.observability.event_log.ttl_seconds == 3600
+    assert cfg.observability.event_log.max_entries == 10_000
+
+
+def test_event_log_explicit_yaml_override(tmp_path):
+    """Explicit YAML values flow through load_config to EventLogConfig."""
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(
+        yaml.dump(
+            {
+                "observability": {
+                    "event_log": {
+                        "backend": "disabled",
+                        "ttl_seconds": 60,
+                        "max_entries": 50,
+                    }
+                }
+            }
+        )
+    )
+
+    cfg = load_config(str(tmp_path))
+    assert cfg.observability.event_log.backend == "disabled"
+    assert cfg.observability.event_log.ttl_seconds == 60
+    assert cfg.observability.event_log.max_entries == 50
+
+
+def test_event_log_partial_override_keeps_other_defaults(tmp_path):
+    """Setting only backend preserves ttl + max_entries defaults."""
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(
+        yaml.dump(
+            {"observability": {"event_log": {"backend": "disabled"}}}
+        )
+    )
+
+    cfg = load_config(str(tmp_path))
+    assert cfg.observability.event_log.backend == "disabled"
+    assert cfg.observability.event_log.ttl_seconds == 3600
+    assert cfg.observability.event_log.max_entries == 10_000
+
+
+def test_event_log_unknown_backend_falls_back_to_memory(tmp_path):
+    """A typo ``backend: redis`` (not yet wired) resolves to the
+    safe default rather than crashing boot. Same lenient-default
+    contract as the rest of this parser."""
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(
+        yaml.dump({"observability": {"event_log": {"backend": "redis"}}})
+    )
+
+    cfg = load_config(str(tmp_path))
+    assert cfg.observability.event_log.backend == "memory"
+
+
+@pytest.mark.parametrize(
+    "raw_block, expected_ttl, expected_max",
+    [
+        # In-band positives pass through.
+        ({"ttl_seconds": 1800, "max_entries": 500}, 1800, 500),
+        # Zero / negative / non-numeric coerce to documented defaults
+        # (3600 / 10000) — disabling the bound is what
+        # ``backend: disabled`` is for.
+        ({"ttl_seconds": 0}, 3600, 10_000),
+        ({"ttl_seconds": -1}, 3600, 10_000),
+        ({"ttl_seconds": "not-a-number"}, 3600, 10_000),
+        ({"max_entries": 0}, 3600, 10_000),
+        ({"max_entries": -5}, 3600, 10_000),
+        ({"max_entries": "huge"}, 3600, 10_000),
+    ],
+    ids=[
+        "in_band_positives",
+        "zero_ttl_falls_back",
+        "negative_ttl_falls_back",
+        "non_numeric_ttl_falls_back",
+        "zero_max_entries_falls_back",
+        "negative_max_entries_falls_back",
+        "non_numeric_max_entries_falls_back",
+    ],
+)
+def test_event_log_bounds_clamp(tmp_path, raw_block, expected_ttl, expected_max):
+    """Out-of-band ttl_seconds / max_entries fall back to defaults
+    rather than disabling the log silently. ``backend: disabled`` is
+    the explicit opt-out path."""
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(
+        yaml.dump({"observability": {"event_log": raw_block}})
+    )
+
+    cfg = load_config(str(tmp_path))
+    assert cfg.observability.event_log.ttl_seconds == expected_ttl
+    assert cfg.observability.event_log.max_entries == expected_max
+
+
+def test_event_log_non_dict_block_falls_back_to_default(tmp_path):
+    """``event_log: "memory"`` (string instead of dict) → defaults.
+    A scalar value at this key is malformed YAML; coerce to default
+    instead of raising."""
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(
+        yaml.dump({"observability": {"event_log": "memory"}})
+    )
+
+    cfg = load_config(str(tmp_path))
+    assert cfg.observability.event_log.backend == "memory"
+    assert cfg.observability.event_log.ttl_seconds == 3600
+    assert cfg.observability.event_log.max_entries == 10_000

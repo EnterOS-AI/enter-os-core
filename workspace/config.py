@@ -177,25 +177,67 @@ class SecurityScanConfig:
 
 
 @dataclass
+class EventLogConfig:
+    """Settings for the workspace event log (workspace/event_log.py).
+
+    The event log is an append-and-query buffer for runtime events
+    (turn started, tool invoked, peer message delivered, …) that the
+    canvas Activity tab and platform-side `/activity` endpoint read.
+    Defaults are tuned for a long-running workspace: 1-hour TTL and a
+    10k-entry cap together hold ~1 MB of events in memory at the
+    documented per-event size budget (~100 bytes payload).
+
+    Example config.yaml snippet::
+
+        observability:
+          event_log:
+            backend: memory       # or "disabled" to opt out
+            ttl_seconds: 3600
+            max_entries: 10000
+    """
+
+    backend: str = "memory"
+    """``memory`` (default) buffers events in process RAM with the
+    bounds below; ``disabled`` returns a no-op log so the canvas
+    Activity tab is silent. Unknown values fall back to ``memory`` —
+    a typo should not crash boot or silently drop telemetry."""
+
+    ttl_seconds: int = 3600
+    """How long an event survives before TTL eviction. 1 hour covers
+    a long agentic loop comfortably without leaking; operators
+    debugging a slow drift may temporarily widen this, but be aware
+    the bound is RAM, not disk."""
+
+    max_entries: int = 10_000
+    """Hard cap on resident events. Together with ``ttl_seconds`` this
+    bounds memory: the FIFO eviction drops oldest first, so a query
+    cursor that falls behind sees a contiguous tail rather than a
+    gappy log."""
+
+
+@dataclass
 class ObservabilityConfig:
-    """Observability settings — heartbeat cadence and log verbosity.
+    """Observability settings — heartbeat cadence, log verbosity, event log.
 
     Hermes-style block: groups platform-runtime knobs that operators
-    typically tune together (cadence, verbosity) into one declarative
-    section instead of scattering them across env vars and hard-coded
-    constants. Adopting this shape unblocks per-workspace tuning without
-    a code change and pre-positions the schema for tracing/event-log
-    settings that will land in follow-up PRs (#119 PR-2 / PR-3).
+    typically tune together (cadence, verbosity, event-log retention)
+    into one declarative section instead of scattering them across env
+    vars and hard-coded constants. Adopting this shape unblocks
+    per-workspace tuning without a code change.
 
-    Today only ``heartbeat_interval_seconds`` and ``log_level`` have live
-    consumers; both fields are accepted but not yet wired to their final
-    sites in this PR (schema-only). Wiring lands in PR-3 of the series.
+    The ``event_log`` sub-block is schema-only in this PR (#119 PR-2);
+    consumer wiring (the canvas Activity tab + `/activity` endpoint
+    reading from the configured backend) lands in PR-3.
 
     Example config.yaml snippet::
 
         observability:
           heartbeat_interval_seconds: 60
           log_level: DEBUG
+          event_log:
+            backend: memory
+            ttl_seconds: 3600
+            max_entries: 10000
     """
 
     heartbeat_interval_seconds: int = 30
@@ -211,6 +253,9 @@ class ObservabilityConfig:
     standard names (DEBUG, INFO, WARNING, ERROR, CRITICAL). Today the
     runtime reads ``LOG_LEVEL`` env; PR-3 of the #119 stack switches to
     this field with env still honored as an override for ops debugging."""
+
+    event_log: EventLogConfig = field(default_factory=EventLogConfig)
+    """Event-log backend + retention bounds. See ``EventLogConfig``."""
 
 
 @dataclass
@@ -335,6 +380,42 @@ def _derive_provider_from_model(model: str) -> str:
         if sep in model:
             return model.partition(sep)[0]
     return ""
+
+
+_EVENT_LOG_VALID_BACKENDS = {"memory", "disabled"}
+
+
+def _parse_event_log(raw: object) -> "EventLogConfig":
+    """Coerce the ``observability.event_log`` YAML block into EventLogConfig.
+
+    Lenient like the rest of this parser: a missing block, a non-dict
+    value, or a bad backend name resolves to defaults rather than
+    raising at boot. The event_log is observability infra — a typo in
+    one field should not crash the workspace before any event can fire.
+    Bounds (ttl_seconds, max_entries) clamp to positives so a 0/-1
+    misconfig doesn't disable the log silently; that's what
+    ``backend: disabled`` is for.
+    """
+    if not isinstance(raw, dict):
+        return EventLogConfig()
+    backend = str(raw.get("backend", "memory")).strip().lower()
+    if backend not in _EVENT_LOG_VALID_BACKENDS:
+        backend = "memory"
+    try:
+        ttl_seconds = int(raw.get("ttl_seconds", 3600))
+    except (TypeError, ValueError):
+        ttl_seconds = 3600
+    if ttl_seconds <= 0:
+        ttl_seconds = 3600
+    try:
+        max_entries = int(raw.get("max_entries", 10_000))
+    except (TypeError, ValueError):
+        max_entries = 10_000
+    if max_entries <= 0:
+        max_entries = 10_000
+    return EventLogConfig(
+        backend=backend, ttl_seconds=ttl_seconds, max_entries=max_entries
+    )
 
 
 def _clamp_heartbeat(value: object) -> int:
@@ -526,6 +607,7 @@ def load_config(config_path: Optional[str] = None) -> WorkspaceConfig:
                 observability_raw.get("heartbeat_interval_seconds", 30)
             ),
             log_level=str(observability_raw.get("log_level", "INFO")).upper(),
+            event_log=_parse_event_log(observability_raw.get("event_log", {})),
         ),
         sub_workspaces=raw.get("sub_workspaces", []),
         effort=str(raw.get("effort", "")),
