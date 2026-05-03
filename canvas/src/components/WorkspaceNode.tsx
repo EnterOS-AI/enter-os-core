@@ -36,7 +36,7 @@ function EjectIcon(props: React.SVGProps<SVGSVGElement>) {
 
 export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) {
   const statusCfg = STATUS_CONFIG[data.status] || STATUS_CONFIG.offline;
-  const tierCfg = TIER_CONFIG[data.tier] || { label: `T${data.tier}`, color: "text-ink-soft bg-surface-card" };
+  const tierCfg = TIER_CONFIG[data.tier] || { label: `T${data.tier}`, color: "text-ink-mid bg-surface-card border border-line" };
   // Org-deploy context — four derived flags off one store subscription.
   // Drives the shimmer while provisioning, the dimmed/non-draggable
   // treatment on locked descendants, and the Cancel pill on the root.
@@ -179,7 +179,7 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
             {hasChildren && (
-              <span className="text-[10px] font-mono text-violet-300 bg-violet-900/40 border border-violet-700/30 px-1.5 py-0.5 rounded-md">
+              <span className="text-[10px] font-mono text-accent bg-accent/15 border border-accent/40 px-1.5 py-0.5 rounded-md">
                 {descendantCount} sub
               </span>
             )}
@@ -207,13 +207,13 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
             <div className="mb-1 flex items-center gap-1">
               {runtime === "external" ? (
                 <span
-                  className="text-[7px] font-mono px-1.5 py-0.5 rounded-md text-violet-200 bg-violet-900/50 border border-violet-500/40"
+                  className="text-[7px] font-mono px-1.5 py-0.5 rounded-md text-white bg-violet-600 border border-violet-700"
                   title="Phase 30 remote agent — runs outside this platform's Docker network. Lifecycle managed via heartbeat-based polling, not Docker exec."
                 >
                   ★ REMOTE
                 </span>
               ) : (
-                <span className="text-[7px] font-mono px-1.5 py-0.5 rounded-md text-ink-mid bg-surface-card/60 border border-line/30">
+                <span className="text-[7px] font-mono px-1.5 py-0.5 rounded-md text-ink-mid bg-surface-card border border-line">
                   {runtime}
                 </span>
               )}
@@ -237,15 +237,15 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
                 key={skill}
                 className={`text-[10px] px-1.5 py-0.5 rounded-md border ${
                   isOnline
-                    ? "text-good/80 bg-emerald-950/30 border-emerald-800/30"
-                    : "text-ink-mid bg-surface-card/60 border-line/40"
+                    ? "text-good bg-good/15 border-good/40"
+                    : "text-ink-mid bg-surface-card border-line"
                 }`}
               >
                 {skill}
               </span>
             ))}
             {skills.length > 4 && (
-              <span className="text-[10px] text-ink-soft self-center">
+              <span className="text-[10px] text-ink-mid self-center">
                 +{skills.length - 4}
               </span>
             )}
@@ -274,10 +274,10 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
               e.stopPropagation();
               useCanvasStore.getState().restartWorkspace(id).catch(() => showToast("Restart failed", "error"));
             }}
-            className="flex items-center gap-1.5 mt-1 w-full bg-sky-950/30 px-2 py-1 rounded-md border border-sky-800/30 hover:bg-sky-900/40 transition-colors text-left focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:outline-none"
+            className="flex items-center gap-1.5 mt-1 w-full bg-accent/10 px-2 py-1 rounded-md border border-accent/40 hover:bg-accent/20 transition-colors text-left focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:outline-none"
           >
-            <span className="text-[10px]">↻</span>
-            <span className="text-[10px] text-sky-300/80">Restart to apply changes</span>
+            <span className="text-[10px] text-accent">↻</span>
+            <span className="text-[10px] text-accent">Restart to apply changes</span>
           </button>
         )}
 
@@ -287,8 +287,8 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
             <div className={`text-[10px] uppercase tracking-widest font-medium ${
               data.status === "failed" ? "text-bad" :
               data.status === "degraded" ? "text-warm" :
-              data.status === "provisioning" ? "text-sky-400" :
-              "text-ink-soft"
+              data.status === "provisioning" ? "text-accent" :
+              "text-ink-mid"
             }`}>
               {statusCfg.label}
             </div>
@@ -296,8 +296,8 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
 
           {data.activeTasks > 0 && (
             <div className="flex items-center gap-1">
-              <div className="w-1 h-1 rounded-full bg-amber-400 motion-safe:animate-pulse" />
-              <span className="text-[10px] text-warm/80 tabular-nums">
+              <div className="w-1 h-1 rounded-full bg-warm motion-safe:animate-pulse" />
+              <span className="text-[10px] text-warm tabular-nums">
                 {data.activeTasks} task{data.activeTasks > 1 ? "s" : ""}
               </span>
             </div>
@@ -307,7 +307,7 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
         {/* Degraded error preview */}
         {data.status === "degraded" && data.lastSampleError && (
           <div
-            className="text-[10px] text-warm/60 truncate mt-1 bg-amber-950/20 px-1.5 py-0.5 rounded border border-amber-800/20"
+            className="text-[10px] text-warm truncate mt-1 bg-warm/10 px-1.5 py-0.5 rounded border border-warm/40"
             title={data.lastSampleError}
           >
             {data.lastSampleError}
@@ -357,7 +357,7 @@ function TeamMemberChip({
 }) {
   const { data } = node;
   const statusCfg = STATUS_CONFIG[data.status] || STATUS_CONFIG.offline;
-  const tierCfg = TIER_CONFIG[data.tier] || { label: `T${data.tier}`, color: "text-ink-soft bg-surface-card" };
+  const tierCfg = TIER_CONFIG[data.tier] || { label: `T${data.tier}`, color: "text-ink-mid bg-surface-card border border-line" };
   const isOnline = data.status === "online";
   const skills = getSkillNames(data.agentCard);
 
@@ -408,7 +408,7 @@ function TeamMemberChip({
           </div>
           <div className="flex items-center gap-1 shrink-0">
             {hasSubChildren && (
-              <span className="text-[7px] font-mono text-violet-300 bg-violet-900/40 border border-violet-700/30 px-1 py-0.5 rounded">
+              <span className="text-[7px] font-mono text-accent bg-accent/15 border border-accent/40 px-1 py-0.5 rounded">
                 {descendantCount}
               </span>
             )}
@@ -423,7 +423,7 @@ function TeamMemberChip({
                 e.stopPropagation();
                 onExtract(node.id);
               }}
-              className="opacity-0 group-hover/child:opacity-100 text-ink-soft hover:text-sky-400 transition-all focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:outline-none rounded"
+              className="opacity-0 group-hover/child:opacity-100 text-ink-mid hover:text-accent transition-all focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:outline-none rounded"
             >
               <EjectIcon aria-hidden="true" />
             </button>
@@ -432,7 +432,7 @@ function TeamMemberChip({
 
         {/* Role */}
         {data.role && (
-          <div className="text-[10px] text-ink-soft mb-1 leading-tight truncate">{data.role}</div>
+          <div className="text-[10px] text-ink-mid mb-1 leading-tight truncate">{data.role}</div>
         )}
 
         {/* Skills */}
@@ -443,8 +443,8 @@ function TeamMemberChip({
                 key={skill}
                 className={`text-[10px] px-1 py-0.5 rounded border ${
                   isOnline
-                    ? "text-good/70 bg-emerald-950/20 border-emerald-800/20"
-                    : "text-ink-soft bg-surface-card/40 border-line/30"
+                    ? "text-good bg-good/15 border-good/40"
+                    : "text-ink-mid bg-surface-card border-line"
                 }`}
               >
                 {skill}
@@ -462,8 +462,8 @@ function TeamMemberChip({
             <span className={`text-[10px] uppercase tracking-widest font-medium ${
               data.status === "failed" ? "text-bad" :
               data.status === "degraded" ? "text-warm" :
-              data.status === "provisioning" ? "text-sky-400" :
-              "text-ink-soft"
+              data.status === "provisioning" ? "text-accent" :
+              "text-ink-mid"
             }`}>
               {statusCfg.label}
             </span>

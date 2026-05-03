@@ -559,9 +559,10 @@ async def tool_chat_history(peer_id: str, limit: int = 20, before_ts: str = "") 
 
     Hits ``/workspaces/<self>/activity?peer_id=<peer>&limit=<N>``
     against the workspace-server, which returns activity rows where
-    this workspace is either the sender (``source_id=peer``) or the
-    recipient (``target_id=peer``) of an A2A turn — both sides of the
-    conversation in chronological order.
+    the peer is either the sender (``source_id=peer`` — they sent us
+    the message) or the recipient (``target_id=peer`` — we sent to
+    them) of an A2A turn — both sides of the conversation in
+    chronological order.
 
     Args:
         peer_id: The other workspace's UUID. Same value the agent
