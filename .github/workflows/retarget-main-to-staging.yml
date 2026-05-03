@@ -26,11 +26,22 @@ jobs:
     runs-on: ubuntu-latest
     # Only fire for bot-authored PRs. Human CEO PRs (staging→main promotion)
     # are intentional and pass through.
+    #
+    # Head-ref guard: never retarget a PR whose head IS `staging` — those
+    # are the auto-promote staging→main PRs (opened by molecule-ai[bot]
+    # since #2586 switched to an App token, which now passes the bot
+    # filter below). Retargeting head=staging onto base=staging fails
+    # with HTTP 422 "no new commits between base 'staging' and head
+    # 'staging'", which used to surface as a noisy red workflow run on
+    # every auto-promote (caught 2026-05-03 on PR #2588).
     if: >-
-      github.event.pull_request.user.type == 'Bot'
-      || endsWith(github.event.pull_request.user.login, '[bot]')
-      || github.event.pull_request.user.login == 'app/molecule-ai'
-      || github.event.pull_request.user.login == 'molecule-ai[bot]'
+      github.event.pull_request.head.ref != 'staging'
+      && (
+        github.event.pull_request.user.type == 'Bot'
+        || endsWith(github.event.pull_request.user.login, '[bot]')
+        || github.event.pull_request.user.login == 'app/molecule-ai'
+        || github.event.pull_request.user.login == 'molecule-ai[bot]'
+      )
     steps:
       - name: Retarget PR base to staging
         id: retarget
