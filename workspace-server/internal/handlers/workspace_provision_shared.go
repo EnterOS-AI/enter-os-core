@@ -166,7 +166,7 @@ func (h *WorkspaceHandler) prepareProvisionContext(
 		}
 	}
 
-	cfg := h.buildProvisionerConfig(workspaceID, templatePath, configFiles, payload, envVars, pluginsPath, awarenessNamespace)
+	cfg := h.buildProvisionerConfig(ctx, workspaceID, templatePath, configFiles, payload, envVars, pluginsPath, awarenessNamespace)
 	cfg.ResetClaudeSession = resetClaudeSession
 
 	return &preparedProvisionContext{

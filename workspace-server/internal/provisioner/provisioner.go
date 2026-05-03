@@ -90,6 +90,33 @@ type WorkspaceConfig struct {
 	AwarenessNamespace string
 	WorkspaceAccess    string // #65: "none" (default), "read_only", or "read_write"
 	ResetClaudeSession bool   // #12: if true, discard the claude-sessions volume before start (fresh session dir)
+
+	// Image, when non-empty, overrides the runtime→image lookup. The handler
+	// layer sets this to the digest-pinned form (`<base>@sha256:<digest>`)
+	// when an operator has promoted a specific runtime build via the
+	// runtime_image_pins table (#2272 layer 1). Empty = legacy behavior,
+	// fall back to RuntimeImages[Runtime] which resolves to the moving
+	// `:latest` tag.
+	Image string
+}
+
+// selectImage resolves the final Docker image ref for a workspace. The handler
+// layer is the source of truth — if it set cfg.Image (the digest-pinned form
+// from runtime_image_pins, #2272), honor that. Otherwise fall back to the
+// runtime→tag lookup in RuntimeImages (legacy `:latest` behavior). When the
+// runtime isn't recognized either, fall back to DefaultImage so Start() still
+// has something to hand Docker — surfacing a "No such image" later is more
+// actionable than a silent "" panic in ContainerCreate.
+func selectImage(cfg WorkspaceConfig) string {
+	if cfg.Image != "" {
+		return cfg.Image
+	}
+	if cfg.Runtime != "" {
+		if img, ok := RuntimeImages[cfg.Runtime]; ok {
+			return img
+		}
+	}
+	return DefaultImage
 }
 
 // Workspace-access constants for #65. Matches the CHECK constraint on
@@ -290,13 +317,7 @@ func (p *Provisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string, e
 
 	env := buildContainerEnv(cfg)
 
-	// Select image based on runtime (each adapter has its own pre-built image)
-	image := DefaultImage
-	if cfg.Runtime != "" {
-		if img, ok := RuntimeImages[cfg.Runtime]; ok {
-			image = img
-		}
-	}
+	image := selectImage(cfg)
 
 	containerCfg := &container.Config{
 		Image:  image,
