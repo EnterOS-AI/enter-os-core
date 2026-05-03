@@ -395,12 +395,12 @@ def test_per_model_match_is_case_insensitive(tmp_path, monkeypatch):
     assert not any(issue.title == "Required env" for issue in report.failures)
 
 
-def test_per_model_match_with_no_required_env_falls_back_to_top_level(tmp_path, monkeypatch):
-    """An entry that matches the picked model but has no `required_env`
-    (or an empty one) falls back to the top-level list. This protects
-    against partially-specified template entries — many templates list
-    a `name`/`description` per model without enumerating env vars when
-    the auth is identical across the family."""
+def test_per_model_match_with_no_required_env_key_falls_back_to_top_level(tmp_path, monkeypatch):
+    """An entry that matches the picked model but has NO `required_env`
+    key at all falls back to the top-level list. Distinct from the
+    explicit-empty case below — many templates list a `name`/`description`
+    per model without enumerating env vars when the auth is identical
+    across the family, and we should not surprise them."""
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-test")
 
     config = make_config(
@@ -409,7 +409,37 @@ def test_per_model_match_with_no_required_env_falls_back_to_top_level(tmp_path, 
             model="sonnet",
             required_env=["CLAUDE_CODE_OAUTH_TOKEN"],
             models=[
-                {"id": "sonnet", "name": "Claude Sonnet"},  # no required_env
+                {"id": "sonnet", "name": "Claude Sonnet"},  # no required_env key
+            ],
+        ),
+    )
+
+    report = run_preflight(config, str(tmp_path))
+
+    assert report.ok is True
+    assert not any(issue.title == "Required env" for issue in report.failures)
+
+
+def test_per_model_explicit_empty_required_env_means_no_auth(tmp_path, monkeypatch):
+    """An entry with an explicit `required_env: []` means "this model
+    needs no auth" — common for local Ollama, Llamafile, or self-hosted
+    OpenAI-compat endpoints. This MUST short-circuit the top-level
+    fallback or the template author can't express a zero-auth model
+    without lying in the per-model list. Distinguished from the no-key
+    case via `"required_env" in entry` (key presence, not truthiness)."""
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+
+    config = make_config(
+        runtime="claude-code",
+        runtime_config=RuntimeConfig(
+            model="local-llama",
+            # Top-level requires an auth token — but the picked model is
+            # a local one that genuinely needs none. Explicit-empty wins.
+            required_env=["CLAUDE_CODE_OAUTH_TOKEN"],
+            models=[
+                {"id": "sonnet", "required_env": ["CLAUDE_CODE_OAUTH_TOKEN"]},
+                {"id": "local-llama", "required_env": []},  # explicit zero-auth
             ],
         ),
     )

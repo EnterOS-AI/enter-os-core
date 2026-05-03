@@ -131,6 +131,38 @@ def test_runtime_config_model_yaml_wins_over_top_level(tmp_path, monkeypatch):
     assert cfg.runtime_config.model == "openai:gpt-4o"
 
 
+def test_runtime_config_model_env_wins_over_explicit_yaml(tmp_path, monkeypatch):
+    """When BOTH MODEL_PROVIDER env AND runtime_config.model in YAML are set,
+    MODEL_PROVIDER wins. Pins the intentional precedence inversion shipped
+    in PR #2538 (2026-05-02): the canvas-picked model is the source of
+    truth, not the template's verbatim default. A self-hosted operator who
+    wants the YAML value to win MUST also unset MODEL_PROVIDER — the env
+    var is the operator's "current intent" signal, the YAML is a baked-in
+    default.
+
+    Without this pin, a future refactor could quietly restore the old
+    YAML-wins order and re-introduce Bug B (canvas-picked model silently
+    dropped for templated workspaces)."""
+    monkeypatch.setenv("MODEL_PROVIDER", "minimax/MiniMax-M2.7")
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(
+        yaml.dump(
+            {
+                "model": "anthropic:claude-opus-4-7",
+                "runtime_config": {"model": "openai:gpt-4o"},
+            }
+        )
+    )
+
+    cfg = load_config(str(tmp_path))
+    # Top-level still resolves to MODEL_PROVIDER (existing behavior).
+    assert cfg.model == "minimax/MiniMax-M2.7"
+    # And runtime_config.model now ALSO follows MODEL_PROVIDER, even
+    # though YAML had an explicit different value. This is the
+    # intentional inversion — the canvas pick beats the template.
+    assert cfg.runtime_config.model == "minimax/MiniMax-M2.7"
+
+
 def test_runtime_config_model_picks_up_env_via_top_level(tmp_path, monkeypatch):
     """End-to-end path the canvas Save+Restart relies on: user picks
     a model → workspace_secrets.MODEL_PROVIDER updated → CP user-data

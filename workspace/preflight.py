@@ -167,15 +167,17 @@ def run_preflight(config: WorkspaceConfig, config_path: str) -> PreflightReport:
                 continue
             if entry_id.lower() != picked_lower:
                 continue
-            per_model_env = entry.get("required_env")
-            if per_model_env:
+            if "required_env" in entry:
                 # Per-model required_env wins outright — do NOT union with the
                 # top-level list. Templates use per-model entries precisely
                 # to express that different models have *different* auth
                 # paths (OAuth token vs API key vs third-party provider key);
                 # unioning would re-introduce the very crash-loop this fix
-                # closes.
-                required_env = list(per_model_env)
+                # closes. An explicit empty list means "no auth needed"
+                # (e.g. local Ollama or self-hosted endpoints) and MUST
+                # short-circuit the top-level fallback — that's why we key
+                # off `"required_env" in entry` rather than truthiness.
+                required_env = list(entry.get("required_env") or [])
             break
 
     for env_var in required_env:
