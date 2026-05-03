@@ -191,15 +191,24 @@ export function ConfigTab({ workspaceId }: Props) {
   // data, written into /configs/config.yaml on next provision too).
   const [provider, setProvider] = useState("");
   const [originalProvider, setOriginalProvider] = useState("");
-  // Track the model that loaded from the DB (workspace_secrets.MODEL_PROVIDER
-  // via /workspaces/:id/model) separately from the YAML's runtime_config.model.
-  // handleSave's diff used to compare nextModel against the YAML's value;
-  // after the loadConfig fix mirrors wsMetadataModel into runtime_config.model
-  // for display, that diff would always be non-zero (YAML default vs.
-  // overridden value) and trigger a /model PUT — which auto-restarts —
-  // on every Save. Comparing against the loaded MODEL_PROVIDER instead
-  // keeps unrelated saves (tier change, skill edit) from rebooting the
-  // workspace just because the template's YAML default differs.
+  // Track the model the form first rendered, so handleSave can detect
+  // whether the user actually changed it (vs. only edited tier/skills/etc).
+  // Two field sources contribute:
+  //   1. wsMetadataModel — workspace_secrets.MODEL_PROVIDER (DB)
+  //   2. parsed.runtime_config.model — the template's YAML default
+  // Whichever was the live runtime value at load time is what currentModelId
+  // will display, and it's the value Save must diff against.
+  //
+  // Why not just diff the YAML directly: after loadConfig mirrors
+  // wsMetadataModel into runtime_config.model for display, the YAML diff
+  // is always non-zero on a no-op save, fires PUT /model, and triggers
+  // an auto-restart for unrelated edits. Why not diff against
+  // wsMetadataModel alone: on a hermes workspace where MODEL_PROVIDER
+  // was never set (pre-#240 workspaces, or workspaces created via direct
+  // API without going through the picker), wsMetadataModel="" but the
+  // form shows the YAML default — diffing against "" makes any first
+  // save propagate-and-restart even when the user didn't touch the model.
+  // Capturing the actual rendered value covers both.
   const [originalModel, setOriginalModel] = useState("");
   const successTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -230,7 +239,11 @@ export function ConfigTab({ workspaceId }: Props) {
       const m = await api.get<{ model?: string }>(`/workspaces/${workspaceId}/model`);
       wsMetadataModel = (m.model || "").trim();
     } catch { /* non-fatal */ }
-    setOriginalModel(wsMetadataModel);
+    // originalModel is set further down once the YAML has been parsed —
+    // we want it to reflect what the form ACTUALLY rendered, which may
+    // be the YAML's runtime_config.model fallback when MODEL_PROVIDER
+    // is empty. Setting it here from wsMetadataModel alone would be
+    // wrong for hermes/pre-#240 workspaces.
 
     // Load explicit provider override (Option B PR-5). Endpoint returns
     // {provider: "", source: "default"} when no override is set, so the
@@ -272,6 +285,12 @@ export function ConfigTab({ workspaceId }: Props) {
         merged.runtime_config = { ...(merged.runtime_config ?? {}), model: wsMetadataModel };
       }
       if (wsMetadataTier !== null) merged.tier = wsMetadataTier;
+      // Snapshot the rendered model so handleSave's diff stays scoped to
+      // user-initiated changes. mirrors the read precedence in
+      // currentModelId so an unrelated save (tier change) doesn't fire
+      // a /model PUT just because MODEL_PROVIDER was empty and the form
+      // showed the YAML default.
+      setOriginalModel(merged.runtime_config?.model || merged.model || "");
       setConfig(merged);
     } catch {
       // No platform-managed config.yaml. Some runtimes (hermes, external)
@@ -292,6 +311,11 @@ export function ConfigTab({ workspaceId }: Props) {
         ...(wsMetadataModel ? { runtime_config: { model: wsMetadataModel } } : {}),
         ...(wsMetadataTier !== null ? { tier: wsMetadataTier } : {}),
       } as ConfigData);
+      // Same snapshot as the merged-path branch above. Falls back to
+      // empty string when neither MODEL_PROVIDER nor a YAML model was
+      // present; handleSave's `nextModel && ...` guard then skips the
+      // PUT correctly.
+      setOriginalModel(wsMetadataModel);
     } finally {
       setLoading(false);
     }

@@ -484,4 +484,91 @@ describe("ConfigTab — Provider override (Option B PR-5)", () => {
       expect.objectContaining({ tier: 3 }),
     );
   });
+
+  // Failure-gating sibling pin to the store-flush test above. The
+  // production code places `updateNodeData` AFTER `await api.patch(...)`
+  // inside the same `if (Object.keys(dbPatch).length > 0)` block, so a
+  // PATCH rejection should throw before the store call. Without this
+  // pin, a future refactor that wraps the PATCH in try/catch and
+  // unconditionally calls updateNodeData would ship green — and then
+  // the badge would lie when the server actually rejected the change.
+  // Codified review feedback from PR #2545 (Agent 2).
+  it("does NOT flush into useCanvasStore.updateNodeData when the PATCH rejects", async () => {
+    wireApi({
+      workspaceRuntime: "claude-code",
+      workspaceModel: "MiniMax-M2",
+      configYamlContent: "name: ws\nruntime: claude-code\ntier: 2\nruntime_config:\n  model: sonnet\n",
+      providerValue: "",
+      templates: [
+        {
+          id: "claude-code-default",
+          name: "Claude Code",
+          runtime: "claude-code",
+          models: [{ id: "sonnet", name: "Sonnet", required_env: ["CLAUDE_CODE_OAUTH_TOKEN"] }],
+        },
+      ],
+    });
+    apiPatch.mockRejectedValue(new Error("500 from workspace-server"));
+
+    render(<ConfigTab workspaceId="ws-test" />);
+    const tierSelect = (await screen.findByLabelText(/tier/i)) as HTMLSelectElement;
+    fireEvent.change(tierSelect, { target: { value: "3" } });
+
+    const saveBtn = screen.getByRole("button", { name: /^save$/i });
+    fireEvent.click(saveBtn);
+
+    // Wait for handleSave to settle (succeeds-or-fails). PATCH must
+    // have been attempted; the error swallow inside handleSave keeps
+    // saving=false in finally.
+    await waitFor(() => {
+      expect(apiPatch.mock.calls.some(([p]) => p === "/workspaces/ws-test")).toBe(true);
+    });
+    // Critically: the store must NOT have been told about the failed
+    // change. Otherwise the badge would lie about a write the server
+    // rejected.
+    const tierFlushes = storeUpdateNodeData.mock.calls.filter(([, body]) =>
+      typeof (body as { tier?: number }).tier === "number",
+    );
+    expect(tierFlushes.length).toBe(0);
+  });
+
+  // Pin the hermes/pre-#240 edge case: workspace where MODEL_PROVIDER
+  // was never written but YAML has runtime_config.model: "something".
+  // originalModel must reflect the rendered baseline (the YAML value),
+  // not the empty MODEL_PROVIDER, so an unrelated save (tier change)
+  // doesn't fire a /model PUT and trigger an auto-restart. Codified
+  // review feedback from PR #2545 (Agent 1, "Important").
+  it("does not PUT /model when MODEL_PROVIDER is empty and the user only edited an unrelated field", async () => {
+    wireApi({
+      workspaceRuntime: "hermes",
+      workspaceModel: "", // legacy workspace — never went through the picker
+      configYamlContent:
+        "name: ws\nruntime: hermes\ntier: 2\nruntime_config:\n  model: nousresearch/hermes-4-70b\n",
+      providerValue: "",
+      templates: [
+        {
+          id: "hermes",
+          name: "Hermes",
+          runtime: "hermes",
+          models: [{ id: "nousresearch/hermes-4-70b", name: "Hermes 4 70B", required_env: ["HERMES_API_KEY"] }],
+          providers: ["nous"],
+        },
+      ],
+    });
+    apiPut.mockResolvedValue({});
+    apiPatch.mockResolvedValue({});
+
+    render(<ConfigTab workspaceId="ws-test" />);
+    const tierSelect = (await screen.findByLabelText(/tier/i)) as HTMLSelectElement;
+    fireEvent.change(tierSelect, { target: { value: "3" } });
+
+    const saveBtn = screen.getByRole("button", { name: /^save$/i });
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(apiPatch.mock.calls.some(([p]) => p === "/workspaces/ws-test")).toBe(true);
+    });
+    const modelPuts = apiPut.mock.calls.filter(([path]) => path === "/workspaces/ws-test/model");
+    expect(modelPuts.length).toBe(0);
+  });
 });
