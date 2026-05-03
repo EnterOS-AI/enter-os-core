@@ -7,7 +7,7 @@ require (
 	github.com/Molecule-AI/molecule-ai-plugin-gh-identity v0.0.0-20260424033845-4fd5ac7be30f
 	github.com/Molecule-AI/molecule-ai-plugin-github-app-auth v0.0.0-20260421064811-7d98ae51e31d
 	github.com/alicebob/miniredis/v2 v2.37.0
-	github.com/creack/pty v1.1.18
+	github.com/creack/pty v1.1.24
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/docker/go-connections v0.7.0
 	github.com/gin-contrib/cors v1.7.7
