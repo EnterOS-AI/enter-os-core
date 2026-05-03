@@ -272,6 +272,18 @@ jobs:
           find tests/e2e infra/scripts -type f -name '*.sh' -print0 \
             | xargs -0 shellcheck --severity=warning
 
+      - if: needs.changes.outputs.scripts == 'true'
+        name: Run E2E bash unit tests (no live infra)
+        # Pure-bash unit tests for E2E helper libs (lib/*.sh). These pin
+        # behavior of dispatch logic that — when broken — silently masks as
+        # "Could not resolve authentication method" only after a successful
+        # tenant + workspace provision (PR #2571 incident, 2026-05-03). Add
+        # new self-contained unit tests here as the lib/ directory grows;
+        # tests requiring live CP/tenant credentials belong in the dedicated
+        # e2e-staging-* workflows, not this job.
+        run: |
+          bash tests/e2e/test_model_slug.sh
+
   canvas-deploy-reminder:
     name: Canvas Deploy Reminder
     runs-on: ubuntu-latest
