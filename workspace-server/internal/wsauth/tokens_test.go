@@ -16,6 +16,15 @@ func setupMock(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
+	// The platform_inbound_secret cache is package-level state shared
+	// across every test in this package — without a reset between
+	// tests a write-through Issue from one test shadows the SELECT
+	// expectation in the next test that touches the same workspaceID
+	// (e.g. "ws-abc" reused across PersistsPlaintext + HappyPath).
+	// Reset before each test that uses setupMock; the no-op cost on
+	// pure-token tests is one Range over an empty sync.Map.
+	ResetInboundSecretCacheForTesting()
+	t.Cleanup(ResetInboundSecretCacheForTesting)
 	return db, mock
 }
 

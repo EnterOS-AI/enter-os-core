@@ -17,6 +17,7 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/ws"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/wsauth"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
@@ -43,6 +44,15 @@ func setupTestDB(t *testing.T) sqlmock.Sqlmock {
 	// (which run with SSRF enabled) are not affected by state leak.
 	restore := setSSRFCheckForTest(false)
 	t.Cleanup(restore)
+
+	// The wsauth.platform_inbound_secret cache (#189) is package-level
+	// state in another package — without a reset between tests, a
+	// write-through Issue from one test (or even a prior Read populating
+	// the cache) shadows the SELECT expectation in the next test that
+	// uses the same workspace ID. Reset before each test that builds a
+	// fresh sqlmock; the no-op cost is one Range over an empty sync.Map.
+	wsauth.ResetInboundSecretCacheForTesting()
+	t.Cleanup(wsauth.ResetInboundSecretCacheForTesting)
 
 	return mock
 }
