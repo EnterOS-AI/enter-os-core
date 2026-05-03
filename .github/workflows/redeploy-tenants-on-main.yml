@@ -17,7 +17,7 @@ name: redeploy-tenants-on-main
 #   1. publish-workspace-server-image completes → new :latest in GHCR.
 #   2. This workflow fires via workflow_run, waits 30s for GHCR's
 #      CDN to propagate the new tag to the region the tenants pull from.
-#   3. Calls redeploy-fleet with canary_slug=hongmingwang and a 60s
+#   3. Calls redeploy-fleet with canary_slug=hongming and a 60s
 #      soak. Canary proves the image boots; batches follow.
 #   4. Any failure aborts the rollout and leaves older tenants on the
 #      prior image — safer default than half-and-half state.
@@ -56,7 +56,12 @@ on:
         description: 'Tenant slug to deploy first + soak (empty = skip canary, fan out immediately).'
         required: false
         type: string
-        default: 'hongmingwang'
+        # Must be an actual prod tenant slug (current: hongming,
+        # chloe-dong, reno-stars). The previous default 'hongmingwang'
+        # didn't match any tenant — CP soft-skipped the missing canary
+        # and the fleet rolled out without the soak gate, defeating the
+        # whole point of canary-first.
+        default: 'hongming'
       soak_seconds:
         description: 'Seconds to wait after canary before fanning out.'
         required: false
@@ -148,7 +153,7 @@ jobs:
           CP_URL: ${{ vars.CP_URL || 'https://api.moleculesai.app' }}
           CP_ADMIN_API_TOKEN: ${{ secrets.CP_ADMIN_API_TOKEN }}
           TARGET_TAG: ${{ steps.tag.outputs.target_tag }}
-          CANARY_SLUG: ${{ inputs.canary_slug || 'hongmingwang' }}
+          CANARY_SLUG: ${{ inputs.canary_slug || 'hongming' }}
           SOAK_SECONDS: ${{ inputs.soak_seconds || '60' }}
           BATCH_SIZE: ${{ inputs.batch_size || '3' }}
           DRY_RUN: ${{ inputs.dry_run || false }}
