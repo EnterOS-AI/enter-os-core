@@ -388,19 +388,35 @@ func (p *Provisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string, e
 	imgPlatform := parseOCIPlatform(imgPlatformStr)
 
 	// Log image resolution for debugging stale-image issues, and pull from
-	// GHCR on miss so tenant hosts don't need a pre-build step anymore.
+	// GHCR so tenant hosts don't need a pre-build step anymore. Two cases
+	// trigger a pull:
+	//   1. Image not present locally — historical behavior (pull-on-miss).
+	//   2. Image present locally AND tag is moving (`:latest`, no tag,
+	//      `:staging`, etc.) — without this, a tenant that pulled `:latest`
+	//      once is stuck on that snapshot forever even after publish-runtime
+	//      pushes a newer image with the same tag. See task #215; sibling
+	//      task #232 fixed the same class on the platform-tenant redeploy
+	//      path. Pinned tags (semver, sha256) skip the pull because their
+	//      contents are by definition immutable.
 	// The pull is best-effort: if it fails (network, auth, rate limit) the
 	// subsequent ContainerCreate still surfaces the actionable error below.
 	imgInspect, _, imgErr := p.cli.ImageInspectWithRaw(ctx, image)
-	if imgErr == nil {
-		log.Printf("Provisioner: creating %s from image %s (ID: %s, created: %s)",
-			name, image, imgInspect.ID[:19], imgInspect.Created[:19])
-	} else {
+	moving := imageTagIsMoving(image)
+	switch {
+	case imgErr != nil:
 		if imgPlatformStr != "" {
 			log.Printf("Provisioner: image %s not present locally (%v) — attempting pull (platform=%s)", image, imgErr, imgPlatformStr)
 		} else {
 			log.Printf("Provisioner: image %s not present locally (%v) — attempting pull", image, imgErr)
 		}
+	case moving:
+		log.Printf("Provisioner: image %s present locally (ID: %s, created: %s) but tag is moving — re-pulling to refresh",
+			image, imgInspect.ID[:19], imgInspect.Created[:19])
+	default:
+		log.Printf("Provisioner: creating %s from image %s (ID: %s, created: %s)",
+			name, image, imgInspect.ID[:19], imgInspect.Created[:19])
+	}
+	if imgErr != nil || moving {
 		if perr := pullImageAndDrain(ctx, p.cli, image, imgPlatformStr); perr != nil {
 			log.Printf("Provisioner: image pull for %s failed: %v (falling through to create)", image, perr)
 		} else {
@@ -1197,6 +1213,55 @@ func isImageNotFoundErr(err error) bool {
 	m := strings.ToLower(err.Error())
 	return strings.Contains(m, "no such image") ||
 		strings.Contains(m, "not found") && strings.Contains(m, "image")
+}
+
+// imageTagIsMoving reports whether the tag portion of an image reference
+// is one whose contents change over time at the registry — meaning a
+// local-cache hit is not safe to trust because the cached snapshot may
+// be stale relative to what the registry currently serves under the
+// same tag.
+//
+// Returns true for:
+//   - References with no tag at all (Docker defaults the missing tag
+//     to `:latest`, which is the canonical moving tag).
+//   - Explicit `:latest`, `:staging`, `:main`, `:dev`, `:edge`, `:nightly`,
+//     `:rolling` — the conventional set of "moves on every publish"
+//     tags across the org's pipelines.
+//
+// Returns false for:
+//   - Digest-pinned references (`@sha256:...`) — by definition immutable.
+//   - Semver / SHA / build-ID tags (`:0.8.2`, `:abc1234`, `:2026-04-30`) —
+//     these are conventionally pinned, and even if a publisher mis-uses
+//     them, the wrong behavior is "stale" not "broken-fleet" because
+//     the tenant who chose a pinned tag is asking for that snapshot.
+//
+// The classification is deliberately conservative on the "moving" side
+// (only the well-known moving tags) because mis-classifying a pinned
+// tag as moving means we re-pull on every provision — wasted bandwidth,
+// no correctness loss. Mis-classifying moving as pinned silently bricks
+// the fleet on stale snapshots — exactly the bug class that motivated
+// task #215. So the bias is: when in doubt, treat as pinned.
+//
+// Sibling task #232 (Platform-tenant :latest re-pull on redeploy)
+// applied the same principle on the controlplane redeploy path. Keep
+// the moving-tag list aligned across both implementations if updated.
+func imageTagIsMoving(image string) bool {
+	// Digest-pinned references are immutable by construction.
+	if strings.Contains(image, "@sha256:") {
+		return false
+	}
+	// Strip everything before the LAST colon to isolate the tag, but
+	// stop at a `/` to avoid mistaking a port number in a registry
+	// hostname (e.g. `localhost:5000/foo`) for a tag.
+	tag := ""
+	if i := strings.LastIndex(image, ":"); i >= 0 && !strings.Contains(image[i+1:], "/") {
+		tag = image[i+1:]
+	}
+	switch tag {
+	case "", "latest", "staging", "main", "dev", "edge", "nightly", "rolling":
+		return true
+	}
+	return false
 }
 
 // runtimeTagFromImage extracts the runtime name from a workspace-template
