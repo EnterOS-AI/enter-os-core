@@ -67,6 +67,9 @@ You are an SEO specialist. When asked to generate a page, follow these steps:
 | `name` | Yes | Skill identifier (lowercase, URL-safe: `^[a-z0-9][a-z0-9-]*$`) |
 | `description` | Yes | Short summary (used in UI and search) |
 | `version` | Yes | Semantic version |
+| `runtime` | No | Adapter compatibility list — see [Runtime Compatibility](#runtime-compatibility) below. Defaults to `["*"]` (universal). |
+| `tags` | No | List of category tags surfaced in the skill catalog |
+| `examples` | No | List of example prompts injected as few-shot context |
 | `metadata.openclaw.requires.env` | No | Environment variables the skill needs |
 | `metadata.openclaw.requires.bins` | No | CLI binaries required (all must exist) |
 | `metadata.openclaw.requires.anyBins` | No | CLI binaries (at least one must exist) |
@@ -78,6 +81,33 @@ You are an SEO specialist. When asked to generate a page, follow these steps:
 | `metadata.openclaw.install` | No | Dependency install specs (`brew`, `node`, `go`, `uv`) |
 
 The `metadata.openclaw` section can also be aliased as `metadata.clawdbot` or `metadata.clawdis`.
+
+### Runtime Compatibility
+
+A skill that depends on a runtime-specific tool — e.g. uses a Claude Code-only `Bash` tool, or hermes-agent's sub-agent registry — should declare which adapters it supports via the `runtime` field:
+
+```markdown
+---
+name: claude-bash-helper
+description: Wraps Claude Code's Bash tool with retries
+runtime: [claude-code]
+---
+```
+
+When a workspace boots with a different adapter, the skill loader logs a `Skipping skill ...: runtime=[...] not compatible with current=...` line and the skill is omitted from the agent's tool set. The runtime never sees the broken skill — no AttributeError, no "tool not found" surprise on the first invocation.
+
+Accepted shapes:
+
+| Value | Meaning |
+|-------|---------|
+| Absent / `["*"]` | Universal — loads into every adapter (default) |
+| `["claude-code"]` | Loads only into the `claude-code` adapter |
+| `[claude-code, hermes]` | Loads into either of these adapters |
+| `claude-code` | String shorthand — normalized to `["claude-code"]` |
+
+Match values come from each adapter's `name()` method (the same string that goes in `config.yaml`'s `runtime:` field). A malformed value (e.g. `runtime: 123`) logs a warning and falls back to universal — the skill is never silently dropped on invalid input.
+
+This shape mirrors hermes-agent's declarative skill-compat model. Adopting the same convention keeps cross-runtime skill packages portable: a skill author writes one `SKILL.md` and the workspace picks the right subset at boot.
 
 ## Skill Types
 
