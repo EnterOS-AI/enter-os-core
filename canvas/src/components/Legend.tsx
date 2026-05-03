@@ -77,7 +77,7 @@ export function Legend() {
         onClick={openLegend}
         aria-label="Show legend"
         title="Show legend"
-        className={`fixed bottom-6 ${leftClass} z-30 flex items-center gap-1.5 rounded-full bg-surface-sunken/95 border border-line/50 px-3 py-1.5 text-[11px] font-semibold text-ink-mid uppercase tracking-wider shadow-xl shadow-black/30 backdrop-blur-sm hover:text-ink hover:border-line transition-[left,colors] duration-200`}
+        className={`fixed bottom-6 ${leftClass} z-30 flex items-center gap-1.5 rounded-full bg-surface-sunken/95 border border-line/50 px-3 py-1.5 text-[11px] font-semibold text-ink-mid uppercase tracking-wider shadow-xl shadow-black/30 backdrop-blur-sm hover:text-ink hover:border-line focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-2 focus-visible:ring-offset-surface transition-[left,colors] duration-200`}
       >
         <span aria-hidden="true" className="text-[10px]">ⓘ</span>
         Legend
@@ -94,7 +94,10 @@ export function Legend() {
           onClick={closeLegend}
           aria-label="Hide legend"
           title="Hide legend"
-          className="-mt-0.5 -mr-1 px-1.5 text-[14px] leading-none text-ink-soft hover:text-ink transition-colors"
+          // 24×24 touch target (was ~10×16, well under WCAG 2.5.5 min).
+          // Negative margin keeps the visual position the same as before
+          // — only the hit area + focus ring are larger.
+          className="-mt-1.5 -mr-1.5 w-6 h-6 inline-flex items-center justify-center rounded text-[14px] leading-none text-ink-soft hover:text-ink hover:bg-surface-card/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 transition-colors"
         >
           ×
         </button>
