@@ -732,6 +732,68 @@ func TestRuntimeTagFromImage(t *testing.T) {
 	}
 }
 
+// ---------- imageTagIsMoving (task #215) ----------
+
+// TestImageTagIsMoving pins the moving-tag classifier. The classifier
+// gates whether Start() forces a re-pull on a local-cache hit — get
+// the classification wrong on the "moving" side and we waste bandwidth
+// on every provision; get it wrong on the "pinned" side and the fleet
+// silently sticks on a stale `:latest` snapshot (the bug class this
+// task closes).
+func TestImageTagIsMoving(t *testing.T) {
+	cases := []struct {
+		name  string
+		image string
+		want  bool
+	}{
+		// Bare references default to :latest at the registry level.
+		{"bare repo no tag", "ghcr.io/molecule-ai/workspace-template-hermes", true},
+		{"bare local image no tag", "workspace-template", true},
+
+		// Explicit moving tags.
+		{"explicit latest", "ghcr.io/molecule-ai/workspace-template-hermes:latest", true},
+		{"explicit staging", "ghcr.io/molecule-ai/workspace-template-hermes:staging", true},
+		{"explicit main", "ghcr.io/molecule-ai/workspace-template-hermes:main", true},
+		{"explicit dev", "ghcr.io/molecule-ai/workspace-template-hermes:dev", true},
+		{"explicit edge", "ghcr.io/molecule-ai/workspace-template-hermes:edge", true},
+		{"explicit nightly", "ghcr.io/molecule-ai/workspace-template-hermes:nightly", true},
+		{"explicit rolling", "ghcr.io/molecule-ai/workspace-template-hermes:rolling", true},
+
+		// Pinned tags — must NOT be classified as moving.
+		{"semver tag", "ghcr.io/molecule-ai/workspace-template-hermes:0.8.2", false},
+		{"semver with v prefix", "ghcr.io/molecule-ai/workspace-template-hermes:v1.2.3", false},
+		{"sha-prefixed commit tag", "ghcr.io/molecule-ai/workspace-template-langgraph:sha-abc1234", false},
+		{"date-stamped tag", "ghcr.io/molecule-ai/workspace-template-hermes:2026-04-30", false},
+		{"build-id tag", "ghcr.io/molecule-ai/workspace-template-hermes:build-12345", false},
+
+		// Digest pinning — strongest immutability signal, never moving
+		// even if a moving-looking tag is also present.
+		{"digest only", "ghcr.io/molecule-ai/workspace-template-hermes@sha256:abc123def456", false},
+		{"tag plus digest", "ghcr.io/molecule-ai/workspace-template-hermes:latest@sha256:abc123def456", false},
+
+		// Registry hostname with port — the `:` in `:5000` must NOT be
+		// mistaken for a tag separator. Without this guard, a private
+		// registry like `localhost:5000/foo` would always re-pull.
+		{"registry with port no tag", "localhost:5000/workspace-template-hermes", true}, // bare → moving
+		{"registry with port pinned tag", "localhost:5000/workspace-template-hermes:0.8.2", false},
+		{"registry with port latest tag", "localhost:5000/workspace-template-hermes:latest", true},
+
+		// Legacy local-build tags from `docker build -t workspace-template:<runtime>`.
+		// These are arbitrary strings, treated as pinned (they don't
+		// move from the registry's perspective — there is no registry).
+		{"legacy local hermes tag", "workspace-template:hermes", false},
+		{"legacy local claude-code tag", "workspace-template:claude-code", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := imageTagIsMoving(tc.image)
+			if got != tc.want {
+				t.Errorf("imageTagIsMoving(%q) = %v, want %v", tc.image, got, tc.want)
+			}
+		})
+	}
+}
+
 // ---------- End-to-end error-message shape ----------
 //
 // Verifies the wrapped error that Start() surfaces when ContainerCreate
