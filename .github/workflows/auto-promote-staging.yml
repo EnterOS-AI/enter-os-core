@@ -111,7 +111,60 @@ jobs:
       all_green: ${{ steps.gates.outputs.all_green }}
       head_sha: ${{ steps.gates.outputs.head_sha }}
     steps:
+      # Skip empty-tree promotes (the perpetual auto-promote↔auto-sync cycle
+      # observed 2026-05-03). Sequence: auto-promote merges via the staging
+      # merge-queue's MERGE strategy, creating a merge commit on main that
+      # staging doesn't have. auto-sync then merges main back into staging
+      # via another merge commit (the queue's MERGE strategy applies on
+      # the staging side too, even when the workflow's local FF would
+      # have sufficed). Now staging has a new merge-commit SHA whose
+      # tree == main's tree — but auto-promote sees "staging ahead of
+      # main by 1" and opens YET another empty promote PR. Each round
+      # costs ~30-40 min wallclock, ~2 manual approvals, and burns a
+      # full CodeQL Go run (~15 min). Without this guard the cycle
+      # repeats indefinitely.
+      #
+      # Long-term fix is to switch the merge_queue ruleset's
+      # `merge_method` away from MERGE so FF-able PRs land cleanly,
+      # but that's a broader change affecting every staging PR's
+      # commit shape. This guard is the one-line surgical fix that
+      # breaks the cycle without touching merge-queue config.
+      #
+      # Fail-open: if `git diff` errors for any reason, fall through
+      # to the gate check (preserve existing behavior). Only skip
+      # when the diff is DEFINITIVELY empty.
+      - name: Checkout for tree-diff check
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          ref: staging
+      - name: Skip if staging tree == main tree (perpetual-cycle break)
+        id: tree-diff
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -eu
+          git fetch origin main --depth=50 || { echo "::warning::git fetch main failed — proceeding (fail-open)"; exit 0; }
+          # Compare staging tip's tree against main's tree. `git diff
+          # --quiet` exits 0 if no differences, 1 if there are.
+          if git diff --quiet origin/main "$HEAD_SHA" -- 2>/dev/null; then
+            {
+              echo "## ⏭ Skipped — no code to promote"
+              echo
+              echo "staging tip (\`${HEAD_SHA:0:8}\`) and \`main\` have identical trees."
+              echo "This is the auto-promote↔auto-sync merge-commit cycle: staging has a"
+              echo "new SHA (a sync-back merge commit) but the underlying file tree is"
+              echo "already on main, so there's no real code to ship."
+              echo
+              echo "Skipping to avoid opening an empty promote PR. Cycle terminates here."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::auto-promote: staging tree == main tree — no code to promote, skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Check all required gates on this SHA
+        if: steps.tree-diff.outputs.skip != 'true'
         id: gates
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
