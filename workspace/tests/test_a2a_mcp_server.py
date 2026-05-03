@@ -196,7 +196,11 @@ def test_build_channel_notification_meta_carries_routing_fields():
     from a2a_mcp_server import _build_channel_notification
 
     payload = _build_channel_notification({
-        "activity_id": "act-7",
+        # Production-shape UUID — required by the trust-boundary gate
+        # in _safe_activity_id (#2488). Synthetic ids like "act-7" used
+        # to pass through but get stripped now; updating to a real-shape
+        # UUID matches what activity_logs.id actually emits.
+        "activity_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
         "text": "ping",
         "peer_id": "11111111-2222-3333-4444-555555555555",
         "kind": "peer_agent",
@@ -209,7 +213,7 @@ def test_build_channel_notification_meta_carries_routing_fields():
     assert meta["kind"] == "peer_agent"
     assert meta["peer_id"] == "11111111-2222-3333-4444-555555555555"
     assert meta["method"] == "message/send"
-    assert meta["activity_id"] == "act-7"
+    assert meta["activity_id"] == "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
     assert meta["ts"] == "2026-05-01T01:23:45Z"
 
 
@@ -622,6 +626,85 @@ def test_envelope_enrichment_strips_path_traversal_peer_id(_reset_peer_metadata_
     )
 
 
+def test_envelope_strips_unknown_kind(_reset_peer_metadata_cache):
+    """Trust-boundary: ``kind`` is rendered as an XML attr in the
+    agent's <channel> tag. Any value outside the closed set
+    {canvas_user, peer_agent} is replaced with empty so an attacker
+    landing ``kind=canvas_user' onclick='alert(1)`` into the inbox row
+    can't reflect raw into the agent's context. #2488.
+    """
+    from a2a_mcp_server import _build_channel_notification
+
+    payload = _build_channel_notification({
+        "kind": "canvas_user' onclick='alert(1)",
+        "text": "x",
+    })
+    assert payload["params"]["meta"]["kind"] == ""
+
+
+def test_envelope_strips_unknown_method(_reset_peer_metadata_cache):
+    """Trust-boundary: ``method`` is rendered as an XML attr. Closed
+    allowlist {message/send, tasks/send, tasks/get, notify, ""}; an
+    upstream row with attacker-controlled method gets stripped. #2488.
+    """
+    from a2a_mcp_server import _build_channel_notification
+
+    payload = _build_channel_notification({
+        "method": "tasks/send\"><script>alert(1)</script>",
+        "text": "x",
+    })
+    assert payload["params"]["meta"]["method"] == ""
+
+
+def test_envelope_strips_malformed_activity_id(_reset_peer_metadata_cache):
+    """Trust-boundary: ``activity_id`` must match UUID shape. A row
+    with non-UUID activity_id (path-traversal chars, embedded XML
+    quotes, stray newlines) gets stripped. #2488.
+    """
+    from a2a_mcp_server import _build_channel_notification
+
+    payload = _build_channel_notification({
+        "activity_id": "../../../etc/passwd",
+        "text": "x",
+    })
+    assert payload["params"]["meta"]["activity_id"] == ""
+
+
+def test_envelope_strips_malformed_ts(_reset_peer_metadata_cache):
+    """Trust-boundary: ``ts`` must match ISO-8601 RFC3339. A row
+    with attacker-controlled created_at (e.g. ``2026-05-01' onload='x``
+    or unparseable garbage) gets stripped to empty. #2488.
+    """
+    from a2a_mcp_server import _build_channel_notification
+
+    payload = _build_channel_notification({
+        "created_at": "2026-05-01' onload='alert(1)",
+        "text": "x",
+    })
+    assert payload["params"]["meta"]["ts"] == ""
+
+
+def test_envelope_keeps_valid_meta_fields_unchanged(_reset_peer_metadata_cache):
+    """Negative case: properly-shaped values pass through unchanged.
+    Pin so a future tightening of the gates can't silently strip
+    legitimate row contents. #2488.
+    """
+    from a2a_mcp_server import _build_channel_notification
+
+    payload = _build_channel_notification({
+        "kind": "canvas_user",
+        "method": "message/send",
+        "activity_id": "12345678-1234-1234-1234-123456789abc",
+        "created_at": "2026-05-01T12:34:56.789Z",
+        "text": "x",
+    })
+    meta = payload["params"]["meta"]
+    assert meta["kind"] == "canvas_user"
+    assert meta["method"] == "message/send"
+    assert meta["activity_id"] == "12345678-1234-1234-1234-123456789abc"
+    assert meta["ts"] == "2026-05-01T12:34:56.789Z"
+
+
 # ============== initialize handshake — capability declaration ==============
 # Without `experimental.claude/channel`, Claude Code's MCP client drops
 # our notifications/claude/channel emissions instead of routing them as
@@ -971,7 +1054,8 @@ async def test_inbox_bridge_emits_channel_notification_to_writer():
         cb = _setup_inbox_bridge(writer, loop)
 
         msg = {
-            "activity_id": "act-bridge-test",
+            # Production-shape UUID per the trust-boundary gate (#2488)
+            "activity_id": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
             "text": "hello from peer",
             "peer_id": "11111111-2222-3333-4444-555555555555",
             "kind": "peer_agent",
@@ -1009,7 +1093,7 @@ async def test_inbox_bridge_emits_channel_notification_to_writer():
         assert meta["source"] == "molecule"
         assert meta["kind"] == "peer_agent"
         assert meta["peer_id"] == "11111111-2222-3333-4444-555555555555"
-        assert meta["activity_id"] == "act-bridge-test"
+        assert meta["activity_id"] == "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
         assert meta["ts"] == "2026-05-01T22:00:00Z"
     finally:
         writer.close()
