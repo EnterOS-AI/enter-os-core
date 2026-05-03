@@ -40,7 +40,7 @@ afterEach(() => {
 describe("CookieConsent", () => {
   it("renders the banner when no decision is stored", () => {
     render(<CookieConsent />);
-    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByRole("region")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Accept all" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Necessary only" })).toBeTruthy();
   });
@@ -48,7 +48,7 @@ describe("CookieConsent", () => {
   it("stores 'accepted' and hides the banner when user clicks Accept all", () => {
     render(<CookieConsent />);
     fireEvent.click(screen.getByRole("button", { name: "Accept all" }));
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("region")).toBeNull();
 
     const raw = window.localStorage.getItem(STORAGE_KEY);
     expect(raw).not.toBeNull();
@@ -61,7 +61,7 @@ describe("CookieConsent", () => {
   it("stores 'rejected' and hides the banner when user clicks Necessary only", () => {
     render(<CookieConsent />);
     fireEvent.click(screen.getByRole("button", { name: "Necessary only" }));
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("region")).toBeNull();
 
     const parsed = JSON.parse(window.localStorage.getItem(STORAGE_KEY)!);
     expect(parsed.decision).toBe("rejected");
@@ -73,7 +73,7 @@ describe("CookieConsent", () => {
       JSON.stringify({ decision: "accepted", decidedAt: new Date().toISOString(), version: 1 }),
     );
     render(<CookieConsent />);
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("region")).toBeNull();
   });
 
   it("re-prompts when the stored decision is on an older policy version", () => {
@@ -82,13 +82,13 @@ describe("CookieConsent", () => {
       JSON.stringify({ decision: "accepted", decidedAt: new Date().toISOString(), version: 0 }),
     );
     render(<CookieConsent />);
-    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByRole("region")).toBeTruthy();
   });
 
   it("re-prompts when localStorage contains invalid JSON", () => {
     window.localStorage.setItem(STORAGE_KEY, "{not json");
     render(<CookieConsent />);
-    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByRole("region")).toBeTruthy();
   });
 
   it("exposes a privacy-policy link with target='_blank'", () => {
@@ -99,11 +99,19 @@ describe("CookieConsent", () => {
     expect(link.getAttribute("rel")).toContain("noreferrer");
   });
 
-  it("uses role=dialog with aria-labelledby and aria-describedby for screen readers", () => {
+  it("uses role=region (NOT dialog) with aria-labelledby/describedby — banner is informational, not modal", () => {
+    // Regression guard: an earlier version claimed role="dialog"
+    // aria-modal="true" without a focus trap. That falsely told screen
+    // readers the rest of the page was inert, trapping AT users in a
+    // banner they couldn't escape. role="region" lets assistive tech
+    // navigate around it normally; the banner stays informational.
     render(<CookieConsent />);
-    const dialog = screen.getByRole("dialog");
-    expect(dialog.getAttribute("aria-labelledby")).toBe("cookie-consent-title");
-    expect(dialog.getAttribute("aria-describedby")).toBe("cookie-consent-body");
+    const banner = screen.getByRole("region");
+    expect(banner.getAttribute("aria-labelledby")).toBe("cookie-consent-title");
+    expect(banner.getAttribute("aria-describedby")).toBe("cookie-consent-body");
+    // No aria-modal claim — explicit guard against regression.
+    expect(banner.getAttribute("aria-modal")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("does NOT render on local dev (non-SaaS hostname)", () => {
@@ -116,7 +124,7 @@ describe("CookieConsent", () => {
       value: { ...window.location, hostname: "localhost" },
     });
     render(<CookieConsent />);
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("region")).toBeNull();
   });
 
   it("does NOT render on a LAN hostname (192.168.*, *.local)", () => {
@@ -125,7 +133,7 @@ describe("CookieConsent", () => {
       value: { ...window.location, hostname: "192.168.1.74" },
     });
     render(<CookieConsent />);
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("region")).toBeNull();
   });
 });
 
