@@ -1,0 +1,39 @@
+name: cascade-list-drift-gate
+
+# Structural gate: TEMPLATES list in publish-runtime.yml must match
+# manifest.json's workspace_templates exactly. Closes the recurrence
+# path of PR #2556 (the data fix) and is the first concrete deliverable
+# of RFC #388 PR-3.
+#
+# Why a gate, not just discipline: PR #2536 pruned the manifest, but the
+# cascade list wasn't updated for ~weeks before someone (PR #2556)
+# noticed during an unrelated audit. During that window, codex never
+# rebuilt on a runtime publish. A structural gate catches the drift
+# the same day either file changes.
+#
+# Triggers narrowly to keep CI quiet: only on PRs that actually change
+# one of the two files. The path-filtered split + always-emit-result
+# pattern (memory: "Required check names need a job that always runs")
+# is unnecessary here because the workflow IS the check name and PR
+# branch protection should require it directly. Future-proof: if this
+# becomes a required check, add a no-op aggregator with always() so the
+# name still emits when paths don't match.
+
+on:
+  pull_request:
+    branches: [staging, main]
+    paths:
+      - manifest.json
+      - .github/workflows/publish-runtime.yml
+      - scripts/check-cascade-list-vs-manifest.sh
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Check cascade list matches manifest
+        run: bash scripts/check-cascade-list-vs-manifest.sh
