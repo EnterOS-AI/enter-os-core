@@ -1,10 +1,22 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { STATUS_CONFIG } from "@/lib/design-tokens";
+import { STATUS_CONFIG, TIER_CONFIG } from "@/lib/design-tokens";
 import { useCanvasStore } from "@/store/canvas";
 
 const LEGEND_STATUSES = ["online", "provisioning", "degraded", "failed", "paused", "offline"] as const;
+
+// Tier descriptions kept in sync with CreateWorkspaceDialog.tsx (the
+// source of truth for what each tier means semantically). Colors come
+// from TIER_CONFIG so the legend swatch matches the badge actually
+// rendered on every WorkspaceNode — drift here misled users into
+// thinking the legend documented a different tier than the one shown.
+const LEGEND_TIERS: ReadonlyArray<{ tier: number; label: string }> = [
+  { tier: 1, label: "Sandboxed" },
+  { tier: 2, label: "Standard" },
+  { tier: 3, label: "Privileged" },
+  { tier: 4, label: "Full Access" },
+];
 
 // Persist the user's choice across sessions. Default is "open" so
 // first-time users still see the symbol key; once dismissed we
@@ -102,9 +114,9 @@ export function Legend() {
       <div className="mb-2">
         <div className="text-[11px] text-ink-soft font-medium mb-1">Tier</div>
         <div className="flex flex-wrap gap-x-3 gap-y-1">
-          <TierItem tier={1} label="Sandboxed" color="text-sky-300 bg-sky-950/40 border-sky-700/30" />
-          <TierItem tier={2} label="Standard" color="text-violet-300 bg-violet-950/40 border-violet-700/30" />
-          <TierItem tier={3} label="Full Access" color="text-warm bg-amber-950/40 border-amber-700/30" />
+          {LEGEND_TIERS.map(({ tier, label }) => (
+            <TierItem key={tier} tier={tier} label={label} color={TIER_CONFIG[tier].border} />
+          ))}
         </div>
       </div>
 
