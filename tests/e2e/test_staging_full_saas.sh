@@ -321,8 +321,9 @@ tenant_call() {
 
 # ─── 5. Provision parent workspace ─────────────────────────────────────
 # Inject the LLM provider key so the runtime can authenticate at boot.
-# Branch by which secret is set so the script supports both paths
-# without forcing every dispatch to ship both keys:
+# Branch by which secret is set so the script supports multiple paths
+# without forcing every dispatch to ship them all. Priority order
+# matters — first non-empty wins:
 #
 #   E2E_MINIMAX_API_KEY → claude-code MiniMax path. Cheapest, default
 #     for the cron canary post-2026-05-03. Routes via the claude-code
@@ -334,6 +335,15 @@ tenant_call() {
 #     collisions when a user runs MiniMax + Z.ai workspaces side-by-
 #     side).
 #
+#   E2E_ANTHROPIC_API_KEY → claude-code direct-Anthropic path (added
+#     2026-05-04 after #2578 left the operator with an awkward choice
+#     between paying OpenAI's billing top-up and registering a new
+#     MiniMax account). Lower friction than MiniMax for operators
+#     who already have an Anthropic API key for their own Claude
+#     Code session. Pricier per-token than MiniMax but billing is
+#     still independent of MOLECULE_STAGING_OPENAI_KEY. Pinned to the
+#     claude-code runtime — hermes/langgraph use OpenAI-shaped envs.
+#
 #   E2E_OPENAI_API_KEY → langgraph + hermes paths. Kept as fallback
 #     for operator dispatches that explicitly want to exercise the
 #     OpenAI path. The HERMES_* fields pin hermes-agent's bridge to
@@ -341,7 +351,7 @@ tenant_call() {
 #     resolves openai/* → openrouter.ai and 401s). MODEL_PROVIDER
 #     follows workspace/config.py:258's 'provider:model' format.
 #
-# Both empty → '{}' (workspace will fail at first turn with an
+# All empty → '{}' (workspace will fail at first turn with an
 # expected, actionable auth error rather than masking the test).
 SECRETS_JSON='{}'
 if [ -n "${E2E_MINIMAX_API_KEY:-}" ]; then
@@ -350,6 +360,25 @@ import json, os
 k = os.environ['E2E_MINIMAX_API_KEY']
 print(json.dumps({
     'MINIMAX_API_KEY': k,
+}))
+")
+elif [ -n "${E2E_ANTHROPIC_API_KEY:-}" ]; then
+  # Direct Anthropic path — claude-code adapter reads ANTHROPIC_API_KEY
+  # natively when ANTHROPIC_BASE_URL is unset. Useful for operators
+  # who already have an Anthropic API key (e.g. for their own Claude
+  # Code session) and want to avoid setting up a separate MiniMax
+  # account just for E2E. Pricier per-token than MiniMax but billing
+  # is still independent of MOLECULE_STAGING_OPENAI_KEY, so an OpenAI
+  # quota collapse doesn't wedge this path. Pinned to the claude-code
+  # runtime: hermes/langgraph use OpenAI-shaped envs and won't honour
+  # ANTHROPIC_API_KEY without further wiring (out of scope for this
+  # branch; if you need a hermes/Anthropic path, dispatch with
+  # E2E_RUNTIME=hermes + E2E_OPENAI_API_KEY pointing at a working key).
+  SECRETS_JSON=$(python3 -c "
+import json, os
+k = os.environ['E2E_ANTHROPIC_API_KEY']
+print(json.dumps({
+    'ANTHROPIC_API_KEY': k,
 }))
 ")
 elif [ -n "${E2E_OPENAI_API_KEY:-}" ]; then

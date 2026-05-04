@@ -119,6 +119,11 @@ jobs:
       # tests/e2e/test_staging_full_saas.sh branches SECRETS_JSON on
       # which key is present — MiniMax wins when set.
       E2E_MINIMAX_API_KEY: ${{ secrets.MOLECULE_STAGING_MINIMAX_API_KEY }}
+      # Direct-Anthropic alternative for operators who don't want to
+      # set up a MiniMax account (priority below MiniMax — first
+      # non-empty wins in test_staging_full_saas.sh's secrets-injection
+      # block). See #2578 PR comment for the rationale.
+      E2E_ANTHROPIC_API_KEY: ${{ secrets.MOLECULE_STAGING_ANTHROPIC_API_KEY }}
       # OpenAI fallback — kept wired so operators can dispatch with
       # E2E_RUNTIME=langgraph or =hermes and still have a working
       # canary path. The script picks the right blob shape based on
@@ -149,13 +154,21 @@ jobs:
             exit 1
           fi
 
-          # LLM-key requirement is per-runtime: claude-code uses MiniMax
-          # (MOLECULE_STAGING_MINIMAX_API_KEY), langgraph + hermes use
-          # OpenAI (MOLECULE_STAGING_OPENAI_KEY).
+          # LLM-key requirement is per-runtime: claude-code accepts
+          # EITHER MiniMax OR direct-Anthropic (whichever is set first),
+          # langgraph + hermes use OpenAI (MOLECULE_STAGING_OPENAI_KEY).
           case "${E2E_RUNTIME}" in
             claude-code)
-              required_secret_name="MOLECULE_STAGING_MINIMAX_API_KEY"
-              required_secret_value="${E2E_MINIMAX_API_KEY:-}"
+              if [ -n "${E2E_MINIMAX_API_KEY:-}" ]; then
+                required_secret_name="MOLECULE_STAGING_MINIMAX_API_KEY"
+                required_secret_value="${E2E_MINIMAX_API_KEY}"
+              elif [ -n "${E2E_ANTHROPIC_API_KEY:-}" ]; then
+                required_secret_name="MOLECULE_STAGING_ANTHROPIC_API_KEY"
+                required_secret_value="${E2E_ANTHROPIC_API_KEY}"
+              else
+                required_secret_name="MOLECULE_STAGING_MINIMAX_API_KEY or MOLECULE_STAGING_ANTHROPIC_API_KEY"
+                required_secret_value=""
+              fi
               ;;
             langgraph|hermes)
               required_secret_name="MOLECULE_STAGING_OPENAI_KEY"
