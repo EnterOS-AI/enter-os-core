@@ -93,8 +93,16 @@ class InboxMessage:
     method: str  # JSON-RPC method ("message/send", "tasks/send", etc.)
     created_at: str  # RFC3339 timestamp from the activity row
 
+    # Which OF MY workspaces did this message arrive on. Only meaningful
+    # for the multi-workspace external agent (one process registered
+    # against multiple workspaces). Empty string = single-workspace
+    # path / pre-multi-workspace caller — back-compat with consumers
+    # that don't set it. Tools like send_message_to_user use this to
+    # know which workspace's identity to reply with.
+    arrival_workspace_id: str = ""
+
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "activity_id": self.activity_id,
             "text": self.text,
             "peer_id": self.peer_id,
@@ -102,49 +110,85 @@ class InboxMessage:
             "method": self.method,
             "created_at": self.created_at,
         }
+        # Only surface arrival_workspace_id when it's set, so single-
+        # workspace consumers don't see a new key in their existing
+        # output.
+        if self.arrival_workspace_id:
+            d["arrival_workspace_id"] = self.arrival_workspace_id
+        return d
 
 
 @dataclass
 class InboxState:
     """Thread-safe queue of pending inbound messages.
 
-    Producer: the poller thread, calling ``record(message)``.
-    Consumers: the MCP tool handlers, calling ``peek``, ``pop``,
-    or ``wait``. Synchronization is via a single ``threading.Lock``
-    (cheap — every operation is O(n) over a small deque) plus an
-    ``Event`` that wakes ``wait`` callers when a new message lands.
+    Producer: the poller thread(s), calling ``record(message)``. Consumers:
+    the MCP tool handlers, calling ``peek``, ``pop``, or ``wait``.
+    Synchronization is via a single ``threading.Lock`` (cheap — every
+    operation is O(n) over a small deque) plus an ``Event`` that wakes
+    ``wait`` callers when a new message lands.
+
+    Cursors are per-workspace. Single-workspace operators construct with
+    ``InboxState(cursor_path=...)`` (back-compat — the path becomes the
+    cursor file for the empty-string workspace_id key). Multi-workspace
+    operators construct with ``InboxState(cursor_paths={wsid: path,...})``
+    so each poller advances its own cursor independently — one
+    workspace's slow poll can't stall another's, and a 410 on one cursor
+    only resets that one.
     """
 
-    cursor_path: Path
-    """File path that persists ``activity_logs.id`` of the most
-    recently observed row, so a restart doesn't replay backlog."""
+    cursor_path: Path | None = None
+    """Single-workspace cursor file. Sets ``cursor_paths[""]`` if
+    ``cursor_paths`` not also supplied. Kept on the dataclass for
+    back-compat — existing callers pass ``cursor_path=`` positionally."""
+
+    cursor_paths: dict[str, Path] = field(default_factory=dict)
+    """Per-workspace cursor files keyed by workspace_id. Multi-workspace
+    pollers each own their own row here."""
 
     _queue: deque[InboxMessage] = field(default_factory=lambda: deque(maxlen=MAX_QUEUED_MESSAGES))
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _arrival: threading.Event = field(default_factory=threading.Event)
-    _cursor: str | None = None
-    _cursor_loaded: bool = False
+    _cursors: dict[str, str | None] = field(default_factory=dict)
+    _cursors_loaded: dict[str, bool] = field(default_factory=dict)
 
-    def load_cursor(self) -> str | None:
+    def __post_init__(self) -> None:
+        # Back-compat: single-workspace constructor passes
+        # cursor_path=Path(...). Promote it into the dict under the
+        # empty-string key so the lookup APIs are uniform.
+        if self.cursor_path is not None and "" not in self.cursor_paths:
+            self.cursor_paths[""] = self.cursor_path
+
+    def _path_for(self, workspace_id: str) -> Path | None:
+        """Resolve the cursor path for a workspace_id key, or None."""
+        return self.cursor_paths.get(workspace_id or "")
+
+    def load_cursor(self, workspace_id: str = "") -> str | None:
         """Read the persisted cursor from disk. Cached after first call.
 
         Missing/unreadable file → None (poller will fall back to the
         initial-backlog window). We never raise: a corrupt cursor is
         less bad than the inbox refusing to start.
-        """
-        with self._lock:
-            if self._cursor_loaded:
-                return self._cursor
-            try:
-                if self.cursor_path.is_file():
-                    self._cursor = self.cursor_path.read_text().strip() or None
-            except OSError as exc:
-                logger.warning("inbox: failed to read cursor %s: %s", self.cursor_path, exc)
-                self._cursor = None
-            self._cursor_loaded = True
-            return self._cursor
 
-    def save_cursor(self, activity_id: str) -> None:
+        ``workspace_id=""`` is the single-workspace path, untouched.
+        """
+        path = self._path_for(workspace_id)
+        with self._lock:
+            if self._cursors_loaded.get(workspace_id):
+                return self._cursors.get(workspace_id)
+            cursor: str | None = None
+            if path is not None:
+                try:
+                    if path.is_file():
+                        cursor = path.read_text().strip() or None
+                except OSError as exc:
+                    logger.warning("inbox: failed to read cursor %s: %s", path, exc)
+                    cursor = None
+            self._cursors[workspace_id] = cursor
+            self._cursors_loaded[workspace_id] = True
+            return cursor
+
+    def save_cursor(self, activity_id: str, workspace_id: str = "") -> None:
         """Persist the cursor. Best-effort — log + continue on failure.
 
         Loss of the cursor on a write failure means an extra page of
@@ -152,27 +196,33 @@ class InboxState:
         would mask a permission misconfiguration on the operator's
         configs dir; warn loudly so they can fix it.
         """
+        path = self._path_for(workspace_id)
         with self._lock:
-            self._cursor = activity_id
-            self._cursor_loaded = True
+            self._cursors[workspace_id] = activity_id
+            self._cursors_loaded[workspace_id] = True
+        if path is None:
+            return
         try:
-            self.cursor_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.cursor_path.with_suffix(self.cursor_path.suffix + ".tmp")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
             tmp.write_text(activity_id)
-            tmp.replace(self.cursor_path)
+            tmp.replace(path)
         except OSError as exc:
-            logger.warning("inbox: failed to persist cursor to %s: %s", self.cursor_path, exc)
+            logger.warning("inbox: failed to persist cursor to %s: %s", path, exc)
 
-    def reset_cursor(self) -> None:
+    def reset_cursor(self, workspace_id: str = "") -> None:
         """Forget the cursor. Used after a 410 from the activity API."""
+        path = self._path_for(workspace_id)
         with self._lock:
-            self._cursor = None
-            self._cursor_loaded = True
+            self._cursors[workspace_id] = None
+            self._cursors_loaded[workspace_id] = True
+        if path is None:
+            return
         try:
-            if self.cursor_path.is_file():
-                self.cursor_path.unlink()
+            if path.is_file():
+                path.unlink()
         except OSError as exc:
-            logger.warning("inbox: failed to delete cursor %s: %s", self.cursor_path, exc)
+            logger.warning("inbox: failed to delete cursor %s: %s", path, exc)
 
     def record(self, message: InboxMessage) -> None:
         """Append a message, wake any waiter, and fire the notification
@@ -418,12 +468,25 @@ def _poll_once(
 
     Idempotent and stateless apart from the InboxState passed in —
     safe to call from tests with a stub state + a real httpx mock.
+
+    ``workspace_id`` doubles as the cursor key on InboxState — pollers
+    for distinct workspaces get distinct cursors and don't trample each
+    other. For the single-workspace path the cursor key is the empty
+    string (per InboxState.__post_init__'s back-compat promotion of
+    ``cursor_path``).
     """
     import httpx
 
     url = f"{platform_url}/workspaces/{workspace_id}/activity"
+    # Dual cursor key resolution: in single-workspace mode the cursor
+    # was historically stored under the "" key (back-compat). In
+    # multi-workspace mode each poller's cursor lives under its own
+    # workspace_id. Try the workspace-specific key first; if absent on
+    # this state, fall back to the legacy empty-string slot so existing
+    # InboxState-with-cursor_path-only constructors keep working.
+    cursor_key = workspace_id if workspace_id in state.cursor_paths else ""
     params: dict[str, str] = {"type": "a2a_receive"}
-    cursor = state.load_cursor()
+    cursor = state.load_cursor(cursor_key)
     if cursor:
         params["since_id"] = cursor
     else:
@@ -444,7 +507,7 @@ def _poll_once(
             cursor,
             INITIAL_BACKLOG_SECONDS,
         )
-        state.reset_cursor()
+        state.reset_cursor(cursor_key)
         return 0
 
     if resp.status_code >= 400:
@@ -499,12 +562,17 @@ def _poll_once(
         message = message_from_activity(row)
         if not message.activity_id:
             continue
+        # Tag the message with the workspace it arrived on so the agent
+        # (and tools like send_message_to_user) can route the reply to
+        # the right tenant. Empty-string in single-workspace mode keeps
+        # to_dict()'s output shape unchanged for back-compat consumers.
+        message.arrival_workspace_id = workspace_id if cursor_key else ""
         state.record(message)
         last_id = message.activity_id
         new_count += 1
 
     if last_id is not None:
-        state.save_cursor(last_id)
+        state.save_cursor(last_id, cursor_key)
     return new_count
 
 
@@ -517,15 +585,21 @@ def _poll_loop(
 ) -> None:
     """Daemon-thread body: poll forever until stop_event fires.
 
-    auth_headers() is rebuilt every iteration so a token rotation via
-    env var or .auth_token file is picked up without a restart. Cheap
-    (a dict + an env read).
+    auth_headers(workspace_id) is rebuilt every iteration so a token
+    rotation via env var, .auth_token file, or per-workspace registry
+    is picked up without a restart. Cheap (a dict + an env read).
+
+    Multi-workspace pollers pass the workspace_id so the per-workspace
+    bearer token is selected from platform_auth's registry; single-
+    workspace pollers fall through to the legacy resolution path
+    (workspace_id arg is still passed but the registry lookup misses
+    and auth_headers falls back to the cached/file/env token).
     """
     from platform_auth import auth_headers
 
     while True:
         try:
-            _poll_once(state, platform_url, workspace_id, auth_headers())
+            _poll_once(state, platform_url, workspace_id, auth_headers(workspace_id))
         except Exception as exc:  # noqa: BLE001
             logger.warning("inbox poller: iteration crashed: %s", exc)
         if stop_event is not None and stop_event.wait(interval):
@@ -545,22 +619,42 @@ def start_poller_thread(
     daemon=True so the poller dies with the main process — same
     rationale as mcp_cli's heartbeat thread (no leaks, no stale
     workspace writes after the operator hits Ctrl-C).
+
+    Thread name embeds the workspace_id (truncated) so a multi-workspace
+    operator running ``ps -eL`` or eyeballing ``threading.enumerate()``
+    can tell which thread is which without reverse-engineering it from
+    crash tracebacks.
     """
+    name = "molecule-mcp-inbox-poller"
+    if workspace_id:
+        name = f"{name}-{workspace_id[:8]}"
     t = threading.Thread(
         target=_poll_loop,
         args=(state, platform_url, workspace_id, interval),
-        name="molecule-mcp-inbox-poller",
+        name=name,
         daemon=True,
     )
     t.start()
     return t
 
 
-def default_cursor_path() -> Path:
+def default_cursor_path(workspace_id: str = "") -> Path:
     """Standard cursor location: ``<resolved configs dir>/.mcp_inbox_cursor``.
 
     Resolved via configs_dir so the cursor lives next to .auth_token
     + .platform_inbound_secret regardless of whether the runtime is
     in-container (/configs) or external (~/.molecule-workspace).
+
+    Multi-workspace operators pass ``workspace_id`` to get a unique
+    cursor file per workspace (``.mcp_inbox_cursor_<wsid_short>``) so
+    pollers don't trample each other's cursors. Single-workspace
+    operators omit the arg and keep the legacy filename — back-compat
+    with existing on-disk cursors.
     """
-    return configs_dir.resolve() / ".mcp_inbox_cursor"
+    base = configs_dir.resolve() / ".mcp_inbox_cursor"
+    if workspace_id:
+        # 8-char prefix is enough to disambiguate two workspaces in the
+        # same operator's setup (UUID v4 first 32 bits ≈ 4 billion of
+        # entropy) without hash-bombing the filename.
+        return base.with_name(f".mcp_inbox_cursor_{workspace_id[:8]}")
+    return base

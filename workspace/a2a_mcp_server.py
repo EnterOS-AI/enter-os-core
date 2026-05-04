@@ -113,6 +113,7 @@ async def handle_tool_call(name: str, arguments: dict) -> str:
         return await tool_send_message_to_user(
             arguments.get("message", ""),
             attachments=attachments,
+            workspace_id=arguments.get("workspace_id") or None,
         )
     elif name == "list_peers":
         return await tool_list_peers()

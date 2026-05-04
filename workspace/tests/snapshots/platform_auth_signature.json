@@ -4,7 +4,14 @@
       "is_abstract": false,
       "is_async": false,
       "name": "auth_headers",
-      "parameters": [],
+      "parameters": [
+        {
+          "annotation": "str | None",
+          "has_default": true,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "workspace_id"
+        }
+      ],
       "return_annotation": "dict[str, str]"
     },
     {

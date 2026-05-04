@@ -295,6 +295,17 @@ _SEND_MESSAGE_TO_USER = ToolSpec(
                 ),
                 "items": {"type": "string"},
             },
+            "workspace_id": {
+                "type": "string",
+                "description": (
+                    "Optional. Set ONLY when this agent is registered in MULTIPLE "
+                    "workspaces (external multi-workspace MCP path) — pass the "
+                    "`arrival_workspace_id` of the inbound message you're replying "
+                    "to so the user sees the reply in the same canvas they typed in. "
+                    "Single-workspace agents omit this; the message routes to the "
+                    "only registered workspace."
+                ),
+            },
         },
         "required": ["message"],
     },
