@@ -403,7 +403,7 @@ export function SkillsTab({ workspaceId, data }: Props) {
                   }}
                   placeholder="e.g. github://owner/repo#v1.0"
                   spellCheck={false}
-                  className="flex-1 rounded border border-line bg-surface px-2 py-1 text-[10px] text-ink placeholder:text-ink-soft focus:border-violet-600 focus:outline-none"
+                  className="flex-1 rounded border border-line bg-surface px-2 py-1 text-[10px] text-ink placeholder:text-ink-soft focus:outline-none focus:border-violet-600 focus-visible:ring-2 focus-visible:ring-violet-600/50"
                 />
                 <button
                   onClick={handleInstallCustom}
