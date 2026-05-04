@@ -93,7 +93,18 @@ jobs:
   synth:
     name: Synthetic E2E against staging
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    # Bumped from 12 → 20 (2026-05-04). Tenant user-data install phase
+    # (apt-get update + install docker.io/jq/awscli/caddy + snap install
+    # ssm-agent) runs from raw Ubuntu on every boot — none of it is
+    # pre-baked into the tenant AMI. Empirical fetch_secrets/ok timing
+    # across today's canaries: 51s → 82s → 143s → 625s. apt-mirror tail
+    # latency drives the boot-to-fetch_secrets phase from ~1min to >10min.
+    # A 12min budget leaves only ~2min for the workspace (which needs
+    # ~3.5min for claude-code cold boot) on slow-apt days, blowing the
+    # budget. 20min absorbs the worst tenant tail so the workspace probe
+    # gets the full ~7min it needs even on a slow apt day. Real fix:
+    # pre-bake caddy + ssm-agent into the tenant AMI (controlplane#TBD).
+    timeout-minutes: 20
     env:
       # claude-code default: cold-start ~5 min (comparable to langgraph),
       # but uses MiniMax-M2.7-highspeed via the template's third-party-
