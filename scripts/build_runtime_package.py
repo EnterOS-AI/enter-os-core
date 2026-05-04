@@ -73,6 +73,7 @@ TOP_LEVEL_MODULES = {
     "main",
     "mcp_cli",
     "molecule_ai_status",
+    "not_configured_handler",
     "platform_auth",
     "platform_inbound_auth",
     "plugins",
