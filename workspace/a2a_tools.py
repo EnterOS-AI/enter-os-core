@@ -102,12 +102,18 @@ def _is_root_workspace() -> bool:
     return _get_workspace_tier() == 0
 
 
-def _auth_headers_for_heartbeat() -> dict[str, str]:
+def _auth_headers_for_heartbeat(workspace_id: str | None = None) -> dict[str, str]:
     """Return Phase 30.1 auth headers; tolerate platform_auth being absent
-    in older installs (e.g. during rolling upgrade)."""
+    in older installs (e.g. during rolling upgrade).
+
+    ``workspace_id`` selects the per-workspace token from the multi-
+    workspace registry when set (PR-1: external agent registered in
+    multiple workspaces). With no arg the legacy single-token path is
+    unchanged.
+    """
     try:
         from platform_auth import auth_headers
-        return auth_headers()
+        return auth_headers(workspace_id) if workspace_id else auth_headers()
     except Exception:
         return {}
 
@@ -313,7 +319,11 @@ async def tool_check_task_status(workspace_id: str, task_id: str) -> str:
         return f"Error checking delegations: {e}"
 
 
-async def _upload_chat_files(client: httpx.AsyncClient, paths: list[str]) -> tuple[list[dict], str | None]:
+async def _upload_chat_files(
+    client: httpx.AsyncClient,
+    paths: list[str],
+    workspace_id: str | None = None,
+) -> tuple[list[dict], str | None]:
     """Upload local file paths through /workspaces/<self>/chat/uploads.
 
     The platform stages each upload under /workspace/.molecule/chat-uploads
@@ -353,11 +363,12 @@ async def _upload_chat_files(client: httpx.AsyncClient, paths: list[str]) -> tup
         if not mime_type:
             mime_type = "application/octet-stream"
         files_payload.append(("files", (os.path.basename(p), data, mime_type)))
+    target_workspace_id = (workspace_id or "").strip() or WORKSPACE_ID
     try:
         resp = await client.post(
-            f"{PLATFORM_URL}/workspaces/{WORKSPACE_ID}/chat/uploads",
+            f"{PLATFORM_URL}/workspaces/{target_workspace_id}/chat/uploads",
             files=files_payload,
-            headers=_auth_headers_for_heartbeat(),
+            headers=_auth_headers_for_heartbeat(target_workspace_id),
         )
     except Exception as e:
         return [], f"Error uploading attachments: {e}"
@@ -373,7 +384,11 @@ async def _upload_chat_files(client: httpx.AsyncClient, paths: list[str]) -> tup
     return uploaded, None
 
 
-async def tool_send_message_to_user(message: str, attachments: list[str] | None = None) -> str:
+async def tool_send_message_to_user(
+    message: str,
+    attachments: list[str] | None = None,
+    workspace_id: str | None = None,
+) -> str:
     """Send a message directly to the user's canvas chat via WebSocket.
 
     Args:
@@ -388,21 +403,32 @@ async def tool_send_message_to_user(message: str, attachments: list[str] | None 
             Examples:
               attachments=["/tmp/build-output.zip"]
               attachments=["/workspace/report.pdf", "/workspace/data.csv"]
+        workspace_id: Optional. When the agent is registered in MULTIPLE
+            workspaces (external multi-workspace MCP path), this
+            selects which workspace's chat to deliver the message to —
+            should match the ``arrival_workspace_id`` of the inbound
+            message you're replying to so the user sees the reply in
+            the same canvas they typed in. Single-workspace agents
+            omit this; the message routes to the only registered
+            workspace.
     """
     if not message:
         return "Error: message is required"
+    target_workspace_id = (workspace_id or "").strip() or WORKSPACE_ID
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
-            uploaded, upload_err = await _upload_chat_files(client, attachments or [])
+            uploaded, upload_err = await _upload_chat_files(
+                client, attachments or [], workspace_id=target_workspace_id,
+            )
             if upload_err:
                 return upload_err
             payload: dict = {"message": message}
             if uploaded:
                 payload["attachments"] = uploaded
             resp = await client.post(
-                f"{PLATFORM_URL}/workspaces/{WORKSPACE_ID}/notify",
+                f"{PLATFORM_URL}/workspaces/{target_workspace_id}/notify",
                 json=payload,
-                headers=_auth_headers_for_heartbeat(),
+                headers=_auth_headers_for_heartbeat(target_workspace_id),
             )
             if resp.status_code == 200:
                 if uploaded:
