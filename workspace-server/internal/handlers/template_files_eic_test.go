@@ -18,10 +18,16 @@ func TestResolveWorkspaceFilePath_KnownRuntimes(t *testing.T) {
 		{"hermes", "config.yaml", "/home/ubuntu/.hermes/config.yaml"},
 		{"HERMES", "config.yaml", "/home/ubuntu/.hermes/config.yaml"}, // case-insensitive
 		{"hermes", "nested/a.yaml", "/home/ubuntu/.hermes/nested/a.yaml"},
+		// claude-code (and any future containerized runtime) lands at /configs —
+		// the path user-data creates and bind-mounts into the container. Pre-fix
+		// this fell through to /opt/configs which doesn't exist on workspace EC2s
+		// and would 500 with EACCES on save (the bug that motivated this gate).
+		{"claude-code", "config.yaml", "/configs/config.yaml"},
+		{"CLAUDE-CODE", "config.yaml", "/configs/config.yaml"}, // case-insensitive
 		{"langgraph", "config.yaml", "/opt/configs/config.yaml"},
 		{"external", "skills.json", "/opt/configs/skills.json"},
-		{"", "config.yaml", "/opt/configs/config.yaml"},        // empty → default
-		{"unknown", "config.yaml", "/opt/configs/config.yaml"}, // unknown → default
+		{"", "config.yaml", "/configs/config.yaml"},        // empty → default
+		{"unknown", "config.yaml", "/configs/config.yaml"}, // unknown → default
 	}
 	for _, tc := range cases {
 		t.Run(tc.runtime+"/"+tc.relPath, func(t *testing.T) {

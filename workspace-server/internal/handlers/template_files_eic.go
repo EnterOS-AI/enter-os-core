@@ -38,13 +38,26 @@ import (
 // Keep these stable — changing the base path for an existing runtime
 // without a migration shim will make previously-saved files disappear from
 // the runtime's POV.
+//
+// Path source-of-truth: cloud-init in
+// `molecule-controlplane/internal/provisioner/userdata_containerized.go`
+// runs `mkdir -p /configs` and writes the canonical config.yaml there.
+// The workspace container bind-mounts host `/configs` to read it back.
+// Files written anywhere else on the host are invisible to the runtime,
+// so `claude-code` (and any future containerized runtime) must point here.
+//
+// `/configs` is root-owned (cloud-init runs as root); the SSH-as-ubuntu
+// install command at the call site below uses `sudo` to write into it.
 var workspaceFilePathPrefix = map[string]string{
-	"hermes":    "/home/ubuntu/.hermes",
-	"langgraph": "/opt/configs",
-	"external":  "/opt/configs",
-	// Default for unknown / future runtimes is /opt/configs — most
-	// conservative place that doesn't collide with system or runtime-
-	// private directories.
+	"hermes":      "/home/ubuntu/.hermes",
+	"claude-code": "/configs",
+	"langgraph":   "/opt/configs",
+	"external":    "/opt/configs",
+	// Default for unknown / future runtimes is /configs — matches the
+	// containerized user-data layout. The `langgraph` / `external`
+	// entries pre-date the unified user-data path and are retained
+	// until a migration audit confirms what the running tenants of
+	// those runtimes actually have on disk.
 }
 
 func resolveWorkspaceFilePath(runtime, relPath string) (string, error) {
@@ -53,7 +66,7 @@ func resolveWorkspaceFilePath(runtime, relPath string) (string, error) {
 	}
 	base, ok := workspaceFilePathPrefix[strings.ToLower(strings.TrimSpace(runtime))]
 	if !ok {
-		base = "/opt/configs"
+		base = "/configs"
 	}
 	return filepath.Join(base, filepath.Clean(relPath)), nil
 }
@@ -148,6 +161,17 @@ func writeFileViaEIC(ctx context.Context, instanceID, runtime, relPath string, c
 	// writes the file atomically via temp-file-rename. Permissions 0644
 	// match the existing tar-unpack defaults on the Docker path.
 	//
+	// `sudo -n` (non-interactive) prefix: the canonical containerized
+	// workspace layout puts /configs at the root, owned by root because
+	// cloud-init runs as root (see
+	// molecule-controlplane/internal/provisioner/userdata_containerized.go).
+	// SSH-as-ubuntu can't write into /configs without escalation.
+	// Ubuntu has passwordless sudo on EC2 by default; sudo -n fails fast
+	// (no prompt) if that ever changes, surfacing a clean error instead
+	// of a hang. The hermes path /home/ubuntu/.hermes is ubuntu-owned
+	// and doesn't strictly need sudo, but using it uniformly avoids
+	// per-runtime branching here.
+	//
 	// The remote command is fully deterministic — no user-controlled
 	// input reaches a shell eval (absPath is built from a map + Clean()).
 	sshArgs := []string{
@@ -157,7 +181,7 @@ func writeFileViaEIC(ctx context.Context, instanceID, runtime, relPath string, c
 		"-o", "ServerAliveInterval=15",
 		"-p", fmt.Sprintf("%d", localPort),
 		fmt.Sprintf("%s@127.0.0.1", osUser),
-		fmt.Sprintf("install -D -m 0644 /dev/stdin %s", shellQuote(absPath)),
+		fmt.Sprintf("sudo -n install -D -m 0644 /dev/stdin %s", shellQuote(absPath)),
 	}
 	sshCmd := exec.CommandContext(ctx, "ssh", sshArgs...)
 	sshCmd.Env = os.Environ()
