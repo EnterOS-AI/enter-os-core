@@ -151,9 +151,9 @@ func TestExport_RoutesThroughPluginWhenCutoverActive(t *testing.T) {
 	t.Setenv(envMemoryV2Cutover, "true")
 	mock := installMockDB(t)
 
-	mock.ExpectQuery("SELECT id::text, name FROM workspaces").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).
-			AddRow("ws-1", "alpha"))
+	mock.ExpectQuery("WITH RECURSIVE chain").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "root_id"}).
+			AddRow("ws-1", "alpha", "ws-1"))
 
 	plugin := &stubAdminPlugin{
 		searchFn: func(_ context.Context, body contract.SearchRequest) (*contract.SearchResponse, error) {
@@ -196,10 +196,10 @@ func TestExport_DeduplicatesByMemoryID(t *testing.T) {
 	mock := installMockDB(t)
 
 	// Two workspaces, both will see the same team-shared memory.
-	mock.ExpectQuery("SELECT id::text, name FROM workspaces").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).
-			AddRow("ws-1", "alpha").
-			AddRow("ws-2", "beta"))
+	mock.ExpectQuery("WITH RECURSIVE chain").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "root_id"}).
+			AddRow("ws-1", "alpha", "ws-1").
+			AddRow("ws-2", "beta", "ws-2"))
 
 	plugin := &stubAdminPlugin{
 		searchFn: func(_ context.Context, body contract.SearchRequest) (*contract.SearchResponse, error) {
@@ -225,9 +225,9 @@ func TestExport_DeduplicatesByMemoryID(t *testing.T) {
 func TestExport_SkipsWorkspaceWhenResolverFails(t *testing.T) {
 	t.Setenv(envMemoryV2Cutover, "true")
 	mock := installMockDB(t)
-	mock.ExpectQuery("SELECT id::text, name FROM workspaces").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).
-			AddRow("ws-1", "alpha"))
+	mock.ExpectQuery("WITH RECURSIVE chain").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "root_id"}).
+			AddRow("ws-1", "alpha", "ws-1"))
 
 	plugin := &stubAdminPlugin{}
 	resolver := &stubAdminResolver{err: errors.New("resolver dead")}
@@ -247,9 +247,9 @@ func TestExport_SkipsWorkspaceWhenResolverFails(t *testing.T) {
 func TestExport_SkipsWorkspaceWhenPluginSearchFails(t *testing.T) {
 	t.Setenv(envMemoryV2Cutover, "true")
 	mock := installMockDB(t)
-	mock.ExpectQuery("SELECT id::text, name FROM workspaces").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).
-			AddRow("ws-1", "alpha"))
+	mock.ExpectQuery("WITH RECURSIVE chain").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "root_id"}).
+			AddRow("ws-1", "alpha", "ws-1"))
 
 	plugin := &stubAdminPlugin{
 		searchFn: func(_ context.Context, _ contract.SearchRequest) (*contract.SearchResponse, error) {
@@ -271,7 +271,7 @@ func TestExport_SkipsWorkspaceWhenPluginSearchFails(t *testing.T) {
 func TestExport_WorkspacesQueryFails(t *testing.T) {
 	t.Setenv(envMemoryV2Cutover, "true")
 	mock := installMockDB(t)
-	mock.ExpectQuery("SELECT id::text, name FROM workspaces").
+	mock.ExpectQuery("WITH RECURSIVE chain").
 		WillReturnError(errors.New("db dead"))
 
 	plugin := &stubAdminPlugin{}
@@ -290,9 +290,9 @@ func TestExport_WorkspacesQueryFails(t *testing.T) {
 func TestExport_EmptyReadable(t *testing.T) {
 	t.Setenv(envMemoryV2Cutover, "true")
 	mock := installMockDB(t)
-	mock.ExpectQuery("SELECT id::text, name FROM workspaces").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).
-			AddRow("ws-1", "alpha"))
+	mock.ExpectQuery("WITH RECURSIVE chain").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "root_id"}).
+			AddRow("ws-1", "alpha", "ws-1"))
 
 	resolver := &stubAdminResolver{readable: []namespace.Namespace{}}
 	h := NewAdminMemoriesHandler().withMemoryV2APIs(&stubAdminPlugin{}, resolver)
@@ -312,9 +312,9 @@ func TestExport_EmptyReadable(t *testing.T) {
 func TestExport_RedactsSecretsInPluginPath(t *testing.T) {
 	t.Setenv(envMemoryV2Cutover, "true")
 	mock := installMockDB(t)
-	mock.ExpectQuery("SELECT id::text, name FROM workspaces").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).
-			AddRow("ws-1", "alpha"))
+	mock.ExpectQuery("WITH RECURSIVE chain").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "root_id"}).
+			AddRow("ws-1", "alpha", "ws-1"))
 
 	plugin := &stubAdminPlugin{
 		searchFn: func(_ context.Context, _ contract.SearchRequest) (*contract.SearchResponse, error) {
@@ -532,6 +532,79 @@ func TestImport_SkipsWhenResolverErrors(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp["skipped"] != 1 {
 		t.Errorf("resp = %v", resp)
+	}
+}
+
+// TestExport_BatchesPluginCallsByRoot pins the I3 fix: previously the
+// export ran one resolver + one plugin search per workspace (N+1 in
+// both); now it groups by root and runs one resolver + one plugin
+// search per UNIQUE root.
+//
+// Setup: 3 workspaces under 1 root → 1 resolver call + 1 plugin call
+// (was: 3 resolver + 3 plugin in the old code).
+func TestExport_BatchesPluginCallsByRoot(t *testing.T) {
+	t.Setenv(envMemoryV2Cutover, "true")
+	mock := installMockDB(t)
+
+	mock.ExpectQuery("WITH RECURSIVE chain").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "root_id"}).
+			AddRow("root-1", "alpha", "root-1").
+			AddRow("child-1", "alpha-child", "root-1").
+			AddRow("child-2", "alpha-grandchild", "root-1"))
+
+	pluginSearchCount := 0
+	plugin := &stubAdminPlugin{
+		searchFn: func(_ context.Context, body contract.SearchRequest) (*contract.SearchResponse, error) {
+			pluginSearchCount++
+			if len(body.Namespaces) != 3 {
+				t.Errorf("plugin search call %d: namespaces len = %d, want 3 (workspace+team+org)", pluginSearchCount, len(body.Namespaces))
+			}
+			return &contract.SearchResponse{}, nil
+		},
+	}
+	h := NewAdminMemoriesHandler().withMemoryV2APIs(plugin, adminRootResolver())
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/admin/memories/export", nil)
+	h.Export(c)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("code = %d body=%s", w.Code, w.Body.String())
+	}
+	if pluginSearchCount != 1 {
+		t.Errorf("plugin search called %d times, want 1 (was 3 with the old N+1 code)", pluginSearchCount)
+	}
+}
+
+// TestPickOwnerForNamespace covers the namespace→workspace_name
+// attribution helper introduced in I3.
+func TestPickOwnerForNamespace(t *testing.T) {
+	members := []workspaceRow{
+		{ID: "root-1", Name: "alpha", RootID: "root-1"},
+		{ID: "child-1", Name: "alpha-child", RootID: "root-1"},
+	}
+	cases := []struct {
+		name string
+		ns   string
+		want string
+	}{
+		{"workspace ns matches member id", "workspace:child-1", "alpha-child"},
+		{"workspace ns no match → first", "workspace:foreign", "alpha"},
+		{"team ns → first member of root group", "team:root-1", "alpha"},
+		{"org ns → first member", "org:root-1", "alpha"},
+		{"custom ns → first member", "custom:foo", "alpha"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pickOwnerForNamespace(tc.ns, members); got != tc.want {
+				t.Errorf("pickOwnerForNamespace(%q) = %q, want %q", tc.ns, got, tc.want)
+			}
+		})
+	}
+	if got := pickOwnerForNamespace("workspace:abc", nil); got != "" {
+		t.Errorf("empty members must return \"\", got %q", got)
 	}
 }
 
