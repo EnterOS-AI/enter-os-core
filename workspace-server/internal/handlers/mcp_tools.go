@@ -349,6 +349,14 @@ func (h *MCPHandler) toolSendMessageToUser(ctx context.Context, workspaceID stri
 
 
 func (h *MCPHandler) toolCommitMemory(ctx context.Context, workspaceID string, args map[string]interface{}) (string, error) {
+	// PR-6 (RFC #2728) compat shim: when the v2 plugin is wired
+	// (MEMORY_PLUGIN_URL set), translate legacy scope→namespace and
+	// delegate. Otherwise fall through to the legacy DB path so
+	// operators who haven't enabled the plugin yet keep working.
+	if h.memoryV2Available() == nil {
+		return h.commitMemoryLegacyShim(ctx, workspaceID, args)
+	}
+
 	content, _ := args["content"].(string)
 	scope, _ := args["scope"].(string)
 	if content == "" {
@@ -386,6 +394,12 @@ func (h *MCPHandler) toolCommitMemory(ctx context.Context, workspaceID string, a
 }
 
 func (h *MCPHandler) toolRecallMemory(ctx context.Context, workspaceID string, args map[string]interface{}) (string, error) {
+	// PR-6 (RFC #2728) compat shim: when the v2 plugin is wired,
+	// route through it. Otherwise fall through to legacy DB path.
+	if h.memoryV2Available() == nil {
+		return h.recallMemoryLegacyShim(ctx, workspaceID, args)
+	}
+
 	query, _ := args["query"].(string)
 	scope, _ := args["scope"].(string)
 
