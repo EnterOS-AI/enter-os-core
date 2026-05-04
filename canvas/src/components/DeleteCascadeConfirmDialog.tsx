@@ -127,13 +127,16 @@ export function DeleteCascadeConfirmDialog({
             </p>
           </div>
 
-          {/* Checkbox guard */}
+          {/* Checkbox guard. Ring-offset color was zinc-900 — the dialog
+              actually sits on bg-surface-sunken, so the offset showed
+              the wrong color through the ring gap. Switched to the
+              real bg + a danger-tinted ring. */}
           <label className="flex items-start gap-2.5 cursor-pointer group select-none">
             <input
               type="checkbox"
               checked={checked}
               onChange={(e) => onCheckedChange(e.target.checked)}
-              className="mt-0.5 w-4 h-4 rounded border-line bg-surface-card text-bad focus:ring-red-500 focus:ring-offset-0 focus:ring-offset-zinc-900 cursor-pointer"
+              className="mt-0.5 w-4 h-4 rounded border-line bg-surface-card text-bad cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-sunken"
             />
             <span className="text-[12px] text-ink-mid group-hover:text-ink-mid leading-relaxed">
               I understand this will permanently delete all listed workspaces and their data
@@ -145,7 +148,11 @@ export function DeleteCascadeConfirmDialog({
           <button
             type="button"
             onClick={onCancel}
-            className="px-3.5 py-1.5 text-[13px] text-ink-mid hover:text-ink bg-surface-card hover:bg-surface-card border border-line rounded-lg transition-colors"
+            // Was hover:bg-surface-card (same as base — silent no-op).
+            // Lift to surface-elevated to match the Cancel pattern in
+            // ConfirmDialog. Added focus-visible ring so keyboard users
+            // see where focus lands.
+            className="px-3.5 py-1.5 text-[13px] text-ink-mid hover:text-ink bg-surface-card hover:bg-surface-elevated border border-line hover:border-line-soft rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-sunken"
           >
             Cancel
           </button>
@@ -153,9 +160,12 @@ export function DeleteCascadeConfirmDialog({
             type="button"
             onClick={onConfirm}
             disabled={!checked}
-            className={`px-3.5 py-1.5 text-[13px] rounded-lg transition-colors
+            // Hover goes DARKER, not lighter — bg-red-500 on white text
+            // drops contrast below AA vs bg-red-700. Same trap fixed in
+            // ConfirmDialog and ApprovalBanner. focus-visible ring matches.
+            className={`px-3.5 py-1.5 text-[13px] rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-sunken
               ${checked
-                ? "bg-red-600 hover:bg-red-500 text-white cursor-pointer"
+                ? "bg-red-600 hover:bg-red-700 text-white cursor-pointer"
                 : "bg-red-900/30 text-bad/40 cursor-not-allowed"
               }`}
           >
