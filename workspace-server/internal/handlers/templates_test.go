@@ -894,7 +894,7 @@ func TestReadFile_WorkspaceNotFound(t *testing.T) {
 
 	handler := NewTemplatesHandler(t.TempDir(), nil)
 
-	mock.ExpectQuery("SELECT name FROM workspaces WHERE id =").
+	mock.ExpectQuery(`SELECT name, COALESCE\(instance_id, ''\), COALESCE\(runtime, ''\) FROM workspaces WHERE id =`).
 		WithArgs("ws-nf").
 		WillReturnError(sql.ErrNoRows)
 
@@ -928,9 +928,14 @@ func TestReadFile_FallbackToHost_Success(t *testing.T) {
 
 	handler := NewTemplatesHandler(tmpDir, nil)
 
-	mock.ExpectQuery("SELECT name FROM workspaces WHERE id =").
+	// instance_id="" → SaaS branch skipped → falls through to local
+	// Docker / template-dir host fallback (the only path the test
+	// exercises). When instance_id is set, ReadFile would dispatch
+	// through readFileViaEIC, which is covered by integration tests.
+	mock.ExpectQuery(`SELECT name, COALESCE\(instance_id, ''\), COALESCE\(runtime, ''\) FROM workspaces WHERE id =`).
 		WithArgs("ws-read").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Reader Agent"))
+		WillReturnRows(sqlmock.NewRows([]string{"name", "instance_id", "runtime"}).
+			AddRow("Reader Agent", "", ""))
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -964,9 +969,10 @@ func TestReadFile_FallbackToHost_NotFound(t *testing.T) {
 	tmpDir := t.TempDir()
 	handler := NewTemplatesHandler(tmpDir, nil)
 
-	mock.ExpectQuery("SELECT name FROM workspaces WHERE id =").
+	mock.ExpectQuery(`SELECT name, COALESCE\(instance_id, ''\), COALESCE\(runtime, ''\) FROM workspaces WHERE id =`).
 		WithArgs("ws-nofile").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("No File Agent"))
+		WillReturnRows(sqlmock.NewRows([]string{"name", "instance_id", "runtime"}).
+			AddRow("No File Agent", "", ""))
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)

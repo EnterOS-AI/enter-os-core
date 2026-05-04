@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -349,16 +350,52 @@ func (h *TemplatesHandler) ReadFile(c *gin.Context) {
 		return
 	}
 
-	var wsName string
-	if err := db.DB.QueryRowContext(ctx, `SELECT name FROM workspaces WHERE id = $1`, workspaceID).Scan(&wsName); err != nil {
+	var wsName, instanceID, runtime string
+	if err := db.DB.QueryRowContext(ctx,
+		`SELECT name, COALESCE(instance_id, ''), COALESCE(runtime, '') FROM workspaces WHERE id = $1`,
+		workspaceID,
+	).Scan(&wsName, &instanceID, &runtime); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
 		return
 	}
 
-	// Try container first. `cat` wants a single path argument — passing
-	// rootPath and filePath as two args would make `cat` try to read the
-	// rootPath directory (error) and then resolve filePath relative to
-	// the container's cwd, which isn't guaranteed to equal rootPath.
+	// SaaS workspace (EC2-per-workspace) — no Docker on this tenant. Read
+	// via SSH through the EIC endpoint, mirroring WriteFile's dispatch
+	// in this same file. Pre-fix this branch was missing and SaaS
+	// workspaces always fell through to the local-Docker container check
+	// (finds nothing on a SaaS tenant) + template-dir fallback (returns
+	// the seed template, not the persisted state). Net effect: the
+	// canvas Config tab always 404'd for SaaS workspaces — visible to
+	// users after #2781 added the "no config.yaml" error UX.
+	//
+	// The ?root= query param is intentionally ignored on the SaaS path —
+	// it's a local-Docker concept (arbitrary container roots). The
+	// runtime → base-path map (workspaceFilePathPrefix in
+	// template_files_eic.go) is the SaaS source of truth.
+	if instanceID != "" {
+		content, err := readFileViaEIC(ctx, instanceID, runtime, filePath)
+		if err == nil {
+			c.JSON(http.StatusOK, gin.H{
+				"path":    filePath,
+				"content": string(content),
+				"size":    len(content),
+			})
+			return
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "file not found on workspace"})
+			return
+		}
+		log.Printf("ReadFile EIC for %s path=%s: %v", workspaceID, filePath, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to read file: %v", err)})
+		return
+	}
+
+	// Local Docker path: try the workspace container first. `cat` wants a
+	// single path argument — passing rootPath and filePath as two args
+	// would make `cat` try to read the rootPath directory (error) and
+	// then resolve filePath relative to the container's cwd, which
+	// isn't guaranteed to equal rootPath.
 	if containerName := h.findContainer(ctx, workspaceID); containerName != "" {
 		fullPath := strings.TrimRight(rootPath, "/") + "/" + filePath
 		content, err := h.execInContainer(ctx, containerName, []string{"cat", fullPath})
