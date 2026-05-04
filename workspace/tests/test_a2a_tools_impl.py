@@ -255,9 +255,10 @@ class TestToolDelegateTask:
             "status": "online",
         }
         captured = {}
-        async def fake_send(passed_peer_id, message):
+        async def fake_send(passed_peer_id, message, source_workspace_id=None):
             captured["peer_id"] = passed_peer_id
             captured["message"] = message
+            captured["source"] = source_workspace_id
             return "ok"
 
         with patch("a2a_tools.discover_peer", return_value=peer), \

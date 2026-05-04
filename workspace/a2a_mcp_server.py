@@ -91,16 +91,19 @@ async def handle_tool_call(name: str, arguments: dict) -> str:
         return await tool_delegate_task(
             arguments.get("workspace_id", ""),
             arguments.get("task", ""),
+            source_workspace_id=arguments.get("source_workspace_id") or None,
         )
     elif name == "delegate_task_async":
         return await tool_delegate_task_async(
             arguments.get("workspace_id", ""),
             arguments.get("task", ""),
+            source_workspace_id=arguments.get("source_workspace_id") or None,
         )
     elif name == "check_task_status":
         return await tool_check_task_status(
             arguments.get("workspace_id", ""),
             arguments.get("task_id", ""),
+            source_workspace_id=arguments.get("source_workspace_id") or None,
         )
     elif name == "send_message_to_user":
         raw_attachments = arguments.get("attachments")
@@ -116,7 +119,9 @@ async def handle_tool_call(name: str, arguments: dict) -> str:
             workspace_id=arguments.get("workspace_id") or None,
         )
     elif name == "list_peers":
-        return await tool_list_peers()
+        return await tool_list_peers(
+            source_workspace_id=arguments.get("source_workspace_id") or None,
+        )
     elif name == "get_workspace_info":
         return await tool_get_workspace_info()
     elif name == "commit_memory":

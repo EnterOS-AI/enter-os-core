@@ -30,6 +30,23 @@ else:
 # Cache workspace ID → name mappings (populated by list_peers calls)
 _peer_names: dict[str, str] = {}
 
+# Cache: peer workspace_id → the source workspace_id whose registry
+# returned that peer. Populated by ``a2a_tools.tool_list_peers`` whenever
+# it queries a specific workspace's peers — so a later
+# ``tool_delegate_task(target)`` can auto-route through the correct
+# source workspace without the agent having to specify
+# ``source_workspace_id`` explicitly.
+#
+# Single-workspace mode: dict stays empty, all delegations fall through
+# to the module-level WORKSPACE_ID (existing behavior).
+#
+# Multi-workspace mode: as the agent calls list_peers, this map is
+# populated with each peer's source. Subsequent delegate_task calls
+# auto-route. If a peer is registered under multiple sources (rare —
+# e.g. an org-wide capability) the LAST observed source wins; the agent
+# can override by passing ``source_workspace_id`` explicitly.
+_peer_to_source: dict[str, str] = {}
+
 # Cache workspace ID → full peer record (id, name, role, status, url, ...).
 # Populated by tool_list_peers and by the lazy registry lookup in
 # enrich_peer_metadata. The notification-callback path (channel envelope
@@ -49,7 +66,12 @@ _peer_metadata: dict[str, tuple[float, dict | None]] = {}
 _PEER_METADATA_TTL_SECONDS = 300.0
 
 
-def enrich_peer_metadata(peer_id: str, *, now: float | None = None) -> dict | None:
+def enrich_peer_metadata(
+    peer_id: str,
+    source_workspace_id: str | None = None,
+    *,
+    now: float | None = None,
+) -> dict | None:
     """Return cached or freshly-fetched metadata for ``peer_id``.
 
     Sync helper — safe to call from the inbox poller's notification
@@ -86,10 +108,11 @@ def enrich_peer_metadata(peer_id: str, *, now: float | None = None) -> dict | No
             # the same as a registry miss, which is the desired UX.
             return record
 
+    src = (source_workspace_id or "").strip() or WORKSPACE_ID
     url = f"{PLATFORM_URL}/registry/discover/{canon}"
     try:
         with httpx.Client(timeout=2.0) as client:
-            resp = client.get(url, headers={"X-Workspace-ID": WORKSPACE_ID, **auth_headers()})
+            resp = client.get(url, headers={"X-Workspace-ID": src, **auth_headers(src)})
     except Exception as exc:  # noqa: BLE001
         logger.debug("enrich_peer_metadata: GET %s failed: %s", url, exc)
         _peer_metadata[canon] = (current, None)
@@ -174,22 +197,30 @@ def _validate_peer_id(peer_id: str) -> str | None:
     return pid.lower()
 
 
-async def discover_peer(target_id: str) -> dict | None:
+async def discover_peer(target_id: str, source_workspace_id: str | None = None) -> dict | None:
     """Discover a peer workspace's URL via the platform registry.
 
     Validates ``target_id`` is a UUID before constructing the URL — a
     malformed id can't reach the platform handler now, which both
     short-circuits an avoidable round-trip AND ensures we never
     interpolate path-traversal characters into the URL.
+
+    ``source_workspace_id`` selects which registered workspace asks the
+    question — both the X-Workspace-ID header AND the Authorization
+    bearer token must come from the same workspace, otherwise the
+    platform's TenantGuard rejects the request. Defaults to the
+    module-level WORKSPACE_ID for back-compat with single-workspace
+    callers.
     """
     safe_id = _validate_peer_id(target_id)
     if safe_id is None:
         return None
+    src = (source_workspace_id or "").strip() or WORKSPACE_ID
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             resp = await client.get(
                 f"{PLATFORM_URL}/registry/discover/{safe_id}",
-                headers={"X-Workspace-ID": WORKSPACE_ID, **auth_headers()},
+                headers={"X-Workspace-ID": src, **auth_headers(src)},
             )
             if resp.status_code == 200:
                 return resp.json()
@@ -283,7 +314,7 @@ def _format_a2a_error(exc: BaseException, target_url: str) -> str:
     return f"{_A2A_ERROR_PREFIX}{detail} [target={target_url}]"
 
 
-async def send_a2a_message(peer_id: str, message: str) -> str:
+async def send_a2a_message(peer_id: str, message: str, source_workspace_id: str | None = None) -> str:
     """Send an A2A ``message/send`` to a peer workspace via the platform proxy.
 
     The target URL is constructed internally as
@@ -291,6 +322,12 @@ async def send_a2a_message(peer_id: str, message: str) -> str:
     platform's A2A proxy is the only path that works for both
     in-container and external runtimes — see
     a2a_tools.tool_delegate_task for the rationale.
+
+    ``source_workspace_id`` is the SENDING workspace — drives both the
+    X-Workspace-ID source-tagging header and the bearer token. Defaults
+    to the module-level WORKSPACE_ID for back-compat. Multi-workspace
+    operators pass it explicitly so each registered workspace's peers
+    are reached via their own auth chain.
 
     Auto-retries up to _DELEGATE_MAX_ATTEMPTS times on transient
     transport-layer errors (RemoteProtocolError, ConnectError,
@@ -302,6 +339,7 @@ async def send_a2a_message(peer_id: str, message: str) -> str:
     safe_id = _validate_peer_id(peer_id)
     if safe_id is None:
         return f"{_A2A_ERROR_PREFIX}invalid peer_id (expected UUID): {peer_id!r}"
+    src = (source_workspace_id or "").strip() or WORKSPACE_ID
     target_url = f"{PLATFORM_URL}/workspaces/{safe_id}/a2a"
 
     # Fix F (Cycle 5 / H2 — flagged 5 consecutive audits): timeout=None allowed
@@ -322,7 +360,7 @@ async def send_a2a_message(peer_id: str, message: str) -> str:
                 # in the recipient's My Chat tab as user-typed input.
                 resp = await client.post(
                     target_url,
-                    headers=self_source_headers(WORKSPACE_ID),
+                    headers=self_source_headers(src),
                     json={
                         "jsonrpc": "2.0",
                         "id": str(uuid.uuid4()),
@@ -389,7 +427,7 @@ async def send_a2a_message(peer_id: str, message: str) -> str:
     return _format_a2a_error(last_exc, target_url)
 
 
-async def get_peers_with_diagnostic() -> tuple[list[dict], str | None]:
+async def get_peers_with_diagnostic(source_workspace_id: str | None = None) -> tuple[list[dict], str | None]:
     """Get this workspace's peers, returning (peers, diagnostic).
 
     diagnostic is None when the call succeeded (status 200, even if the list
@@ -398,15 +436,22 @@ async def get_peers_with_diagnostic() -> tuple[list[dict], str | None]:
     diagnostic is a short human-readable string explaining what went wrong
     so callers can surface it instead of "may be isolated" — see #2397.
 
+    ``source_workspace_id`` selects which registered workspace's peers to
+    enumerate; defaults to the module-level WORKSPACE_ID for
+    single-workspace back-compat. Multi-workspace operators iterate over
+    each registered workspace separately so each set of peers is fetched
+    with the correct auth.
+
     The legacy get_peers() shim below preserves the bare-list contract for
     non-tool callers.
     """
-    url = f"{PLATFORM_URL}/registry/{WORKSPACE_ID}/peers"
+    src = (source_workspace_id or "").strip() or WORKSPACE_ID
+    url = f"{PLATFORM_URL}/registry/{src}/peers"
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             resp = await client.get(
                 url,
-                headers={"X-Workspace-ID": WORKSPACE_ID, **auth_headers()},
+                headers={"X-Workspace-ID": src, **auth_headers(src)},
             )
         except Exception as e:
             return [], f"Cannot reach platform at {PLATFORM_URL}: {e}"

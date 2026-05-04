@@ -21,7 +21,7 @@ Use for long-running work where you want to keep doing other things while the pe
 Statuses: pending/in_progress (peer still working — wait), queued (peer is busy with a prior task — DO NOT retry, the platform stitches the response when it finishes), completed (result available), failed (real error — fall back to a different peer or handle it yourself).
 
 ### list_peers
-Call this first when you need to delegate but don't know the target's ID. Access control is enforced — you only see siblings, parent, and direct children.
+Call this first when you need to delegate but don't know the target's ID. Access control is enforced — you only see siblings, parent, and direct children. With MOLECULE_WORKSPACES set, peers from every registered workspace are aggregated and tagged with their source.
 
 ### get_workspace_info
 Use to introspect your own identity (e.g. before reporting back to the user, or to determine whether you're a tier-0 root that can write GLOBAL memory).
