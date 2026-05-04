@@ -128,24 +128,22 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Verify required secrets present
-        env:
-          # Re-bind so the per-runtime LLM key check below sees the right
-          # secret. The job-level env block already reads both; this just
-          # makes them visible inside the conditional shell.
-          IS_DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
-          # Schedule-vs-dispatch hardening (mirrors the sweep-cf-* and
-          # redeploy-tenants-on-* workflows): hard-fail on missing secret
-          # for cron firing so a misconfigured-repo doesn't silently
-          # report green while doing nothing. Soft-skip on operator
-          # dispatch — operators can dispatch ad-hoc to verify a fix
-          # without setting up the secret first.
+          # Hard-fail on missing secret REGARDLESS of trigger. Previously
+          # this step soft-skipped on workflow_dispatch via `exit 0`, but
+          # `exit 0` only ends the STEP — subsequent steps still ran with
+          # the empty secret, the synth script fell through to the wrong
+          # SECRETS_JSON branch, and the canary failed 5 min later with a
+          # confusing "Agent error (Exception)" instead of the clean
+          # "secret missing" message at the top. Caught 2026-05-04 by
+          # dispatched run 25296530706: claude-code + missing MINIMAX
+          # silently used OpenAI keys but kept model=MiniMax-M2.7, then
+          # the workspace 401'd against MiniMax once it tried to call.
+          # Fix: exit 1 in both cron and dispatch paths. Operators who
+          # want to verify a YAML change without setting up the secret
+          # can read the verify-secrets step's stderr — the failure is
+          # itself the verification signal.
           if [ -z "${MOLECULE_ADMIN_TOKEN:-}" ]; then
-            if [ "$IS_DISPATCH" = "true" ]; then
-              echo "::warning::CP_STAGING_ADMIN_API_TOKEN not set — synth E2E cannot run"
-              echo "::warning::Set it at Settings → Secrets and Variables → Actions"
-              exit 0
-            fi
             echo "::error::CP_STAGING_ADMIN_API_TOKEN secret missing — synth E2E cannot run"
             echo "::error::Set it at Settings → Secrets and Variables → Actions; pull from staging-CP's CP_ADMIN_API_TOKEN env in Railway."
             exit 1
@@ -153,8 +151,7 @@ jobs:
 
           # LLM-key requirement is per-runtime: claude-code uses MiniMax
           # (MOLECULE_STAGING_MINIMAX_API_KEY), langgraph + hermes use
-          # OpenAI (MOLECULE_STAGING_OPENAI_KEY). Cron firing must have
-          # the right key for the active runtime; dispatch can soft-skip.
+          # OpenAI (MOLECULE_STAGING_OPENAI_KEY).
           case "${E2E_RUNTIME}" in
             claude-code)
               required_secret_name="MOLECULE_STAGING_MINIMAX_API_KEY"
@@ -171,13 +168,8 @@ jobs:
               ;;
           esac
           if [ -n "$required_secret_name" ] && [ -z "$required_secret_value" ]; then
-            if [ "$IS_DISPATCH" = "true" ]; then
-              echo "::warning::${required_secret_name} not set — synth E2E with runtime=${E2E_RUNTIME} cannot reach an LLM"
-              echo "::warning::Set it at Settings → Secrets and Variables → Actions, OR dispatch with a different runtime"
-              exit 0
-            fi
             echo "::error::${required_secret_name} secret missing — runtime=${E2E_RUNTIME} cannot authenticate against its LLM provider"
-            echo "::error::Set it at Settings → Secrets and Variables → Actions"
+            echo "::error::Set it at Settings → Secrets and Variables → Actions, OR dispatch with a different runtime"
             exit 1
           fi
 
