@@ -16,8 +16,9 @@ import (
 
 // stubBackfillPlugin records calls for assertions.
 type stubBackfillPlugin struct {
-	upsertedNamespaces []string
+	upsertedNamespaces  []string
 	committedNamespaces []string
+	committedIDs        []string // captures MemoryWrite.ID per call
 	upsertErr           error
 	commitErr           error
 }
@@ -29,12 +30,17 @@ func (s *stubBackfillPlugin) UpsertNamespace(_ context.Context, name string, _ c
 	}
 	return &contract.Namespace{Name: name, Kind: contract.NamespaceKindWorkspace}, nil
 }
-func (s *stubBackfillPlugin) CommitMemory(_ context.Context, ns string, _ contract.MemoryWrite) (*contract.MemoryWriteResponse, error) {
+func (s *stubBackfillPlugin) CommitMemory(_ context.Context, ns string, body contract.MemoryWrite) (*contract.MemoryWriteResponse, error) {
 	s.committedNamespaces = append(s.committedNamespaces, ns)
+	s.committedIDs = append(s.committedIDs, body.ID)
 	if s.commitErr != nil {
 		return nil, s.commitErr
 	}
-	return &contract.MemoryWriteResponse{ID: "out-1", Namespace: ns}, nil
+	id := body.ID
+	if id == "" {
+		id = "out-1"
+	}
+	return &contract.MemoryWriteResponse{ID: id, Namespace: ns}, nil
 }
 
 type stubBackfillResolver struct {
@@ -130,6 +136,66 @@ func TestNamespaceKindFromString(t *testing.T) {
 }
 
 // --- backfill (the workhorse) ---
+
+// TestBackfill_PassesSourceUUIDAsIdempotencyKey pins the Critical-1
+// fix: backfill must forward agent_memories.id to MemoryWrite.ID so
+// re-runs upsert in place.
+func TestBackfill_PassesSourceUUIDAsIdempotencyKey(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+	now := time.Now().UTC()
+	mock.ExpectQuery("SELECT id, workspace_id, content, scope, created_at").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "workspace_id", "content", "scope", "created_at"}).
+			AddRow("source-uuid-A", "root-1", "fact 1", "LOCAL", now).
+			AddRow("source-uuid-B", "root-1", "fact 2", "LOCAL", now))
+
+	plugin := &stubBackfillPlugin{}
+	cfg := backfillConfig{DB: db, Plugin: plugin, Resolver: rootBackfillResolver(), Limit: 100}
+	devnull, _ := os.Open(os.DevNull)
+	defer devnull.Close()
+	if _, err := backfill(context.Background(), cfg, devnull); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if len(plugin.committedIDs) != 2 {
+		t.Fatalf("commits = %d", len(plugin.committedIDs))
+	}
+	if plugin.committedIDs[0] != "source-uuid-A" || plugin.committedIDs[1] != "source-uuid-B" {
+		t.Errorf("committedIDs = %v; idempotency key not forwarded", plugin.committedIDs)
+	}
+}
+
+// TestBackfill_RerunIsIdempotent: same agent_memories rows backfilled
+// twice. Plugin sees the same UUIDs both times; without the fix the
+// plugin would generate fresh UUIDs and duplicate.
+func TestBackfill_RerunIsIdempotent(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+	now := time.Now().UTC()
+	rows1 := sqlmock.NewRows([]string{"id", "workspace_id", "content", "scope", "created_at"}).
+		AddRow("uuid-1", "root-1", "fact", "LOCAL", now)
+	rows2 := sqlmock.NewRows([]string{"id", "workspace_id", "content", "scope", "created_at"}).
+		AddRow("uuid-1", "root-1", "fact", "LOCAL", now)
+	mock.ExpectQuery("SELECT id, workspace_id, content, scope, created_at").WillReturnRows(rows1)
+	mock.ExpectQuery("SELECT id, workspace_id, content, scope, created_at").WillReturnRows(rows2)
+
+	plugin := &stubBackfillPlugin{}
+	cfg := backfillConfig{DB: db, Plugin: plugin, Resolver: rootBackfillResolver(), Limit: 100}
+	devnull, _ := os.Open(os.DevNull)
+	defer devnull.Close()
+
+	if _, err := backfill(context.Background(), cfg, devnull); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backfill(context.Background(), cfg, devnull); err != nil {
+		t.Fatal(err)
+	}
+	if len(plugin.committedIDs) != 2 {
+		t.Errorf("commits = %d, want 2", len(plugin.committedIDs))
+	}
+	if plugin.committedIDs[0] != "uuid-1" || plugin.committedIDs[1] != "uuid-1" {
+		t.Errorf("ids = %v; both runs must pass uuid-1 (relies on plugin upsert for actual de-dup)", plugin.committedIDs)
+	}
+}
 
 func TestBackfill_HappyPath_Apply(t *testing.T) {
 	db, mock, _ := sqlmock.New()

@@ -238,6 +238,15 @@ components:
       type: object
       required: [content, kind, source]
       properties:
+        id:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            Optional idempotency key. When supplied, the plugin MUST
+            treat the write as upsert keyed on this id (re-running
+            the same write does not duplicate). When omitted, the
+            plugin generates a fresh UUID. Used by the backfill CLI.
         content:
           type: string
           minLength: 1

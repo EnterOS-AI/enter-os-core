@@ -1,8 +1,10 @@
 // memory-backfill is a one-shot CLI that copies rows from the legacy
 // agent_memories table into the v2 plugin via its HTTP API.
-// Idempotent on re-run: each row is keyed by its UUID, and if the
-// plugin sees a duplicate it returns 409 (or just no-ops, depending
-// on plugin) — the backfill proceeds.
+//
+// Idempotent on re-run: the backfill passes each source row's UUID
+// to the plugin's MemoryWrite.ID field, and the plugin upserts on
+// conflict. Re-running the backfill (whole or partial) updates rows
+// in place rather than duplicating.
 //
 // Usage:
 //   memory-backfill -dry-run                    # count + diff
@@ -188,7 +190,11 @@ func backfill(ctx context.Context, cfg backfillConfig, stdout *os.File) (*backfi
 			continue
 		}
 
+		// Pass the source row's UUID as the idempotency key so re-runs
+		// upsert in place. Without this, retries would duplicate every
+		// memory.
 		if _, err := cfg.Plugin.CommitMemory(ctx, ns, contract.MemoryWrite{
+			ID:      id,
 			Content: content,
 			Kind:    contract.MemoryKindFact,
 			Source:  contract.MemorySourceAgent,
