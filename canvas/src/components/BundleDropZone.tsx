@@ -117,9 +117,11 @@ export function BundleDropZone() {
         📦 Import bundle
       </button>
 
-      {/* Visual overlay when dragging */}
+      {/* Visual overlay when dragging — was hardcoded blue-950/blue-400
+          which doesn't flip with theme. accent colors stay visually
+          consistent with the rest of the canvas in both modes. */}
       {isDragging && (
-        <div className="fixed inset-0 z-20 flex items-center justify-center bg-blue-950/40 backdrop-blur-sm border-2 border-dashed border-blue-400/50 pointer-events-none">
+        <div className="fixed inset-0 z-20 flex items-center justify-center bg-accent/15 backdrop-blur-sm border-2 border-dashed border-accent/40 pointer-events-none">
           <div className="bg-surface-sunken/95 border border-accent/50 rounded-2xl px-8 py-6 shadow-2xl text-center">
             <div className="text-3xl mb-2" aria-hidden="true">📦</div>
             <div className="text-sm font-semibold text-ink">Drop Bundle to Import</div>
@@ -128,10 +130,21 @@ export function BundleDropZone() {
         </div>
       )}
 
-      {/* Importing spinner */}
+      {/* Importing indicator — role=status + aria-live so SR users hear
+          "Importing bundle..." while the API call is in flight, not just
+          the result toast that fires after. motion-safe:animate-spin
+          respects prefers-reduced-motion (Tailwind's motion-safe variant
+          gates animation on the user's OS setting). */}
       {importing && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-surface-sunken/95 border border-line/60 rounded-xl px-5 py-3 shadow-2xl flex items-center gap-3">
-          <div className="w-4 h-4 border-2 border-sky-400 border-t-transparent rounded-full animate-spin" />
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-surface-sunken/95 border border-line/60 rounded-xl px-5 py-3 shadow-2xl flex items-center gap-3"
+        >
+          <div
+            aria-hidden="true"
+            className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full motion-safe:animate-spin"
+          />
           <span className="text-sm text-ink">Importing bundle...</span>
         </div>
       )}
