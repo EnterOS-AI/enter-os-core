@@ -5,6 +5,13 @@ export const STATUS_CONFIG: Record<string, { dot: string; glow: string; label: s
   degraded: { dot: "bg-amber-400", glow: "shadow-amber-400/50", label: "Degraded", bar: "from-amber-500/20 to-transparent" },
   failed: { dot: "bg-red-400", glow: "shadow-red-400/50", label: "Failed", bar: "from-red-500/20 to-transparent" },
   provisioning: { dot: "bg-sky-400 motion-safe:animate-pulse", glow: "shadow-sky-400/50", label: "Starting", bar: "from-sky-500/20 to-transparent" },
+  // not_configured: derived state from agent_card.configuration_status (PR #2756 chain).
+  // Workspace is reachable (heartbeating, /agent-card serves) but adapter.setup()
+  // failed — typically a missing/rotated LLM credential. Amber to differentiate from
+  // online (green) and failed (red) — the workspace itself is healthy, just needs
+  // configuration. Hover renders agent_card.configuration_error in the tooltip so
+  // the operator sees the exact env var to set.
+  not_configured: { dot: "bg-amber-300", glow: "shadow-amber-300/50", label: "Not configured", bar: "from-amber-400/20 to-transparent" },
 };
 
 export function statusDotClass(status: string): string {
