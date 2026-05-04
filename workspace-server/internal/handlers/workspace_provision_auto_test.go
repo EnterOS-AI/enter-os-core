@@ -168,3 +168,120 @@ func TestTeamExpand_UsesAutoNotDirectDockerPath(t *testing.T) {
 		t.Errorf("team.go must call h.wh.provisionWorkspaceAuto for child provisioning — current code does not")
 	}
 }
+
+// TestNoCallSiteCallsDirectProvisionerExceptAuto — generic source-level
+// gate covering ANY future caller, not just team.go and org_import.go.
+//
+// The architectural intent is: provisionWorkspaceAuto is the single
+// source of truth for "how to start a workspace"; the per-backend
+// helpers (provisionWorkspace = Docker, provisionWorkspaceCP = CP) are
+// implementation details Auto routes between based on which backend is
+// wired. Pre-2026-05-04 we had this abstraction but enforced only by
+// convention — TeamHandler.Expand violated it (silent SaaS bug), then
+// org_import.go violated it the same way. The fixes were identical:
+// route through Auto. This gate prevents the *next* call site from
+// repeating the pattern.
+//
+// Walks every .go file under handlers/ (except the dispatcher itself
+// in workspace.go, and tests). Fails if any non-test handler calls
+// h.*.provisionWorkspace( or h.*.provisionWorkspaceCP( directly —
+// they should ALL go through provisionWorkspaceAuto.
+func TestNoCallSiteCallsDirectProvisionerExceptAuto(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	entries, err := os.ReadDir(wd)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	directRe := []string{
+		// Receiver could be anything, so match on the suffix.
+		".provisionWorkspace(",
+		".provisionWorkspaceCP(",
+	}
+	allowedFiles := map[string]bool{
+		// workspace.go DEFINES the methods + the Auto dispatcher; it's
+		// allowed to reference them directly.
+		"workspace.go": true,
+		// workspace_provision.go DEFINES the bodies of the direct
+		// methods (and the Auto-internal call from CP-mode itself).
+		"workspace_provision.go": true,
+		// workspace_restart.go pre-dates the Auto dispatcher and has
+		// its own if-cpProv-else manual dispatch (line 219-228, 571-575,
+		// 704-708). Functionally equivalent to Auto, so it's not the
+		// bug class this gate targets — but it IS architectural
+		// duplication, tracked as a follow-up for proper de-dup.
+		// See <follow-up issue> filed alongside this PR.
+		"workspace_restart.go": true,
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !filepath.IsAbs(name) && entry.IsDir() {
+			continue
+		}
+		if filepath.Ext(name) != ".go" {
+			continue
+		}
+		// Skip tests — tests legitimately stub or call the helpers
+		// to exercise their behavior.
+		if filepath.Base(name) != name {
+			continue
+		}
+		if filepath.Ext(name) == ".go" && len(name) > len("_test.go") &&
+			name[len(name)-len("_test.go"):] == "_test.go" {
+			continue
+		}
+		if allowedFiles[name] {
+			continue
+		}
+		src, err := os.ReadFile(filepath.Join(wd, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		for _, needle := range directRe {
+			if bytes.Contains(src, []byte(needle)) {
+				t.Errorf("%s calls h.X%s directly — must use h.X.provisionWorkspaceAuto so backend routing stays centralized. "+
+					"Pre-2026-05-04 the same pattern caused the silent-drop bug in TeamHandler.Expand, then again in org_import.go (#2486). "+
+					"Fix: replace the call with h.X.provisionWorkspaceAuto(...) — Auto picks Docker vs CP based on which backend is wired.",
+					name, needle)
+			}
+		}
+	}
+}
+
+// TestOrgImport_UsesAutoNotDirectDockerPath — source-level guard for
+// the org_import.go call site. Same bug pattern as team.go above:
+// pre-2026-05-04 #2 (this PR), org_import called h.workspace.provisionWorkspace
+// directly, sending every imported workspace down the Docker path on
+// SaaS. User reproduced 2026-05-04 ~22:30Z importing a 7-workspace
+// "Director Pattern" template on the hongming prod tenant — every
+// workspace sat in "provisioning" until the 600s sweeper marked it
+// failed with "container started but never called /registry/register",
+// because no container ever existed (the Docker provisioner was nil
+// in SaaS, the goroutine returned silently, no log emitted from
+// provisionWorkspaceCP because that function was never invoked).
+//
+// The repro pattern was identical to issue #2486. The fix is identical
+// to the team.go fix above: route through provisionWorkspaceAuto.
+//
+// This test pins the call site so a future refactor can't re-introduce
+// the bug. Substring match on the source — same rationale as the team.go
+// gate above.
+func TestOrgImport_UsesAutoNotDirectDockerPath(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	src, err := os.ReadFile(filepath.Join(wd, "org_import.go"))
+	if err != nil {
+		t.Fatalf("read org_import.go: %v", err)
+	}
+	if bytes.Contains(src, []byte("h.workspace.provisionWorkspace(")) {
+		t.Errorf("org_import.go calls h.workspace.provisionWorkspace directly — must use h.workspace.provisionWorkspaceAuto so SaaS tenants route to CP. " +
+			"Pre-fix repro: 7-workspace org-import on hongming prod tenant 2026-05-04 ~22:30Z, every workspace timed out at 600s with the misleading 'container started but never called /registry/register' message — see #2486.")
+	}
+	if !bytes.Contains(src, []byte("h.workspace.provisionWorkspaceAuto(")) {
+		t.Errorf("org_import.go must call h.workspace.provisionWorkspaceAuto for child provisioning — current code does not")
+	}
+}

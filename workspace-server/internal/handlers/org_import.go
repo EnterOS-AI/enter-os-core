@@ -377,11 +377,22 @@ func (h *OrgHandler) createWorkspaceTree(ws OrgWorkspace, parentID *string, absX
 			}
 		}
 
-		// #1084: limit concurrent Docker provisioning via semaphore.
+		// #1084: limit concurrent provisioning via semaphore.
+		// Use provisionWorkspaceAuto so SaaS deployments route through
+		// the CP (EC2) path — calling provisionWorkspace directly was
+		// the same silent-drop bug that bit TeamHandler.Expand on
+		// 2026-05-04 (see workspace.go:121-125 comment + #2486). Symptom:
+		// every claude-code workspace from org-import on SaaS sat in
+		// "provisioning" until the 600s sweeper marked it failed with
+		// "container started but never called /registry/register" —
+		// because there was no container, just a workspace row.
+		// provisionWorkspaceAuto picks CP-mode when h.cpProv is wired,
+		// Docker-mode otherwise; the org-import call site doesn't need
+		// to know which.
 		provisionSem <- struct{}{} // acquire
 		go func(wID, tPath string, cFiles map[string][]byte, p models.CreateWorkspacePayload) {
 			defer func() { <-provisionSem }() // release
-			h.workspace.provisionWorkspace(wID, tPath, cFiles, p)
+			h.workspace.provisionWorkspaceAuto(wID, tPath, cFiles, p)
 		}(id, templatePath, configFiles, payload)
 	}
 
