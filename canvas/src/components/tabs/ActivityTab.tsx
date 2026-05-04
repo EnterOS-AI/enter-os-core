@@ -110,8 +110,11 @@ export function ActivityTab({ workspaceId }: Props) {
               Full Trace
             </button>
             <button
+              type="button"
               onClick={loadActivities}
-              className="px-2 py-1 bg-surface-card hover:bg-surface-card text-[11px] rounded text-ink-mid"
+              // hover:bg-surface-card on top of itself was a no-op;
+              // lift to surface-elevated + focus-visible ring.
+              className="px-2 py-1 bg-surface-card hover:bg-surface-elevated hover:text-ink text-[11px] rounded text-ink-mid transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
             >
               Refresh
             </button>

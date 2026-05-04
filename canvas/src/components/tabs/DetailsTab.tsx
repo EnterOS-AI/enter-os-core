@@ -166,7 +166,10 @@ export function DetailsTab({ workspaceId, data }: Props) {
                 type="button"
                 onClick={handleSave}
                 disabled={saving}
-                className="px-3 py-1 bg-accent-strong hover:bg-accent text-xs rounded text-white disabled:opacity-50"
+                // Was bg-accent-strong hover:bg-accent — accent is the
+                // LIGHTER variant; flipped + focus-visible ring (same
+                // trap fix shipped on every other tab).
+                className="px-3 py-1 bg-accent hover:bg-accent-strong text-xs rounded text-white disabled:opacity-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
               >
                 {saving ? "Saving..." : "Save"}
               </button>
@@ -322,7 +325,10 @@ export function DetailsTab({ workspaceId, data }: Props) {
               <button
                 type="button"
                 onClick={handleDelete}
-                className="px-3 py-1 bg-red-600 hover:bg-red-500 text-xs rounded text-white"
+                // hover:bg-red-500 LIGHTER on white text drops AA;
+                // flipped to bg-red-700 + focus-visible danger ring,
+                // matching the ConfirmDialog/DeleteCascade pattern.
+                className="px-3 py-1 bg-red-600 hover:bg-red-700 text-xs rounded text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
               >
                 Confirm Delete
               </button>
@@ -334,7 +340,9 @@ export function DetailsTab({ workspaceId, data }: Props) {
                   // Return focus to the trigger so keyboard users aren't stranded
                   deleteButtonRef.current?.focus();
                 }}
-                className="px-3 py-1 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid"
+                // Was hover:bg-surface-card on top of itself (no-op);
+                // lift to surface-elevated.
+                className="px-3 py-1 bg-surface-card hover:bg-surface-elevated hover:text-ink text-xs rounded text-ink-mid transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
               >
                 Cancel
               </button>
