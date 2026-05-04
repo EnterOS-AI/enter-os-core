@@ -1,0 +1,349 @@
+openapi: 3.0.3
+info:
+  title: Molecule Memory Plugin v1
+  version: 1.0.0
+  description: |
+    Contract between workspace-server and a memory backend plugin. The
+    plugin owns its own storage; workspace-server is the security
+    perimeter (secret redaction, namespace ACL, GLOBAL audit/wrap).
+
+    Defined in RFC #2728. See docs/rfc/memory-v2-rationale.md for design
+    rationale.
+
+    Auth: none. Plugins MUST be reachable only on a private network or
+    unix socket — workspace-server is the only sanctioned client.
+servers:
+  - url: http://localhost:9100
+    description: Built-in postgres-backed plugin (default)
+
+paths:
+  /v1/health:
+    get:
+      summary: Liveness + capability probe
+      operationId: getHealth
+      responses:
+        '200':
+          description: Plugin healthy
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HealthResponse' }
+        '503':
+          description: Plugin unhealthy (e.g., backing store down)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/namespaces/{name}:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceName'
+    put:
+      summary: Upsert a namespace (idempotent)
+      operationId: upsertNamespace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NamespaceUpsert' }
+      responses:
+        '200': { $ref: '#/components/responses/Namespace' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+    patch:
+      summary: Update namespace metadata or TTL
+      operationId: patchNamespace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NamespacePatch' }
+      responses:
+        '200': { $ref: '#/components/responses/Namespace' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      summary: Delete namespace and all its memories (operator action)
+      operationId: deleteNamespace
+      responses:
+        '204':
+          description: Deleted
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/namespaces/{name}/memories:
+    parameters:
+      - $ref: '#/components/parameters/NamespaceName'
+    post:
+      summary: Write a memory to a namespace
+      description: |
+        `content` MUST already be secret-redacted by the workspace-server.
+        Plugin does not run additional redaction.
+      operationId: commitMemory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MemoryWrite' }
+      responses:
+        '201':
+          description: Memory persisted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemoryWriteResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/search:
+    post:
+      summary: Search memories across one or more namespaces
+      description: |
+        workspace-server MUST intersect the requested `namespaces` with
+        the caller's currently-readable set BEFORE invoking this
+        endpoint. The plugin treats the list as authoritative.
+      operationId: searchMemories
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SearchRequest' }
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SearchResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /v1/memories/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      summary: Forget a memory by id
+      description: |
+        `requested_by_namespace` is the namespace the caller has write
+        access to; the plugin SHOULD reject if the memory doesn't belong
+        to that namespace.
+      operationId: forgetMemory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ForgetRequest' }
+      responses:
+        '204':
+          description: Forgotten
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  parameters:
+    NamespaceName:
+      in: path
+      name: name
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 256
+        pattern: '^[a-z]+:[A-Za-z0-9_:.\-]+$'
+        example: 'workspace:550e8400-e29b-41d4-a716-446655440000'
+
+  responses:
+    Namespace:
+      description: Namespace state
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Namespace' }
+    BadRequest:
+      description: Invalid input
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Caller lacks write access to the requested namespace
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, version, capabilities]
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        version: { type: string, example: "1.0.0" }
+        capabilities:
+          type: array
+          items:
+            type: string
+            enum: [embedding, fts, ttl, pin, propagation]
+          description: |
+            Optional features this plugin supports. workspace-server
+            adapts MCP responses based on this list (e.g., agents can
+            request semantic search only when `embedding` is present).
+
+    NamespaceKind:
+      type: string
+      enum: [workspace, team, org, custom]
+
+    Namespace:
+      type: object
+      required: [name, kind, created_at]
+      properties:
+        name: { type: string }
+        kind: { $ref: '#/components/schemas/NamespaceKind' }
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        metadata:
+          type: object
+          additionalProperties: true
+          nullable: true
+        created_at: { type: string, format: date-time }
+
+    NamespaceUpsert:
+      type: object
+      required: [kind]
+      properties:
+        kind: { $ref: '#/components/schemas/NamespaceKind' }
+        expires_at: { type: string, format: date-time, nullable: true }
+        metadata:
+          type: object
+          additionalProperties: true
+          nullable: true
+
+    NamespacePatch:
+      type: object
+      properties:
+        expires_at: { type: string, format: date-time, nullable: true }
+        metadata:
+          type: object
+          additionalProperties: true
+          nullable: true
+
+    MemoryKind:
+      type: string
+      enum: [fact, summary, checkpoint]
+
+    MemorySource:
+      type: string
+      enum: [agent, runtime, user]
+
+    MemoryWrite:
+      type: object
+      required: [content, kind, source]
+      properties:
+        content:
+          type: string
+          minLength: 1
+          description: Already secret-redacted by workspace-server.
+        kind: { $ref: '#/components/schemas/MemoryKind' }
+        source: { $ref: '#/components/schemas/MemorySource' }
+        expires_at: { type: string, format: date-time, nullable: true }
+        propagation:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: |
+            Opaque metadata the plugin stores and returns. Reserved for
+            future cross-namespace propagation semantics.
+        pin: { type: boolean, default: false }
+        embedding:
+          type: array
+          items: { type: number }
+          nullable: true
+          description: |
+            Optional pre-computed embedding. Plugins reporting the
+            `embedding` capability MAY ignore this and recompute.
+
+    MemoryWriteResponse:
+      type: object
+      required: [id, namespace]
+      properties:
+        id: { type: string, format: uuid }
+        namespace: { type: string }
+
+    Memory:
+      type: object
+      required: [id, namespace, content, kind, source, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        namespace: { type: string }
+        content: { type: string }
+        kind: { $ref: '#/components/schemas/MemoryKind' }
+        source: { $ref: '#/components/schemas/MemorySource' }
+        expires_at: { type: string, format: date-time, nullable: true }
+        propagation:
+          type: object
+          additionalProperties: true
+          nullable: true
+        pin: { type: boolean }
+        created_at: { type: string, format: date-time }
+        score:
+          type: number
+          nullable: true
+          description: Relevance score from search (semantic + FTS).
+
+    SearchRequest:
+      type: object
+      required: [namespaces]
+      properties:
+        namespaces:
+          type: array
+          items: { type: string }
+          minItems: 1
+          description: |
+            Already intersected with the caller's readable set by
+            workspace-server.
+        query: { type: string }
+        kinds:
+          type: array
+          items: { $ref: '#/components/schemas/MemoryKind' }
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+        embedding:
+          type: array
+          items: { type: number }
+          nullable: true
+
+    SearchResponse:
+      type: object
+      required: [memories]
+      properties:
+        memories:
+          type: array
+          items: { $ref: '#/components/schemas/Memory' }
+
+    ForgetRequest:
+      type: object
+      required: [requested_by_namespace]
+      properties:
+        requested_by_namespace:
+          type: string
+          description: Namespace the caller has write access to.
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - bad_request
+            - not_found
+            - forbidden
+            - internal
+            - unavailable
+        message: { type: string }
+        details:
+          type: object
+          additionalProperties: true
+          nullable: true
