@@ -3,6 +3,7 @@
 import { useCallback, useMemo } from "react";
 import { Handle, NodeResizer, Position, type NodeProps, type Node } from "@xyflow/react";
 import { useCanvasStore, type WorkspaceNodeData } from "@/store/canvas";
+import { getConfigurationError, getConfigurationStatus } from "@/store/canvas-topology";
 import { showToast } from "@/components/Toaster";
 import { Tooltip } from "@/components/Tooltip";
 import { STATUS_CONFIG, TIER_CONFIG } from "@/lib/design-tokens";
@@ -35,8 +36,28 @@ function EjectIcon(props: React.SVGProps<SVGSVGElement>) {
 }
 
 export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) {
-  const statusCfg = STATUS_CONFIG[data.status] || STATUS_CONFIG.offline;
+  // Configuration-status overlay (PR #2756 / #467 chain). When the
+  // workspace is reachable but adapter.setup() failed (typically a
+  // missing/rotated LLM credential), the agent_card carries
+  // configuration_status: "not_configured". Surface this as a distinct
+  // tile state so the operator sees a useful error instead of an
+  // ambiguous "online but silent" workspace.
+  //
+  // The override only applies when the underlying status is "online" —
+  // a workspace that's actually offline / failed / provisioning gets
+  // its own treatment. "online + not_configured" is the gap PR #2756
+  // introduced; everything else was already covered.
+  const isMisconfigured =
+    data.status === "online" &&
+    getConfigurationStatus(data.agentCard) === "not_configured";
+  const configurationError = getConfigurationError(data.agentCard);
+  const effectiveStatus = isMisconfigured ? "not_configured" : data.status;
+  const statusCfg = STATUS_CONFIG[effectiveStatus] || STATUS_CONFIG.offline;
   const tierCfg = TIER_CONFIG[data.tier] || { label: `T${data.tier}`, color: "text-ink-mid bg-surface-card border border-line" };
+  const tooltipExtra = isMisconfigured && configurationError
+    ? `Agent not configured: ${configurationError}`
+    : null;
+  void tooltipExtra; // wired in via aria-label below; reserved here for future tooltip surface.
   // Org-deploy context — four derived flags off one store subscription.
   // Drives the shimmer while provisioning, the dimmed/non-draggable
   // treatment on locked descendants, and the Cancel pill on the root.
@@ -75,7 +96,12 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
     <div
       role="button"
       tabIndex={0}
-      aria-label={`${data.name} workspace — ${data.status}`}
+      aria-label={
+        isMisconfigured && configurationError
+          ? `${data.name} workspace — agent not configured: ${configurationError}`
+          : `${data.name} workspace — ${data.status}`
+      }
+      title={isMisconfigured && configurationError ? `Agent not configured: ${configurationError}` : undefined}
       aria-pressed={isSelected}
       onClick={(e) => {
         e.stopPropagation();
@@ -283,11 +309,12 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
 
         {/* Bottom row: status / active tasks */}
         <div className="flex items-center justify-between mt-0.5">
-          {data.status !== "online" ? (
+          {effectiveStatus !== "online" ? (
             <div className={`text-[10px] uppercase tracking-widest font-medium ${
-              data.status === "failed" ? "text-bad" :
-              data.status === "degraded" ? "text-warm" :
-              data.status === "provisioning" ? "text-accent" :
+              effectiveStatus === "failed" ? "text-bad" :
+              effectiveStatus === "degraded" ? "text-warm" :
+              effectiveStatus === "not_configured" ? "text-warm" :
+              effectiveStatus === "provisioning" ? "text-accent" :
               "text-ink-mid"
             }`}>
               {statusCfg.label}
@@ -311,6 +338,19 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
             title={data.lastSampleError}
           >
             {data.lastSampleError}
+          </div>
+        )}
+
+        {/* Configuration error preview — same visual as the degraded
+         *  error preview but keyed off the agent_card's configuration_status.
+         *  Tells the operator which env var is missing so they can fix it
+         *  without having to dig into the workspace logs. */}
+        {isMisconfigured && configurationError && (
+          <div
+            className="text-[10px] text-warm truncate mt-1 bg-warm/10 px-1.5 py-0.5 rounded border border-warm/40"
+            title={configurationError}
+          >
+            {configurationError}
           </div>
         )}
       </div>
