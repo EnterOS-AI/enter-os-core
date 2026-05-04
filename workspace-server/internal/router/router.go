@@ -13,6 +13,7 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/handlers"
+	memwiring "github.com/Molecule-AI/molecule-monorepo/platform/internal/memory/wiring"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/metrics"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/middleware"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
@@ -23,7 +24,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provisioner, platformURL, configsDir string, wh *handlers.WorkspaceHandler, channelMgr *channels.Manager) *gin.Engine {
+func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provisioner, platformURL, configsDir string, wh *handlers.WorkspaceHandler, channelMgr *channels.Manager, memBundle *memwiring.Bundle) *gin.Engine {
 	r := gin.Default()
 
 	// Issue #179 — trust no reverse-proxy headers. Without this call Gin's
@@ -150,6 +151,9 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		// F1084/#1131: Export applies redactSecrets before returning content.
 		// F1085/#1132: Import applies redactSecrets before persisting content.)
 		adminMemH := handlers.NewAdminMemoriesHandler()
+		if memBundle != nil {
+			adminMemH.WithMemoryV2(memBundle.Plugin, memBundle.Resolver)
+		}
 		wsAdmin.GET("/admin/memories/export", adminMemH.Export)
 		wsAdmin.POST("/admin/memories/import", adminMemH.Import)
 	}
@@ -370,6 +374,9 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		//   C3: commit_memory/recall_memory with scope=GLOBAL → permission error;
 		//       send_message_to_user excluded unless MOLECULE_MCP_ALLOW_SEND_MESSAGE=true.
 		mcpH := handlers.NewMCPHandler(db.DB, broadcaster)
+		if memBundle != nil {
+			mcpH.WithMemoryV2(memBundle.Plugin, memBundle.Resolver)
+		}
 		mcpRl := middleware.NewMCPRateLimiter(120, time.Minute, context.Background())
 		wsAuth.GET("/mcp/stream", mcpRl.Middleware(), mcpH.Stream)
 		wsAuth.POST("/mcp", mcpRl.Middleware(), mcpH.Call)
