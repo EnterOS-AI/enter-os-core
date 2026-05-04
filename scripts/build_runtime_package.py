@@ -58,6 +58,7 @@ TOP_LEVEL_MODULES = {
     "adapter_base",
     "agent",
     "agents_md",
+    "boot_routes",
     "card_helpers",
     "config",
     "configs_dir",

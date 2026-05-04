@@ -277,54 +277,16 @@ async def main():  # pragma: no cover
 
     # 7. Wrap in A2A.
     #
-    # Regression fix (#204): PR #198 tried to wire push_config_store +
-    # push_sender to satisfy #175 (push notification capability), but
-    # PushNotificationSender is an abstract base class in the a2a-sdk and
-    # can't be instantiated directly. Passing it crashed main.py on startup
-    # with `TypeError: Can't instantiate abstract class`. Dropped back to
-    # DefaultRequestHandler's own defaults — pushNotifications capability
-    # in the AgentCard below is still advertised via AgentCapabilities so
-    # clients know we COULD do pushes; actually implementing them requires
-    # a concrete sender subclass, tracked as a Phase-H follow-up to #175.
-    routes = []
-    routes.extend(create_agent_card_routes(agent_card))
-
-    if adapter_ready:
-        handler = DefaultRequestHandler(
-            agent_executor=executor,
-            task_store=InMemoryTaskStore(),
-            # a2a-sdk 1.x added agent_card as a required positional/keyword
-            # argument — it's used internally for capability dispatch (e.g.
-            # routing tasks/get historyLength based on the card's protocol
-            # version). Pass the same agent_card we registered with the
-            # platform so the handler's capability surface matches what the
-            # AgentCard advertises.
-            agent_card=agent_card,
-        )
-        # v1: replace A2AStarletteApplication with Starlette route factory.
-        # rpc_url is required in a2a-sdk 1.x (was implicit at root in 0.x).
-        # Use '/' to match a2a.utils.constants.DEFAULT_RPC_URL — that's also
-        # what the platform's a2a_proxy.go POSTs to (it forwards to the
-        # workspace's URL without appending a path). Card endpoint stays at
-        # the well-known path /.well-known/agent-card.json (handled by
-        # create_agent_card_routes default).
-        # enable_v0_3_compat=True is the JSON-RPC wire-compat path: clients
-        # using v0.3-shaped payloads (`"role": "user"` lowercase + camelCase
-        # Pydantic field names) can talk to us without re-deploying.
-        routes.extend(create_jsonrpc_routes(request_handler=handler, rpc_url="/", enable_v0_3_compat=True))
-    else:
-        # Misconfigured: serve the card but reject JSON-RPC with -32603 so
-        # canvas surfaces a useful "agent not configured: <reason>" instead
-        # of letting requests time out. Handler factory is in its own module
-        # so the behavior is unit-testable (workspace/tests/test_not_configured_handler.py).
-        from starlette.routing import Route
-        from not_configured_handler import make_not_configured_handler
-
-        routes.append(
-            Route("/", make_not_configured_handler(adapter_error), methods=["POST"])
-        )
-
-    app = Starlette(routes=routes)
+    # Route assembly is in workspace/boot_routes.py so the contract —
+    # card always mounted, JSON-RPC route swaps based on adapter state
+    # (DefaultRequestHandler when executor is non-None, not_configured
+    # handler returning -32603 otherwise) — is unit-testable with
+    # Starlette's TestClient. main.py is `# pragma: no cover` so without
+    # this extraction a future refactor that re-coupled card + setup()
+    # would silently bypass PR #2756. tests/test_boot_routes.py pins
+    # the four-branch contract.
+    from boot_routes import build_routes
+    app = Starlette(routes=build_routes(agent_card, executor, adapter_error))
 
     # 8. Register with platform
     # When adapter.setup() failed, advertise via configuration_status so
