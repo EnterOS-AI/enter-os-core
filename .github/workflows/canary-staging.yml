@@ -50,19 +50,30 @@ jobs:
     env:
       MOLECULE_CP_URL: https://staging-api.moleculesai.app
       MOLECULE_ADMIN_TOKEN: ${{ secrets.MOLECULE_STAGING_ADMIN_TOKEN }}
-      # Without an LLM key the test_staging_full_saas.sh script provisions
-      # the workspace with empty secrets, hermes derive-provider.sh resolves
-      # `openai/gpt-4o` to PROVIDER=openrouter, no OPENROUTER_API_KEY is
-      # found in env, and A2A returns "No LLM provider configured" at
-      # request time (canary step 8/11). The full-lifecycle workflow
-      # (e2e-staging-saas.yml) has carried this secret since launch — the
-      # canary regressed when it was first split out and lost the env
-      # block. Issue #1500 had ~30 consecutive failures before this was
-      # spotted; do NOT remove without re-reading the script's secrets-
-      # injection block.
+      # MiniMax is the canary's PRIMARY LLM auth path post-2026-05-04.
+      # Switched from hermes+OpenAI after #2578 (the staging OpenAI key
+      # account went over quota and stayed dead for 36+ hours, taking
+      # the canary red the entire time). claude-code template's
+      # `minimax` provider routes ANTHROPIC_BASE_URL to
+      # api.minimax.io/anthropic and reads MINIMAX_API_KEY at boot —
+      # ~5-10x cheaper per token than gpt-4.1-mini AND on a separate
+      # billing account, so OpenAI quota collapse no longer wedges the
+      # canary. Mirrors the migration continuous-synth-e2e.yml made on
+      # 2026-05-03 (#265) for the same reason. tests/e2e/test_staging_
+      # full_saas.sh branches SECRETS_JSON on which key is present —
+      # MiniMax wins when set.
+      E2E_MINIMAX_API_KEY: ${{ secrets.MOLECULE_STAGING_MINIMAX_API_KEY }}
+      # OpenAI fallback — kept wired so an operator-dispatched run with
+      # E2E_RUNTIME=hermes overridden via workflow_dispatch can still
+      # exercise the OpenAI path without re-editing the workflow.
       E2E_OPENAI_API_KEY: ${{ secrets.MOLECULE_STAGING_OPENAI_KEY }}
       E2E_MODE: canary
-      E2E_RUNTIME: hermes
+      E2E_RUNTIME: claude-code
+      # Pin the canary to a specific MiniMax model rather than relying
+      # on the per-runtime default (which could resolve to "sonnet" →
+      # direct Anthropic and defeat the cost saving). M2.7-highspeed
+      # is "Token Plan only" but cheap-per-token and fast.
+      E2E_MODEL_SLUG: MiniMax-M2.7-highspeed
       E2E_RUN_ID: "canary-${{ github.run_id }}"
 
     steps:
@@ -75,13 +86,35 @@ jobs:
             exit 2
           fi
 
-      - name: Verify OpenAI key present
+      - name: Verify LLM key present
         run: |
-          if [ -z "$E2E_OPENAI_API_KEY" ]; then
-            echo "::error::MOLECULE_STAGING_OPENAI_KEY secret not set — A2A will fail at request time with 'No LLM provider configured'"
+          # Per-runtime key check — claude-code uses MiniMax; hermes /
+          # langgraph (operator-dispatched only) use OpenAI. Hard-fail
+          # rather than soft-skip per the lesson from synth E2E #2578:
+          # an empty key silently falls through to the wrong
+          # SECRETS_JSON branch and the canary fails 5 min later with
+          # a confusing auth error instead of the clean "secret
+          # missing" message at the top.
+          case "${E2E_RUNTIME}" in
+            claude-code)
+              required_secret_name="MOLECULE_STAGING_MINIMAX_API_KEY"
+              required_secret_value="${E2E_MINIMAX_API_KEY:-}"
+              ;;
+            langgraph|hermes)
+              required_secret_name="MOLECULE_STAGING_OPENAI_KEY"
+              required_secret_value="${E2E_OPENAI_API_KEY:-}"
+              ;;
+            *)
+              echo "::warning::Unknown E2E_RUNTIME='${E2E_RUNTIME}' — skipping LLM-key check"
+              required_secret_name=""
+              required_secret_value="present"
+              ;;
+          esac
+          if [ -n "$required_secret_name" ] && [ -z "$required_secret_value" ]; then
+            echo "::error::${required_secret_name} secret not set for runtime=${E2E_RUNTIME} — A2A will fail at request time with 'No LLM provider configured'"
             exit 2
           fi
-          echo "OpenAI key present ✓ (len=${#E2E_OPENAI_API_KEY})"
+          echo "LLM key present ✓ (runtime=${E2E_RUNTIME}, key=${required_secret_name}, len=${#required_secret_value})"
 
       - name: Canary run
         id: canary
