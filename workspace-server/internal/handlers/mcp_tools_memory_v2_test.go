@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -342,13 +343,19 @@ func TestCommitMemoryV2_AcceptsExpiresAndPin(t *testing.T) {
 	}
 }
 
-func TestCommitMemoryV2_BadExpiresIsIgnored(t *testing.T) {
+// TestCommitMemoryV2_BadExpiresReturnsError pins the I1 fix: malformed
+// expires_at must surface as an error, not silently drop (which would
+// leave the agent thinking it set a TTL when it didn't).
+//
+// Replaces TestCommitMemoryV2_BadExpiresIsIgnored which incorrectly
+// codified silent-drop as a feature.
+func TestCommitMemoryV2_BadExpiresReturnsError(t *testing.T) {
 	db, _, _ := sqlmock.New()
 	defer db.Close()
-	gotExp := (*time.Time)(nil)
+	pluginCalled := false
 	h := newV2Handler(t, db, &stubMemoryPlugin{
-		commitFn: func(_ context.Context, _ string, body contract.MemoryWrite) (*contract.MemoryWriteResponse, error) {
-			gotExp = body.ExpiresAt
+		commitFn: func(_ context.Context, _ string, _ contract.MemoryWrite) (*contract.MemoryWriteResponse, error) {
+			pluginCalled = true
 			return &contract.MemoryWriteResponse{ID: "mem-1", Namespace: "workspace:root-1"}, nil
 		},
 	}, rootNamespaceResolver())
@@ -356,12 +363,57 @@ func TestCommitMemoryV2_BadExpiresIsIgnored(t *testing.T) {
 		"content":    "x",
 		"expires_at": "tomorrow at noon",
 	})
-	if err != nil {
-		t.Fatalf("err: %v", err)
+	if err == nil {
+		t.Fatalf("expected error for malformed expires_at, got nil")
 	}
-	if gotExp != nil {
-		t.Errorf("malformed expires must be ignored, got %v", gotExp)
+	if !strings.Contains(err.Error(), "invalid expires_at") {
+		t.Errorf("err = %v, want substring 'invalid expires_at'", err)
 	}
+	if pluginCalled {
+		t.Errorf("plugin must NOT be called when expires_at fails to parse")
+	}
+}
+
+// TestAuditOrgWrite_MetadataIsValidJSON pins the I4 fix: audit metadata
+// is built via json.Marshal, not Sprintf-%q. This test exercises
+// auditOrgWrite directly with a content string containing characters
+// where Go-quote would diverge from JSON-quote, and asserts the
+// metadata column receives valid JSON.
+func TestAuditOrgWrite_MetadataIsValidJSON(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+	// jsonValidArg is a sqlmock.Argument that asserts its input
+	// parses as JSON. Used as the metadata-arg matcher so the test
+	// fails loudly if a future refactor regresses to Sprintf-%q.
+	matcher := jsonValidMatcher{}
+	mock.ExpectExec("INSERT INTO activity_logs").
+		WithArgs("ws-1", "org:abc", matcher).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	h := &MCPHandler{database: db}
+	if err := h.auditOrgWrite(context.Background(),
+		"ws-1", "org:abc",
+		"content with \"quotes\" \\backslash and \x01 control",
+		"mem-uuid-1"); err != nil {
+		t.Fatalf("auditOrgWrite: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// jsonValidMatcher is a sqlmock.Argument that passes only when the
+// driver-encoded value parses as JSON. Lets the I4 test fail loudly
+// if metadata regresses to non-JSON output.
+type jsonValidMatcher struct{}
+
+func (jsonValidMatcher) Match(v driver.Value) bool {
+	s, ok := v.(string)
+	if !ok {
+		return false
+	}
+	var out map[string]interface{}
+	return json.Unmarshal([]byte(s), &out) == nil
 }
 
 // --- search_memory ---

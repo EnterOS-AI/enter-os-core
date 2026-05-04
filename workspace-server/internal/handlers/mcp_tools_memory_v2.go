@@ -127,9 +127,11 @@ func (h *MCPHandler) toolCommitMemoryV2(ctx context.Context, workspaceID string,
 		Source:  contract.MemorySourceAgent,
 	}
 	if exp, ok := args["expires_at"].(string); ok && exp != "" {
-		if t, err := time.Parse(time.RFC3339, exp); err == nil {
-			body.ExpiresAt = &t
+		t, err := time.Parse(time.RFC3339, exp)
+		if err != nil {
+			return "", fmt.Errorf("invalid expires_at: must be RFC3339 (got %q): %w", exp, err)
 		}
+		body.ExpiresAt = &t
 	}
 	if pin, ok := args["pin"].(bool); ok {
 		body.Pin = pin
@@ -331,10 +333,23 @@ func (h *MCPHandler) toolForgetMemory(ctx context.Context, workspaceID string, a
 func (h *MCPHandler) auditOrgWrite(ctx context.Context, workspaceID, ns, content, memID string) error {
 	hash := sha256.Sum256([]byte(content))
 	hashHex := hex.EncodeToString(hash[:])
-	_, err := h.database.ExecContext(ctx, `
+	// json.Marshal, not Sprintf-%q. %q produces Go-quoted strings,
+	// which are NOT valid JSON for non-ASCII inputs (Go's escapes
+	// like \xNN aren't part of the JSON spec). Today's values are
+	// pure-ASCII so the bug was latent; if metadata grows to include
+	// arbitrary content snippets it would silently produce invalid
+	// JSON in activity_logs.
+	metadata, err := json.Marshal(map[string]string{
+		"memory_id": memID,
+		"sha256":    hashHex,
+	})
+	if err != nil {
+		return fmt.Errorf("audit metadata marshal: %w", err)
+	}
+	_, err = h.database.ExecContext(ctx, `
 		INSERT INTO activity_logs (workspace_id, action, target, metadata, created_at)
 		VALUES ($1, 'memory.org_write', $2, $3, now())
-	`, workspaceID, ns, fmt.Sprintf(`{"memory_id":%q,"sha256":%q}`, memID, hashHex))
+	`, workspaceID, ns, string(metadata))
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
