@@ -83,7 +83,20 @@ curl -fsS -X POST "{{PLATFORM_URL}}/registry/register" \
 const externalChannelTemplate = `# Claude Code channel — bridges this workspace's A2A traffic into your
 # Claude Code session. No tunnel/public URL needed (polling-based).
 #
-# 1. Save this token + workspace_id, then create ~/.claude/channels/molecule/.env:
+# Prereq: Bun installed (channel plugins are Bun scripts).
+#   bun --version    # must print a version number
+#
+# 1. Inside Claude Code, install the channel plugin from its GitHub repo.
+#    The plugin is NOT on Anthropic's default allowlist, so a one-time
+#    marketplace-add is needed before install:
+#
+#      /plugin marketplace add Molecule-AI/molecule-mcp-claude-channel
+#      /plugin install molecule@molecule-mcp-claude-channel
+#
+#    Then either run /reload-plugins or restart Claude Code so the
+#    plugin is registered.
+#
+# 2. Create the per-watched-workspace config file:
 mkdir -p ~/.claude/channels/molecule
 cat > ~/.claude/channels/molecule/.env <<'EOF'
 MOLECULE_PLATFORM_URL={{PLATFORM_URL}}
@@ -92,12 +105,31 @@ MOLECULE_WORKSPACE_TOKENS=<paste auth_token from create response>
 EOF
 chmod 600 ~/.claude/channels/molecule/.env
 
-# 2. Launch Claude Code with the channel enabled:
-claude --channels plugin:molecule@Molecule-AI/molecule-mcp-claude-channel
+# 3. Launch Claude Code with the channel enabled. Custom (non-Anthropic-
+#    allowlisted) channels need the --dangerously-load-development-channels
+#    flag to opt in — without it, you'll see "not on the approved channels
+#    allowlist" on startup.
+claude --dangerously-load-development-channels \
+  --channels plugin:molecule@molecule-mcp-claude-channel
 
+# You should see on stderr:
+#   molecule channel: connected — watching 1 workspace(s) at {{PLATFORM_URL}}
+#
 # Inbound A2A messages now surface as conversation turns. Claude's
 # replies route back via the reply_to_workspace MCP tool — no extra
 # wiring on your side.
+#
+# Common errors:
+#   "plugin not installed"            → Step 1 didn't run; run /plugin install
+#                                       inside Claude Code, then /reload-plugins.
+#   "not on approved channels allowlist" → Add --dangerously-load-development-channels
+#                                       to the launch command (Step 3).
+#   "config-missing"                  → ~/.claude/channels/molecule/.env not
+#                                       readable; re-run Step 2 and check chmod.
+#
+# Team/Enterprise orgs: the --dangerously-load-development-channels flag is
+# blocked by managed settings. Your admin must set channelsEnabled=true and
+# add the plugin to allowedChannelPlugins in claude.ai admin settings.
 #
 # Multi-workspace: comma-separate IDs and tokens (same order). See
 # https://github.com/Molecule-AI/molecule-mcp-claude-channel for
