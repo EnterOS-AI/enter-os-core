@@ -71,6 +71,105 @@ async def test_handle_tool_call_unknown_tool():
     assert "Unknown tool" in result
 
 
+# ---------------------------------------------------------------------------
+# source_workspace_id propagation — every workspace-scoped tool's schema
+# advertises this parameter (PR #2766) so the LLM can route a memory commit
+# or chat-history query through the workspace the inbound message arrived
+# on. The dispatch path itself MUST forward the kwarg — otherwise the
+# schema lies and every call silently falls back to the module-level
+# WORKSPACE_ID, defeating multi-workspace isolation. These tests pin
+# end-to-end argument flow on the four tools that ship in PR #2766.
+# ---------------------------------------------------------------------------
+
+
+async def test_dispatch_get_workspace_info_forwards_source_workspace_id():
+    from a2a_mcp_server import handle_tool_call
+    mock = AsyncMock(return_value='{"id":"ws-X"}')
+    with patch("a2a_mcp_server.tool_get_workspace_info", new=mock):
+        await handle_tool_call(
+            "get_workspace_info",
+            {"source_workspace_id": "ws-X"},
+        )
+    mock.assert_awaited_once_with(source_workspace_id="ws-X")
+
+
+async def test_dispatch_commit_memory_forwards_source_workspace_id():
+    from a2a_mcp_server import handle_tool_call
+    mock = AsyncMock(return_value='{"success":true}')
+    with patch("a2a_mcp_server.tool_commit_memory", new=mock):
+        await handle_tool_call(
+            "commit_memory",
+            {
+                "content": "remember this",
+                "scope": "LOCAL",
+                "source_workspace_id": "ws-Y",
+            },
+        )
+    mock.assert_awaited_once_with(
+        "remember this",
+        "LOCAL",
+        source_workspace_id="ws-Y",
+    )
+
+
+async def test_dispatch_recall_memory_forwards_source_workspace_id():
+    from a2a_mcp_server import handle_tool_call
+    mock = AsyncMock(return_value="[LOCAL] remember this")
+    with patch("a2a_mcp_server.tool_recall_memory", new=mock):
+        await handle_tool_call(
+            "recall_memory",
+            {
+                "query": "remember",
+                "scope": "LOCAL",
+                "source_workspace_id": "ws-Z",
+            },
+        )
+    mock.assert_awaited_once_with(
+        "remember",
+        "LOCAL",
+        source_workspace_id="ws-Z",
+    )
+
+
+async def test_dispatch_chat_history_forwards_source_workspace_id():
+    from a2a_mcp_server import handle_tool_call
+    mock = AsyncMock(return_value="[]")
+    with patch("a2a_mcp_server.tool_chat_history", new=mock):
+        await handle_tool_call(
+            "chat_history",
+            {
+                "peer_id": "peer-A",
+                "limit": 10,
+                "source_workspace_id": "ws-W",
+            },
+        )
+    mock.assert_awaited_once_with(
+        "peer-A",
+        10,
+        "",
+        source_workspace_id="ws-W",
+    )
+
+
+async def test_dispatch_omits_source_workspace_id_when_unset():
+    """Single-workspace operators (no source_workspace_id key in args) must
+    forward None — preserving the legacy fallback to module-level WORKSPACE_ID
+    inside the tool. An accidental empty-string forward would also fall back,
+    but None is the documented contract."""
+    from a2a_mcp_server import handle_tool_call
+    mock = AsyncMock(return_value='{"success":true}')
+    with patch("a2a_mcp_server.tool_commit_memory", new=mock):
+        await handle_tool_call(
+            "commit_memory",
+            {"content": "x", "scope": "LOCAL"},
+        )
+    mock.assert_awaited_once_with(
+        "x",
+        "LOCAL",
+        source_workspace_id=None,
+    )
+
+
 async def test_handle_tool_call_missing_args_defaults():
     """Test that missing args default to empty strings (defensive)."""
     from a2a_mcp_server import handle_tool_call

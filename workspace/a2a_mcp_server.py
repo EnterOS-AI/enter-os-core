@@ -123,16 +123,20 @@ async def handle_tool_call(name: str, arguments: dict) -> str:
             source_workspace_id=arguments.get("source_workspace_id") or None,
         )
     elif name == "get_workspace_info":
-        return await tool_get_workspace_info()
+        return await tool_get_workspace_info(
+            source_workspace_id=arguments.get("source_workspace_id") or None,
+        )
     elif name == "commit_memory":
         return await tool_commit_memory(
             arguments.get("content", ""),
             arguments.get("scope", "LOCAL"),
+            source_workspace_id=arguments.get("source_workspace_id") or None,
         )
     elif name == "recall_memory":
         return await tool_recall_memory(
             arguments.get("query", ""),
             arguments.get("scope", ""),
+            source_workspace_id=arguments.get("source_workspace_id") or None,
         )
     elif name == "wait_for_message":
         return await tool_wait_for_message(
@@ -151,6 +155,7 @@ async def handle_tool_call(name: str, arguments: dict) -> str:
             arguments.get("peer_id", ""),
             arguments.get("limit", 20),
             arguments.get("before_ts", ""),
+            source_workspace_id=arguments.get("source_workspace_id") or None,
         )
     return f"Unknown tool: {name}"
 
