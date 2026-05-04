@@ -32,10 +32,20 @@ name: Continuous synthetic E2E (staging)
 
 on:
   schedule:
-    # Every 20 minutes, on the :00 :20 :40. Offsets the existing :15
-    # sweep-cf-orphans and :45 sweep-cf-tunnels so the three
-    # operations don't all hit Cloudflare/AWS at the same minute.
-    - cron: '0,20,40 * * * *'
+    # Every 20 minutes, on :10 :30 :50. Two constraints:
+    #   1. Stay off the top-of-hour. GitHub Actions scheduler drops
+    #      :00 firings under high load (own docs:
+    #      https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#schedule).
+    #      Empirical 2026-05-03: cron was '0,20,40 * * * *' but actual
+    #      firings landed at :08, :03, :01, :03 with :20 + :40 silently
+    #      dropped — only the :00-region run survived. Detection
+    #      latency degraded from claimed 20 min to actual ~60 min.
+    #      :10/:30/:50 sit far enough from :00 that GH-load skips
+    #      stop dropping us.
+    #   2. Avoid colliding with the existing :15 sweep-cf-orphans
+    #      and :45 sweep-cf-tunnels — both hit the CF API and we
+    #      don't want to fight for rate-limit tokens.
+    - cron: '10,30,50 * * * *'
   workflow_dispatch:
     inputs:
       runtime:
