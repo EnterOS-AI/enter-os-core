@@ -472,6 +472,7 @@ function GroupedCommsView({
             <NormalMessage key={msg.id} msg={msg} />
           ),
         )}
+        <WaitingBubbles visible={visible} />
         <div ref={bottomRef} />
       </div>
     </div>
@@ -557,6 +558,83 @@ function PeerTabButton({
     >
       {label} <span className="text-[9px] text-ink-soft">({count})</span>
     </button>
+  );
+}
+
+/** WaitingBubbles renders one "typing" bubble per peer that has an
+ *  in-flight outbound delegation — i.e., the most recent outbound
+ *  message to that peer is still pending or queued and no later inbound
+ *  reply has arrived. Mirrors the bouncing-dots indicator in ChatTab so
+ *  the operator sees the same visual cue regardless of whether they're
+ *  watching their own chat or a peer thread.
+ *
+ *  Why "per peer" not "one global": when multiple delegations are in
+ *  flight to different peers (common during fan-out), one shared
+ *  spinner under-reports — the user can't tell whether ALL peers are
+ *  still working or only the visible ones. Per-peer matches Slack-style
+ *  typing indicators and keeps the signal honest.
+ *
+ *  Why we look at the LAST per-peer message: once a peer replies (an
+ *  "in" bubble lands), the corresponding "out" bubble is no longer the
+ *  tail — even if status hasn't been mutated to "completed", the inbound
+ *  reply means the wait is over. Looking at the tail collapses both
+ *  cases into one rule.
+ */
+function WaitingBubbles({ visible }: { visible: CommMessage[] }) {
+  // Group by peer, keep only the chronologically-last message per peer,
+  // emit a bubble when that tail is an outbound pending/queued.
+  const tailByPeer = new Map<string, CommMessage>();
+  for (const m of visible) {
+    const prev = tailByPeer.get(m.peerId);
+    if (!prev || m.timestamp > prev.timestamp) tailByPeer.set(m.peerId, m);
+  }
+  const waitingPeers = Array.from(tailByPeer.values()).filter(
+    (m) => m.flow === "out" && (m.status === "pending" || m.status === "queued"),
+  );
+  if (waitingPeers.length === 0) return null;
+  return (
+    <>
+      {waitingPeers.map((m) => (
+        <div
+          key={`waiting-${m.peerId}`}
+          className="flex justify-end"
+          // Outbound thread → right-justified to match the "out" bubble
+          // alignment, so the dots feel like they belong to the message
+          // they're replying to.
+        >
+          <div
+            className="max-w-[85%] rounded-lg px-3 py-2 text-xs bg-cyan-900/30 border border-cyan-700/20"
+            // role+aria-label so screen readers announce the wait;
+            // matches the announcing pattern used by Toaster.
+            role="status"
+            aria-label={`Waiting for reply from ${m.peerName}`}
+          >
+            <div className="text-[9px] text-ink-soft mb-1">→ To {m.peerName}</div>
+            <span className="flex items-center gap-2 text-ink-mid">
+              <span className="flex gap-0.5" aria-hidden="true">
+                <span
+                  className="w-1.5 h-1.5 bg-cyan-300/70 rounded-full motion-safe:animate-bounce"
+                  style={{ animationDelay: "0ms" }}
+                />
+                <span
+                  className="w-1.5 h-1.5 bg-cyan-300/70 rounded-full motion-safe:animate-bounce"
+                  style={{ animationDelay: "150ms" }}
+                />
+                <span
+                  className="w-1.5 h-1.5 bg-cyan-300/70 rounded-full motion-safe:animate-bounce"
+                  style={{ animationDelay: "300ms" }}
+                />
+              </span>
+              <span className="text-[10px]">
+                {m.status === "queued"
+                  ? `${m.peerName} is busy — reply will arrive when they're free`
+                  : `Waiting for ${m.peerName}…`}
+              </span>
+            </span>
+          </div>
+        </div>
+      ))}
+    </>
   );
 }
 
