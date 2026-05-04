@@ -138,14 +138,37 @@ export function A2ATopologyOverlay() {
   // Stable Zustand action reference — safe to call inside effects
   const setA2AEdges = useCanvasStore((s) => s.setA2AEdges);
 
-  // Read the nodes array as a primitive ref; derive visible IDs outside the selector
-  const nodes = useCanvasStore((s) => s.nodes);
+  // Subscribe to a STABLE STRING KEY of visible workspace IDs, not the
+  // nodes array itself. Zustand returns a new array reference on every
+  // store update (status flips, position drags, peer-discovery writes,
+  // workspace-tab opens, etc.) — even when the set of visible IDs is
+  // unchanged. Selecting a sorted-CSV string makes Zustand's default
+  // shallow-equal short-circuit the re-render unless the actual ID set
+  // changes.
+  //
+  // Why this matters: previously visibleIds was useMemo'd on `nodes`, so
+  // the array reference recreated on every store mutation. fetchAndUpdate
+  // (useCallback'd on visibleIds) then recreated, the useEffect re-fired,
+  // it tore down the 60s setInterval and immediately re-ran the fan-out.
+  // With ~5 store updates/second from heartbeats + polling, the canvas
+  // hammered /workspaces/<id>/activity?type=delegation 5×N requests/sec
+  // until edge rate-limit kicked in with HTTP 429. The recursive React
+  // render trace in the original bug report (uE → ux → uE → ux ...) is
+  // the symptom of this re-render storm.
+  //
+  // The fix is purely the dependency-stability change here; the fetch
+  // logic is unchanged.
+  const visibleIdsKey = useCanvasStore((s) =>
+    s.nodes
+      .filter((n) => !n.hidden)
+      .map((n) => n.id)
+      .sort()
+      .join(",")
+  );
 
-  // IDs of visible (non-nested, non-hidden) workspace nodes.
-  // Recomputed only when the nodes array reference changes.
   const visibleIds = useMemo(
-    () => nodes.filter((n) => !n.hidden).map((n) => n.id),
-    [nodes]
+    () => (visibleIdsKey ? visibleIdsKey.split(",") : []),
+    [visibleIdsKey]
   );
 
   // Fetch delegation activity for all visible workspaces and rebuild overlay edges.
