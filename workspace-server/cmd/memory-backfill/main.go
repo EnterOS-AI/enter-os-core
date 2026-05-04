@@ -50,13 +50,25 @@ func run(argv []string, stdout, stderr *os.File) error {
 	fs.SetOutput(stderr)
 	dryRun := fs.Bool("dry-run", false, "count + diff only, no writes")
 	apply := fs.Bool("apply", false, "actually copy rows to the plugin")
+	verify := fs.Bool("verify", false, "post-apply parity check: random-sample N workspaces, diff agent_memories vs plugin search")
+	verifySample := fs.Int("verify-sample", 50, "number of workspaces to sample in -verify mode")
 	workspace := fs.String("workspace", "", "limit to a single workspace UUID (empty = all)")
 	limit := fs.Int("limit", defaultLimit, "max rows to process this run")
 	if err := fs.Parse(argv); err != nil {
 		return err
 	}
-	if *dryRun == *apply {
-		return errors.New("specify exactly one of -dry-run or -apply")
+	modesPicked := 0
+	if *dryRun {
+		modesPicked++
+	}
+	if *apply {
+		modesPicked++
+	}
+	if *verify {
+		modesPicked++
+	}
+	if modesPicked != 1 {
+		return errors.New("specify exactly one of -dry-run, -apply, or -verify")
 	}
 
 	dbURL := os.Getenv("DATABASE_URL")
@@ -81,6 +93,26 @@ func run(argv []string, stdout, stderr *os.File) error {
 
 	plugin := mclient.New(mclient.Config{BaseURL: pluginURL})
 	resolver := namespace.New(db)
+
+	if *verify {
+		vcfg := verifyConfig{
+			DB:          db,
+			Plugin:      plugin,
+			Resolver:    namespaceResolverAdapter{resolver},
+			SampleSize:  *verifySample,
+			WorkspaceID: *workspace,
+		}
+		report, err := verifyParity(context.Background(), vcfg, stdout)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "\nVerify complete: workspaces_sampled=%d matches=%d mismatches=%d errors=%d\n",
+			report.WorkspacesSampled, report.Matches, report.Mismatches, report.Errors)
+		if report.Mismatches > 0 || report.Errors > 0 {
+			return fmt.Errorf("verify found %d mismatches and %d errors", report.Mismatches, report.Errors)
+		}
+		return nil
+	}
 
 	cfg := backfillConfig{
 		DB:          db,
@@ -250,4 +282,24 @@ func namespaceKindFromString(scope string) contract.NamespaceKind {
 	default:
 		return contract.NamespaceKindWorkspace
 	}
+}
+
+// namespaceResolverAdapter bridges *namespace.Resolver (which returns
+// []namespace.Namespace) to verify.go's verifyResolver interface
+// (which wants []ResolvedNamespace). Keeps verify.go independent of
+// the namespace-package dependency so its tests can stub easily.
+type namespaceResolverAdapter struct {
+	r *namespace.Resolver
+}
+
+func (a namespaceResolverAdapter) ReadableNamespaces(ctx context.Context, workspaceID string) ([]ResolvedNamespace, error) {
+	src, err := a.r.ReadableNamespaces(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ResolvedNamespace, len(src))
+	for i, ns := range src {
+		out[i] = ResolvedNamespace{Name: ns.Name}
+	}
+	return out, nil
 }
