@@ -564,3 +564,42 @@ export function extractSkillNames(agentCard: Record<string, unknown> | null): st
     .map((skill: Record<string, unknown>) => String(skill.name || skill.id || ""))
     .filter(Boolean);
 }
+
+/**
+ * Returns the configuration status reported by the workspace, or null
+ * when the agent card doesn't carry one (older runtime, or pre-PR #2756
+ * worker).
+ *
+ * Pairs with molecule-core PR #2756: when adapter.setup() fails, the
+ * runtime mounts a not-configured handler AND advertises the failure
+ * via agent_card.configuration_status = "not_configured" +
+ * configuration_error = "<reason>". Canvas reads both to render a
+ * "needs config" tile instead of a confused "online but silent" state.
+ *
+ * Returns null (not undefined) so callers can distinguish "no info"
+ * from explicit values via a strict equality check.
+ */
+export function getConfigurationStatus(
+  agentCard: Record<string, unknown> | null,
+): "ready" | "not_configured" | null {
+  if (!agentCard) return null;
+  const raw = agentCard.configuration_status;
+  if (raw === "ready" || raw === "not_configured") return raw;
+  return null;
+}
+
+/**
+ * Returns the configuration error string from the agent card when
+ * configuration_status is "not_configured", or null otherwise.
+ *
+ * Already redacted server-side via secret_redactor (PR #2778) — safe to
+ * render in the UI verbatim.
+ */
+export function getConfigurationError(
+  agentCard: Record<string, unknown> | null,
+): string | null {
+  if (!agentCard) return null;
+  if (getConfigurationStatus(agentCard) !== "not_configured") return null;
+  const raw = agentCard.configuration_error;
+  return typeof raw === "string" && raw.length > 0 ? raw : null;
+}

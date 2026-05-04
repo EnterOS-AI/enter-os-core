@@ -181,6 +181,77 @@ def _make_a2a_mocks():
     types_mod.AgentInterface = AgentInterface
     types_mod.AgentCard = AgentCard
 
+    # a2a.server.routes — used by boot_routes.build_routes (PR #2756 chain
+    # / #2761) to mount /.well-known/agent-card.json. The real SDK builds
+    # a Starlette route that serializes the card on each request; the stub
+    # mirrors that behaviour with json.dumps over the card's __dict__ so
+    # TestClient.get("/.well-known/agent-card.json") returns the same
+    # shape canvas would see in production.
+    routes_mod = ModuleType("a2a.server.routes")
+
+    def _create_agent_card_routes(card):
+        from starlette.responses import JSONResponse
+        from starlette.routing import Route
+
+        async def _card_handler(_request):
+            # Convert the stub AgentCard into a JSON-serialisable dict.
+            # Real a2a.types.AgentCard is a Pydantic model with proper
+            # serialisation; the stub stores attrs raw, so we walk
+            # __dict__ and serialise nested AgentSkill objects too.
+            def _to_dict(obj):
+                if hasattr(obj, "__dict__"):
+                    return {k: _to_dict(v) for k, v in vars(obj).items()}
+                if isinstance(obj, list):
+                    return [_to_dict(x) for x in obj]
+                if isinstance(obj, dict):
+                    return {k: _to_dict(v) for k, v in obj.items()}
+                return obj
+
+            return JSONResponse(_to_dict(card))
+
+        return [Route("/.well-known/agent-card.json", _card_handler, methods=["GET"])]
+
+    def _create_jsonrpc_routes(request_handler=None, rpc_url="/", **_kwargs):
+        from starlette.responses import JSONResponse
+        from starlette.routing import Route
+
+        async def _jsonrpc_handler(_request):
+            # Stub: real DefaultRequestHandler dispatches to the executor;
+            # tests that need real behaviour will use a test-side mock.
+            # This stub just returns a JSON-RPC envelope so the not-configured
+            # branch's discriminator (`error.data` containing "setup() failed")
+            # has something to differ from.
+            return JSONResponse({"jsonrpc": "2.0", "result": "stub-jsonrpc-handler"})
+
+        return [Route(rpc_url, _jsonrpc_handler, methods=["POST"])]
+
+    routes_mod.create_agent_card_routes = _create_agent_card_routes
+    routes_mod.create_jsonrpc_routes = _create_jsonrpc_routes
+    sys.modules["a2a.server.routes"] = routes_mod
+
+    # a2a.server.request_handlers — used by boot_routes' executor branch.
+    # DefaultRequestHandler stub takes the same kwargs as the real one;
+    # tests that exercise the executor path don't poke at the handler's
+    # internals, only that it gets mounted at "/".
+    rh_mod = ModuleType("a2a.server.request_handlers")
+
+    class DefaultRequestHandler:
+        def __init__(self, agent_executor=None, task_store=None, agent_card=None, **_kwargs):
+            self.agent_executor = agent_executor
+            self.task_store = task_store
+            self.agent_card = agent_card
+
+    rh_mod.DefaultRequestHandler = DefaultRequestHandler
+    sys.modules["a2a.server.request_handlers"] = rh_mod
+
+    # InMemoryTaskStore is exposed via a2a.server.tasks (already stubbed
+    # above with TaskUpdater). Add it as a no-op class.
+    class _InMemoryTaskStore:
+        def __init__(self):
+            pass
+
+    tasks_mod.InMemoryTaskStore = _InMemoryTaskStore
+
     # a2a.helpers (v1: moved from a2a.utils, renamed new_agent_text_message
     # → new_text_message). Mock both names — production code only calls
     # new_text_message, but if any test still references the old name it
