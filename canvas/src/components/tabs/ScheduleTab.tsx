@@ -269,15 +269,23 @@ export function ScheduleTab({ workspaceId }: Props) {
           {error && <div className="text-[10px] text-bad">{error}</div>}
           <div className="flex gap-2">
             <button
+              type="button"
               onClick={handleSubmit}
               disabled={!formCron || !formPrompt}
-              className="text-[11px] px-3 py-1 bg-accent-strong text-white rounded hover:bg-accent disabled:opacity-40 transition-colors"
+              // Was bg-accent-strong hover:bg-accent — accent is the
+              // LIGHTER variant, so this hovered lighter on white text
+              // and dropped contrast below AA. Same trap fixed in
+              // OnboardingWizard, ConfirmDialog, ApprovalBanner.
+              className="text-[11px] px-3 py-1 bg-accent text-white rounded hover:bg-accent-strong disabled:opacity-40 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
             >
               {editId ? "Update" : "Create"}
             </button>
             <button
+              type="button"
               onClick={resetForm}
-              className="text-[11px] px-3 py-1 bg-surface-card text-ink-mid rounded hover:bg-surface-card transition-colors"
+              // Was hover:bg-surface-card on top of bg-surface-card —
+              // silent no-op hover. Lift to surface-elevated.
+              className="text-[11px] px-3 py-1 bg-surface-card text-ink-mid rounded hover:bg-surface-elevated hover:text-ink transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
             >
               Cancel
             </button>
