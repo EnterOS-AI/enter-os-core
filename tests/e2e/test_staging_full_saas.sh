@@ -534,7 +534,17 @@ print(json.dumps({
     }
 }))
 ")
+# Override CURL_COMMON's --max-time 30 for THIS call only. Each canary
+# creates a fresh org → workspace, so the A2A POST hits a cold model:
+# claude-code adapter starts its event loop, opens TLS to the LLM
+# endpoint, ships the first prompt, waits for first token. With MiniMax
+# (which is the canary default since #2710) cold-call latency
+# routinely exceeds 30s on the first request after workspace boot.
+# 90s gives ~3x headroom over observed cold-call P95 (~25-30s).
+# Subsequent A2A turns hit the same workspace and are sub-second, so
+# this only widens the window for step 8/11 of the canary's first turn.
 A2A_RESP=$(tenant_call POST "/workspaces/$PARENT_ID/a2a" \
+  --max-time 90 \
   -H "Content-Type: application/json" \
   -d "$A2A_PAYLOAD")
 AGENT_TEXT=$(echo "$A2A_RESP" | python3 -c "
