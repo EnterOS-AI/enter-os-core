@@ -204,17 +204,31 @@ def run_preflight(config: WorkspaceConfig, config_path: str) -> PreflightReport:
                 )
             )
             continue
-        report.failures.append(
+        # Missing required env is a CONFIGURATION issue, not a STRUCTURAL one.
+        # The workspace can still bind /.well-known/agent-card.json — adapter.setup()
+        # raises on the missing key, main.py's PR #2756 try/except mounts the
+        # not-configured JSON-RPC handler, canvas surfaces a clear "agent not
+        # configured: <reason>" error to the user. Hard-failing preflight here
+        # would crash before the not-configured path even loads, leaving the
+        # workspace invisible (the failure mode that bit codex/openclaw bench
+        # 25335853189 on 2026-05-04 even after PR #2756). Warn loudly so logs
+        # remain actionable, but let the boot continue.
+        report.warnings.append(
             PreflightIssue(
-                severity="fail",
+                severity="warn",
                 title="Required env",
                 detail=f"Missing required environment variable: {env_var}",
-                fix=f"Set {env_var} via the secrets API (global or workspace-level).",
+                fix=(
+                    f"Set {env_var} via the secrets API (global or workspace-level). "
+                    "Workspace will boot in not-configured state until this is set; "
+                    "JSON-RPC will return -32603 'agent not configured' on every request."
+                ),
             )
         )
 
-    # Backward compat: if legacy auth_token_file is set, warn but don't block
-    # if the token is available via required_env or auth_token_env.
+    # Backward compat: if legacy auth_token_file is set, warn — same reasoning
+    # as the required_env block above. The downstream auth check fires inside
+    # adapter.setup(), which is wrapped by main.py's try/except.
     token_file = getattr(config.runtime_config, "auth_token_file", "")
     if token_file:
         token_path = config_dir / token_file
@@ -226,12 +240,16 @@ def run_preflight(config: WorkspaceConfig, config_path: str) -> PreflightReport:
                 env_has_token = all(os.environ.get(e) for e in required_env)
 
             if not env_has_token:
-                report.failures.append(
+                report.warnings.append(
                     PreflightIssue(
-                        severity="fail",
+                        severity="warn",
                         title="Auth token",
                         detail=f"Missing auth token file: {token_file}",
-                        fix="Remove auth_token_file and use required_env + secrets API instead.",
+                        fix=(
+                            "Remove auth_token_file and use required_env + secrets API "
+                            "instead. Workspace will boot in not-configured state until "
+                            "the token is provided."
+                        ),
                     )
                 )
 

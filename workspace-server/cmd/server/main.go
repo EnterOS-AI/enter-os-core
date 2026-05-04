@@ -18,6 +18,7 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/handlers"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/imagewatch"
+	memwiring "github.com/Molecule-AI/molecule-monorepo/platform/internal/memory/wiring"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/registry"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/router"
@@ -166,6 +167,16 @@ func main() {
 		wh.SetCPProvisioner(cpProv)
 	}
 
+	// Memory v2 plugin (RFC #2728): build the dependency bundle once
+	// here so all three handlers (MCPHandler, AdminMemoriesHandler,
+	// WorkspaceHandler) get the same plugin/resolver pair. memBundle
+	// is nil when MEMORY_PLUGIN_URL is unset — every consumer
+	// nil-checks before using.
+	memBundle := memwiring.Build(db.DB)
+	if memBundle != nil {
+		wh.WithNamespaceCleanup(memBundle.NamespaceCleanupFn())
+	}
+
 	// External-plugin env mutators — each plugin contributes 0+ mutators
 	// onto a shared registry. Order matters: gh-identity populates
 	// MOLECULE_AGENT_ROLE-derived attribution env vars that downstream
@@ -306,7 +317,7 @@ func main() {
 	cronSched.SetChannels(channelMgr)
 
 	// Router
-	r := router.Setup(hub, broadcaster, prov, platformURL, configsDir, wh, channelMgr)
+	r := router.Setup(hub, broadcaster, prov, platformURL, configsDir, wh, channelMgr, memBundle)
 
 	// HTTP server with graceful shutdown
 	srv := &http.Server{

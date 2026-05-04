@@ -225,8 +225,14 @@ def test_required_env_present_passes(tmp_path, monkeypatch):
     assert not any(issue.title == "Required env" for issue in report.failures)
 
 
-def test_required_env_missing_fails(tmp_path, monkeypatch):
-    """When a required_env var is missing, preflight fails."""
+def test_required_env_missing_warns_does_not_fail(tmp_path, monkeypatch):
+    """When a required_env var is missing, preflight WARNS but does not
+    fail the boot. Pairs with PR #2756 (molecule-core): the workspace
+    binds /.well-known/agent-card.json regardless of credentials and
+    routes JSON-RPC to a -32603 'agent not configured' handler. Hard
+    failing here would crash before the not-configured path even loads,
+    leaving the workspace invisible — that's the failure mode that bit
+    codex/openclaw bench 25335853189 on 2026-05-04 even after PR #2756."""
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
 
     config = make_config(
@@ -236,10 +242,13 @@ def test_required_env_missing_fails(tmp_path, monkeypatch):
 
     report = run_preflight(config, str(tmp_path))
 
-    assert report.ok is False
+    assert report.ok is True
     assert any(
         issue.title == "Required env" and "CLAUDE_CODE_OAUTH_TOKEN" in issue.detail
-        for issue in report.failures
+        for issue in report.warnings
+    )
+    assert not any(
+        issue.title == "Required env" for issue in report.failures
     )
 
 
@@ -257,8 +266,11 @@ def test_required_env_multiple_all_present_passes(tmp_path, monkeypatch):
     assert report.ok is True
 
 
-def test_required_env_multiple_one_missing_fails(tmp_path, monkeypatch):
-    """If any required_env var is missing, preflight fails with that var named."""
+def test_required_env_multiple_one_missing_warns(tmp_path, monkeypatch):
+    """If any required_env var is missing, preflight warns with that var
+    named (and does NOT fail). The eventual setup() failure is what
+    actually surfaces to the user via the -32603 handler — preflight is
+    just a logging signal for operators inspecting boot logs."""
     monkeypatch.setenv("API_KEY_A", "key-a")
     monkeypatch.delenv("API_KEY_B", raising=False)
 
@@ -268,10 +280,10 @@ def test_required_env_multiple_one_missing_fails(tmp_path, monkeypatch):
 
     report = run_preflight(config, str(tmp_path))
 
-    assert report.ok is False
+    assert report.ok is True
     assert any(
         issue.title == "Required env" and "API_KEY_B" in issue.detail
-        for issue in report.failures
+        for issue in report.warnings
     )
 
 
@@ -317,8 +329,10 @@ def test_required_env_skipped_in_smoke_mode(tmp_path, monkeypatch):
     )
 
 
-def test_required_env_smoke_mode_off_still_fails(tmp_path, monkeypatch):
-    """Sanity: smoke bypass is OFF when MOLECULE_SMOKE_MODE is unset."""
+def test_required_env_smoke_mode_off_still_warns(tmp_path, monkeypatch):
+    """Sanity: smoke bypass is OFF when MOLECULE_SMOKE_MODE is unset, but
+    the warning still fires (and preflight no longer hard-fails — see
+    test_required_env_missing_warns_does_not_fail for the rationale)."""
     monkeypatch.delenv("HERMES_API_KEY", raising=False)
     monkeypatch.delenv("MOLECULE_SMOKE_MODE", raising=False)
 
@@ -328,10 +342,13 @@ def test_required_env_smoke_mode_off_still_fails(tmp_path, monkeypatch):
 
     report = run_preflight(config, str(tmp_path))
 
-    assert report.ok is False
+    assert report.ok is True
     assert any(
         issue.title == "Required env" and "HERMES_API_KEY" in issue.detail
-        for issue in report.failures
+        for issue in report.warnings
+    )
+    assert not any(
+        issue.title == "Required env" for issue in report.failures
     )
 
 
@@ -383,10 +400,12 @@ def test_top_level_required_env_used_when_no_models_declared(tmp_path, monkeypat
 
     report = run_preflight(config, str(tmp_path))
 
-    assert report.ok is False
+    # Missing required_env is now a warning (workspace boots in
+    # not-configured state); see test_required_env_missing_warns_does_not_fail.
+    assert report.ok is True
     assert any(
         issue.title == "Required env" and "CLAUDE_CODE_OAUTH_TOKEN" in issue.detail
-        for issue in report.failures
+        for issue in report.warnings
     )
 
 
@@ -411,10 +430,10 @@ def test_top_level_used_when_picked_model_not_in_models_list(tmp_path, monkeypat
 
     report = run_preflight(config, str(tmp_path))
 
-    assert report.ok is False
+    assert report.ok is True
     assert any(
         issue.title == "Required env" and "CLAUDE_CODE_OAUTH_TOKEN" in issue.detail
-        for issue in report.failures
+        for issue in report.warnings
     )
 
 
@@ -526,8 +545,13 @@ def test_per_model_required_env_null_treated_as_empty_no_auth(tmp_path, monkeypa
 # ---------- Legacy auth_token_file backward compat ----------
 
 
-def test_legacy_auth_token_file_missing_no_env_fails(tmp_path, monkeypatch):
-    """Legacy: missing auth_token_file with no env var should fail."""
+def test_legacy_auth_token_file_missing_no_env_warns(tmp_path, monkeypatch):
+    """Legacy: missing auth_token_file with no env var emits a warning,
+    not a hard failure. Same reasoning as
+    test_required_env_missing_warns_does_not_fail — adapter.setup() is
+    the authoritative auth check, preflight just surfaces the issue
+    early in the boot log. The workspace still binds /agent-card and
+    routes to the not-configured -32603 handler."""
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
 
     config = make_config(
@@ -536,8 +560,9 @@ def test_legacy_auth_token_file_missing_no_env_fails(tmp_path, monkeypatch):
 
     report = run_preflight(config, str(tmp_path))
 
-    assert report.ok is False
-    assert any(issue.title == "Auth token" for issue in report.failures)
+    assert report.ok is True
+    assert any(issue.title == "Auth token" for issue in report.warnings)
+    assert not any(issue.title == "Auth token" for issue in report.failures)
 
 
 def test_legacy_auth_token_file_missing_but_auth_token_env_passes(tmp_path, monkeypatch):

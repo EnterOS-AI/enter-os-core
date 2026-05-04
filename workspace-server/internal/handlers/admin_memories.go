@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"log"
 	"net/http"
 	"os"
@@ -255,66 +256,183 @@ func (h *AdminMemoriesHandler) Import(c *gin.Context) {
 // the legacy memoryExportEntry shape so existing tooling that consumes
 // the export keeps working.
 //
-// Strategy: enumerate workspaces, ask the resolver for each one's
-// readable namespaces, search each namespace once. Deduplicate by
-// memory id (a single memory in team:X is visible to every workspace
-// under root X — we want one row per memory, not N).
+// Optimization (#289 fix): the previous implementation was O(workspaces)
+// in BOTH resolver CTE walks AND plugin search calls. For a 1000-tenant
+// org, that's 1000 × resolver + 1000 × HTTP, where most are redundant
+// because workspaces sharing a team/org root see identical namespaces.
+//
+// New strategy:
+//   1. Single SQL pass walks parent_id chains, returning each
+//      workspace's root_id alongside its name.
+//   2. Group workspaces by root → unique tree count is typically <<
+//      workspace count.
+//   3. Resolve namespaces ONCE per root (any workspace under that
+//      root produces the same readable list).
+//   4. Build a UNION of namespaces across all roots; single plugin
+//      search call.
+//   5. Map each memory back to a workspace_name via a namespace→ws
+//      lookup table built up from step 3.
+//
+// Net cost: 1 SQL + N_roots resolver calls + 1 plugin call (vs
+// N_workspaces resolver + N_workspaces plugin in the old code).
 func (h *AdminMemoriesHandler) exportViaPlugin(c *gin.Context, ctx context.Context) {
-	rows, err := db.DB.QueryContext(ctx, `SELECT id::text, name FROM workspaces ORDER BY created_at`)
+	// 1. One SQL pass: every workspace + its root id.
+	wsRows, err := loadWorkspacesWithRoots(ctx, db.DB)
 	if err != nil {
 		log.Printf("admin/memories/export (cutover): workspaces query: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "export query failed"})
 		return
 	}
-	defer rows.Close()
 
-	type wsRow struct{ ID, Name string }
-	var workspaces []wsRow
-	for rows.Next() {
-		var w wsRow
-		if err := rows.Scan(&w.ID, &w.Name); err != nil {
-			continue
-		}
-		workspaces = append(workspaces, w)
+	// 2. Group by root → list of workspaces.
+	rootToWorkspaces := make(map[string][]workspaceRow, len(wsRows))
+	for _, w := range wsRows {
+		rootToWorkspaces[w.RootID] = append(rootToWorkspaces[w.RootID], w)
 	}
 
-	seen := make(map[string]struct{})
-	memories := make([]memoryExportEntry, 0)
-	for _, w := range workspaces {
-		readable, err := h.resolver.ReadableNamespaces(ctx, w.ID)
+	// 3. Resolve team/org namespaces once per root, then add each
+	// member's private workspace:<id> namespace explicitly.
+	//
+	// IMPORTANT: ReadableNamespaces(rootID) returns
+	// {workspace:rootID, team:rootID, org:rootID}. Calling it once
+	// per root is enough for team:/org:/custom: (those are shared by
+	// every member of the root group), but the workspace: namespace
+	// it returns is rootID's only — child members' private
+	// workspace:<childID> namespaces would be silently dropped from
+	// the export. Inject each member's workspace:<id> below to keep
+	// coverage parity with the legacy per-workspace iteration.
+	nsToOwner := make(map[string]string)       // namespace → workspace_name (first matching wins)
+	allNamespaces := make(map[string]struct{}) // union for plugin search
+	for rootID, members := range rootToWorkspaces {
+		readable, err := h.resolver.ReadableNamespaces(ctx, rootID)
 		if err != nil {
-			log.Printf("admin/memories/export (cutover) workspace=%s: resolve: %v", w.Name, err)
+			log.Printf("admin/memories/export (cutover) root=%s: resolve: %v", rootID, err)
 			continue
 		}
-		nsList := make([]string, len(readable))
-		for i, ns := range readable {
-			nsList[i] = ns.Name
-		}
-		if len(nsList) == 0 {
-			continue
-		}
-		resp, err := h.plugin.Search(ctx, contract.SearchRequest{Namespaces: nsList, Limit: 100})
-		if err != nil {
-			log.Printf("admin/memories/export (cutover) workspace=%s: plugin search: %v", w.Name, err)
-			continue
-		}
-		for _, m := range resp.Memories {
-			if _, dup := seen[m.ID]; dup {
+		// Collect non-workspace namespaces (team:/org:/custom:/...) from
+		// the root view; these are identical across every member.
+		for _, ns := range readable {
+			if strings.HasPrefix(ns.Name, "workspace:") {
 				continue
 			}
-			seen[m.ID] = struct{}{}
-			redacted, _ := redactSecrets(w.Name, m.Content)
-			memories = append(memories, memoryExportEntry{
-				ID:            m.ID,
-				Content:       redacted,
-				Scope:         legacyScopeFromNamespace(m.Namespace),
-				Namespace:     m.Namespace,
-				CreatedAt:     m.CreatedAt,
-				WorkspaceName: w.Name,
-			})
+			allNamespaces[ns.Name] = struct{}{}
+			if _, alreadyMapped := nsToOwner[ns.Name]; alreadyMapped {
+				continue
+			}
+			if owner := pickOwnerForNamespace(ns.Name, members); owner != "" {
+				nsToOwner[ns.Name] = owner
+			}
+		}
+		// Inject each member's private workspace:<id> namespace + its
+		// owner. Children's private memories live in workspace:<childID>
+		// which the root-only resolve doesn't surface.
+		for _, m := range members {
+			ns := "workspace:" + m.ID
+			allNamespaces[ns] = struct{}{}
+			nsToOwner[ns] = m.Name
 		}
 	}
+
+	if len(allNamespaces) == 0 {
+		c.JSON(http.StatusOK, []memoryExportEntry{})
+		return
+	}
+
+	// 4. Single plugin search across the union.
+	nsList := make([]string, 0, len(allNamespaces))
+	for ns := range allNamespaces {
+		nsList = append(nsList, ns)
+	}
+	resp, err := h.plugin.Search(ctx, contract.SearchRequest{Namespaces: nsList, Limit: 100})
+	if err != nil {
+		log.Printf("admin/memories/export (cutover): plugin search: %v", err)
+		c.JSON(http.StatusOK, []memoryExportEntry{})
+		return
+	}
+
+	// 5. Map each memory to a workspace_name, redact, emit.
+	seen := make(map[string]struct{})
+	memories := make([]memoryExportEntry, 0, len(resp.Memories))
+	for _, m := range resp.Memories {
+		if _, dup := seen[m.ID]; dup {
+			continue
+		}
+		seen[m.ID] = struct{}{}
+		owner := nsToOwner[m.Namespace]
+		redacted, _ := redactSecrets(owner, m.Content)
+		memories = append(memories, memoryExportEntry{
+			ID:            m.ID,
+			Content:       redacted,
+			Scope:         legacyScopeFromNamespace(m.Namespace),
+			Namespace:     m.Namespace,
+			CreatedAt:     m.CreatedAt,
+			WorkspaceName: owner,
+		})
+	}
 	c.JSON(http.StatusOK, memories)
+}
+
+// workspaceRow bundles the per-workspace fields the optimized export
+// needs (id + name + root for grouping).
+type workspaceRow struct {
+	ID     string
+	Name   string
+	RootID string
+}
+
+// loadWorkspacesWithRoots returns one row per workspace with its root
+// id computed via a recursive CTE. Single SQL pass — replaces the
+// previous N×ReadableNamespaces pattern that walked each tree
+// independently.
+func loadWorkspacesWithRoots(ctx context.Context, conn *sql.DB) ([]workspaceRow, error) {
+	rows, err := conn.QueryContext(ctx, `
+		WITH RECURSIVE chain AS (
+			SELECT id, parent_id, name, id AS root_id, 0 AS depth
+			FROM workspaces
+			WHERE parent_id IS NULL
+			UNION ALL
+			SELECT w.id, w.parent_id, w.name, c.root_id, c.depth + 1
+			FROM workspaces w
+			JOIN chain c ON w.parent_id = c.id
+			WHERE c.depth < 50
+		)
+		SELECT id::text, name, root_id::text FROM chain ORDER BY name
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]workspaceRow, 0)
+	for rows.Next() {
+		var w workspaceRow
+		if err := rows.Scan(&w.ID, &w.Name, &w.RootID); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// pickOwnerForNamespace returns the workspace_name to attribute a
+// namespace to in the export. workspace:<id> namespaces map to the
+// matching member; team:* / org:* / custom:* fall back to the first
+// member of the root group (canonical owner).
+func pickOwnerForNamespace(ns string, members []workspaceRow) string {
+	if strings.HasPrefix(ns, "workspace:") {
+		wantID := strings.TrimPrefix(ns, "workspace:")
+		for _, m := range members {
+			if m.ID == wantID {
+				return m.Name
+			}
+		}
+	}
+	// Non-workspace namespaces: attribute to first member of the root
+	// group. Stable because loadWorkspacesWithRoots returns ORDER BY
+	// name, so the same root group always picks the same owner.
+	if len(members) > 0 {
+		return members[0].Name
+	}
+	return ""
 }
 
 // importViaPlugin writes the entries through the plugin instead of
