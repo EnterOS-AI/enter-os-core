@@ -296,4 +296,75 @@ describe("A2ATopologyOverlay component", () => {
     // setA2AEdges should still be called with an empty array
     expect(mockStoreState.setA2AEdges).toHaveBeenCalled();
   });
+
+  // Regression for the 2026-05-04 render-loop incident:
+  // tenant heartbeats / status flips / peer-discovery writes mutated
+  // canvas store .nodes ~5x/sec. Previously visibleIds was useMemo'd on
+  // [nodes] so the array reference recreated on every store mutation,
+  // causing fetchAndUpdate to recreate, the useEffect to re-fire, and
+  // the 60-second polling fan-out to fire on EVERY store update. With
+  // 5 visible workspaces and 5 store updates/sec, the canvas hammered
+  // /workspaces/<id>/activity?type=delegation 25×/sec until edge rate
+  // -limit returned 429 (per browser console captured by user).
+  //
+  // Fix: select a stable string key (sorted CSV of IDs) from Zustand
+  // so the selector's shallow-equal short-circuit prevents re-renders
+  // when the actual ID set hasn't changed.
+  //
+  // This test verifies the fetch fires ONCE on mount + only re-fires
+  // when the visible ID set actually changes, NOT on every nodes[]
+  // reference change.
+  it("does not re-fetch when nodes[] reference changes but visible IDs are the same", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockGet.mockResolvedValue([] as any);
+    const { rerender } = render(<A2ATopologyOverlay />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    const callsAfterMount = mockGet.mock.calls.length;
+    // Sanity: 2 visible nodes (ws-a, ws-b) → 2 fan-out requests on mount
+    expect(callsAfterMount).toBe(2);
+
+    // Simulate a store mutation that changes the nodes array reference
+    // (e.g. status flip on a node) WITHOUT changing the set of visible
+    // IDs. Pre-fix: this triggered a re-fetch storm. Post-fix: the
+    // sorted-CSV selector returns the same key, Zustand's shallow-equal
+    // short-circuits, useMemo keeps the same visibleIds, fetchAndUpdate
+    // keeps the same identity, useEffect does NOT re-fire.
+    mockStoreState.nodes = [
+      { id: "ws-a", hidden: false, data: { newStatus: "online" } },  // mutated
+      { id: "ws-b", hidden: false, data: {} },
+      { id: "ws-hidden", hidden: true, data: {} },
+    ];
+    rerender(<A2ATopologyOverlay />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    // No additional fetches should have fired.
+    expect(mockGet.mock.calls.length).toBe(callsAfterMount);
+  });
+
+  it("re-fetches when the visible ID set actually changes", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockGet.mockResolvedValue([] as any);
+    const { rerender } = render(<A2ATopologyOverlay />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    const callsAfterMount = mockGet.mock.calls.length;
+    expect(callsAfterMount).toBe(2);
+
+    // Add a new visible workspace — the visible-ID-set actually changed.
+    mockStoreState.nodes = [
+      { id: "ws-a", hidden: false, data: {} },
+      { id: "ws-b", hidden: false, data: {} },
+      { id: "ws-c", hidden: false, data: {} }, // NEW
+      { id: "ws-hidden", hidden: true, data: {} },
+    ];
+    rerender(<A2ATopologyOverlay />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    // Should have fetched the additional workspace + the existing two
+    // (the effect re-fires once with the new ID set). Total: 2 + 3 = 5.
+    expect(mockGet.mock.calls.length).toBe(callsAfterMount + 3);
+    const allPaths = mockGet.mock.calls.map(([p]) => p as string);
+    expect(allPaths.some((p) => p.includes("ws-c"))).toBe(true);
+  });
 });
