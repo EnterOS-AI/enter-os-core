@@ -55,7 +55,13 @@ export function TracesTab({ workspaceId }: Props) {
     <div className="p-4 space-y-2">
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs text-ink-mid">{traces.length} traces</span>
-        <button type="button" onClick={loadTraces} className="text-[10px] text-ink-soft hover:text-ink-mid">
+        <button
+          type="button"
+          onClick={loadTraces}
+          // Added focus-visible ring; previous version was hover-only,
+          // invisible to keyboard users.
+          className="text-[10px] text-ink-soft hover:text-ink-mid rounded-sm px-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        >
           Refresh
         </button>
       </div>
@@ -79,66 +85,79 @@ export function TracesTab({ workspaceId }: Props) {
         </div>
       ) : (
         <div className="space-y-1">
-          {traces.map((trace) => (
-            <div key={trace.id} className="bg-surface-card/40 border border-line/40 rounded-lg overflow-hidden">
-              <button
-                onClick={() => setExpanded(expanded === trace.id ? null : trace.id)}
-                className="w-full px-3 py-2 flex items-center gap-2 text-left hover:bg-surface-card/60 transition-colors"
-              >
-                <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                  trace.status === "ERROR" ? "bg-red-400" : "bg-emerald-400"
-                }`} />
-                <div className="flex-1 min-w-0">
-                  <div className="text-[11px] text-ink truncate">{trace.name || "trace"}</div>
-                  <div className="text-[9px] text-ink-soft">{formatTime(trace.timestamp)}</div>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  {trace.latency != null && (
-                    <span className="text-[9px] text-ink-soft tabular-nums">
-                      {trace.latency > 1000 ? `${(trace.latency / 1000).toFixed(1)}s` : `${trace.latency}ms`}
-                    </span>
-                  )}
-                  {trace.usage?.total != null && (
-                    <span className="text-[9px] text-ink-soft tabular-nums">
-                      {trace.usage.total} tok
-                    </span>
-                  )}
-                  <span className="text-[9px] text-ink-soft">
-                    {expanded === trace.id ? "▼" : "▶"}
-                  </span>
-                </div>
-              </button>
-
-              {expanded === trace.id && (
-                <div className="px-3 pb-2 space-y-2 border-t border-line/30">
-                  {trace.input && (
-                    <div>
-                      <div className="text-[9px] text-ink-soft uppercase tracking-wider mt-2 mb-1">Input</div>
-                      <pre className="text-[9px] text-ink-mid bg-surface-sunken rounded p-2 overflow-x-auto max-h-32">
-                        {String(typeof trace.input === "string" ? trace.input : JSON.stringify(trace.input, null, 2))}
-                      </pre>
-                    </div>
-                  )}
-                  {trace.output && (
-                    <div>
-                      <div className="text-[9px] text-ink-soft uppercase tracking-wider mb-1">Output</div>
-                      <pre className="text-[9px] text-ink-mid bg-surface-sunken rounded p-2 overflow-x-auto max-h-32">
-                        {String(typeof trace.output === "string" ? trace.output : JSON.stringify(trace.output, null, 2))}
-                      </pre>
-                    </div>
-                  )}
-                  {trace.totalCost != null && (
-                    <div className="text-[9px] text-ink-soft">
-                      Cost: ${trace.totalCost.toFixed(6)}
-                    </div>
-                  )}
-                  <div className="text-[8px] text-ink-soft font-mono select-all">
-                    {trace.id}
+          {traces.map((trace) => {
+            const isOpen = expanded === trace.id;
+            const panelId = `trace-detail-${trace.id}`;
+            return (
+              <div key={trace.id} className="bg-surface-card/40 border border-line/40 rounded-lg overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setExpanded(isOpen ? null : trace.id)}
+                  // aria-expanded + aria-controls so SR announces the
+                  // open/closed state and links the row to its detail
+                  // panel. Same pattern shipped on EventsTab.
+                  aria-expanded={isOpen}
+                  aria-controls={panelId}
+                  className="w-full px-3 py-2 flex items-center gap-2 text-left hover:bg-surface-card/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/50 transition-colors"
+                >
+                  {/* Status dot uses semantic bad/good tokens — was hardcoded
+                      bg-red-400 / bg-emerald-400 which doesn't pin to the
+                      canvas-wide ramp. */}
+                  <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                    trace.status === "ERROR" ? "bg-bad" : "bg-good"
+                  }`} />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[11px] text-ink truncate">{trace.name || "trace"}</div>
+                    <div className="text-[9px] text-ink-soft">{formatTime(trace.timestamp)}</div>
                   </div>
-                </div>
-              )}
-            </div>
-          ))}
+                  <div className="flex items-center gap-2 shrink-0">
+                    {trace.latency != null && (
+                      <span className="text-[9px] text-ink-soft tabular-nums">
+                        {trace.latency > 1000 ? `${(trace.latency / 1000).toFixed(1)}s` : `${trace.latency}ms`}
+                      </span>
+                    )}
+                    {trace.usage?.total != null && (
+                      <span className="text-[9px] text-ink-soft tabular-nums">
+                        {trace.usage.total} tok
+                      </span>
+                    )}
+                    <span aria-hidden="true" className="text-[9px] text-ink-soft">
+                      {isOpen ? "▼" : "▶"}
+                    </span>
+                  </div>
+                </button>
+
+                {isOpen && (
+                  <div id={panelId} className="px-3 pb-2 space-y-2 border-t border-line/30">
+                    {trace.input && (
+                      <div>
+                        <div className="text-[9px] text-ink-soft uppercase tracking-wider mt-2 mb-1">Input</div>
+                        <pre className="text-[9px] text-ink-mid bg-surface-sunken rounded p-2 overflow-x-auto max-h-32">
+                          {String(typeof trace.input === "string" ? trace.input : JSON.stringify(trace.input, null, 2))}
+                        </pre>
+                      </div>
+                    )}
+                    {trace.output && (
+                      <div>
+                        <div className="text-[9px] text-ink-soft uppercase tracking-wider mb-1">Output</div>
+                        <pre className="text-[9px] text-ink-mid bg-surface-sunken rounded p-2 overflow-x-auto max-h-32">
+                          {String(typeof trace.output === "string" ? trace.output : JSON.stringify(trace.output, null, 2))}
+                        </pre>
+                      </div>
+                    )}
+                    {trace.totalCost != null && (
+                      <div className="text-[9px] text-ink-soft">
+                        Cost: ${trace.totalCost.toFixed(6)}
+                      </div>
+                    )}
+                    <div className="text-[8px] text-ink-soft font-mono select-all">
+                      {trace.id}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
