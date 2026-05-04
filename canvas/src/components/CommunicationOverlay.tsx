@@ -32,11 +32,18 @@ export function CommunicationOverlay() {
 
   const fetchComms = useCallback(async () => {
     try {
-      // Fetch activity from all online workspaces
+      // Fan-out cap: each polled workspace = 1 round-trip. The platform
+      // rate limits at 600 req/min/IP; combined with heartbeats + other
+      // canvas polling, every workspace polled here costs ~6 req/min
+      // (1 every 30s × 1 per workspace). Capping at 3 keeps this
+      // overlay's footprint at 18 req/min worst case — well under
+      // budget even with 8+ workspaces visible. Caught 2026-05-04 when
+      // a user with 8+ workspaces (Design Director + 6 sub-agents +
+      // 3 standalones) saw sustained 429s in canvas console.
       const onlineNodes = nodesRef.current.filter((n) => n.data.status === "online");
       const allComms: Communication[] = [];
 
-      for (const node of onlineNodes.slice(0, 6)) {
+      for (const node of onlineNodes.slice(0, 3)) {
         try {
           const activities = await api.get<Array<{
             id: string;
@@ -91,10 +98,20 @@ export function CommunicationOverlay() {
   }, []);
 
   useEffect(() => {
+    // Gate polling on visibility — when the user collapses the overlay
+    // the data isn't being read, so the per-workspace fan-out becomes
+    // pure rate-limit overhead. Pre-fix this overlay polled regardless
+    // of whether the panel was shown, costing ~36 req/min from a
+    // hidden surface.
+    if (!visible) return;
     fetchComms();
-    const interval = setInterval(fetchComms, 10000);
+    // 30s cadence (was 10s). At 3-workspace fan-out that's 6 req/min
+    // worst case from this overlay. Combined with heartbeats (~30/min)
+    // and other canvas polling, leaves ample headroom under the 600/
+    // min/IP server-side rate limit even at 8+ workspace tenants.
+    const interval = setInterval(fetchComms, 30000);
     return () => clearInterval(interval);
-  }, [fetchComms]);
+  }, [fetchComms, visible]);
 
   if (!visible || comms.length === 0) {
     return (

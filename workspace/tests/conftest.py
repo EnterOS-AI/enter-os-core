@@ -35,27 +35,41 @@ def _make_a2a_mocks():
 
     events_mod.EventQueue = EventQueue
 
-    # a2a.server.tasks needs a TaskUpdater stub whose async methods are no-ops.
-    # In tests, TaskUpdater calls go to this stub rather than the real SDK so
-    # event_queue.enqueue_event is only called via explicit executor code paths.
+    # a2a.server.tasks needs a TaskUpdater stub whose async methods are no-ops
+    # for status transitions but ROUTE the terminal message back through
+    # event_queue.enqueue_event so legacy assertions on enqueue_event keep
+    # working. The wrapper preserves identity (the same Message object the
+    # executor passed in) so tests inspecting str(event_arg) still see the
+    # response text. complete()/failed() also record their last call on the
+    # event_queue itself (`_complete_calls`, `_failed_calls`) so the v1
+    # contract regression test (#262 follow-on to #2558) can pin the proper
+    # path was taken — raw enqueue from executor would NOT touch these.
     tasks_mod = ModuleType("a2a.server.tasks")
 
     class TaskUpdater:
-        """Stub TaskUpdater — no-op async methods for unit tests."""
+        """Stub TaskUpdater — terminal helpers route through event_queue."""
 
         def __init__(self, event_queue, task_id, context_id, *args, **kwargs):
             self.event_queue = event_queue
             self.task_id = task_id
             self.context_id = context_id
+            if not hasattr(event_queue, "_complete_calls"):
+                event_queue._complete_calls = []
+            if not hasattr(event_queue, "_failed_calls"):
+                event_queue._failed_calls = []
 
         async def start_work(self, message=None):
             pass
 
         async def complete(self, message=None):
-            pass
+            self.event_queue._complete_calls.append(message)
+            if message is not None:
+                await self.event_queue.enqueue_event(message)
 
         async def failed(self, message=None):
-            pass
+            self.event_queue._failed_calls.append(message)
+            if message is not None:
+                await self.event_queue.enqueue_event(message)
 
         async def add_artifact(
             self, parts, artifact_id=None, name=None, metadata=None,
@@ -101,6 +115,35 @@ def _make_a2a_mocks():
     types_mod.Part = Part
     types_mod.Message = Message
     types_mod.Role = _RoleEnum
+
+    # v1 Task / TaskStatus / TaskState — used by the executor's "enqueue Task
+    # before any TaskStatusUpdateEvent" guard (a2a-sdk ≥ 1.0 contract). The
+    # stubs preserve every kwarg so tests can assert on Task(id=..., status=...).
+    class TaskStatus:
+        def __init__(self, state=None, **kwargs):
+            self.state = state
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+
+    class _TaskStateEnum:
+        TASK_STATE_SUBMITTED = 1
+        TASK_STATE_WORKING = 2
+        TASK_STATE_COMPLETED = 3
+        TASK_STATE_CANCELED = 4
+        TASK_STATE_FAILED = 5
+        TASK_STATE_REJECTED = 6
+
+    class Task:
+        def __init__(self, id="", context_id="", status=None, **kwargs):
+            self.id = id
+            self.context_id = context_id
+            self.status = status
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+
+    types_mod.Task = Task
+    types_mod.TaskStatus = TaskStatus
+    types_mod.TaskState = _TaskStateEnum
 
     # a2a.helpers (v1: moved from a2a.utils, renamed new_agent_text_message
     # → new_text_message). Mock both names — production code only calls

@@ -138,14 +138,23 @@ func (h *TeamHandler) Expand(c *gin.Context) {
 		// and every other preflight (secrets, env mutators, identity
 		// injection, missing-env). That left every child with NULL
 		// platform_inbound_secret and never-issued auth_token. Now
-		// children go through the same provisionWorkspace path as
+		// children go through the same provisionWorkspaceAuto path as
 		// Create/Restart, so adding a future provision-time step
 		// automatically covers Expand too.
+		//
+		// 2026-05-04 follow-up: switched from provisionWorkspace
+		// (hardcoded Docker) to provisionWorkspaceAuto (picks CP for
+		// SaaS, Docker for self-hosted). Pre-fix, deploying a team on
+		// a SaaS tenant created child rows but never an EC2 instance —
+		// the 600s sweeper logged the misleading "container started
+		// but never called /registry/register". Templates only own
+		// shape (config/prompts/files/plugins/runtime); the platform
+		// owns where it runs.
 		if h.wh != nil && sub.Config != "" {
 			templatePath := filepath.Join(h.configsDir, sub.Config)
 			if _, err := os.Stat(templatePath); err == nil {
 				parent := parentID // copy for closure
-				go h.wh.provisionWorkspace(childID, templatePath, nil, models.CreateWorkspacePayload{
+				h.wh.provisionWorkspaceAuto(childID, templatePath, nil, models.CreateWorkspacePayload{
 					Name:     childName,
 					Role:     sub.Role,
 					Tier:     tier,

@@ -67,6 +67,12 @@ log()  { echo "[$(date +%H:%M:%S)] $*"; }
 fail() { echo "[$(date +%H:%M:%S)] ❌ $*" >&2; exit 1; }
 ok()   { echo "[$(date +%H:%M:%S)] ✅ $*"; }
 
+# Per-runtime model slug dispatch — see lib/model_slug.sh for the rationale.
+# Extracted so unit tests (tests/e2e/test_model_slug.sh) can pin every branch
+# without booting the full 11-step lifecycle.
+# shellcheck source=lib/model_slug.sh
+source "$(dirname "$0")/lib/model_slug.sh"
+
 CURL_COMMON=(-sS --fail-with-body --max-time 30)
 
 # ─── cleanup trap ───────────────────────────────────────────────────────
@@ -314,29 +320,68 @@ tenant_call() {
 }
 
 # ─── 5. Provision parent workspace ─────────────────────────────────────
-# Runtimes like hermes crash at boot with "No provider API key found"
-# if nothing in the standard env-var list is set. Inject the API key
-# from E2E_OPENAI_API_KEY so the runtime can actually start — it's
-# per-workspace secret, so it's persisted as a workspace_secret and
-# materialized into the container env. Missing key falls through to
-# an empty secrets map; workspace will still fail but the error is
-# expected and actionable.
+# Inject the LLM provider key so the runtime can authenticate at boot.
+# Branch by which secret is set so the script supports multiple paths
+# without forcing every dispatch to ship them all. Priority order
+# matters — first non-empty wins:
+#
+#   E2E_MINIMAX_API_KEY → claude-code MiniMax path. Cheapest, default
+#     for the cron canary post-2026-05-03. Routes via the claude-code
+#     template's `minimax` provider (workspace-configs-templates/
+#     claude-code-default/config.yaml:64-69) which sets
+#     ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic at boot.
+#     MINIMAX_API_KEY is the vendor-specific env name the adapter
+#     reads (PR #244 — per-vendor envs prevent ANTHROPIC_AUTH_TOKEN
+#     collisions when a user runs MiniMax + Z.ai workspaces side-by-
+#     side).
+#
+#   E2E_ANTHROPIC_API_KEY → claude-code direct-Anthropic path (added
+#     2026-05-04 after #2578 left the operator with an awkward choice
+#     between paying OpenAI's billing top-up and registering a new
+#     MiniMax account). Lower friction than MiniMax for operators
+#     who already have an Anthropic API key for their own Claude
+#     Code session. Pricier per-token than MiniMax but billing is
+#     still independent of MOLECULE_STAGING_OPENAI_KEY. Pinned to the
+#     claude-code runtime — hermes/langgraph use OpenAI-shaped envs.
+#
+#   E2E_OPENAI_API_KEY → langgraph + hermes paths. Kept as fallback
+#     for operator dispatches that explicitly want to exercise the
+#     OpenAI path. The HERMES_* fields pin hermes-agent's bridge to
+#     api.openai.com (template-hermes' derive-provider.sh otherwise
+#     resolves openai/* → openrouter.ai and 401s). MODEL_PROVIDER
+#     follows workspace/config.py:258's 'provider:model' format.
+#
+# All empty → '{}' (workspace will fail at first turn with an
+# expected, actionable auth error rather than masking the test).
 SECRETS_JSON='{}'
-if [ -n "${E2E_OPENAI_API_KEY:-}" ]; then
-  # MODEL_PROVIDER is a full model slug in 'provider:model' format per
-  # workspace/config.py:258. Using just "openai" gets parsed as the
-  # model name → 404 model_not_found. Also set OPENAI_BASE_URL to
-  # OpenAI's own endpoint — default is openrouter.ai which would need
-  # a different key format.
-  #
-  # The HERMES_* fields below bypass template-hermes/scripts/derive-provider.sh
-  # — verified 2026-04-24 that even with template-hermes#19's fix in main,
-  # staging tenants sometimes resolve openai/* to PROVIDER=openrouter and
-  # emit {'message':'Missing Authentication header','code':401} (OpenRouter's
-  # shape) in the A2A reply. Setting HERMES_INFERENCE_PROVIDER=custom +
-  # HERMES_CUSTOM_{BASE_URL,API_KEY,API_MODE} pins the bridge deterministically
-  # so the test doesn't depend on every tenant EC2 having a freshly-cloned
-  # template-hermes.
+if [ -n "${E2E_MINIMAX_API_KEY:-}" ]; then
+  SECRETS_JSON=$(python3 -c "
+import json, os
+k = os.environ['E2E_MINIMAX_API_KEY']
+print(json.dumps({
+    'MINIMAX_API_KEY': k,
+}))
+")
+elif [ -n "${E2E_ANTHROPIC_API_KEY:-}" ]; then
+  # Direct Anthropic path — claude-code adapter reads ANTHROPIC_API_KEY
+  # natively when ANTHROPIC_BASE_URL is unset. Useful for operators
+  # who already have an Anthropic API key (e.g. for their own Claude
+  # Code session) and want to avoid setting up a separate MiniMax
+  # account just for E2E. Pricier per-token than MiniMax but billing
+  # is still independent of MOLECULE_STAGING_OPENAI_KEY, so an OpenAI
+  # quota collapse doesn't wedge this path. Pinned to the claude-code
+  # runtime: hermes/langgraph use OpenAI-shaped envs and won't honour
+  # ANTHROPIC_API_KEY without further wiring (out of scope for this
+  # branch; if you need a hermes/Anthropic path, dispatch with
+  # E2E_RUNTIME=hermes + E2E_OPENAI_API_KEY pointing at a working key).
+  SECRETS_JSON=$(python3 -c "
+import json, os
+k = os.environ['E2E_ANTHROPIC_API_KEY']
+print(json.dumps({
+    'ANTHROPIC_API_KEY': k,
+}))
+")
+elif [ -n "${E2E_OPENAI_API_KEY:-}" ]; then
   SECRETS_JSON=$(python3 -c "
 import json, os
 k = os.environ['E2E_OPENAI_API_KEY']
@@ -352,15 +397,7 @@ print(json.dumps({
 ")
 fi
 
-# Model slug MUST be provider-prefixed for hermes — the template's
-# derive-provider.sh parses the slug prefix (`openai/…`, `anthropic/…`,
-# `minimax/…`) to set HERMES_INFERENCE_PROVIDER at install time. A bare
-# "gpt-4o" has no prefix → provider falls back to hermes auto-detect →
-# picks Anthropic default → tries Anthropic API with the OpenAI key →
-# 401 on A2A. Same trap that trapped prod users in PR #1714. We pin
-# "openai/gpt-4o" here because the E2E's secret is always the OpenAI
-# key; non-hermes runtimes ignore the prefix.
-MODEL_SLUG="openai/gpt-4o"
+MODEL_SLUG=$(pick_model_slug "$RUNTIME")
 
 log "5/11 Provisioning parent workspace (runtime=$RUNTIME)..."
 PARENT_RESP=$(tenant_call POST /workspaces \
@@ -431,6 +468,42 @@ for wid in $WS_TO_CHECK; do
   ok "    $wid online"
 done
 
+# ─── 7b. Canvas-terminal diagnose (EIC chain probe) ────────────────────
+# This step exists because the canvas-terminal failure of 2026-05-03
+# was structurally invisible to local-dev (handleLocalConnect uses
+# docker exec; handleRemoteConnect uses EIC + ssh). The CP provisioner
+# shipped without the tcp/22 EIC ingress rule for ~6 months and nobody
+# noticed until a paying tenant clicked Terminal in canvas. Probing the
+# diagnose endpoint here at synth-E2E time means a regression in
+#   - tenantIngressRules / workspaceIngressRules (CP)
+#   - eicSSHIngressRule helper (CP)
+#   - AuthorizeIngress source-group support (CP awsapi)
+#   - EIC_ENDPOINT_SG_ID Railway env
+#   - handleRemoteConnect's send-ssh-public-key/open-tunnel/ssh chain
+# surfaces within ~20 min of merge instead of waiting for a user report.
+#
+# The diagnose endpoint runs the full EIC + ssh probe from inside the
+# tenant's workspace-server (which already has AWS creds via its IAM
+# profile) and reports per-step status. We only need to call it as the
+# tenant — no AWS creds needed on the GHA runner. Returns
+# {"ok": bool, "first_failure": "name", "steps": [...]}.
+#
+# Local-docker workspaces (instance_id NULL) get diagnoseLocal which
+# probes docker.Ping + container exec; we still expect ok=true there
+# since local-docker is the alternative production path.
+log "7b/11 Canvas-terminal EIC diagnose probe..."
+for wid in $WS_TO_CHECK; do
+  DIAG_JSON=$(tenant_call GET "/workspaces/$wid/terminal/diagnose" 2>/dev/null || echo '{}')
+  DIAG_OK=$(echo "$DIAG_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); print('true' if d.get('ok') else 'false')" 2>/dev/null || echo "false")
+  if [ "$DIAG_OK" = "true" ]; then
+    ok "    $wid terminal-reachable (canvas terminal will work)"
+  else
+    DIAG_FAIL=$(echo "$DIAG_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('first_failure','unknown'))" 2>/dev/null || echo "unknown")
+    DIAG_DETAIL=$(echo "$DIAG_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); s=[x for x in d.get('steps',[]) if not x.get('ok')]; print(s[0].get('error','') if s else '')" 2>/dev/null || echo "")
+    fail "Workspace $wid terminal diagnose failed at step '$DIAG_FAIL': $DIAG_DETAIL — check tenant SG has tcp/22 from EIC endpoint SG (sg-0785d5c6138220523), EIC_ENDPOINT_SG_ID set in Railway, and EIC endpoint health"
+  fi
+done
+
 # ─── 8. A2A round-trip on parent ───────────────────────────────────────
 log "8/11 Sending A2A message to parent — expecting agent response..."
 # Smoke prompt phrasing — DO NOT trim back to the bare "Reply with exactly: PONG"
@@ -461,7 +534,17 @@ print(json.dumps({
     }
 }))
 ")
+# Override CURL_COMMON's --max-time 30 for THIS call only. Each canary
+# creates a fresh org → workspace, so the A2A POST hits a cold model:
+# claude-code adapter starts its event loop, opens TLS to the LLM
+# endpoint, ships the first prompt, waits for first token. With MiniMax
+# (which is the canary default since #2710) cold-call latency
+# routinely exceeds 30s on the first request after workspace boot.
+# 90s gives ~3x headroom over observed cold-call P95 (~25-30s).
+# Subsequent A2A turns hit the same workspace and are sub-second, so
+# this only widens the window for step 8/11 of the canary's first turn.
 A2A_RESP=$(tenant_call POST "/workspaces/$PARENT_ID/a2a" \
+  --max-time 90 \
   -H "Content-Type: application/json" \
   -d "$A2A_PAYLOAD")
 AGENT_TEXT=$(echo "$A2A_RESP" | python3 -c "
@@ -483,6 +566,7 @@ fi
 #   "Encrypted content is not supported" → hermes codex_responses API misroute (#14)
 #   "Unknown provider"               → bridge misconfigured PROVIDER= (regression of #13 fix)
 #   "hermes-agent unreachable"       → gateway process died
+#   "exceeded your current quota"    → MOLECULE_STAGING_OPENAI_KEY billing (NOT a platform regression — #2578)
 #
 # Fail LOUD with the specific pattern so CI log + alert channel makes the
 # regression unambiguous.
@@ -507,6 +591,16 @@ fi
 # "error|exception" catch-all below, so they'd slip through.
 if echo "$AGENT_TEXT" | grep -qF "Invalid API key"; then
   fail "A2A — REGRESSION: tenant auth chain returned 'Invalid API key'. Likely CP boot-event 401 race (CP #238) or stale OPENAI_API_KEY in the runtime env. Raw: $AGENT_TEXT"
+fi
+# Provider quota exhausted — distinguish from a platform regression so
+# the canary alert names the operator action directly instead of falling
+# through to the generic "error-shaped response" message. Steps 0-7 having
+# passed means the platform itself is healthy (CP up, tenant provisioned,
+# workspace online, A2A delivery end-to-end). When the agent comes back
+# with a provider-side 429, that is a billing event on the configured
+# OpenAI key, not a platform regression. Tracked in #2578.
+if echo "$AGENT_TEXT" | grep -qiE "exceeded your current quota|insufficient_quota"; then
+  fail "A2A — PROVIDER QUOTA EXHAUSTED (NOT a platform regression). Operator action: top up MOLECULE_STAGING_OPENAI_KEY billing or rotate to a higher-quota org at Settings → Secrets and Variables → Actions. Tracked in #2578. Raw: $AGENT_TEXT"
 fi
 # Generic catch-all — falls through if none of the known regressions hit.
 if echo "$AGENT_TEXT" | grep -qiE "error|exception"; then

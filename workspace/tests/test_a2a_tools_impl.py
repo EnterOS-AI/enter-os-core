@@ -255,9 +255,10 @@ class TestToolDelegateTask:
             "status": "online",
         }
         captured = {}
-        async def fake_send(passed_peer_id, message):
+        async def fake_send(passed_peer_id, message, source_workspace_id=None):
             captured["peer_id"] = passed_peer_id
             captured["message"] = message
+            captured["source"] = source_workspace_id
             return "ok"
 
         with patch("a2a_tools.discover_peer", return_value=peer), \
@@ -1049,6 +1050,27 @@ class TestChatHistory:
             )
 
         assert mc.get.call_args.kwargs["params"]["before_ts"] == "2026-05-01T00:00:00Z"
+
+    async def test_empty_history_returns_empty_json_list(self):
+        """Pin the happy-path-with-no-rows shape: server returns 200
+        with an empty list, the wheel returns the JSON literal ``"[]"``.
+
+        Without this pin the surrounding tests all pre-populate rows;
+        none verify what an agent sees when there's literally no chat
+        history with this peer yet (a fresh A2A peering, or a peer
+        whose history was rotated out). #2485.
+        """
+        import a2a_tools
+
+        mc = _make_http_mock(get_resp=_resp(200, []))
+        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+            result = await a2a_tools.tool_chat_history(peer_id=_PEER)
+
+        # Exact-equality on the JSON literal (per assert-exact memory) —
+        # substring "[]" would also match `{"items": []}` or any number
+        # of envelope shapes, only `result == "[]"` discriminates the
+        # bare-list contract callers depend on.
+        assert result == "[]"
 
     async def test_reverses_desc_response_to_chronological(self):
         """Server returns DESC (newest first); the wheel reverses to

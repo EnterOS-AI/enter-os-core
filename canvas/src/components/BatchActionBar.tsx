@@ -30,6 +30,24 @@ export function BatchActionBar() {
     if (count === 0 && hasFailedBatch) setHasFailedBatch(false);
   }, [count, hasFailedBatch]);
 
+  // Esc clears selection — the deselect button title has been promising
+  // "(Escape)" since the bar shipped, but no handler was wired. Skip when
+  // the confirm dialog is open (`pending !== null`) so the dialog's own
+  // Esc-cancels takes precedence and we don't double-handle the keystroke.
+  // Also skip during a busy in-flight action so the user can't accidentally
+  // strand a partial-failure mid-flight.
+  useEffect(() => {
+    if (count === 0 || pending !== null || busy) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        clearSelection();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [count, pending, busy, clearSelection]);
+
   // Hide when nothing is selected. Hide for single-node selection UNLESS a
   // partial-failure left a survivor awaiting retry.
   if (count === 0) return null;
@@ -129,7 +147,7 @@ export function BatchActionBar() {
         onClick={clearSelection}
         aria-label="Clear selection"
         title="Clear selection (Escape)"
-        className="p-1.5 rounded-lg text-[12px] text-ink-mid hover:text-ink hover:bg-surface-card/50 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500/70"
+        className="p-1.5 rounded-lg text-[12px] text-ink-mid hover:text-ink hover:bg-surface-card/50 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
       >
         ✕
       </button>

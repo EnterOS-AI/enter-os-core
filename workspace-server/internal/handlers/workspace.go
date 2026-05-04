@@ -66,6 +66,12 @@ type WorkspaceHandler struct {
 	// template manifests (#2054 phase 2). Lazy-init on first scan; see
 	// runtime_provision_timeouts.go for the loader contract.
 	provisionTimeouts runtimeProvisionTimeoutsCache
+	// namespaceCleanupFn is the I5 (RFC #2728) hook called best-effort
+	// during purge to delete the workspace's plugin-side namespace.
+	// nil = no-op (default for operators who haven't wired the v2
+	// memory plugin). main.go sets this to plugin.DeleteNamespace
+	// when MEMORY_PLUGIN_URL is configured.
+	namespaceCleanupFn func(ctx context.Context, workspaceID string)
 }
 
 func NewWorkspaceHandler(b events.EventEmitter, p *provisioner.Provisioner, platformURL, configsDir string) *WorkspaceHandler {
@@ -87,6 +93,16 @@ func NewWorkspaceHandler(b events.EventEmitter, p *provisioner.Provisioner, plat
 	return h
 }
 
+// WithNamespaceCleanup wires the I5 hook (RFC #2728) so workspace
+// purge can drop the plugin's `workspace:<id>` namespace. main.go
+// passes a closure over plugin.DeleteNamespace; tests pass a stub.
+// Nil-safe: omitting this leaves namespaceCleanupFn nil, which the
+// purge path treats as a no-op.
+func (h *WorkspaceHandler) WithNamespaceCleanup(fn func(ctx context.Context, workspaceID string)) *WorkspaceHandler {
+	h.namespaceCleanupFn = fn
+	return h
+}
+
 // SetCPProvisioner wires the control plane provisioner for SaaS tenants.
 // Auto-activated when MOLECULE_ORG_ID is set (no manual config needed).
 //
@@ -94,6 +110,33 @@ func NewWorkspaceHandler(b events.EventEmitter, p *provisioner.Provisioner, plat
 // the *CPProvisioner from NewCPProvisioner; tests pass a stub.
 func (h *WorkspaceHandler) SetCPProvisioner(cp provisioner.CPProvisionerAPI) {
 	h.cpProv = cp
+}
+
+// provisionWorkspaceAuto picks the backend (CP for SaaS, local Docker
+// for self-hosted) and starts provisioning in a goroutine. Returns true
+// when a backend was kicked off, false when neither is wired (caller
+// owns the persist-config + mark-failed surface in that case).
+//
+// Centralized so every caller — Create, TeamHandler.Expand, future
+// paths — gets the same routing. Pre-2026-05-04 TeamHandler.Expand
+// hardcoded provisionWorkspace (Docker) and silently broke the
+// "deploy a team on SaaS" flow: child workspace rows were created with
+// no EC2 instance, the runtime never ran, and the 600s sweeper logged
+// the misleading "container started but never called /registry/register".
+//
+// Architectural principle: templates own runtime/config/prompts/files/
+// plugins; the platform owns where it runs. Anything that picks
+// between CP and local Docker belongs in this one helper.
+func (h *WorkspaceHandler) provisionWorkspaceAuto(workspaceID, templatePath string, configFiles map[string][]byte, payload models.CreateWorkspacePayload) bool {
+	if h.cpProv != nil {
+		go h.provisionWorkspaceCP(workspaceID, templatePath, configFiles, payload)
+		return true
+	}
+	if h.provisioner != nil {
+		go h.provisionWorkspace(workspaceID, templatePath, configFiles, payload)
+		return true
+	}
+	return false
 }
 
 // SetEnvMutators wires a provisionhook.Registry into the handler. Plugins
@@ -454,6 +497,41 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 						"{{PLATFORM_URL}}", platformURL),
 					"{{WORKSPACE_ID}}", id,
 				),
+				// Hermes channel snippet — for operators whose external
+				// agent IS a hermes-agent session. Routes A2A traffic
+				// into the hermes gateway via the molecule-channel
+				// plugin (Molecule-AI/hermes-channel-molecule). Long-
+				// poll based (no tunnel) — same UX as the Claude Code
+				// channel tab. Gives hermes true push parity with the
+				// other runtime templates.
+				"hermes_channel_snippet": strings.ReplaceAll(
+					strings.ReplaceAll(externalHermesChannelTemplate,
+						"{{PLATFORM_URL}}", platformURL),
+					"{{WORKSPACE_ID}}", id,
+				),
+				// Codex MCP config snippet — for operators whose
+				// external agent is a codex CLI (@openai/codex)
+				// session. Wires the molecule MCP server into
+				// ~/.codex/config.toml. Outbound-tools-only today;
+				// codex's MCP client doesn't route arbitrary
+				// notifications/* so push parity needs a separate
+				// bridge daemon (future work).
+				"codex_snippet": strings.ReplaceAll(
+					strings.ReplaceAll(externalCodexTemplate,
+						"{{PLATFORM_URL}}", platformURL),
+					"{{WORKSPACE_ID}}", id,
+				),
+				// OpenClaw MCP config snippet — for operators whose
+				// external agent is an openclaw session. Wires the
+				// molecule MCP server via `openclaw mcp set` + starts
+				// the gateway on loopback. Outbound-tools-only today;
+				// full push parity needs a sessions.steer bridge
+				// daemon (future work).
+				"openclaw_snippet": strings.ReplaceAll(
+					strings.ReplaceAll(externalOpenClawTemplate,
+						"{{PLATFORM_URL}}", platformURL),
+					"{{WORKSPACE_ID}}", id,
+				),
 			}
 		}
 		c.JSON(http.StatusCreated, resp)
@@ -486,12 +564,15 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 		configFiles = h.ensureDefaultConfig(id, payload)
 	}
 
-	// Auto-provision — pick backend: control plane (SaaS) or Docker (self-hosted)
-	if h.cpProv != nil {
-		go h.provisionWorkspaceCP(id, templatePath, configFiles, payload)
-	} else if h.provisioner != nil {
-		go h.provisionWorkspace(id, templatePath, configFiles, payload)
-	} else {
+	// Auto-provision — pick backend: control plane (SaaS) or Docker (self-hosted).
+	// Routing is centralized in provisionWorkspaceAuto so every caller
+	// (Create, TeamHandler.Expand, future paths) gets the same backend
+	// selection. Pre-2026-05-04 the team-deploy path hardcoded the
+	// Docker route, so on a SaaS tenant 7-of-7 sub-agents were created
+	// as DB rows but had no EC2 — symptom: "container started but never
+	// called /registry/register" + diagnose returns "docker client not
+	// configured". Centralizing here closes that drift class.
+	if !h.provisionWorkspaceAuto(id, templatePath, configFiles, payload) {
 		// No Docker available (SaaS tenant). Persist basic config as JSON
 		// so the Config tab shows the correct runtime/model/name. Then mark
 		// the workspace as failed with a clear message.

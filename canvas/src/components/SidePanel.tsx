@@ -202,7 +202,7 @@ export function SidePanel() {
       {/* Tabs — relative wrapper lets the fade gradient position against the scroll container */}
       <div className="relative border-b border-line/40">
         {/* Right-edge fade: signals more tabs are hidden off-screen when the bar overflows */}
-        <div className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-zinc-950 to-transparent z-10" aria-hidden="true" />
+        <div className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-surface to-transparent z-10" aria-hidden="true" />
       <div
         role="tablist"
         aria-label="Workspace panel tabs"
@@ -232,8 +232,8 @@ export function SidePanel() {
             onClick={() => setPanelTab(tab.id)}
             className={`shrink-0 px-3 py-2.5 text-[10px] font-medium tracking-wide transition-all rounded-t-lg mx-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 ${
               panelTab === tab.id
-                ? "text-ink bg-surface-card/40 border-b-2 border-accent"
-                : "text-ink-soft hover:text-ink hover:bg-surface-card/40"
+                ? "text-ink bg-surface-card border-b-2 border-accent"
+                : "text-ink-mid hover:text-ink hover:bg-surface-card/60"
             }`}
           >
             <span className="mr-1 opacity-50" aria-hidden="true">{tab.icon}</span>

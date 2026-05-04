@@ -2,6 +2,15 @@
 @plugin "@tailwindcss/typography";
 
 /*
+ * Tailwind v4 defaults the `dark:` variant to `prefers-color-scheme: dark`.
+ * Our theme switcher writes `data-theme="dark"` on <html> instead (so user
+ * choice via the toggle wins over OS preference). Re-bind `dark:` to that
+ * attribute so component classes like `dark:bg-zinc-800` track the same
+ * source of truth as the `[data-theme="dark"]` token overrides below.
+ */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/*
  * Load order:
  *   1. Tailwind core (v4) — provides preflight + utility generation.
  *   2. xterm — overrides preflight on its own .xterm-* class names; must

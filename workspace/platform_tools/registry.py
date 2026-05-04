@@ -140,6 +140,16 @@ _DELEGATE_TASK = ToolSpec(
                 "type": "string",
                 "description": "Task description to send to the peer.",
             },
+            "source_workspace_id": {
+                "type": "string",
+                "description": (
+                    "Optional. The registered workspace this delegation "
+                    "originates from when the agent is registered to "
+                    "multiple workspaces (MOLECULE_WORKSPACES). Auto-"
+                    "routes via the peer→source cache when omitted; "
+                    "single-workspace operators can ignore it."
+                ),
+            },
         },
         "required": ["workspace_id", "task"],
     },
@@ -169,6 +179,14 @@ _DELEGATE_TASK_ASYNC = ToolSpec(
             "task": {
                 "type": "string",
                 "description": "Task description to send to the peer.",
+            },
+            "source_workspace_id": {
+                "type": "string",
+                "description": (
+                    "Optional. The registered workspace this delegation "
+                    "originates from. Auto-routes via the peer→source "
+                    "cache when omitted."
+                ),
             },
         },
         "required": ["workspace_id", "task"],
@@ -201,6 +219,13 @@ _CHECK_TASK_STATUS = ToolSpec(
                 "type": "string",
                 "description": "task_id returned by delegate_task_async.",
             },
+            "source_workspace_id": {
+                "type": "string",
+                "description": (
+                    "Optional. Which registered workspace's delegation "
+                    "log to query. Defaults to this workspace."
+                ),
+            },
         },
         "required": ["workspace_id", "task_id"],
     },
@@ -217,9 +242,23 @@ _LIST_PEERS = ToolSpec(
     when_to_use=(
         "Call this first when you need to delegate but don't know the "
         "target's ID. Access control is enforced — you only see "
-        "siblings, parent, and direct children."
+        "siblings, parent, and direct children. With "
+        "MOLECULE_WORKSPACES set, peers from every registered workspace "
+        "are aggregated and tagged with their source."
     ),
-    input_schema={"type": "object", "properties": {}},
+    input_schema={
+        "type": "object",
+        "properties": {
+            "source_workspace_id": {
+                "type": "string",
+                "description": (
+                    "Optional. Restrict to peers of this one registered "
+                    "workspace. Omit to aggregate across all workspaces "
+                    "an external agent has registered against."
+                ),
+            },
+        },
+    },
     impl=tool_list_peers,
     section=A2A_SECTION,
 )
@@ -294,6 +333,17 @@ _SEND_MESSAGE_TO_USER = ToolSpec(
                     "tool, etc.) then pass its path here. 25 MB per file cap."
                 ),
                 "items": {"type": "string"},
+            },
+            "workspace_id": {
+                "type": "string",
+                "description": (
+                    "Optional. Set ONLY when this agent is registered in MULTIPLE "
+                    "workspaces (external multi-workspace MCP path) — pass the "
+                    "`arrival_workspace_id` of the inbound message you're replying "
+                    "to so the user sees the reply in the same canvas they typed in. "
+                    "Single-workspace agents omit this; the message routes to the "
+                    "only registered workspace."
+                ),
             },
         },
         "required": ["message"],

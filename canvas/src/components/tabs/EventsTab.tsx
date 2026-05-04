@@ -15,14 +15,20 @@ interface EventEntry {
   created_at: string;
 }
 
+// Use semantic warm-paper tokens so colors flip with theme. Earlier
+// the table referenced text-yellow-400 / text-purple-400 (Tailwind
+// raw colors, no theme variant), which read fine in dark mode but
+// washed out in the warm-paper light theme. text-warm covers the
+// "degraded" amber tone in both modes; AGENT_CARD_UPDATED is informational
+// metadata, so reuse text-accent for theme-consistency.
 const EVENT_COLORS: Record<string, string> = {
   WORKSPACE_ONLINE: "text-good",
   WORKSPACE_OFFLINE: "text-ink-mid",
-  WORKSPACE_DEGRADED: "text-yellow-400",
+  WORKSPACE_DEGRADED: "text-warm",
   WORKSPACE_PROVISIONING: "text-accent",
   WORKSPACE_REMOVED: "text-bad",
   WORKSPACE_PROVISION_FAILED: "text-bad",
-  AGENT_CARD_UPDATED: "text-purple-400",
+  AGENT_CARD_UPDATED: "text-accent",
 };
 
 export function EventsTab({ workspaceId }: Props) {
@@ -64,8 +70,12 @@ export function EventsTab({ workspaceId }: Props) {
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs text-ink-mid">{events.length} events</span>
         <button
+          type="button"
           onClick={loadEvents}
-          className="px-2 py-1 bg-surface-card hover:bg-surface-card text-[10px] rounded text-ink-mid"
+          // Was hover:bg-surface-card on top of bg-surface-card — silent
+          // no-op hover. Lift to surface-elevated, matching the Cancel
+          // pattern from ConfirmDialog.
+          className="px-2 py-1 bg-surface-card hover:bg-surface-elevated hover:text-ink text-[10px] rounded text-ink-mid transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           Refresh
         </button>
@@ -81,39 +91,51 @@ export function EventsTab({ workspaceId }: Props) {
         <p className="text-xs text-ink-soft text-center py-4">No events yet</p>
       ) : (
         <div className="space-y-1">
-          {events.map((event) => (
-            <div key={event.id} className="bg-surface-card rounded border border-line">
-              <button
-                onClick={() => setExpanded(expanded === event.id ? null : event.id)}
-                className="w-full flex items-center gap-2 px-3 py-2 text-left"
-              >
-                <span
-                  className={`text-xs font-mono ${
-                    EVENT_COLORS[event.event_type] || "text-ink-mid"
-                  }`}
+          {events.map((event) => {
+            const isOpen = expanded === event.id;
+            const panelId = `events-payload-${event.id}`;
+            return (
+              <div key={event.id} className="bg-surface-card rounded border border-line">
+                <button
+                  type="button"
+                  onClick={() => setExpanded(isOpen ? null : event.id)}
+                  // aria-expanded + aria-controls so screen readers
+                  // announce the open/closed state and link the row to
+                  // its payload panel. Without these, AT users hear
+                  // a generic "button" with no indication that it
+                  // toggles or what it controls.
+                  aria-expanded={isOpen}
+                  aria-controls={panelId}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-left rounded-t hover:bg-surface-elevated/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/50 transition-colors"
                 >
-                  {event.event_type}
-                </span>
-                <span className="text-[9px] text-ink-soft ml-auto">
-                  {formatTime(event.created_at)}
-                </span>
-                <span className="text-[10px] text-ink-soft">
-                  {expanded === event.id ? "▼" : "▶"}
-                </span>
-              </button>
+                  <span
+                    className={`text-xs font-mono ${
+                      EVENT_COLORS[event.event_type] || "text-ink-mid"
+                    }`}
+                  >
+                    {event.event_type}
+                  </span>
+                  <span className="text-[9px] text-ink-soft ml-auto">
+                    {formatTime(event.created_at)}
+                  </span>
+                  <span aria-hidden="true" className="text-[10px] text-ink-soft">
+                    {isOpen ? "▼" : "▶"}
+                  </span>
+                </button>
 
-              {expanded === event.id && (
-                <div className="px-3 pb-2">
-                  <pre className="text-[10px] text-ink-mid bg-surface-sunken rounded p-2 overflow-x-auto max-h-40">
-                    {JSON.stringify(event.payload, null, 2)}
-                  </pre>
-                  <div className="mt-1 text-[9px] text-ink-soft font-mono">
-                    ID: {event.id}
+                {isOpen && (
+                  <div id={panelId} className="px-3 pb-2">
+                    <pre className="text-[10px] text-ink-mid bg-surface-sunken rounded p-2 overflow-x-auto max-h-40">
+                      {JSON.stringify(event.payload, null, 2)}
+                    </pre>
+                    <div className="mt-1 text-[9px] text-ink-soft font-mono">
+                      ID: {event.id}
+                    </div>
                   </div>
-                </div>
-              )}
-            </div>
-          ))}
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

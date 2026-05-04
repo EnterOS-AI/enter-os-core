@@ -22,6 +22,24 @@ export function Tooltip({ text, children }: Props) {
 
   useEffect(() => () => clearTimeout(timerRef.current), []);
 
+  // WCAG 1.4.13 (Content on Hover or Focus) — Dismissible: a mechanism
+  // is available to dismiss the additional content WITHOUT moving
+  // pointer hover or keyboard focus. Esc dismisses while the trigger
+  // stays focused/hovered, so a screen-magnifier user can read what
+  // the tooltip was covering without losing their place.
+  useEffect(() => {
+    if (!show) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        clearTimeout(timerRef.current);
+        setShow(false);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [show]);
+
   const enter = useCallback(() => {
     timerRef.current = setTimeout(() => {
       if (triggerRef.current) {

@@ -134,10 +134,12 @@ export function OnboardingWizard() {
       aria-label="Onboarding guide"
       className="fixed bottom-20 left-4 z-50 w-80 rounded-2xl border border-line/60 bg-surface-sunken/95 backdrop-blur-xl shadow-2xl shadow-black/40 overflow-hidden"
     >
-      {/* Progress bar */}
+      {/* Progress bar — was hardcoded from-blue-500 to-sky-400, neither
+          tone exists in warm-paper light theme. Switched to the accent
+          ramp so the gradient reads as brand color in both themes. */}
       <div className="h-1 bg-surface-card">
         <div
-          className="h-full bg-gradient-to-r from-blue-500 to-sky-400 transition-all duration-500"
+          className="h-full bg-gradient-to-r from-accent to-accent-strong transition-all duration-500"
           style={{ width: `${((currentStepIdx + 1) / STEPS.length) * 100}%` }}
         />
       </div>
@@ -155,14 +157,16 @@ export function OnboardingWizard() {
       <div className="p-4">
         {/* Step indicator */}
         <div className="flex items-center justify-between mb-2">
-          <span className="text-[9px] font-semibold uppercase tracking-widest text-sky-400/80">
+          {/* text-sky-400/80 was hardcoded; flip to text-accent so the
+              indicator stays brand-tinted in both themes. */}
+          <span className="text-[9px] font-semibold uppercase tracking-widest text-accent">
             Step {currentStepIdx + 1} of {STEPS.length}
           </span>
           <button
             type="button"
             onClick={dismiss}
             aria-label="Skip onboarding guide"
-            className="text-[10px] text-ink-mid hover:text-ink transition-colors"
+            className="text-[10px] text-ink-mid hover:text-ink transition-colors rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
           >
             Skip guide
           </button>
@@ -181,7 +185,11 @@ export function OnboardingWizard() {
           <button
             type="button"
             onClick={handleAction}
-            className="flex-1 px-3 py-1.5 bg-accent-strong/90 hover:bg-accent rounded-lg text-[11px] font-medium text-white transition-colors"
+            // Was bg-accent-strong/90 hover:bg-accent — accent is the
+            // LIGHTER variant, so this hovered lighter on white text and
+            // dropped contrast below AA. Same trap fixed in
+            // ConfirmDialog/ApprovalBanner. Hover the OTHER direction.
+            className="flex-1 px-3 py-1.5 bg-accent hover:bg-accent-strong rounded-lg text-[11px] font-medium text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-sunken"
           >
             {step === "welcome"
               ? "Create Workspace"
@@ -199,7 +207,10 @@ export function OnboardingWizard() {
                 if (next) setStep(next.id);
                 else dismiss();
               }}
-              className="px-3 py-1.5 bg-surface-card hover:bg-surface-card rounded-lg text-[11px] text-ink-mid transition-colors"
+              // Was hover:bg-surface-card on top of bg-surface-card —
+              // silent no-op hover. Lift to surface-elevated, matching
+              // the Cancel pattern in ConfirmDialog.
+              className="px-3 py-1.5 bg-surface-card hover:bg-surface-elevated hover:text-ink rounded-lg text-[11px] text-ink-mid transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-sunken"
             >
               Next
             </button>

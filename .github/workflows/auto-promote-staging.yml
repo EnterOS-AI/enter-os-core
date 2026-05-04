@@ -111,7 +111,60 @@ jobs:
       all_green: ${{ steps.gates.outputs.all_green }}
       head_sha: ${{ steps.gates.outputs.head_sha }}
     steps:
+      # Skip empty-tree promotes (the perpetual auto-promote↔auto-sync cycle
+      # observed 2026-05-03). Sequence: auto-promote merges via the staging
+      # merge-queue's MERGE strategy, creating a merge commit on main that
+      # staging doesn't have. auto-sync then merges main back into staging
+      # via another merge commit (the queue's MERGE strategy applies on
+      # the staging side too, even when the workflow's local FF would
+      # have sufficed). Now staging has a new merge-commit SHA whose
+      # tree == main's tree — but auto-promote sees "staging ahead of
+      # main by 1" and opens YET another empty promote PR. Each round
+      # costs ~30-40 min wallclock, ~2 manual approvals, and burns a
+      # full CodeQL Go run (~15 min). Without this guard the cycle
+      # repeats indefinitely.
+      #
+      # Long-term fix is to switch the merge_queue ruleset's
+      # `merge_method` away from MERGE so FF-able PRs land cleanly,
+      # but that's a broader change affecting every staging PR's
+      # commit shape. This guard is the one-line surgical fix that
+      # breaks the cycle without touching merge-queue config.
+      #
+      # Fail-open: if `git diff` errors for any reason, fall through
+      # to the gate check (preserve existing behavior). Only skip
+      # when the diff is DEFINITIVELY empty.
+      - name: Checkout for tree-diff check
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          ref: staging
+      - name: Skip if staging tree == main tree (perpetual-cycle break)
+        id: tree-diff
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -eu
+          git fetch origin main --depth=50 || { echo "::warning::git fetch main failed — proceeding (fail-open)"; exit 0; }
+          # Compare staging tip's tree against main's tree. `git diff
+          # --quiet` exits 0 if no differences, 1 if there are.
+          if git diff --quiet origin/main "$HEAD_SHA" -- 2>/dev/null; then
+            {
+              echo "## ⏭ Skipped — no code to promote"
+              echo
+              echo "staging tip (\`${HEAD_SHA:0:8}\`) and \`main\` have identical trees."
+              echo "This is the auto-promote↔auto-sync merge-commit cycle: staging has a"
+              echo "new SHA (a sync-back merge commit) but the underlying file tree is"
+              echo "already on main, so there's no real code to ship."
+              echo
+              echo "Skipping to avoid opening an empty promote PR. Cycle terminates here."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::auto-promote: staging tree == main tree — no code to promote, skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Check all required gates on this SHA
+        if: steps.tree-diff.outputs.skip != 'true'
         id: gates
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -209,10 +262,25 @@ jobs:
             exit 0
           fi
 
+      # Mint the App token BEFORE the promote-PR step so the auto-merge
+      # call can use it. GITHUB_TOKEN-initiated merges suppress the
+      # downstream `push` event on main, breaking the
+      # publish-workspace-server-image → canary-verify → redeploy-tenants
+      # chain (issue #2357). Using the App token here means the
+      # merge-queue-landed merge IS able to fire the cascade naturally;
+      # the polling tail below stays as defense-in-depth.
+      - name: Mint App token for promote-PR + downstream dispatch
+        if: ${{ vars.AUTO_PROMOTE_ENABLED == 'true' || github.event.inputs.force == 'true' }}
+        id: app-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          app-id: ${{ secrets.MOLECULE_AI_APP_ID }}
+          private-key: ${{ secrets.MOLECULE_AI_APP_PRIVATE_KEY }}
+
       - name: Open (or reuse) staging → main promote PR + enable auto-merge
         if: ${{ vars.AUTO_PROMOTE_ENABLED == 'true' || github.event.inputs.force == 'true' }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
           TARGET_SHA: ${{ needs.check-all-gates-green.outputs.head_sha }}
         run: |
@@ -267,52 +335,34 @@ jobs:
           echo "promote_pr_num=${PR_NUM}" >> "$GITHUB_OUTPUT"
         id: promote_pr
 
-      # Mint a short-lived GitHub App installation token for the dispatch
-      # step below. We CANNOT use `secrets.GITHUB_TOKEN` to dispatch the
-      # downstream publish chain — workflow runs created by GITHUB_TOKEN
-      # do not fire `workflow_run` triggers on completion (the
-      # documented "no recursion" rule —
-      # https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow).
-      #
-      # Symptom this caused (root-caused on 2026-04-30): publish-image
-      # ran successfully twice (21313dc 14:41Z, 59dec57 15:21Z) but
-      # canary-verify and redeploy-tenants-on-main never chained,
-      # because the publish run's `triggering_actor` was
-      # `github-actions[bot]` (i.e. GITHUB_TOKEN). A manual dispatch
-      # earlier in the day with the operator's PAT (d850ec7 06:52Z) did
-      # chain — same workflow file, only the actor differed.
-      #
-      # An App token's triggering_actor is the App user (e.g.
-      # `molecule-ai[bot]`), which IS allowed to fire downstream
-      # workflow_run cascades.
-      - name: Mint App token for downstream dispatch
-        if: steps.promote_pr.outputs.promote_pr_num != ''
-        id: app-token
-        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
-        with:
-          app-id: ${{ secrets.MOLECULE_AI_APP_ID }}
-          private-key: ${{ secrets.MOLECULE_AI_APP_PRIVATE_KEY }}
-
+      # The App token minted above (before the promote-PR step) is
+      # also used by the polling tail below. Defense-in-depth: with
+      # the merge-queue-landed merge now using the App token, the
+      # main-branch push event SHOULD fire the publish/canary/redeploy
+      # cascade naturally — but if for any reason it doesn't (e.g. an
+      # unrelated event-suppression edge case), the explicit dispatches
+      # below still wake the chain.
       - name: Wait for promote merge, then dispatch publish + redeploy (#2357)
-        # GITHUB_TOKEN-initiated merges suppress downstream `push` events
-        # (https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow).
-        # Result: when the merge queue lands the promote PR, the resulting
-        # main-branch push DOES NOT fire publish-workspace-server-image,
-        # so canary-verify and redeploy-tenants-on-main never run and
-        # tenants stay on stale code (issue #2357).
+        # Defense-in-depth dispatch. With the auto-merge call above
+        # now using the App token (this commit), the merge-queue-landed
+        # merge SHOULD fire publish-workspace-server-image naturally
+        # via on:push:[main] — App-token-initiated pushes DO trigger
+        # workflow_run cascades, unlike GITHUB_TOKEN-initiated ones
+        # (the documented "no recursion" rule —
+        # https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow).
         #
-        # Workaround: poll for the merge to land, then explicitly
-        # `gh workflow run` publish-workspace-server-image. The dispatch
-        # MUST authenticate as the molecule-ai App (App token minted
-        # above) — not GITHUB_TOKEN — so that the resulting publish
-        # run's completion event can fire the workflow_run cascade
-        # into canary-verify + redeploy-tenants-on-main. See the prior
-        # step's comment for the GITHUB_TOKEN no-recursion details.
+        # This explicit dispatch stays as belt-and-suspenders for any
+        # edge case where the natural cascade misfires. If it never
+        # observably fires after this token swap (i.e. the publish
+        # workflow has already started by the time we get here), the
+        # second dispatch is a harmless no-op (publish-workspace-server-image
+        # has its own concurrency group that dedupes).
         #
-        # Long-term fix: switch the auto-merge call above to use the
-        # same App token, so the merge's push event fires
-        # publish-workspace-server-image naturally and this polling tail
-        # becomes unnecessary. Tracked in #2357.
+        # See PR for #2357: pre-fix the merge action was via
+        # GITHUB_TOKEN, suppressing the cascade and forcing this tail
+        # to be the SOLE chain trigger. With the auto-merge token swap
+        # the tail becomes redundant in the happy path; keep until
+        # we've observed >=10 successful natural cascades, then drop.
         if: steps.promote_pr.outputs.promote_pr_num != ''
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}

@@ -286,6 +286,55 @@ def test_required_env_empty_list_passes(tmp_path):
     assert report.ok is True
 
 
+def test_required_env_skipped_in_smoke_mode(tmp_path, monkeypatch):
+    """MOLECULE_SMOKE_MODE=1 demotes Required-env failures to warnings.
+
+    Boot smoke (issue #2275) exercises executor.execute() against stub
+    deps and never hits the real provider, so missing auth env is not
+    a real blocker. Without this bypass, every adapter that introduces
+    a new auth env var (HERMES_API_KEY, OPENROUTER_API_KEY, etc.)
+    would silently break the publish-image gate until molecule-ci's
+    fake-env list catches up — the 2026-05-03 hermes outage. The
+    warning still surfaces in the report so unset env doesn't go
+    completely silent.
+    """
+    monkeypatch.delenv("HERMES_API_KEY", raising=False)
+    monkeypatch.setenv("MOLECULE_SMOKE_MODE", "1")
+
+    config = make_config(
+        runtime_config=RuntimeConfig(required_env=["HERMES_API_KEY"]),
+    )
+
+    report = run_preflight(config, str(tmp_path))
+
+    assert report.ok is True
+    assert any(
+        issue.title == "Required env" and "HERMES_API_KEY" in issue.detail
+        for issue in report.warnings
+    ), "smoke-mode bypass should still warn so unset env stays visible"
+    assert not any(
+        issue.title == "Required env" for issue in report.failures
+    )
+
+
+def test_required_env_smoke_mode_off_still_fails(tmp_path, monkeypatch):
+    """Sanity: smoke bypass is OFF when MOLECULE_SMOKE_MODE is unset."""
+    monkeypatch.delenv("HERMES_API_KEY", raising=False)
+    monkeypatch.delenv("MOLECULE_SMOKE_MODE", raising=False)
+
+    config = make_config(
+        runtime_config=RuntimeConfig(required_env=["HERMES_API_KEY"]),
+    )
+
+    report = run_preflight(config, str(tmp_path))
+
+    assert report.ok is False
+    assert any(
+        issue.title == "Required env" and "HERMES_API_KEY" in issue.detail
+        for issue in report.failures
+    )
+
+
 # ---------- Per-model required_env (models[] override) ----------
 
 

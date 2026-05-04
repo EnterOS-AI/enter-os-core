@@ -113,7 +113,10 @@ export function ConsoleModal({ workspaceId, workspaceName, open, onClose }: Prop
             ref={closeButtonRef}
             onClick={onClose}
             aria-label="Close"
-            className="text-ink-mid hover:text-ink text-sm px-2"
+            // 24x24 touch target (was ~10x16, well under WCAG 2.5.5).
+            // Hover bg makes the area visible; focus-visible ring matches
+            // the rest of the canvas chrome.
+            className="w-6 h-6 inline-flex items-center justify-center rounded text-sm text-ink-mid hover:text-ink hover:bg-surface-card/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 transition-colors"
           >
             ✕
           </button>
@@ -150,12 +153,19 @@ export function ConsoleModal({ workspaceId, workspaceName, open, onClose }: Prop
               type="button"
               onClick={() => {
                 if (navigator.clipboard) {
-                  navigator.clipboard.writeText(output);
+                  // Add success feedback — without it, clicking Copy
+                  // looked like a no-op since the previous hover bg was
+                  // also a no-op (`hover:bg-surface-card` on top of the
+                  // same base). Toast confirms the write actually fired.
+                  navigator.clipboard
+                    .writeText(output)
+                    .then(() => showToast("Console output copied", "success"))
+                    .catch(() => showToast("Copy failed", "error"));
                 } else {
                   showToast("Copy requires HTTPS — please select and copy manually", "info");
                 }
               }}
-              className="px-3 py-1.5 text-[11px] text-ink-mid hover:text-ink bg-surface-card hover:bg-surface-card border border-line rounded-lg transition-colors"
+              className="px-3 py-1.5 text-[11px] text-ink-mid hover:text-ink bg-surface-card hover:bg-surface-elevated border border-line hover:border-line-soft rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
             >
               Copy
             </button>
@@ -163,7 +173,10 @@ export function ConsoleModal({ workspaceId, workspaceName, open, onClose }: Prop
           <button
             type="button"
             onClick={onClose}
-            className="px-3 py-1.5 text-[11px] text-ink-mid bg-surface-card hover:bg-surface-card border border-line rounded-lg transition-colors"
+            // Was hover:bg-surface-card (same as base — silent no-op).
+            // Lift to surface-elevated so the button visibly responds,
+            // matching the Cancel button in ConfirmDialog.
+            className="px-3 py-1.5 text-[11px] text-ink-mid hover:text-ink bg-surface-card hover:bg-surface-elevated border border-line hover:border-line-soft rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
           >
             Close
           </button>

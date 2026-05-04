@@ -129,7 +129,7 @@ export function TokensTab({ workspaceId }: TokensTabProps) {
 
       {/* Token list */}
       {loading ? (
-        <div className="flex items-center justify-center gap-2 py-6 text-ink-soft text-xs">
+        <div role="status" aria-live="polite" className="flex items-center justify-center gap-2 py-6 text-ink-soft text-xs">
           <Spinner /> Loading tokens...
         </div>
       ) : tokens.length === 0 ? (

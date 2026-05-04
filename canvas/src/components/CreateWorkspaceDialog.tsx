@@ -310,7 +310,7 @@ export function CreateWorkspaceButton() {
   return (
     <Dialog.Root open={open} onOpenChange={setOpen}>
       <Dialog.Trigger asChild>
-        <button type="button" className="fixed bottom-6 right-6 z-40 px-5 py-2.5 bg-accent-strong hover:bg-accent active:bg-accent-strong text-sm font-medium rounded-xl text-white shadow-lg shadow-blue-600/20 hover:shadow-xl hover:shadow-blue-500/30 transition-all duration-200 flex items-center gap-2">
+        <button type="button" className="fixed bottom-6 right-6 z-40 px-5 py-2.5 bg-accent hover:bg-accent-strong active:bg-accent text-sm font-medium rounded-xl text-white shadow-lg shadow-accent/20 hover:shadow-xl hover:shadow-accent/30 transition-all duration-200 flex items-center gap-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-2 focus-visible:ring-offset-surface">
           <svg
             width="14"
             height="14"
@@ -502,7 +502,7 @@ export function CreateWorkspaceButton() {
                   placeholder="sk-…"
                   aria-label="Hermes API key"
                   autoComplete="off"
-                  className="w-full bg-surface-card/60 border border-line/50 rounded-lg px-3 py-2 text-sm text-ink placeholder-zinc-600 focus:outline-none focus:border-violet-500/60 focus:ring-1 focus:ring-violet-500/20 transition-colors font-mono"
+                  className="w-full bg-surface-card/60 border border-line/50 rounded-lg px-3 py-2 text-sm text-ink placeholder-ink-soft focus:outline-none focus:border-violet-500/60 focus:ring-1 focus:ring-violet-500/20 transition-colors font-mono"
                 />
               </div>
 
@@ -527,7 +527,7 @@ export function CreateWorkspaceButton() {
                   autoComplete="off"
                   spellCheck={false}
                   list="hermes-model-suggestions"
-                  className="w-full bg-surface-card/60 border border-line/50 rounded-lg px-3 py-2 text-sm text-ink placeholder-zinc-600 focus:outline-none focus:border-violet-500/60 focus:ring-1 focus:ring-violet-500/20 transition-colors font-mono"
+                  className="w-full bg-surface-card/60 border border-line/50 rounded-lg px-3 py-2 text-sm text-ink placeholder-ink-soft focus:outline-none focus:border-violet-500/60 focus:ring-1 focus:ring-violet-500/20 transition-colors font-mono"
                 />
                 <datalist id="hermes-model-suggestions">
                   {HERMES_PROVIDERS.find((p) => p.id === hermesProvider)?.models.map(
@@ -552,7 +552,7 @@ export function CreateWorkspaceButton() {
 
           <div className="flex justify-end gap-2.5 mt-6">
             <Dialog.Close asChild>
-              <button type="button" className="px-4 py-2 bg-surface-card hover:bg-surface-card text-sm rounded-lg text-ink-mid transition-colors">
+              <button type="button" className="px-4 py-2 bg-surface-card hover:bg-surface-elevated hover:text-ink text-sm rounded-lg text-ink-mid transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-surface">
                 Cancel
               </button>
             </Dialog.Close>
@@ -560,7 +560,7 @@ export function CreateWorkspaceButton() {
               type="button"
               onClick={handleCreate}
               disabled={creating}
-              className="px-5 py-2 bg-accent-strong hover:bg-accent active:bg-accent-strong text-sm rounded-lg text-white disabled:opacity-50 transition-colors"
+              className="px-5 py-2 bg-accent hover:bg-accent-strong active:bg-accent text-sm rounded-lg text-white disabled:opacity-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
             >
               {creating ? "Creating..." : "Create"}
             </button>
@@ -623,7 +623,7 @@ function InputField({
         placeholder={placeholder}
         min={type === "number" ? "0" : undefined}
         step={type === "number" ? "0.01" : undefined}
-        className={`w-full bg-surface-card/60 border border-line/50 rounded-lg px-3 py-2 text-sm text-ink placeholder-zinc-500 focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/20 transition-colors ${mono ? "font-mono text-xs" : ""}`}
+        className={`w-full bg-surface-card/60 border border-line/50 rounded-lg px-3 py-2 text-sm text-ink placeholder-ink-soft focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/20 transition-colors ${mono ? "font-mono text-xs" : ""}`}
       />
       {helper && (
         <p className="mt-1 text-xs text-ink-soft">{helper}</p>

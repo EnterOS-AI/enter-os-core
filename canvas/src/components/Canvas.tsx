@@ -13,6 +13,7 @@ import {
 import "@xyflow/react/dist/style.css";
 
 import { useCanvasStore } from "@/store/canvas";
+import { useTheme } from "@/lib/theme-provider";
 import { A2ATopologyOverlay } from "./A2ATopologyOverlay";
 import { WorkspaceNode } from "./WorkspaceNode";
 import { SidePanel } from "./SidePanel";
@@ -69,6 +70,14 @@ export function Canvas() {
 }
 
 function CanvasInner() {
+  // ReactFlow's `colorMode` prop drives the styling of every viewport
+  // primitive it renders directly (background dots, edge defaults,
+  // selection rings, controls, minimap mask). Pre-fix this was hard-pinned
+  // to "dark" — so on light theme the chrome (toolbar, side panel) flipped
+  // to warm-paper but the canvas backplate + edges stayed black, leaving a
+  // half-themed page. Pull resolvedTheme so the canvas matches the user's
+  // selected mode (and the system preference when they pick "system").
+  const { resolvedTheme } = useTheme();
   const rawNodes = useCanvasStore((s) => s.nodes);
   const edges = useCanvasStore((s) => s.edges);
   const a2aEdges = useCanvasStore((s) => s.a2aEdges);
@@ -250,7 +259,7 @@ function CanvasInner() {
       </a>
       <main id="canvas-main" className="w-screen h-screen bg-surface">
         <ReactFlow
-          colorMode="dark"
+          colorMode={resolvedTheme}
           nodes={nodes}
           edges={allEdges}
           onNodesChange={onNodesChange}
@@ -273,7 +282,9 @@ function CanvasInner() {
             variant={BackgroundVariant.Dots}
             gap={24}
             size={1}
-            color="#27272a"
+            // Match the line token so dots fade with the surface.
+            // Hard-coded zinc-800 was invisible on warm-paper.
+            color={resolvedTheme === "dark" ? "#27272a" : "#d4d0c4"}
           />
           <Controls
             className="!bg-surface-sunken/90 !border-line/50 !rounded-lg !shadow-xl !shadow-black/20 [&>button]:!bg-surface-card [&>button]:!border-line/50 [&>button]:!text-ink-mid [&>button:hover]:!bg-surface-card [&>button:hover]:!text-ink"
@@ -281,7 +292,9 @@ function CanvasInner() {
           />
           <MiniMap
             className="!bg-surface-sunken/90 !border-line/50 !rounded-lg !shadow-xl !shadow-black/20"
-            maskColor="rgba(0, 0, 0, 0.7)"
+            // Mask dims off-viewport areas; tint matches the surface so
+            // the dimming doesn't show as a black bar in light mode.
+            maskColor={resolvedTheme === "dark" ? "rgba(0, 0, 0, 0.7)" : "rgba(232, 226, 211, 0.7)"}
             nodeColor={(node) => {
               // Parents show as a filled region — hierarchy visible at
               // a glance in the minimap without needing to zoom.

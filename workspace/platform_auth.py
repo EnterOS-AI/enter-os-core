@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from pathlib import Path
 
 import configs_dir
@@ -32,6 +33,20 @@ logger = logging.getLogger(__name__)
 # loop fires on a short interval and reading a tiny file 10x per minute
 # is wasteful. The file is the durable copy; this var is the hot path.
 _cached_token: str | None = None
+
+# Per-workspace token registry — populated by mcp_cli when the operator
+# runs a multi-workspace external agent (MOLECULE_WORKSPACES env var).
+# Keyed by workspace_id, value is the bearer token issued by that
+# workspace's tenant. Distinct from `_cached_token` (which is the
+# single-workspace path's token); the two coexist so single-workspace
+# back-compat is preserved exactly.
+#
+# Lock guards mutations from the registration phase (one writer per
+# workspace, but the writers run in main(), not in heartbeat threads).
+# Reads are lock-free for the hot path; the dict is finalized before
+# any heartbeat / poller thread starts.
+_WORKSPACE_TOKENS: dict[str, str] = {}
+_WORKSPACE_TOKENS_LOCK = threading.Lock()
 
 
 def _token_file() -> Path:
@@ -111,7 +126,59 @@ def save_token(token: str) -> None:
     _cached_token = token
 
 
-def auth_headers() -> dict[str, str]:
+def register_workspace_token(workspace_id: str, token: str) -> None:
+    """Register a per-workspace bearer token in the multi-workspace registry.
+
+    Called by ``mcp_cli`` once per entry in the ``MOLECULE_WORKSPACES``
+    env var so per-workspace heartbeat / poller threads can resolve their
+    own auth via ``auth_headers(workspace_id=...)`` without each thread
+    closing over a token literal.
+
+    Idempotent: re-registering the same workspace_id with the same token
+    is a no-op; with a different token it overwrites and logs at INFO
+    (the legitimate case is operator token rotation between restarts).
+    """
+    workspace_id = (workspace_id or "").strip()
+    token = (token or "").strip()
+    if not workspace_id or not token:
+        return
+    with _WORKSPACE_TOKENS_LOCK:
+        prior = _WORKSPACE_TOKENS.get(workspace_id)
+        if prior == token:
+            return
+        if prior is not None:
+            logger.info(
+                "platform_auth: workspace_id %s token rotated", workspace_id,
+            )
+        _WORKSPACE_TOKENS[workspace_id] = token
+
+
+def get_workspace_token(workspace_id: str) -> str | None:
+    """Return the per-workspace token from the registry, or None.
+
+    Lookup is lock-free: writes happen in main() before threads start,
+    reads are stable thereafter.
+    """
+    return _WORKSPACE_TOKENS.get((workspace_id or "").strip())
+
+
+def list_registered_workspaces() -> list[str]:
+    """Return the workspace IDs currently in the per-workspace registry.
+
+    Empty list when no multi-workspace registration has happened (i.e.
+    single-workspace operators using the legacy WORKSPACE_ID env path —
+    those callers should fall back to the module-level WORKSPACE_ID).
+
+    Used by ``a2a_tools.tool_list_peers`` to aggregate peers across all
+    workspaces an external agent has registered against, so a
+    multi-workspace operator can see the full peer surface in one call
+    instead of having to query each workspace separately.
+    """
+    with _WORKSPACE_TOKENS_LOCK:
+        return list(_WORKSPACE_TOKENS.keys())
+
+
+def auth_headers(workspace_id: str | None = None) -> dict[str, str]:
     """Return a header dict to merge into httpx calls. Empty if no token
     is available yet — callers send the request as-is and the platform's
     heartbeat handler grandfathers pre-token workspaces through until
@@ -126,12 +193,28 @@ def auth_headers() -> dict[str, str]:
     Discovered while smoke-testing the molecule-mcp external-runtime
     path against a live tenant — every tool call returned "not found"
     because the WAF was eating them.
+
+    Token resolution order:
+        1. ``workspace_id`` arg → per-workspace registry
+           (multi-workspace external agent — set by mcp_cli)
+        2. Single-workspace cache + .auth_token file + env var
+           (pre-existing path; back-compat unchanged)
+
+    Single-workspace operators see no behavior change: ``auth_headers()``
+    with no arg routes through the legacy resolution path exactly as
+    before. Multi-workspace operators pass ``workspace_id`` so each
+    thread (heartbeat, poller, send_message_to_user) authenticates
+    against the correct workspace.
     """
     headers: dict[str, str] = {}
     platform_url = os.environ.get("PLATFORM_URL", "").strip()
     if platform_url:
         headers["Origin"] = platform_url
-    tok = get_token()
+    tok: str | None = None
+    if workspace_id:
+        tok = get_workspace_token(workspace_id)
+    if tok is None:
+        tok = get_token()
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
     return headers
@@ -154,7 +237,12 @@ def self_source_headers(workspace_id: str) -> dict[str, str]:
     correlation ID) only touches one place — and so that any
     workspace→A2A POST that doesn't use this helper stands out in
     review as a probable bug."""
-    return {**auth_headers(), "X-Workspace-ID": workspace_id}
+    # Pass workspace_id through to auth_headers so the bearer token
+    # comes from the per-workspace registry when set — otherwise a
+    # multi-workspace operator's source-tagged POST authenticates with
+    # the legacy single token (or none) and the platform rejects with
+    # 401, or worse silently logs the wrong source.
+    return {**auth_headers(workspace_id), "X-Workspace-ID": workspace_id}
 
 
 def clear_cache() -> None:
@@ -162,6 +250,8 @@ def clear_cache() -> None:
     files between cases."""
     global _cached_token
     _cached_token = None
+    with _WORKSPACE_TOKENS_LOCK:
+        _WORKSPACE_TOKENS.clear()
 
 
 def refresh_cache() -> str | None:

@@ -34,6 +34,7 @@ own heartbeat loop in ``heartbeat.py`` so we don't double-heartbeat.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -345,6 +346,90 @@ def _start_heartbeat_thread(
     return t
 
 
+def _resolve_workspaces() -> tuple[list[tuple[str, str]], list[str]]:
+    """Return the list of ``(workspace_id, token)`` pairs to register.
+
+    Resolution order:
+
+    1. ``MOLECULE_WORKSPACES`` env var — JSON array of
+       ``{"id": "...", "token": "..."}`` objects. Activates the
+       multi-workspace external-agent path (one process registered into
+       N workspaces). When set, ``WORKSPACE_ID`` / ``MOLECULE_WORKSPACE_TOKEN``
+       are IGNORED — the JSON is the source of truth.
+
+    2. Single-workspace fallback — ``WORKSPACE_ID`` env var + token from
+       ``MOLECULE_WORKSPACE_TOKEN`` or ``${CONFIGS_DIR}/.auth_token``.
+       This is the pre-existing path; back-compat exact.
+
+    Returns ``(workspaces, errors)``:
+      * ``workspaces``: list of ``(workspace_id, token)`` — non-empty
+        on the happy path.
+      * ``errors``: human-readable strings describing what's missing /
+        malformed. ``main()`` surfaces these with the same shape as
+        ``_print_missing_env_help`` so the operator's first run gives
+        actionable output.
+
+    Why JSON env (not file): ergonomic for Claude Code MCP config (one
+    string in ``mcpServers.molecule.env`` instead of a sidecar file)
+    and for CI / launchers. A separate config-file path can be added
+    later without breaking this.
+    """
+    raw = os.environ.get("MOLECULE_WORKSPACES", "").strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            return [], [
+                f"MOLECULE_WORKSPACES is not valid JSON ({exc.msg} at pos "
+                f"{exc.pos}). Expected: '[{{\"id\":\"<wsid>\",\"token\":"
+                f"\"<tok>\"}},{{...}}]'"
+            ]
+        if not isinstance(parsed, list) or not parsed:
+            return [], [
+                "MOLECULE_WORKSPACES must be a non-empty JSON array of "
+                "{\"id\":\"...\",\"token\":\"...\"} objects"
+            ]
+        out: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        errors: list[str] = []
+        for i, entry in enumerate(parsed):
+            if not isinstance(entry, dict):
+                errors.append(
+                    f"MOLECULE_WORKSPACES[{i}] is not an object — got {type(entry).__name__}"
+                )
+                continue
+            wsid = str(entry.get("id", "")).strip()
+            tok = str(entry.get("token", "")).strip()
+            if not wsid or not tok:
+                errors.append(
+                    f"MOLECULE_WORKSPACES[{i}] missing 'id' or 'token'"
+                )
+                continue
+            if wsid in seen:
+                errors.append(
+                    f"MOLECULE_WORKSPACES[{i}] duplicate workspace id {wsid!r}"
+                )
+                continue
+            seen.add(wsid)
+            out.append((wsid, tok))
+        if errors:
+            return [], errors
+        return out, []
+
+    # Single-workspace back-compat path.
+    wsid = os.environ.get("WORKSPACE_ID", "").strip()
+    if not wsid:
+        return [], ["WORKSPACE_ID (or MOLECULE_WORKSPACES) is required"]
+    tok = os.environ.get("MOLECULE_WORKSPACE_TOKEN", "").strip()
+    if not tok:
+        tok = _read_token_file()
+    if not tok:
+        return [], [
+            "MOLECULE_WORKSPACE_TOKEN (or CONFIGS_DIR/.auth_token) is required"
+        ]
+    return [(wsid, tok)], []
+
+
 def _print_missing_env_help(missing: list[str], have_token_file: bool) -> None:
     print("molecule-mcp: missing required environment.\n", file=sys.stderr)
     print("Set the following before running molecule-mcp:", file=sys.stderr)
@@ -369,36 +454,51 @@ def main() -> None:
 
     Returns nothing — calls ``sys.exit`` on validation failure or on
     normal completion of the underlying MCP server loop.
-    """
-    missing: list[str] = []
-    if not os.environ.get("WORKSPACE_ID", "").strip():
-        missing.append("WORKSPACE_ID")
-    if not os.environ.get("PLATFORM_URL", "").strip():
-        missing.append("PLATFORM_URL")
-    # Token can come from env OR file — only flag when both are absent.
-    # Mirrors platform_auth.get_token's resolution order (file-first,
-    # env-fallback). configs_dir.resolve() handles in-container vs
-    # external-runtime fallback so we don't probe a non-existent
-    # /configs on a laptop and falsely report no-token-file.
-    has_token_file = (configs_dir.resolve() / ".auth_token").is_file()
-    has_token_env = bool(os.environ.get("MOLECULE_WORKSPACE_TOKEN", "").strip())
-    if not has_token_file and not has_token_env:
-        missing.append("MOLECULE_WORKSPACE_TOKEN (or CONFIGS_DIR/.auth_token)")
 
-    if missing:
-        _print_missing_env_help(missing, have_token_file=has_token_file)
+    Two registration shapes:
+      * Single-workspace (legacy): ``WORKSPACE_ID`` + token env/file.
+        Unchanged behavior.
+      * Multi-workspace: ``MOLECULE_WORKSPACES`` JSON env var with N
+        ``{"id": ..., "token": ...}`` entries. One register + heartbeat
+        + inbox poller per entry; messages from any workspace land in
+        the same agent inbox tagged with ``arrival_workspace_id``.
+    """
+    if not os.environ.get("PLATFORM_URL", "").strip():
+        _print_missing_env_help(
+            ["PLATFORM_URL"],
+            have_token_file=(configs_dir.resolve() / ".auth_token").is_file(),
+        )
         sys.exit(2)
 
-    # Resolve the effective token: env wins (operator override), then
-    # the on-disk file (in-container default). Mirrors
-    # platform_auth.get_token's resolution order so we don't
-    # double-implement.
-    token = (
-        os.environ.get("MOLECULE_WORKSPACE_TOKEN", "").strip()
-        or _read_token_file()
-    )
-    workspace_id = os.environ["WORKSPACE_ID"].strip()
+    workspaces, errors = _resolve_workspaces()
+    if errors or not workspaces:
+        # Reuse the missing-env help printer for legacy WORKSPACE_ID +
+        # token shape, which is what most first-run operators hit. For
+        # MOLECULE_WORKSPACES errors, print directly so the JSON-shape
+        # message isn't mangled into the WORKSPACE_ID-style help.
+        if os.environ.get("MOLECULE_WORKSPACES", "").strip():
+            print("molecule-mcp: invalid MOLECULE_WORKSPACES:", file=sys.stderr)
+            for e in errors:
+                print(f"  - {e}", file=sys.stderr)
+        else:
+            _print_missing_env_help(
+                errors or ["WORKSPACE_ID", "MOLECULE_WORKSPACE_TOKEN"],
+                have_token_file=(configs_dir.resolve() / ".auth_token").is_file(),
+            )
+        sys.exit(2)
+
     platform_url = os.environ["PLATFORM_URL"].strip().rstrip("/")
+
+    # In multi-workspace mode the FIRST entry is treated as the
+    # "primary" — it gets exported to a2a_client.py's module-level
+    # WORKSPACE_ID (which gates a RuntimeError at import time) and is
+    # used by tools that don't yet take an explicit workspace_id. PR-2
+    # parameterizes those tools; for now this preserves existing
+    # outbound-tool behavior unchanged for single-workspace operators
+    # AND for the multi-workspace operator's first registered
+    # workspace.
+    primary_workspace_id, _primary_token = workspaces[0]
+    os.environ["WORKSPACE_ID"] = primary_workspace_id
 
     # Configure logging so the operator sees register/heartbeat status
     # without needing to set up logging themselves. WARNING by default
@@ -411,6 +511,21 @@ def main() -> None:
     )
     logging.basicConfig(level=log_level, format="[molecule-mcp] %(message)s")
 
+    # Populate the per-workspace token registry so heartbeat threads,
+    # the inbox poller, and (later) outbound tools resolve the right
+    # token for each workspace via ``platform_auth.auth_headers(wsid)``.
+    # Done BEFORE register/heartbeat thread spawn so a thread that
+    # races to fire its first request always sees its token.
+    try:
+        from platform_auth import register_workspace_token
+        for wsid, tok in workspaces:
+            register_workspace_token(wsid, tok)
+    except ImportError:
+        # Older installs that don't yet ship register_workspace_token —
+        # multi-workspace resolution silently degrades to the legacy
+        # single-token path; single-workspace operators see no change.
+        logger.debug("platform_auth.register_workspace_token unavailable; skipping registry populate")
+
     # Standalone-mode register + heartbeat. Skipped via env var so an
     # in-container caller (which has its own heartbeat loop) can reuse
     # this entry point without double-heartbeating. The wheel's main
@@ -418,21 +533,23 @@ def main() -> None:
     # MOLECULE_MCP_DISABLE_HEARTBEAT escape hatch exists for tests +
     # the rare embedded use-case.
     if not os.environ.get("MOLECULE_MCP_DISABLE_HEARTBEAT", "").strip():
-        _platform_register(platform_url, workspace_id, token)
-        _start_heartbeat_thread(platform_url, workspace_id, token)
+        for wsid, tok in workspaces:
+            _platform_register(platform_url, wsid, tok)
+            _start_heartbeat_thread(platform_url, wsid, tok)
 
     # Inbox poller — the inbound side of the standalone path. Without
     # this thread, the universal MCP server is OUTBOUND-ONLY: an agent
     # can call delegate_task / send_message_to_user but never observe
-    # canvas-user or peer-agent messages. The poller fills an in-memory
-    # queue from the platform's /activity?type=a2a_receive endpoint;
-    # the agent reads via wait_for_message / inbox_peek / inbox_pop.
+    # canvas-user or peer-agent messages. One poller per workspace; all
+    # of them write to the SAME shared inbox state so the agent's
+    # inbox_peek/pop/wait tools see a merged view (each message tagged
+    # with arrival_workspace_id so the agent can route the reply).
     #
     # Same disable pattern as heartbeat: in-container callers (with
     # push delivery via canvas WebSocket) skip this to avoid duplicate
     # delivery; tests use the env to keep imports cheap.
     if not os.environ.get("MOLECULE_MCP_DISABLE_INBOX", "").strip():
-        _start_inbox_poller(platform_url, workspace_id)
+        _start_inbox_pollers(platform_url, [w[0] for w in workspaces])
 
     # Env is valid — safe to import the heavy module now. Importing
     # earlier would trigger a2a_client.py:22's module-level RuntimeError
@@ -441,8 +558,8 @@ def main() -> None:
     cli_main()
 
 
-def _start_inbox_poller(platform_url: str, workspace_id: str) -> None:
-    """Activate the inbox singleton + spawn the poller daemon thread.
+def _start_inbox_pollers(platform_url: str, workspace_ids: list[str]) -> None:
+    """Activate the inbox singleton + spawn one poller daemon thread per workspace.
 
     Done lazily here (not at module import) because importing inbox
     pulls in platform_auth, which only resolves cleanly AFTER env
@@ -450,7 +567,17 @@ def _start_inbox_poller(platform_url: str, workspace_id: str) -> None:
     so a stray double-call (e.g. test harness re-entering main) is
     harmless.
 
-    The poller thread is daemon=True — dies with the main process.
+    The poller threads are daemon=True — die with the main process.
+
+    Single-workspace path: one poller, single cursor file at the legacy
+    location (``.mcp_inbox_cursor``). Cursor-key resolution falls back
+    to the empty string for back-compat with operators whose existing
+    on-disk cursor was written by the pre-multi-workspace code.
+
+    Multi-workspace path: N pollers, each with its own cursor file
+    keyed by ``workspace_id[:8]``. Cursors live next to each other in
+    configs_dir so an operator inspecting state sees all of them
+    together.
     """
     try:
         import inbox
@@ -458,9 +585,22 @@ def _start_inbox_poller(platform_url: str, workspace_id: str) -> None:
         logger.warning("molecule-mcp: inbox module unavailable: %s", exc)
         return
 
-    state = inbox.InboxState(cursor_path=inbox.default_cursor_path())
+    if len(workspace_ids) <= 1:
+        # Back-compat exact: single-workspace mode reuses the legacy
+        # cursor filename + cursor_path constructor arg, so an existing
+        # operator's on-disk state isn't invalidated by upgrade.
+        wsid = workspace_ids[0]
+        state = inbox.InboxState(cursor_path=inbox.default_cursor_path())
+        inbox.activate(state)
+        inbox.start_poller_thread(state, platform_url, wsid)
+        return
+
+    # Multi-workspace: per-workspace cursor file, one shared queue.
+    cursor_paths = {wsid: inbox.default_cursor_path(wsid) for wsid in workspace_ids}
+    state = inbox.InboxState(cursor_paths=cursor_paths)
     inbox.activate(state)
-    inbox.start_poller_thread(state, platform_url, workspace_id)
+    for wsid in workspace_ids:
+        inbox.start_poller_thread(state, platform_url, wsid)
 
 
 def _read_token_file() -> str:

@@ -507,6 +507,22 @@ func (h *WorkspaceHandler) Delete(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "purge failed"})
 			return
 		}
+
+		// I5 (RFC #2728): best-effort plugin namespace cleanup. If
+		// MEMORY_V2 is wired, ask the plugin to drop each purged
+		// workspace's `workspace:<id>` namespace so stale namespaces
+		// don't accumulate. We deliberately do NOT clean up team:* /
+		// org:* namespaces — those may still be referenced by other
+		// workspaces under the same root.
+		//
+		// Failures are logged but don't fail the purge (which has
+		// already succeeded against the workspaces table).
+		if h.namespaceCleanupFn != nil {
+			for _, id := range allIDs {
+				h.namespaceCleanupFn(ctx, id)
+			}
+		}
+
 		c.JSON(http.StatusOK, gin.H{"status": "purged", "cascade_deleted": len(descendantIDs)})
 		return
 	}

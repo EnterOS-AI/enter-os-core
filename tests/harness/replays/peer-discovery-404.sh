@@ -75,9 +75,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 # Stub platform_auth so a2a_client imports cleanly without requiring a
 # real workspace token file. The helper's auth_headers() only matters
 # when going through the network; we're feeding it a mock response.
+#
+# Both stubs accept *args, **kwargs because the multi-workspace work
+# (#2739, #2743) added optional ``workspace_id`` parameters to
+# ``auth_headers`` and made ``self_source_headers`` 1-arg-required.
+# The stubs need to accept whatever the helpers pass without caring.
 _pa = types.ModuleType("platform_auth")
-_pa.auth_headers = lambda: {}
-_pa.self_source_headers = lambda: {}
+_pa.auth_headers = lambda *a, **kw: {}
+_pa.self_source_headers = lambda *a, **kw: {}
 sys.modules.setdefault("platform_auth", _pa)
 
 sys.path.insert(0, sys.argv[1])

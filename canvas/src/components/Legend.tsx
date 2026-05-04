@@ -1,10 +1,22 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { STATUS_CONFIG } from "@/lib/design-tokens";
+import { STATUS_CONFIG, TIER_CONFIG } from "@/lib/design-tokens";
 import { useCanvasStore } from "@/store/canvas";
 
 const LEGEND_STATUSES = ["online", "provisioning", "degraded", "failed", "paused", "offline"] as const;
+
+// Tier descriptions kept in sync with CreateWorkspaceDialog.tsx (the
+// source of truth for what each tier means semantically). Colors come
+// from TIER_CONFIG so the legend swatch matches the badge actually
+// rendered on every WorkspaceNode — drift here misled users into
+// thinking the legend documented a different tier than the one shown.
+const LEGEND_TIERS: ReadonlyArray<{ tier: number; label: string }> = [
+  { tier: 1, label: "Sandboxed" },
+  { tier: 2, label: "Standard" },
+  { tier: 3, label: "Privileged" },
+  { tier: 4, label: "Full Access" },
+];
 
 // Persist the user's choice across sessions. Default is "open" so
 // first-time users still see the symbol key; once dismissed we
@@ -65,7 +77,7 @@ export function Legend() {
         onClick={openLegend}
         aria-label="Show legend"
         title="Show legend"
-        className={`fixed bottom-6 ${leftClass} z-30 flex items-center gap-1.5 rounded-full bg-surface-sunken/95 border border-line/50 px-3 py-1.5 text-[11px] font-semibold text-ink-mid uppercase tracking-wider shadow-xl shadow-black/30 backdrop-blur-sm hover:text-ink hover:border-line transition-[left,colors] duration-200`}
+        className={`fixed bottom-6 ${leftClass} z-30 flex items-center gap-1.5 rounded-full bg-surface-sunken/95 border border-line/50 px-3 py-1.5 text-[11px] font-semibold text-ink-mid uppercase tracking-wider shadow-xl shadow-black/30 backdrop-blur-sm hover:text-ink hover:border-line focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-2 focus-visible:ring-offset-surface transition-[left,colors] duration-200`}
       >
         <span aria-hidden="true" className="text-[10px]">ⓘ</span>
         Legend
@@ -82,7 +94,10 @@ export function Legend() {
           onClick={closeLegend}
           aria-label="Hide legend"
           title="Hide legend"
-          className="-mt-0.5 -mr-1 px-1.5 text-[14px] leading-none text-ink-soft hover:text-ink transition-colors"
+          // 24×24 touch target (was ~10×16, well under WCAG 2.5.5 min).
+          // Negative margin keeps the visual position the same as before
+          // — only the hit area + focus ring are larger.
+          className="-mt-1.5 -mr-1.5 w-6 h-6 inline-flex items-center justify-center rounded text-[14px] leading-none text-ink-soft hover:text-ink hover:bg-surface-card/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 transition-colors"
         >
           ×
         </button>
@@ -102,9 +117,9 @@ export function Legend() {
       <div className="mb-2">
         <div className="text-[11px] text-ink-soft font-medium mb-1">Tier</div>
         <div className="flex flex-wrap gap-x-3 gap-y-1">
-          <TierItem tier={1} label="Sandboxed" color="text-sky-300 bg-sky-950/40 border-sky-700/30" />
-          <TierItem tier={2} label="Standard" color="text-violet-300 bg-violet-950/40 border-violet-700/30" />
-          <TierItem tier={3} label="Full Access" color="text-warm bg-amber-950/40 border-amber-700/30" />
+          {LEGEND_TIERS.map(({ tier, label }) => (
+            <TierItem key={tier} tier={tier} label={label} color={TIER_CONFIG[tier].border} />
+          ))}
         </div>
       </div>
 

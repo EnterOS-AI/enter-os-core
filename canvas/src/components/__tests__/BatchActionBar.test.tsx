@@ -130,6 +130,26 @@ describe("BatchActionBar", () => {
     const toolbar = screen.getByRole("toolbar");
     expect(toolbar.getAttribute("aria-label")).toBe("Batch workspace actions");
   });
+
+  it("Esc clears the selection — matches the deselect button title", () => {
+    // The deselect button has been promising "Clear selection (Escape)"
+    // since the bar shipped, but no handler was wired. This pins the
+    // contract.
+    mockSelectedNodeIds = new Set(["ws-1", "ws-2"]);
+    render(<BatchActionBar />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(mockClearSelection).toHaveBeenCalled();
+  });
+
+  it("Esc is a no-op when nothing is selected", () => {
+    mockSelectedNodeIds = new Set<string>();
+    render(<BatchActionBar />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    // The early-return at count===0 prevents the bar from mounting at all,
+    // so the keydown listener never registers. clearSelection must NOT be
+    // called.
+    expect(mockClearSelection).not.toHaveBeenCalled();
+  });
 });
 
 /**

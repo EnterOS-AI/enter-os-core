@@ -38,6 +38,18 @@ export function Toaster() {
     };
   }, []);
 
+  // Esc dismisses the newest toast — keyboard parity with the × button.
+  // Errors never auto-expire, so without this a keyboard-only user has to
+  // tab through the entire app to reach the dismiss button on a stuck error.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setToasts((prev) => (prev.length === 0 ? prev : prev.slice(0, -1)));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const toastCls = (type: Toast["type"]) =>
     `flex items-center gap-2 pl-4 pr-2 py-2.5 rounded-xl shadow-2xl shadow-black/40 text-sm backdrop-blur-md animate-in slide-in-from-bottom duration-200 ${
       type === "success"
@@ -46,6 +58,17 @@ export function Toaster() {
         ? "bg-red-950/90 border border-red-700/40 text-red-200"
         : "bg-surface-sunken/90 border border-line/40 text-ink"
     }`;
+
+  // Success/error toasts are intentionally dark in both themes (high-vis).
+  // Info uses the semantic surface that flips with theme — so the dismiss
+  // button needs a tint that stays visible on a light bg in light mode.
+  const dismissCls = (type: Toast["type"]) => {
+    const base =
+      "ml-1 w-7 h-7 inline-flex items-center justify-center text-base leading-none rounded transition-colors opacity-70 hover:opacity-100 focus-visible:opacity-100 focus:outline-none focus-visible:ring-2 shrink-0";
+    return type === "info"
+      ? `${base} hover:bg-ink/10 focus-visible:ring-accent/60`
+      : `${base} hover:bg-white/15 focus-visible:ring-white/70`;
+  };
 
   const pos =
     "fixed bottom-16 left-1/2 -translate-x-1/2 z-[80] flex flex-col gap-2 items-center";
@@ -66,7 +89,7 @@ export function Toaster() {
                 type="button"
                 onClick={() => dismiss(toast.id)}
                 aria-label="Dismiss notification"
-                className="ml-1 p-1 rounded hover:bg-surface-card/50 transition-colors opacity-70 hover:opacity-100 shrink-0"
+                className={dismissCls(toast.type)}
               >
                 ×
               </button>
@@ -94,7 +117,7 @@ export function Toaster() {
                 type="button"
                 onClick={() => dismiss(toast.id)}
                 aria-label="Dismiss notification"
-                className="ml-1 p-1 rounded hover:bg-surface-card/50 transition-colors opacity-70 hover:opacity-100 shrink-0"
+                className={dismissCls(toast.type)}
               >
                 ×
               </button>

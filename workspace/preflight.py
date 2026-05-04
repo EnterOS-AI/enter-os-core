@@ -180,16 +180,38 @@ def run_preflight(config: WorkspaceConfig, config_path: str) -> PreflightReport:
                 required_env = list(entry.get("required_env") or [])
             break
 
+    # Smoke mode skips the auth-env block: the boot smoke (CI publish-image,
+    # issue #2275) exercises executor.execute() against stub deps, never
+    # hits the real provider, and CI cannot enumerate every adapter's auth
+    # env without forming a maintenance treadmill. Hermes 2026-05-03 outage:
+    # template smoke crashed for two cycles because molecule-ci injected
+    # CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY/etc. but not HERMES_API_KEY.
+    # Bypass here means new templates can ship without the workflow
+    # learning their env names.
+    smoke_mode = os.environ.get("MOLECULE_SMOKE_MODE", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
     for env_var in required_env:
-        if not os.environ.get(env_var):
-            report.failures.append(
+        if os.environ.get(env_var):
+            continue
+        if smoke_mode:
+            report.warnings.append(
                 PreflightIssue(
-                    severity="fail",
+                    severity="warn",
                     title="Required env",
-                    detail=f"Missing required environment variable: {env_var}",
-                    fix=f"Set {env_var} via the secrets API (global or workspace-level).",
+                    detail=f"Missing {env_var} (skipped — MOLECULE_SMOKE_MODE)",
+                    fix="",
                 )
             )
+            continue
+        report.failures.append(
+            PreflightIssue(
+                severity="fail",
+                title="Required env",
+                detail=f"Missing required environment variable: {env_var}",
+                fix=f"Set {env_var} via the secrets API (global or workspace-level).",
+            )
+        )
 
     # Backward compat: if legacy auth_token_file is set, warn but don't block
     # if the token is available via required_env or auth_token_env.

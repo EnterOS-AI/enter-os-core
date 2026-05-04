@@ -16,6 +16,7 @@ from a2a_client import (
     WORKSPACE_ID,
     _A2A_ERROR_PREFIX,
     _peer_names,
+    _peer_to_source,
     discover_peer,
     get_peers,
     get_peers_with_diagnostic,
@@ -23,6 +24,7 @@ from a2a_client import (
     send_a2a_message,
 )
 from builtin_tools.security import _redact_secrets
+from platform_auth import list_registered_workspaces
 
 
 # ---------------------------------------------------------------------------
@@ -102,12 +104,18 @@ def _is_root_workspace() -> bool:
     return _get_workspace_tier() == 0
 
 
-def _auth_headers_for_heartbeat() -> dict[str, str]:
+def _auth_headers_for_heartbeat(workspace_id: str | None = None) -> dict[str, str]:
     """Return Phase 30.1 auth headers; tolerate platform_auth being absent
-    in older installs (e.g. during rolling upgrade)."""
+    in older installs (e.g. during rolling upgrade).
+
+    ``workspace_id`` selects the per-workspace token from the multi-
+    workspace registry when set (PR-1: external agent registered in
+    multiple workspaces). With no arg the legacy single-token path is
+    unchanged.
+    """
     try:
         from platform_auth import auth_headers
-        return auth_headers()
+        return auth_headers(workspace_id) if workspace_id else auth_headers()
     except Exception:
         return {}
 
@@ -183,16 +191,32 @@ async def report_activity(
         pass  # Best-effort — don't block delegation on activity reporting
 
 
-async def tool_delegate_task(workspace_id: str, task: str) -> str:
-    """Delegate a task to another workspace via A2A (synchronous — waits for response)."""
+async def tool_delegate_task(
+    workspace_id: str,
+    task: str,
+    source_workspace_id: str | None = None,
+) -> str:
+    """Delegate a task to another workspace via A2A (synchronous — waits for response).
+
+    ``source_workspace_id`` selects which registered workspace this
+    delegation originates from — drives auth + the X-Workspace-ID source
+    header so the platform's a2a_proxy logs the correct sender. Single-
+    workspace operators leave it None and routing falls back to the
+    module-level WORKSPACE_ID.
+    """
     if not workspace_id or not task:
         return "Error: workspace_id and task are required"
+
+    # Auto-route: if source not specified, look up which registered
+    # workspace last saw this peer (populated by tool_list_peers). Falls
+    # back to the legacy WORKSPACE_ID for single-workspace operators.
+    src = source_workspace_id or _peer_to_source.get(workspace_id) or None
 
     # Discover the target. discover_peer is the access-control gate +
     # name/status lookup. The peer's reported ``url`` field is NOT used
     # for routing — see send_a2a_message, which constructs the URL via
     # the platform's A2A proxy.
-    peer = await discover_peer(workspace_id)
+    peer = await discover_peer(workspace_id, source_workspace_id=src)
     if not peer:
         return f"Error: workspace {workspace_id} not found or not accessible (check access control)"
 
@@ -208,7 +232,7 @@ async def tool_delegate_task(workspace_id: str, task: str) -> str:
     # send_a2a_message routes through ${PLATFORM_URL}/workspaces/{id}/a2a
     # (the platform proxy) so the same code works for in-container and
     # external (standalone molecule-mcp) callers.
-    result = await send_a2a_message(workspace_id, task)
+    result = await send_a2a_message(workspace_id, task, source_workspace_id=src)
 
     # Detect delegation failures — wrap them clearly so the calling agent
     # can decide to retry, use another peer, or handle the task itself.
@@ -240,27 +264,41 @@ async def tool_delegate_task(workspace_id: str, task: str) -> str:
     return result
 
 
-async def tool_delegate_task_async(workspace_id: str, task: str) -> str:
+async def tool_delegate_task_async(
+    workspace_id: str,
+    task: str,
+    source_workspace_id: str | None = None,
+) -> str:
     """Delegate a task via the platform's async delegation API (fire-and-forget).
 
     Uses POST /workspaces/:id/delegate which runs the A2A request in the background.
     Results are tracked in the platform DB and broadcast via WebSocket.
     Use check_task_status to poll for results.
+
+    ``source_workspace_id`` selects the sending workspace (which one of
+    this agent's registered workspaces gets logged as the originator);
+    auto-routes via the peer→source cache when omitted.
     """
     if not workspace_id or not task:
         return "Error: workspace_id and task are required"
 
-    # Idempotency key: SHA-256 of (workspace_id, task) so that a restarted agent
-    # firing the same delegation gets the same key and the platform returns the
-    # existing delegation_id instead of creating a duplicate. Fixes #1456.
-    idem_key = hashlib.sha256(f"{workspace_id}:{task}".encode()).hexdigest()[:32]
+    src = source_workspace_id or _peer_to_source.get(workspace_id) or WORKSPACE_ID
+
+    # Idempotency key: SHA-256 of (source, target, task) so that a
+    # restarted agent firing the same delegation gets the same key and
+    # the platform returns the existing delegation_id instead of
+    # creating a duplicate. Fixes #1456. Source is in the key so the
+    # SAME task delegated from two different registered workspaces
+    # produces two distinct delegations (the right behavior — one per
+    # tenant audit trail).
+    idem_key = hashlib.sha256(f"{src}:{workspace_id}:{task}".encode()).hexdigest()[:32]
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
-                f"{PLATFORM_URL}/workspaces/{WORKSPACE_ID}/delegate",
+                f"{PLATFORM_URL}/workspaces/{src}/delegate",
                 json={"target_id": workspace_id, "task": task, "idempotency_key": idem_key},
-                headers=_auth_headers_for_heartbeat(),
+                headers=_auth_headers_for_heartbeat(src),
             )
             if resp.status_code == 202:
                 data = resp.json()
@@ -276,18 +314,27 @@ async def tool_delegate_task_async(workspace_id: str, task: str) -> str:
         return f"Error: delegation failed — {e}"
 
 
-async def tool_check_task_status(workspace_id: str, task_id: str) -> str:
+async def tool_check_task_status(
+    workspace_id: str,
+    task_id: str,
+    source_workspace_id: str | None = None,
+) -> str:
     """Check delegations for this workspace via the platform API.
 
     Args:
-        workspace_id: Ignored (kept for backward compat). Checks this workspace's delegations.
+        workspace_id: Ignored (kept for backward compat). Checks
+            ``source_workspace_id``'s delegations (the workspace that
+            FIRED the delegations), not the target's.
         task_id: Optional delegation_id to filter. If empty, returns all recent delegations.
+        source_workspace_id: Which registered workspace's delegation log
+            to query. Defaults to the module-level WORKSPACE_ID.
     """
+    src = source_workspace_id or WORKSPACE_ID
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
-                f"{PLATFORM_URL}/workspaces/{WORKSPACE_ID}/delegations",
-                headers=_auth_headers_for_heartbeat(),
+                f"{PLATFORM_URL}/workspaces/{src}/delegations",
+                headers=_auth_headers_for_heartbeat(src),
             )
             if resp.status_code != 200:
                 return f"Error: failed to check delegations ({resp.status_code})"
@@ -313,7 +360,11 @@ async def tool_check_task_status(workspace_id: str, task_id: str) -> str:
         return f"Error checking delegations: {e}"
 
 
-async def _upload_chat_files(client: httpx.AsyncClient, paths: list[str]) -> tuple[list[dict], str | None]:
+async def _upload_chat_files(
+    client: httpx.AsyncClient,
+    paths: list[str],
+    workspace_id: str | None = None,
+) -> tuple[list[dict], str | None]:
     """Upload local file paths through /workspaces/<self>/chat/uploads.
 
     The platform stages each upload under /workspace/.molecule/chat-uploads
@@ -353,11 +404,12 @@ async def _upload_chat_files(client: httpx.AsyncClient, paths: list[str]) -> tup
         if not mime_type:
             mime_type = "application/octet-stream"
         files_payload.append(("files", (os.path.basename(p), data, mime_type)))
+    target_workspace_id = (workspace_id or "").strip() or WORKSPACE_ID
     try:
         resp = await client.post(
-            f"{PLATFORM_URL}/workspaces/{WORKSPACE_ID}/chat/uploads",
+            f"{PLATFORM_URL}/workspaces/{target_workspace_id}/chat/uploads",
             files=files_payload,
-            headers=_auth_headers_for_heartbeat(),
+            headers=_auth_headers_for_heartbeat(target_workspace_id),
         )
     except Exception as e:
         return [], f"Error uploading attachments: {e}"
@@ -373,7 +425,11 @@ async def _upload_chat_files(client: httpx.AsyncClient, paths: list[str]) -> tup
     return uploaded, None
 
 
-async def tool_send_message_to_user(message: str, attachments: list[str] | None = None) -> str:
+async def tool_send_message_to_user(
+    message: str,
+    attachments: list[str] | None = None,
+    workspace_id: str | None = None,
+) -> str:
     """Send a message directly to the user's canvas chat via WebSocket.
 
     Args:
@@ -388,21 +444,32 @@ async def tool_send_message_to_user(message: str, attachments: list[str] | None 
             Examples:
               attachments=["/tmp/build-output.zip"]
               attachments=["/workspace/report.pdf", "/workspace/data.csv"]
+        workspace_id: Optional. When the agent is registered in MULTIPLE
+            workspaces (external multi-workspace MCP path), this
+            selects which workspace's chat to deliver the message to —
+            should match the ``arrival_workspace_id`` of the inbound
+            message you're replying to so the user sees the reply in
+            the same canvas they typed in. Single-workspace agents
+            omit this; the message routes to the only registered
+            workspace.
     """
     if not message:
         return "Error: message is required"
+    target_workspace_id = (workspace_id or "").strip() or WORKSPACE_ID
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
-            uploaded, upload_err = await _upload_chat_files(client, attachments or [])
+            uploaded, upload_err = await _upload_chat_files(
+                client, attachments or [], workspace_id=target_workspace_id,
+            )
             if upload_err:
                 return upload_err
             payload: dict = {"message": message}
             if uploaded:
                 payload["attachments"] = uploaded
             resp = await client.post(
-                f"{PLATFORM_URL}/workspaces/{WORKSPACE_ID}/notify",
+                f"{PLATFORM_URL}/workspaces/{target_workspace_id}/notify",
                 json=payload,
-                headers=_auth_headers_for_heartbeat(),
+                headers=_auth_headers_for_heartbeat(target_workspace_id),
             )
             if resp.status_code == 200:
                 if uploaded:
@@ -413,25 +480,68 @@ async def tool_send_message_to_user(message: str, attachments: list[str] | None 
         return f"Error sending message: {e}"
 
 
-async def tool_list_peers() -> str:
-    """List all workspaces this agent can communicate with."""
-    peers, diagnostic = await get_peers_with_diagnostic()
-    if not peers:
-        if diagnostic is not None:
-            # Non-trivial empty: auth failure / 404 / 5xx / network — surface
-            # the actual reason so the user/agent doesn't have to guess. #2397.
-            return f"No peers found. {diagnostic}"
+async def tool_list_peers(source_workspace_id: str | None = None) -> str:
+    """List all workspaces this agent can communicate with.
+
+    Behavior:
+        - ``source_workspace_id`` set → list peers of that one workspace.
+        - Unset, single-workspace mode → list peers of WORKSPACE_ID
+          (the legacy path, unchanged).
+        - Unset, multi-workspace mode (MOLECULE_WORKSPACES populated) →
+          aggregate across every registered workspace, prefixing each
+          peer with its source so the agent / user can see the full peer
+          surface in one call.
+
+    Side-effect: populates ``_peer_to_source`` so subsequent
+    ``tool_delegate_task(target)`` auto-routes through the correct
+    sending workspace without the agent needing ``source_workspace_id``.
+    """
+    sources: list[str]
+    aggregate = False
+    if source_workspace_id:
+        sources = [source_workspace_id]
+    else:
+        registered = list_registered_workspaces()
+        if len(registered) > 1:
+            sources = registered
+            aggregate = True
+        else:
+            sources = [WORKSPACE_ID]
+
+    all_peers: list[tuple[str, dict]] = []  # (source, peer_record)
+    diagnostics: list[tuple[str, str]] = []  # (source, diagnostic)
+    for src in sources:
+        peers, diagnostic = await get_peers_with_diagnostic(source_workspace_id=src)
+        if peers:
+            for p in peers:
+                all_peers.append((src, p))
+        elif diagnostic is not None:
+            diagnostics.append((src, diagnostic))
+
+    if not all_peers:
+        if diagnostics:
+            joined = "; ".join(f"[{src[:8]}] {d}" for src, d in diagnostics)
+            return f"No peers found. {joined}"
         return (
             "You have no peers in the platform registry. "
             "(No parent, no children, no siblings registered.)"
         )
+
     lines = []
-    for p in peers:
+    for src, p in all_peers:
         status = p.get("status", "unknown")
         role = p.get("role", "")
+        peer_id = p["id"]
         # Cache name for use in delegate_task
-        _peer_names[p["id"]] = p["name"]
-        lines.append(f"- {p['name']} (ID: {p['id']}, status: {status}, role: {role})")
+        _peer_names[peer_id] = p["name"]
+        # Cache the source workspace so tool_delegate_task auto-routes
+        _peer_to_source[peer_id] = src
+        if aggregate:
+            lines.append(
+                f"- {p['name']} (ID: {peer_id}, status: {status}, role: {role}, via: {src[:8]})"
+            )
+        else:
+            lines.append(f"- {p['name']} (ID: {peer_id}, status: {status}, role: {role})")
     return "\n".join(lines)
 
 
@@ -559,9 +669,10 @@ async def tool_chat_history(peer_id: str, limit: int = 20, before_ts: str = "") 
 
     Hits ``/workspaces/<self>/activity?peer_id=<peer>&limit=<N>``
     against the workspace-server, which returns activity rows where
-    this workspace is either the sender (``source_id=peer``) or the
-    recipient (``target_id=peer``) of an A2A turn — both sides of the
-    conversation in chronological order.
+    the peer is either the sender (``source_id=peer`` — they sent us
+    the message) or the recipient (``target_id=peer`` — we sent to
+    them) of an A2A turn — both sides of the conversation in
+    chronological order.
 
     Args:
         peer_id: The other workspace's UUID. Same value the agent

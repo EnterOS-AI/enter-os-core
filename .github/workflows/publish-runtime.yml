@@ -327,13 +327,19 @@ jobs:
             echo "::error::publish job did not expose a version output — cascade cannot fan out"
             exit 1
           fi
-          # Source of truth: manifest.json workspace_templates (PR #2536 pruned
-          # to 4 actively-supported runtimes: claude-code, hermes, openclaw, codex).
-          # Removed langgraph/crewai/autogen/deepagents/gemini-cli (deprecated, no
-          # shipping images); added codex (had been missing since #2512).
-          # Long-term: derive this list from manifest.json so the cascade can't
-          # drift again — tracked in RFC #388 as a Phase-1 invariant.
-          TEMPLATES="claude-code hermes openclaw codex"
+          # All 9 active workspace template repos. The PR #2536 pruning
+          # ("deprecated, no shipping images") was empirically wrong:
+          # continuous-synth-e2e.yml defaults to langgraph as its primary
+          # canary (line 44), and every excluded template had successful
+          # publish-image runs as of 2026-05-03 — none were dormant.
+          # Symptom of the prune: today's a2a-sdk strict-mode fix
+          # (#2566 / commit e1628c4) cascaded to 4 templates but never
+          # reached langgraph, so the synth-E2E correctly canary'd a fix
+          # that had landed but not deployed. Re-added the 5 templates.
+          # Long-term: derive this list from manifest.json so cascade
+          # scope can't drift from E2E scope — tracked in RFC #388 as a
+          # Phase-1 invariant.
+          TEMPLATES="claude-code hermes openclaw codex langgraph crewai autogen deepagents gemini-cli"
           FAILED=""
           for tpl in $TEMPLATES; do
             REPO="Molecule-AI/molecule-ai-workspace-template-$tpl"

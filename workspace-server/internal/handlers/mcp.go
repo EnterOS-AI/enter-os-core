@@ -83,6 +83,12 @@ type mcpTool struct {
 type MCPHandler struct {
 	database    *sql.DB
 	broadcaster *events.Broadcaster
+
+	// memv2 is the v2 memory plugin wiring (RFC #2728). nil-safe:
+	// every v2 tool calls memoryV2Available() first and returns a
+	// clear error rather than crashing when the operator hasn't set
+	// MEMORY_PLUGIN_URL.
+	memv2 *memoryV2Deps
 }
 
 // NewMCPHandler wires the handler to db and broadcaster.
@@ -215,6 +221,76 @@ var mcpAllTools = []mcpTool{
 					"description": "Filter by scope (empty returns LOCAL + TEAM; GLOBAL is blocked)",
 				},
 			},
+		},
+	},
+
+	// ─────────────────────────────────────────────────────────────────
+	// v2 memory tools (RFC #2728). Coexist with legacy commit_memory /
+	// recall_memory; PR-6 aliases the legacy names. Surface here so
+	// agents calling tools/list see them when MEMORY_PLUGIN_URL is
+	// configured (handlers no-op cleanly when it isn't).
+	// ─────────────────────────────────────────────────────────────────
+	{
+		Name:        "commit_memory_v2",
+		Description: "Save a memory to a namespace. Defaults to your own workspace. Use list_writable_namespaces to discover what else you can write to. Server applies SAFE-T1201 redaction before storage.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"content":    map[string]interface{}{"type": "string"},
+				"namespace":  map[string]interface{}{"type": "string"},
+				"kind":       map[string]interface{}{"type": "string", "enum": []string{"fact", "summary", "checkpoint"}},
+				"expires_at": map[string]interface{}{"type": "string", "description": "RFC3339"},
+				"pin":        map[string]interface{}{"type": "boolean"},
+			},
+			"required": []string{"content"},
+		},
+	},
+	{
+		Name:        "search_memory",
+		Description: "Search memories across one or more namespaces. Empty namespaces = search everything readable. Server applies ACL intersection before querying.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query":      map[string]interface{}{"type": "string"},
+				"namespaces": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+				"kinds":      map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string", "enum": []string{"fact", "summary", "checkpoint"}}},
+				"limit":      map[string]interface{}{"type": "integer"},
+			},
+		},
+	},
+	{
+		Name:        "commit_summary",
+		Description: "Save an end-of-session summary. Same shape as commit_memory_v2 but kind=summary and a 30-day default TTL.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"content":    map[string]interface{}{"type": "string"},
+				"namespace":  map[string]interface{}{"type": "string"},
+				"expires_at": map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"content"},
+		},
+	},
+	{
+		Name:        "list_writable_namespaces",
+		Description: "List the namespaces this workspace can write to.",
+		InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+	},
+	{
+		Name:        "list_readable_namespaces",
+		Description: "List the namespaces this workspace can read from.",
+		InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+	},
+	{
+		Name:        "forget_memory",
+		Description: "Delete a memory by id. Only memories in namespaces you can write to can be forgotten.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"memory_id": map[string]interface{}{"type": "string"},
+				"namespace": map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"memory_id"},
 		},
 	},
 }
@@ -363,6 +439,14 @@ func (h *MCPHandler) dispatchRPC(ctx context.Context, workspaceID string, req mc
 // Tool dispatch
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Dispatch is the public entry point external code (tests, future
+// out-of-package callers) uses to invoke a tool by name. Forwards
+// to the unexported dispatch so existing in-package call sites
+// stay unchanged.
+func (h *MCPHandler) Dispatch(ctx context.Context, workspaceID, toolName string, args map[string]interface{}) (string, error) {
+	return h.dispatch(ctx, workspaceID, toolName, args)
+}
+
 func (h *MCPHandler) dispatch(ctx context.Context, workspaceID, toolName string, args map[string]interface{}) (string, error) {
 	switch toolName {
 	case "list_peers":
@@ -381,6 +465,22 @@ func (h *MCPHandler) dispatch(ctx context.Context, workspaceID, toolName string,
 		return h.toolCommitMemory(ctx, workspaceID, args)
 	case "recall_memory":
 		return h.toolRecallMemory(ctx, workspaceID, args)
+
+	// v2 memory tools (RFC #2728). PR-6 will alias the legacy names to
+	// these; until then they are independent surfaces.
+	case "commit_memory_v2":
+		return h.toolCommitMemoryV2(ctx, workspaceID, args)
+	case "search_memory":
+		return h.toolSearchMemory(ctx, workspaceID, args)
+	case "commit_summary":
+		return h.toolCommitSummary(ctx, workspaceID, args)
+	case "list_writable_namespaces":
+		return h.toolListWritableNamespaces(ctx, workspaceID, args)
+	case "list_readable_namespaces":
+		return h.toolListReadableNamespaces(ctx, workspaceID, args)
+	case "forget_memory":
+		return h.toolForgetMemory(ctx, workspaceID, args)
+
 	default:
 		return "", fmt.Errorf("unknown tool: %s", toolName)
 	}

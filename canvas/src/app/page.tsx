@@ -54,7 +54,7 @@ export default function Home() {
   if (hydrating) {
     return (
       <div className="fixed inset-0 flex items-center justify-center bg-surface">
-        <div className="flex flex-col items-center gap-3">
+        <div role="status" aria-live="polite" className="flex flex-col items-center gap-3">
           <Spinner size="lg" />
           <span className="text-xs text-ink-soft">Loading canvas...</span>
         </div>

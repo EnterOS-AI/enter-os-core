@@ -293,7 +293,7 @@ export function OrgImportPreflightModal({
           <button
             type="button"
             onClick={onCancel}
-            className="px-3 py-1.5 text-[11px] rounded bg-surface-card hover:bg-surface-card text-ink-mid"
+            className="px-3 py-1.5 text-[11px] rounded bg-surface-card hover:bg-surface-elevated hover:text-ink text-ink-mid transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
           >
             Cancel
           </button>
@@ -308,7 +308,7 @@ export function OrgImportPreflightModal({
               type="button"
               onClick={onProceed}
               disabled={!canProceed}
-              className="px-4 py-1.5 text-[11px] font-semibold rounded bg-accent-strong hover:bg-accent text-white disabled:bg-surface-card disabled:text-white-soft disabled:cursor-not-allowed"
+              className="px-4 py-1.5 text-[11px] font-semibold rounded bg-accent hover:bg-accent-strong text-white disabled:bg-surface-card disabled:text-white-soft disabled:cursor-not-allowed"
             >
               Import
             </button>
@@ -428,7 +428,7 @@ function StrictEnvRow({
             type="button"
             onClick={() => onSave(envKey)}
             disabled={d?.saving || !d?.value.trim()}
-            className="px-2 py-1 text-[10px] rounded bg-accent-strong hover:bg-accent text-white disabled:opacity-40 disabled:cursor-not-allowed"
+            className="px-2 py-1 text-[10px] rounded bg-accent hover:bg-accent-strong text-white disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {d?.saving ? "…" : "Save"}
           </button>
@@ -520,7 +520,7 @@ function AnyOfEnvGroup({
                     type="button"
                     onClick={() => onSave(m)}
                     disabled={d?.saving || !d?.value.trim()}
-                    className="px-2 py-1 text-[10px] rounded bg-accent-strong hover:bg-accent text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="px-2 py-1 text-[10px] rounded bg-accent hover:bg-accent-strong text-white disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     {d?.saving ? "…" : "Save"}
                   </button>

@@ -155,18 +155,31 @@ describe("SearchDialog — keyboard accessibility", () => {
     expect(selectNode).not.toHaveBeenCalled();
   });
 
-  it("typing a new query resets focusedIndex to -1", () => {
+  it("typing a query that matches auto-highlights the first result", () => {
+    // Replaces the older "resets to -1" assertion. New behavior: a query
+    // with at least one match pins the highlight to row 0 so Enter picks
+    // a result instead of being a no-op. Empty-query case is covered by
+    // "Enter at focusedIndex=-1 does not select anything" above.
+    render(<SearchDialog />);
+    const input = screen.getByRole("combobox");
+    fireEvent.change(input, { target: { value: "Alpha" } });
+    const options = screen.getAllByRole("option");
+    expect(options[0].getAttribute("aria-selected")).toBe("true");
+    // Enter on the auto-highlighted match should select it without
+    // needing a manual ArrowDown first.
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(selectNode).toHaveBeenCalledWith("ws-1");
+  });
+
+  it("typing a query that matches NOTHING resets focusedIndex to -1", () => {
     render(<SearchDialog />);
     const input = screen.getByRole("combobox");
     fireEvent.keyDown(input, { key: "ArrowDown" }); // focusedIndex → 0
-    // Verify selection before reset
-    expect(screen.getAllByRole("option")[0].getAttribute("aria-selected")).toBe("true");
-    // Change query — triggers the useEffect that resets focusedIndex
-    fireEvent.change(input, { target: { value: "Alpha" } });
-    // After reset all options must have aria-selected="false"
-    screen.getAllByRole("option").forEach((opt) => {
-      expect(opt.getAttribute("aria-selected")).toBe("false");
-    });
+    fireEvent.change(input, { target: { value: "zzz-no-match" } });
+    // No options remain, so nothing to assert on aria-selected directly —
+    // the empty-state message takes over. But Enter should be a no-op.
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(selectNode).not.toHaveBeenCalled();
   });
 
   it("aria-activedescendant matches the focused option's id", () => {

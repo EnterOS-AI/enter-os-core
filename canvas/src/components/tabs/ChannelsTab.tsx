@@ -365,8 +365,12 @@ export function ChannelsTab({ workspaceId }: Props) {
             <p className="text-[10px] text-bad">{formError}</p>
           )}
           <button
+            type="button"
             onClick={handleCreate}
-            className="w-full text-xs py-1.5 rounded bg-accent-strong hover:bg-accent text-white transition"
+            // Was bg-accent-strong hover:bg-accent — accent is the
+            // LIGHTER variant; same AA contrast trap fixed in
+            // ScheduleTab/MemoryTab/OnboardingWizard.
+            className="w-full text-xs py-1.5 rounded bg-accent hover:bg-accent-strong text-white transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
           >
             Connect Channel
           </button>

@@ -48,9 +48,9 @@ on:
   workflow_dispatch:
     inputs:
       runtime:
-        description: "Runtime to test (hermes | claude-code | langgraph)"
+        description: "Runtime to test (claude-code [default, MiniMax] | hermes [OpenAI] | langgraph [OpenAI])"
         required: false
-        default: "hermes"
+        default: "claude-code"
       keep_org:
         description: "Skip teardown for debugging (only use via manual dispatch!)"
         required: false
@@ -83,11 +83,32 @@ jobs:
       # retrieval + teardown. Configure in
       # Settings → Secrets and variables → Actions → Repository secrets.
       MOLECULE_ADMIN_TOKEN: ${{ secrets.MOLECULE_STAGING_ADMIN_TOKEN }}
-      # OpenAI key for workspace LLM calls (section 8 A2A). Without it,
-      # Hermes runtime crashes at boot with "No provider API key found".
-      # Configure at Settings → Secrets → Actions → MOLECULE_STAGING_OPENAI_KEY.
+      # MiniMax is the PRIMARY LLM auth path post-2026-05-04. Switched
+      # from hermes+OpenAI default after #2578 (the staging OpenAI key
+      # account went over quota and stayed dead for 36+ hours, taking
+      # the full-lifecycle E2E red on every provisioning-critical push).
+      # claude-code template's `minimax` provider routes
+      # ANTHROPIC_BASE_URL to api.minimax.io/anthropic and reads
+      # MINIMAX_API_KEY at boot — separate billing account so an
+      # OpenAI quota collapse no longer wedges the gate. Mirrors the
+      # canary-staging.yml + continuous-synth-e2e.yml migrations.
+      E2E_MINIMAX_API_KEY: ${{ secrets.MOLECULE_STAGING_MINIMAX_API_KEY }}
+      # Direct-Anthropic alternative for operators who don't want to
+      # set up a MiniMax account (priority below MiniMax — first
+      # non-empty wins in test_staging_full_saas.sh's secrets-injection
+      # block). See #2578 PR comment for the rationale.
+      E2E_ANTHROPIC_API_KEY: ${{ secrets.MOLECULE_STAGING_ANTHROPIC_API_KEY }}
+      # OpenAI fallback — kept wired so an operator-dispatched run with
+      # E2E_RUNTIME=hermes or =langgraph via workflow_dispatch can still
+      # exercise the OpenAI path.
       E2E_OPENAI_API_KEY: ${{ secrets.MOLECULE_STAGING_OPENAI_KEY }}
-      E2E_RUNTIME: ${{ github.event.inputs.runtime || 'hermes' }}
+      E2E_RUNTIME: ${{ github.event.inputs.runtime || 'claude-code' }}
+      # Pin the model when running on the default claude-code path —
+      # the per-runtime default ("sonnet") routes to direct Anthropic
+      # and defeats the cost saving. Operators can override via the
+      # workflow_dispatch flow (no input wired here yet — runtime
+      # override is enough for ad-hoc).
+      E2E_MODEL_SLUG: ${{ github.event.inputs.runtime == 'hermes' && 'openai/gpt-4o' || github.event.inputs.runtime == 'langgraph' && 'openai:gpt-4o' || 'MiniMax-M2.7-highspeed' }}
       E2E_RUN_ID: "${{ github.run_id }}-${{ github.run_attempt }}"
       E2E_KEEP_ORG: ${{ github.event.inputs.keep_org && '1' || '0' }}
 
@@ -102,13 +123,45 @@ jobs:
           fi
           echo "Admin token present ✓"
 
-      - name: Verify OpenAI key present
+      - name: Verify LLM key present
         run: |
-          if [ -z "$E2E_OPENAI_API_KEY" ]; then
-            echo "::error::MOLECULE_STAGING_OPENAI_KEY secret not set — workspaces will fail at boot with 'No provider API key found'"
+          # Per-runtime key check — claude-code uses MiniMax; hermes /
+          # langgraph (operator-dispatched only) use OpenAI. Hard-fail
+          # rather than soft-skip per #2578's lesson — empty key
+          # silently falls through to the wrong SECRETS_JSON branch and
+          # produces a confusing auth error 5 min later instead of the
+          # clean "secret missing" message at the top.
+          case "${E2E_RUNTIME}" in
+            claude-code)
+              # Either MiniMax OR direct-Anthropic works — first
+              # non-empty wins in the test script's secrets-injection
+              # priority chain.
+              if [ -n "${E2E_MINIMAX_API_KEY:-}" ]; then
+                required_secret_name="MOLECULE_STAGING_MINIMAX_API_KEY"
+                required_secret_value="${E2E_MINIMAX_API_KEY}"
+              elif [ -n "${E2E_ANTHROPIC_API_KEY:-}" ]; then
+                required_secret_name="MOLECULE_STAGING_ANTHROPIC_API_KEY"
+                required_secret_value="${E2E_ANTHROPIC_API_KEY}"
+              else
+                required_secret_name="MOLECULE_STAGING_MINIMAX_API_KEY or MOLECULE_STAGING_ANTHROPIC_API_KEY"
+                required_secret_value=""
+              fi
+              ;;
+            langgraph|hermes)
+              required_secret_name="MOLECULE_STAGING_OPENAI_KEY"
+              required_secret_value="${E2E_OPENAI_API_KEY:-}"
+              ;;
+            *)
+              echo "::warning::Unknown E2E_RUNTIME='${E2E_RUNTIME}' — skipping LLM-key check"
+              required_secret_name=""
+              required_secret_value="present"
+              ;;
+          esac
+          if [ -n "$required_secret_name" ] && [ -z "$required_secret_value" ]; then
+            echo "::error::${required_secret_name} secret not set for runtime=${E2E_RUNTIME} — workspaces will fail at boot with 'No provider API key found'"
             exit 2
           fi
-          echo "OpenAI key present ✓ (len=${#E2E_OPENAI_API_KEY})"
+          echo "LLM key present ✓ (runtime=${E2E_RUNTIME}, key=${required_secret_name}, len=${#required_secret_value})"
 
       - name: CP staging health preflight
         run: |
@@ -164,11 +217,27 @@ jobs:
                         and o.get('instance_status') not in ('purged',)]
           print('\n'.join(candidates))
           " 2>/dev/null)
+          # Per-slug verified DELETE (was `>/dev/null || true` — see
+          # molecule-controlplane#420). Surface non-2xx as a workflow
+          # warning naming the leaked slug; don't exit 1 (sweeper is
+          # the safety net within ~45 min).
+          leaks=()
           for slug in $orgs; do
             echo "Safety-net teardown: $slug"
-            curl -sS -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
+            code=$(curl -sS -o /tmp/saas-cleanup.out -w "%{http_code}" \
+              -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
               -H "Authorization: Bearer $ADMIN_TOKEN" \
               -H "Content-Type: application/json" \
-              -d "{\"confirm\":\"$slug\"}" >/dev/null || true
+              -d "{\"confirm\":\"$slug\"}" \
+              || echo "000")
+            if [ "$code" = "200" ] || [ "$code" = "204" ]; then
+              echo "[teardown] deleted $slug (HTTP $code)"
+            else
+              echo "::warning::saas teardown for $slug returned HTTP $code — sweep-stale-e2e-orgs will catch it within ~45 min. Body: $(head -c 300 /tmp/saas-cleanup.out 2>/dev/null)"
+              leaks+=("$slug")
+            fi
           done
+          if [ ${#leaks[@]} -gt 0 ]; then
+            echo "::warning::saas teardown left ${#leaks[@]} leak(s): ${leaks[*]}"
+          fi
           exit 0
