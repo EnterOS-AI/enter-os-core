@@ -8,10 +8,8 @@ breaks multi-workspace doesn't get hidden in a 1000-line test file.
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 

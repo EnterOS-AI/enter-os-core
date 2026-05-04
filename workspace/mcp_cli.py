@@ -521,7 +521,10 @@ def main() -> None:
         for wsid, tok in workspaces:
             register_workspace_token(wsid, tok)
     except ImportError:
-        pass
+        # Older installs that don't yet ship register_workspace_token —
+        # multi-workspace resolution silently degrades to the legacy
+        # single-token path; single-workspace operators see no change.
+        logger.debug("platform_auth.register_workspace_token unavailable; skipping registry populate")
 
     # Standalone-mode register + heartbeat. Skipped via env var so an
     # in-container caller (which has its own heartbeat loop) can reuse
