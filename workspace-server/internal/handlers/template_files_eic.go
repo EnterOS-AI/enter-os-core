@@ -204,3 +204,116 @@ func writeFileViaEIC(ctx context.Context, instanceID, runtime, relPath string, c
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
+
+// readFileViaEIC reads a single file from the workspace EC2 at the
+// absolute path that resolveWorkspaceFilePath computes. Mirrors
+// writeFileViaEIC end-to-end (ephemeral keypair, EIC tunnel, ssh) so
+// canvas's Config tab can GET back what it just PUT. Pre-fix the GET
+// path (templates.go ReadFile) only handled local Docker containers
+// + a host-side template fallback; SaaS workspaces (EC2-per-workspace)
+// always 404'd because neither handles their on-EC2 layout.
+//
+// Returns ("", os.ErrNotExist) when the remote path doesn't exist so
+// the handler can map it to HTTP 404 cleanly. Other errors propagate.
+func readFileViaEIC(ctx context.Context, instanceID, runtime, relPath string) ([]byte, error) {
+	if instanceID == "" {
+		return nil, fmt.Errorf("workspace has no instance_id — not a SaaS EC2 workspace")
+	}
+	absPath, err := resolveWorkspaceFilePath(runtime, relPath)
+	if err != nil {
+		return nil, fmt.Errorf("invalid path: %w", err)
+	}
+
+	osUser := os.Getenv("WORKSPACE_EC2_OS_USER")
+	if osUser == "" {
+		osUser = "ubuntu"
+	}
+	region := os.Getenv("AWS_REGION")
+	if region == "" {
+		region = "us-east-2"
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, eicFileWriteTimeout)
+	defer cancel()
+
+	keyDir, err := os.MkdirTemp("", "molecule-fileread-*")
+	if err != nil {
+		return nil, fmt.Errorf("keydir mkdir: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(keyDir) }()
+	keyPath := keyDir + "/id"
+	if out, kerr := exec.CommandContext(ctx, "ssh-keygen",
+		"-t", "ed25519", "-f", keyPath, "-N", "", "-q",
+		"-C", "molecule-fileread",
+	).CombinedOutput(); kerr != nil {
+		return nil, fmt.Errorf("ssh-keygen: %w (%s)", kerr, strings.TrimSpace(string(out)))
+	}
+	pubKey, err := os.ReadFile(keyPath + ".pub")
+	if err != nil {
+		return nil, fmt.Errorf("read pubkey: %w", err)
+	}
+
+	if err := sendSSHPublicKey(ctx, region, instanceID, osUser, strings.TrimSpace(string(pubKey))); err != nil {
+		return nil, fmt.Errorf("send-ssh-public-key: %w", err)
+	}
+
+	localPort, err := pickFreePort()
+	if err != nil {
+		return nil, fmt.Errorf("pick free port: %w", err)
+	}
+	tunnel := openTunnelCmd(eicSSHOptions{
+		InstanceID:     instanceID,
+		OSUser:         osUser,
+		Region:         region,
+		LocalPort:      localPort,
+		PrivateKeyPath: keyPath,
+	})
+	tunnel.Env = os.Environ()
+	if err := tunnel.Start(); err != nil {
+		return nil, fmt.Errorf("open-tunnel start: %w", err)
+	}
+	defer func() {
+		if tunnel.Process != nil {
+			_ = tunnel.Process.Kill()
+		}
+		_ = tunnel.Wait()
+	}()
+	if err := waitForPort(ctx, "127.0.0.1", localPort, 10*time.Second); err != nil {
+		return nil, fmt.Errorf("tunnel never listened: %w", err)
+	}
+
+	// `sudo -n cat`: /configs is root-owned by cloud-init (same reason
+	// writeFileViaEIC needs sudo to install). The path is built from a
+	// validated map + Clean(), so no user-controlled string reaches the
+	// shell here. `2>/dev/null` swallows `cat: ...: No such file` so
+	// the missing-file case returns empty stdout + non-zero exit, which
+	// we translate to os.ErrNotExist below.
+	sshCmd := exec.CommandContext(ctx, "ssh",
+		"-i", keyPath,
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "ServerAliveInterval=15",
+		"-p", fmt.Sprintf("%d", localPort),
+		fmt.Sprintf("%s@127.0.0.1", osUser),
+		fmt.Sprintf("sudo -n cat %s 2>/dev/null", shellQuote(absPath)),
+	)
+	sshCmd.Env = os.Environ()
+	var stdout, stderr bytes.Buffer
+	sshCmd.Stdout = &stdout
+	sshCmd.Stderr = &stderr
+	runErr := sshCmd.Run()
+	out := stdout.Bytes()
+	if runErr != nil {
+		// `cat` returns 1 on missing file; with 2>/dev/null we have no
+		// stderr distinguisher. Treat empty-stdout + non-zero exit as
+		// not-found rather than a tunnel/auth error (those usually
+		// produce stderr from ssh itself, not from the remote command).
+		if len(out) == 0 && stderr.Len() == 0 {
+			return nil, os.ErrNotExist
+		}
+		return nil, fmt.Errorf("ssh cat: %w (%s)", runErr, strings.TrimSpace(stderr.String()))
+	}
+	log.Printf("readFileViaEIC: ws instance=%s runtime=%s read %d bytes ← %s",
+		instanceID, runtime, len(out), absPath)
+	return out, nil
+}
