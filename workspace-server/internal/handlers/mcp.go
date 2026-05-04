@@ -439,6 +439,14 @@ func (h *MCPHandler) dispatchRPC(ctx context.Context, workspaceID string, req mc
 // Tool dispatch
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Dispatch is the public entry point external code (tests, future
+// out-of-package callers) uses to invoke a tool by name. Forwards
+// to the unexported dispatch so existing in-package call sites
+// stay unchanged.
+func (h *MCPHandler) Dispatch(ctx context.Context, workspaceID, toolName string, args map[string]interface{}) (string, error) {
+	return h.dispatch(ctx, workspaceID, toolName, args)
+}
+
 func (h *MCPHandler) dispatch(ctx context.Context, workspaceID, toolName string, args map[string]interface{}) (string, error) {
 	switch toolName {
 	case "list_peers":
