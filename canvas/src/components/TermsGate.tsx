@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { PLATFORM_URL } from "@/lib/api";
 
 // TermsGate blocks the page it wraps until the user has accepted the
@@ -73,39 +73,72 @@ export function TermsGate({ children }: { children: React.ReactNode }) {
     }
   };
 
+  // Move focus to the "I agree" button when the modal opens (WCAG 2.4.3).
+  // The dialog is a hard gate — no Esc dismiss — so we don't need a focus
+  // trap loop, just a one-shot focus move into the dialog.
+  const agreeButtonRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (status !== "pending") return;
+    const raf = requestAnimationFrame(() => agreeButtonRef.current?.focus());
+    return () => cancelAnimationFrame(raf);
+  }, [status]);
+
   return (
     <>
       {children}
       {status === "pending" && (
-        <div aria-hidden="true" className="fixed inset-0 z-50 flex items-center justify-center bg-surface/80 backdrop-blur-sm">
+        // Backdrop is decorative — does NOT carry aria-hidden anymore.
+        // The earlier version put aria-hidden="true" on this wrapper,
+        // which hid the dialog AND its descendants from screen readers,
+        // making the entire terms-acceptance flow invisible to AT users.
+        // Backdrop click intentionally does nothing — this is a hard
+        // gate.
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface/80 backdrop-blur-sm">
           <div
             role="dialog"
             aria-modal="true"
             aria-labelledby="terms-dialog-title"
+            aria-describedby="terms-dialog-body"
             className="mx-4 max-w-lg rounded-lg border border-line bg-surface-sunken p-6 shadow-xl"
           >
             <h2 id="terms-dialog-title" className="text-lg font-semibold text-ink">Terms &amp; conditions</h2>
-            <p className="mt-3 text-sm text-ink-mid">
-              Before you create an organization, please review our{" "}
-              <a href="/legal/terms" className="text-sky-400 underline" target="_blank" rel="noreferrer">
-                Terms of Service
-              </a>{" "}
-              and{" "}
-              <a href="/legal/privacy" className="text-sky-400 underline" target="_blank" rel="noreferrer">
-                Privacy Policy
-              </a>
-              . Click agree to continue.
-            </p>
-            <p className="mt-3 text-xs text-ink-soft">
-              By agreeing you acknowledge that workspace data is stored in AWS us-east-2 (Ohio, United States).
-            </p>
+            <div id="terms-dialog-body">
+              <p className="mt-3 text-sm text-ink-mid">
+                Before you create an organization, please review our{" "}
+                <a
+                  href="/legal/terms"
+                  className="text-accent underline underline-offset-2 hover:text-accent-strong focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 rounded-sm"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Terms of Service
+                </a>{" "}
+                and{" "}
+                <a
+                  href="/legal/privacy"
+                  className="text-accent underline underline-offset-2 hover:text-accent-strong focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 rounded-sm"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Privacy Policy
+                </a>
+                . Click agree to continue.
+              </p>
+              <p className="mt-3 text-xs text-ink-soft">
+                By agreeing you acknowledge that workspace data is stored in AWS us-east-2 (Ohio, United States).
+              </p>
+            </div>
             {error && <p role="alert" className="mt-3 text-sm text-bad">{error}</p>}
             <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"
+                ref={agreeButtonRef}
                 onClick={accept}
                 disabled={submitting}
-                className="rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+                // Hover goes DARKER, not lighter — emerald-500 on white
+                // text drops contrast below AA vs emerald-700. Same trap
+                // I fixed in ApprovalBanner + ConfirmDialog.
+                className="rounded bg-emerald-600 hover:bg-emerald-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-sunken"
               >
                 {submitting ? "Saving…" : "I agree"}
               </button>
