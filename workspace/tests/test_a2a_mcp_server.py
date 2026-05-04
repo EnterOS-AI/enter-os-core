@@ -171,9 +171,19 @@ def test_build_channel_notification_method_matches_claude_contract():
     assert payload["jsonrpc"] == "2.0"
 
 
-def test_build_channel_notification_content_is_message_text():
-    """`content` is what becomes the agent conversation turn —
-    pulled directly from the inbox message text."""
+def test_build_channel_notification_content_wraps_text_with_identity_and_reply_hint():
+    """`content` is what becomes the agent conversation turn — wrapped
+    with an identity header AND a reply-tool hint. The wrapping makes the
+    reply path self-documenting so the agent doesn't have to remember
+    which platform tool to call (per the cross-codepath fix shipped with
+    Molecule-AI/molecule-mcp-claude-channel#24).
+
+    Before this change `content == msg["text"]` and the agent had to
+    reach into meta + recall send_message_to_user / delegate_task on
+    every push. Now the conversation turn carries the identity inline
+    and a copy-pasteable reply call, so the model surfaces the right
+    routing without round-tripping through tool documentation each time.
+    """
     from a2a_mcp_server import _build_channel_notification
 
     payload = _build_channel_notification({
@@ -185,7 +195,14 @@ def test_build_channel_notification_content_is_message_text():
         "created_at": "2026-05-01T00:00:00Z",
     })
 
-    assert payload["params"]["content"] == "hello from canvas"
+    # Exact match — per `feedback_assert_exact_not_substring`, substring
+    # asserts pass for both correct formatting AND for "raw input echoed"
+    # regression. Only equality discriminates.
+    assert payload["params"]["content"] == (
+        "[from canvas user]\n"
+        "hello from canvas\n"
+        '↩ Reply: send_message_to_user({message: "..."})'
+    )
 
 
 def test_build_channel_notification_meta_carries_routing_fields():
@@ -235,7 +252,14 @@ def test_build_channel_notification_no_id_field():
 def test_build_channel_notification_handles_missing_fields_gracefully():
     """Some fields may be absent on edge-case messages (e.g. cursor
     bootstrapping with no created_at yet). Default to empty strings
-    so the wire shape stays valid JSON instead of crashing."""
+    so the wire shape stays valid JSON instead of crashing.
+
+    With an empty-kind payload the formatter falls through its
+    defensive default branch (kind not in _VALID_KINDS) and emits the
+    bare text — no header, no reply hint. This degrades gracefully
+    rather than emitting a "[from None]" header that would mislead the
+    receiving agent about who sent the empty payload.
+    """
     from a2a_mcp_server import _build_channel_notification
 
     payload = _build_channel_notification({})
@@ -245,6 +269,120 @@ def test_build_channel_notification_handles_missing_fields_gracefully():
     assert meta["activity_id"] == ""
     assert meta["peer_id"] == ""
     assert meta["kind"] == ""
+
+
+# ----- _format_channel_content: identity header + reply-tool hint ----------
+#
+# Pinned separately from _build_channel_notification so a regression in
+# the formatter surfaces with a tight failure message ("expected
+# delegate_task hint, got send_message_to_user") rather than buried in a
+# generic envelope-shape diff. Per `feedback_assert_exact_not_substring`,
+# all asserts pin exact strings.
+
+
+def test_format_channel_content_canvas_user_uses_send_message_to_user():
+    """canvas_user → reply via send_message_to_user (canvas WebSocket
+    push). Header omits peer_id since canvas messages don't carry one."""
+    from a2a_mcp_server import _format_channel_content
+
+    out = _format_channel_content(
+        text="what's the deploy status?",
+        kind="canvas_user",
+        peer_id="",
+    )
+    assert out == (
+        "[from canvas user]\n"
+        "what's the deploy status?\n"
+        '↩ Reply: send_message_to_user({message: "..."})'
+    )
+
+
+def test_format_channel_content_peer_agent_with_full_enrichment():
+    """peer_agent + name + role → friendly identity, delegate_task hint
+    with workspace_id arg pinned to the peer's UUID."""
+    from a2a_mcp_server import _format_channel_content
+
+    peer_uuid = "11111111-2222-3333-4444-555555555555"
+    out = _format_channel_content(
+        text="ping",
+        kind="peer_agent",
+        peer_id=peer_uuid,
+        peer_name="ops-agent",
+        peer_role="sre",
+    )
+    assert out == (
+        f"[from ops-agent (sre) · peer_id={peer_uuid}]\n"
+        "ping\n"
+        f'↩ Reply: delegate_task({{workspace_id: "{peer_uuid}", task: "..."}})'
+    )
+
+
+def test_format_channel_content_peer_agent_name_only():
+    """peer_agent + name (no role) → identity uses bare name. Catches
+    the regression where role-only or both-missing branches accidentally
+    print 'None' or '(undefined)' in the header."""
+    from a2a_mcp_server import _format_channel_content
+
+    peer_uuid = "11111111-2222-3333-4444-555555555555"
+    out = _format_channel_content(
+        text="ping",
+        kind="peer_agent",
+        peer_id=peer_uuid,
+        peer_name="ops-agent",
+    )
+    assert out.startswith(f"[from ops-agent · peer_id={peer_uuid}]\n")
+    assert "(None)" not in out
+    assert "(undefined)" not in out
+
+
+def test_format_channel_content_peer_agent_no_enrichment_falls_back():
+    """peer_agent without name/role (registry miss) → identity is
+    'peer-agent' and peer_id is still surfaced so the reply call has
+    a value to copy."""
+    from a2a_mcp_server import _format_channel_content
+
+    peer_uuid = "11111111-2222-3333-4444-555555555555"
+    out = _format_channel_content(
+        text="ping",
+        kind="peer_agent",
+        peer_id=peer_uuid,
+    )
+    assert out == (
+        f"[from peer-agent · peer_id={peer_uuid}]\n"
+        "ping\n"
+        f'↩ Reply: delegate_task({{workspace_id: "{peer_uuid}", task: "..."}})'
+    )
+
+
+def test_format_channel_content_unknown_kind_degrades_to_raw_text():
+    """Defensive default — _safe_meta_field already constrains kind to
+    _VALID_KINDS, so this branch is unreachable in practice. But if a
+    future kind is added to the allowlist before the formatter learns
+    about it, emitting raw text is better than crashing the push path."""
+    from a2a_mcp_server import _format_channel_content
+
+    assert _format_channel_content(
+        text="something", kind="future_kind", peer_id="",
+    ) == "something"
+
+
+def test_format_channel_content_preserves_multiline_text():
+    """Body text may contain newlines (multi-paragraph user prose,
+    code blocks). Content composition must not collapse or truncate
+    them — the agent's reply quality depends on seeing the full
+    inbound message."""
+    from a2a_mcp_server import _format_channel_content
+
+    multi = "first paragraph\n\nsecond paragraph\nstill second"
+    out = _format_channel_content(
+        text=multi, kind="canvas_user", peer_id="",
+    )
+    # Body sandwiched between header and hint, separated by single
+    # newlines. Body itself unchanged.
+    assert (
+        f"[from canvas user]\n{multi}\n"
+        '↩ Reply: send_message_to_user({message: "..."})'
+    ) == out
 
 
 # ----- Channel envelope enrichment (peer_name / peer_role / agent_card_url) ---
@@ -1088,7 +1226,16 @@ async def test_inbox_bridge_emits_channel_notification_to_writer():
 
         assert payload["jsonrpc"] == "2.0"
         assert payload["method"] == "notifications/claude/channel"
-        assert payload["params"]["content"] == "hello from peer"
+        # Content is wrapped with the identity header + reply hint —
+        # see _format_channel_content. The bridge test pins the full
+        # composition so a regression to "raw text only" surfaces here
+        # as well as in the per-formatter tests above.
+        assert payload["params"]["content"] == (
+            "[from peer-agent · peer_id=11111111-2222-3333-4444-555555555555]\n"
+            "hello from peer\n"
+            '↩ Reply: delegate_task({workspace_id: '
+            '"11111111-2222-3333-4444-555555555555", task: "..."})'
+        )
         meta = payload["params"]["meta"]
         assert meta["source"] == "molecule"
         assert meta["kind"] == "peer_agent"

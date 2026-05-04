@@ -458,14 +458,82 @@ def _build_channel_notification(msg: dict) -> dict:
             # endpoint to hit for capabilities lookup.
             meta["agent_card_url"] = _agent_card_url_for(safe_peer_id)
 
+    # Compose the conversation-turn text Claude actually sees. Header
+    # carries peer identity (name + role when registry-resolved, peer_id
+    # always); footer carries the exact reply-tool call shape so the
+    # model doesn't have to remember which tool to call or what args to
+    # pass. See _format_channel_content for the rationale + tradeoff on
+    # coupling display to behaviour. Mirrors the change shipped for the
+    # external channel-plugin path
+    # (Molecule-AI/molecule-mcp-claude-channel#24); the universal MCP
+    # path is the same display surface for in-workspace agents.
+    content = _format_channel_content(
+        text=msg.get("text", ""),
+        kind=meta["kind"],
+        peer_id=meta["peer_id"],
+        peer_name=meta.get("peer_name"),
+        peer_role=meta.get("peer_role"),
+    )
     return {
         "jsonrpc": "2.0",
         "method": _CHANNEL_NOTIFICATION_METHOD,
         "params": {
-            "content": msg.get("text", ""),
+            "content": content,
             "meta": meta,
         },
     }
+
+
+def _format_channel_content(
+    *,
+    text: str,
+    kind: str,
+    peer_id: str,
+    peer_name: str | None = None,
+    peer_role: str | None = None,
+) -> str:
+    """Prepend identity + append reply-tool example to the inbound text.
+
+    Why this couples display to behaviour: Claude Code surfaces the
+    notification's ``content`` as the conversation turn. Without context
+    in the text, the model has to remember (a) who sent the message,
+    (b) which tool to call to reply, (c) which args to pass. Putting it
+    in the turn itself makes the reply path self-documenting at the
+    cost of ~80 extra chars per push.
+
+    The reply-tool names live in the same module as the notification
+    builder so the ``feedback_doc_tool_alignment`` drift class can't bite:
+    a future tool-rename PR that misses this hint would also fail
+    ``test_format_channel_content_*`` below.
+
+    canvas_user → ``send_message_to_user({message: "..."})`` — pushed via
+    canvas WebSocket, lands in the user's chat panel.
+    peer_agent  → ``delegate_task({workspace_id: peer_id, task: "..."})``
+    — sends an A2A reply to the calling peer.
+    """
+    if kind == "canvas_user":
+        header = "[from canvas user]"
+        hint = '↩ Reply: send_message_to_user({message: "..."})'
+    elif kind == "peer_agent":
+        if peer_name and peer_role:
+            identity = f"{peer_name} ({peer_role})"
+        elif peer_name:
+            identity = peer_name
+        else:
+            identity = "peer-agent"
+        header = f"[from {identity} · peer_id={peer_id}]"
+        hint = (
+            f'↩ Reply: delegate_task({{workspace_id: "{peer_id}", '
+            f'task: "..."}})'
+        )
+    else:
+        # Defensive default — _safe_meta_field already constrains kind to
+        # _VALID_KINDS, so this branch is unreachable in practice. Emit
+        # the bare text rather than crash so a future kind value (added
+        # to the allowlist but not the formatter) degrades gracefully
+        # instead of breaking every push.
+        return text
+    return f"{header}\n{text}\n{hint}"
 
 
 # --- MCP Server (JSON-RPC over stdio) ---
