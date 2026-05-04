@@ -82,6 +82,7 @@ TOP_LEVEL_MODULES = {
     "preflight",
     "prompt",
     "runtime_wedge",
+    "secret_redactor",
     "shared_runtime",
     "smoke_mode",
     "transcript_auth",

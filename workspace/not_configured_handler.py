@@ -16,6 +16,8 @@ from typing import Awaitable, Callable
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from secret_redactor import redact_secrets
+
 
 def make_not_configured_handler(
     reason: str | None,
@@ -27,12 +29,24 @@ def make_not_configured_handler(
     stringified ``adapter.setup()`` exception. ``None`` falls back to a
     generic "adapter.setup() failed".
 
+    Secret redaction (issue molecule-core#2760): ``reason`` is run
+    through ``secret_redactor.redact_secrets`` once, when the handler
+    is built. If a future adapter author writes ``raise
+    RuntimeError(f"auth failed for {token}")``, the token is replaced
+    with ``<redacted-secret>`` BEFORE it lands in the response —
+    closes the structural leak path PR #2756 introduced. Per-request
+    hot path stays unchanged (one cached string, no re-redaction).
+
     The handler echoes the request's JSON-RPC ``id`` when present so a
     well-behaved JSON-RPC client can correlate the error to its request.
     Malformed bodies (non-JSON, missing id) get ``id: null`` per spec.
     """
 
-    fallback = reason or "adapter.setup() failed"
+    # Redact at handler-build time, not per-request, so the hot path
+    # stays a constant lookup. The fallback string can't carry secrets
+    # but we still pass it through redact_secrets() so a future change
+    # to the fallback can't accidentally introduce a leak.
+    fallback = redact_secrets(reason or "adapter.setup() failed")
 
     async def _handler(request: Request) -> JSONResponse:
         try:
