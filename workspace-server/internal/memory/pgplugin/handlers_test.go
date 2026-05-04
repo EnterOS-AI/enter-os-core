@@ -342,6 +342,46 @@ func TestCommitMemory_StoreError(t *testing.T) {
 	}
 }
 
+func TestCommitMemory_WithIDUpserts(t *testing.T) {
+	// Idempotency-key path. When body.id is set, the store must use
+	// the upsert SQL (INSERT ... ON CONFLICT DO UPDATE) so a re-run
+	// updates in place instead of inserting a new row.
+	db, mock := setupMockDB(t)
+	h := newTestHandler(t, db, nil)
+	mock.ExpectQuery("INSERT INTO memory_records.*ON CONFLICT").
+		WithArgs("fixed-id-1", "workspace:abc", "fact x", "fact", "agent",
+			sqlmock.AnyArg(), sqlmock.AnyArg(), false, sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "namespace"}).
+			AddRow("fixed-id-1", "workspace:abc"))
+	w := doRequest(h, "POST", "/v1/namespaces/workspace:abc/memories", contract.MemoryWrite{
+		ID:      "fixed-id-1",
+		Content: "fact x",
+		Kind:    contract.MemoryKindFact,
+		Source:  contract.MemorySourceAgent,
+	})
+	if w.Code != 201 {
+		t.Errorf("code = %d body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("upsert SQL not used: %v", err)
+	}
+}
+
+func TestCommitMemory_UpsertScanError(t *testing.T) {
+	db, mock := setupMockDB(t)
+	h := newTestHandler(t, db, nil)
+	mock.ExpectQuery("INSERT INTO memory_records.*ON CONFLICT").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}). // wrong shape
+								AddRow("x"))
+	w := doRequest(h, "POST", "/v1/namespaces/workspace:abc/memories", contract.MemoryWrite{
+		ID:      "fixed-id-1",
+		Content: "x", Kind: contract.MemoryKindFact, Source: contract.MemorySourceAgent,
+	})
+	if w.Code != 500 {
+		t.Errorf("code = %d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestCommitMemory_WithEmbedding(t *testing.T) {
 	db, mock := setupMockDB(t)
 	h := newTestHandler(t, db, nil)

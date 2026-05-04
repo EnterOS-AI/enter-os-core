@@ -129,7 +129,14 @@ type NamespacePatch struct {
 // `Content` MUST be pre-redacted by workspace-server (SAFE-T1201).
 // Plugins do not run additional redaction; the workspace-server is the
 // security perimeter.
+//
+// `ID` is an optional idempotency key. When supplied, the plugin MUST
+// treat the write as upsert keyed on this id so re-running the same
+// write does not duplicate. The backfill CLI passes the source row's
+// UUID here; production agent commits leave it empty and the plugin
+// generates a fresh UUID.
 type MemoryWrite struct {
+	ID          string                 `json:"id,omitempty"`
 	Content     string                 `json:"content"`
 	Kind        MemoryKind             `json:"kind"`
 	Source      MemorySource           `json:"source"`

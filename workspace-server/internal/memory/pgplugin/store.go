@@ -122,6 +122,45 @@ func (s *Store) CommitMemory(ctx context.Context, namespace string, body contrac
 		return nil, err
 	}
 	embedding := nullVectorString(body.Embedding)
+
+	// Two paths so that the upsert branch only fires when the caller
+	// supplied an idempotency key. Production agent commits leave id
+	// empty and rely on gen_random_uuid() — splitting the SQL avoids
+	// adding a NULL guard inside the conflict target.
+	if body.ID != "" {
+		const upsertQuery = `
+			INSERT INTO memory_records
+				(id, namespace, content, kind, source, expires_at, propagation, pin, embedding)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector)
+			ON CONFLICT (id) DO UPDATE SET
+				namespace = EXCLUDED.namespace,
+				content = EXCLUDED.content,
+				kind = EXCLUDED.kind,
+				source = EXCLUDED.source,
+				expires_at = EXCLUDED.expires_at,
+				propagation = EXCLUDED.propagation,
+				pin = EXCLUDED.pin,
+				embedding = EXCLUDED.embedding
+			RETURNING id, namespace
+		`
+		row := s.db.QueryRowContext(ctx, upsertQuery,
+			body.ID,
+			namespace,
+			body.Content,
+			string(body.Kind),
+			string(body.Source),
+			nullTime(body.ExpiresAt),
+			propagation,
+			body.Pin,
+			embedding,
+		)
+		var resp contract.MemoryWriteResponse
+		if err := row.Scan(&resp.ID, &resp.Namespace); err != nil {
+			return nil, fmt.Errorf("commit memory (upsert): %w", err)
+		}
+		return &resp, nil
+	}
+
 	const query = `
 		INSERT INTO memory_records
 			(namespace, content, kind, source, expires_at, propagation, pin, embedding)
