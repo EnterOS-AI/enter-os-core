@@ -706,8 +706,53 @@ print(json.dumps({
 d=json.load(sys.stdin)
 print(len(d if isinstance(d, list) else d.get('events', [])))" 2>/dev/null || echo 0)
   log "    Activity events observed: $ACTIVITY_COUNT"
+
+  # ─── 9c. Workspace KV memory Edit round-trip ─────────────────────────
+  # Pins the Edit affordance added to the canvas Memory tab. The UI calls
+  # POST /workspaces/:id/memory with if_match_version, so the contract is:
+  #   1. initial POST creates row at version 1
+  #   2. GET returns version 1 + value
+  #   3. POST with if_match_version=1 updates → version 2
+  #   4. POST with if_match_version=1 again → 409 (optimistic-lock enforcement)
+  # Without (3) there is no Edit; without (4) two concurrent writers can
+  # silently overwrite each other and the agent loses delegation-ledger state.
+  log "9c.  Memory KV Edit round-trip (Edit affordance + 409 gate)"
+  EDIT_KEY="e2e_edit_gate_$SLUG"
+
+  # 1. seed
+  tenant_call POST "/workspaces/$PARENT_ID/memory" \
+    -H "Content-Type: application/json" \
+    -d "{\"key\":\"$EDIT_KEY\",\"value\":{\"step\":1}}" >/dev/null \
+    || fail "memory KV seed POST failed"
+
+  # 2. read back, capture version
+  EDIT_GET=$(tenant_call GET "/workspaces/$PARENT_ID/memory/$EDIT_KEY")
+  EDIT_VER=$(echo "$EDIT_GET" | python3 -c "import json,sys; print(json.load(sys.stdin)['version'])" 2>/dev/null || echo "")
+  [ -z "$EDIT_VER" ] && fail "memory KV GET missing version field. Body: ${EDIT_GET:0:200}"
+
+  # 3. conditional update with matching version
+  tenant_call POST "/workspaces/$PARENT_ID/memory" \
+    -H "Content-Type: application/json" \
+    -d "{\"key\":\"$EDIT_KEY\",\"value\":{\"step\":2},\"if_match_version\":$EDIT_VER}" >/dev/null \
+    || fail "memory KV conditional Edit failed (if_match_version=$EDIT_VER)"
+
+  # 4. value flipped + version incremented?
+  EDIT_GET2=$(tenant_call GET "/workspaces/$PARENT_ID/memory/$EDIT_KEY")
+  EDIT_VAL2=$(echo "$EDIT_GET2" | python3 -c "import json,sys; print(json.load(sys.stdin)['value'].get('step'))" 2>/dev/null || echo "")
+  [ "$EDIT_VAL2" = "2" ] || fail "memory KV Edit did not persist new value. Body: ${EDIT_GET2:0:200}"
+
+  # 5. stale-version POST must 409 — pin the optimistic-lock contract.
+  EDIT_STALE_CODE=$(tenant_call POST "/workspaces/$PARENT_ID/memory" \
+    -H "Content-Type: application/json" \
+    -d "{\"key\":\"$EDIT_KEY\",\"value\":{\"step\":3},\"if_match_version\":$EDIT_VER}" \
+    -o /tmp/memory_stale_resp.txt -w "%{http_code}" 2>/dev/null || echo "000")
+  [ "$EDIT_STALE_CODE" = "409" ] || fail "memory KV stale Edit must 409 (optimistic-lock). Got $EDIT_STALE_CODE: $(cat /tmp/memory_stale_resp.txt 2>/dev/null | head -c 200)"
+
+  # cleanup
+  tenant_call DELETE "/workspaces/$PARENT_ID/memory/$EDIT_KEY" >/dev/null 2>&1 || true
+  ok "Memory KV Edit round-trip + 409 gate passed"
 else
-  log "9/11 Canary mode — skipping HMA / peers / activity"
+  log "9/11 Canary mode — skipping HMA / peers / activity / memory-edit"
 fi
 
 # ─── 10. Delegation mechanics (full mode + child) ──────────────────────
