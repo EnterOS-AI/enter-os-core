@@ -123,15 +123,18 @@ export function TerminalTab({ workspaceId }: Props) {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Status bar — role="status" so connection state changes are announced politely */}
+      {/* Status bar — role="status" so connection state changes are announced politely.
+          Terminal body stays dark unconditionally (Canvas v4 design rule), but the
+          chrome wrapping it now uses semantic status colors so the dot/text stay
+          readable in both themes. */}
       <div role="status" aria-live="polite" className="flex items-center justify-between px-3 py-1.5 border-b border-zinc-700 bg-zinc-800/50">
         <div className="flex items-center gap-2">
           <div className={`w-2 h-2 rounded-full ${
-            status === "connected" ? "bg-green-500" :
-            status === "connecting" ? "bg-yellow-500 motion-safe:animate-pulse" :
-            status === "error" ? "bg-red-500" : "bg-zinc-500"
+            status === "connected" ? "bg-good" :
+            status === "connecting" ? "bg-warm motion-safe:animate-pulse" :
+            status === "error" ? "bg-bad" : "bg-ink-soft"
           }`} />
-          <span className="text-[10px] text-zinc-400">
+          <span className="text-[10px] text-zinc-300">
             {status === "connected" ? "Shell active" :
              status === "connecting" ? "Connecting..." :
              status === "error" ? "Connection failed" : "Disconnected"}
@@ -139,8 +142,13 @@ export function TerminalTab({ workspaceId }: Props) {
         </div>
         {(status === "disconnected" || status === "error") && (
           <button
+            type="button"
             onClick={reconnect}
-            className="text-[10px] text-blue-400 hover:text-blue-300"
+            // Accent over hardcoded blue. text-accent + hover-strong stays
+            // readable on the dark terminal chrome and matches the rest
+            // of the canvas semantic palette. Focus-visible ring added so
+            // keyboard users see where focus lands on a recovery button.
+            className="text-[10px] text-accent hover:text-accent-strong rounded-sm px-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
           >
             Reconnect
           </button>
@@ -149,7 +157,7 @@ export function TerminalTab({ workspaceId }: Props) {
 
       {/* Error message — role="alert" announces immediately via assertive live region */}
       {errorMsg && (
-        <div role="alert" className="mx-3 mt-2 px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-red-400">
+        <div role="alert" className="mx-3 mt-2 px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-bad">
           {errorMsg}
         </div>
       )}
