@@ -54,6 +54,26 @@ security perimeter:
   defines
 - `/v1/health` reporting your supported capabilities (see below)
 - Idempotency on namespace upsert (PUT semantics, not POST)
+- Idempotency on memory commit when `MemoryWrite.id` is supplied
+  (see "Memory idempotency" below)
+
+## Memory idempotency
+
+`MemoryWrite.id` is optional. Two contracts to honor:
+
+| Caller passes | Plugin MUST |
+|---|---|
+| `id` omitted | Generate a fresh UUID, return it in the response |
+| `id` set | Upsert keyed on this id — if a row with that id already exists, UPDATE it in place rather than inserting a duplicate |
+
+The backfill CLI (`memory-backfill`) relies on the upsert behavior
+so retries don't duplicate rows. Production agent commits leave `id`
+empty and rely on the plugin's UUID generator — the hot path is
+unchanged.
+
+The built-in postgres plugin implements this with `INSERT ... ON
+CONFLICT (id) DO UPDATE`. A vector-DB plugin (e.g., Pinecone) would
+use the database's native upsert primitive on the same id.
 
 ## Capability negotiation
 
@@ -99,16 +119,51 @@ network. workspace-server is the only sanctioned client.
 
 ## Replacing the built-in plugin
 
-1. Apply [PR-7's backfill](../../workspace-server/cmd/memory-backfill/) to
-   copy `agent_memories` into your plugin's storage.
-2. Stop workspace-server, point `MEMORY_PLUGIN_URL` at your plugin,
-   restart.
-3. Existing data in the postgres plugin's tables is **not auto-
-   dropped** — that's a deliberate safety property. Operator drops
-   manually after they're confident they don't want to switch back.
+This is the canonical operator runbook for swapping the default
+plugin out. The same sequence applies whether you're swapping for
+another postgres plugin variant, Pinecone, Letta, or a custom
+implementation.
 
-If you switch back later, the old postgres tables come back into use
-(no data loss).
+1. **Stand up the new plugin.** Deploy the binary/container, confirm
+   it boots, confirm `/v1/health` returns `ok` with the capability
+   list you expect.
+
+2. **Run the backfill in dry-run mode** to scope the migration:
+   ```bash
+   DATABASE_URL=postgres://... \
+   MEMORY_PLUGIN_URL=http://your-plugin:9100 \
+   memory-backfill -dry-run
+   ```
+   Reports row count + namespace mapping per workspace, no writes.
+
+3. **Apply the backfill:**
+   ```bash
+   memory-backfill -apply
+   ```
+   Idempotent on retry — the backfill passes each `agent_memories.id`
+   to `MemoryWrite.id`, so partial-then-full re-runs upsert in place.
+
+4. **Verify parity** before flipping the cutover flag:
+   ```bash
+   memory-backfill -verify -verify-sample=200
+   ```
+   Random-samples N workspaces, diffs `agent_memories` direct query
+   against plugin search via the workspace's readable namespaces.
+   Reports mismatches and exits non-zero if any are found — wire
+   into your CI to gate the cutover.
+
+5. **Flip the cutover flag.** Set `MEMORY_V2_CUTOVER=true` on
+   workspace-server and restart. Admin export/import now route
+   through the plugin; legacy `agent_memories` becomes read-only.
+
+6. **Existing data in the old plugin's tables is NOT auto-dropped.**
+   Deliberate safety property — operator drops manually after the
+   ~60-day grace window. If you switch back later, old data comes
+   back into use (no loss).
+
+If `-verify` reports mismatches, do NOT set `MEMORY_V2_CUTOVER` —
+inspect the output, re-run `-apply` to backfill missing rows (it
+upserts, so this is safe), and re-verify.
 
 ## Worked examples
 
@@ -130,6 +185,7 @@ Write a fresh plugin if:
 
 ## See also
 
+- [`CHANGELOG.md`](CHANGELOG.md) — contract revisions and fixup waves
 - RFC #2728 — design rationale
 - [`cmd/memory-plugin-postgres/`](../../workspace-server/cmd/memory-plugin-postgres/) — reference implementation
 - [`docs/api-protocol/memory-plugin-v1.yaml`](../api-protocol/memory-plugin-v1.yaml) — full OpenAPI spec

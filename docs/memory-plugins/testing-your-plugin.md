@@ -77,6 +77,68 @@ func TestMyPlugin_FullRoundTrip(t *testing.T) {
 }
 ```
 
+## Testing idempotency
+
+The contract requires that `MemoryWrite.id`, when supplied, behaves
+as an upsert key. The backfill CLI relies on this — without it,
+operator retries silently duplicate every memory.
+
+```go
+func TestMyPlugin_IDIsIdempotencyKey(t *testing.T) {
+    pluginURL := startMyPlugin(t)
+    cl := mclient.New(mclient.Config{BaseURL: pluginURL})
+    if _, err := cl.UpsertNamespace(context.Background(), "workspace:test-1",
+        contract.NamespaceUpsert{Kind: contract.NamespaceKindWorkspace}); err != nil {
+        t.Fatal(err)
+    }
+
+    fixedID := "11111111-2222-3333-4444-555555555555"
+
+    // First write with a specific id.
+    resp1, err := cl.CommitMemory(context.Background(), "workspace:test-1",
+        contract.MemoryWrite{
+            ID:      fixedID,
+            Content: "first version",
+            Kind:    contract.MemoryKindFact,
+            Source:  contract.MemorySourceAgent,
+        })
+    if err != nil {
+        t.Fatalf("first commit: %v", err)
+    }
+    if resp1.ID != fixedID {
+        t.Errorf("plugin must echo the supplied id, got %q", resp1.ID)
+    }
+
+    // Second write with the same id — must update, not insert.
+    if _, err := cl.CommitMemory(context.Background(), "workspace:test-1",
+        contract.MemoryWrite{
+            ID:      fixedID,
+            Content: "second version (updated)",
+            Kind:    contract.MemoryKindFact,
+            Source:  contract.MemorySourceAgent,
+        }); err != nil {
+        t.Fatalf("second commit: %v", err)
+    }
+
+    // Search must return exactly one row, with the updated content.
+    sresp, _ := cl.Search(context.Background(), contract.SearchRequest{
+        Namespaces: []string{"workspace:test-1"},
+    })
+    matches := 0
+    for _, m := range sresp.Memories {
+        if m.ID == fixedID {
+            matches++
+            if m.Content != "second version (updated)" {
+                t.Errorf("upsert didn't update content: got %q", m.Content)
+            }
+        }
+    }
+    if matches != 1 {
+        t.Errorf("upsert produced %d rows for id=%s, want 1", matches, fixedID)
+    }
+}
+```
+
 ## What the harness does NOT cover
 
 - **Capability accuracy**: if you list `embedding` you must actually
@@ -88,6 +150,13 @@ func TestMyPlugin_FullRoundTrip(t *testing.T) {
   no IDs collide.
 - **Recovery**: kill your plugin's storage backend, send a request,
   assert your plugin returns 503 (not 200 with stale data).
+- **Backfill compatibility**: run the operator backfill against your
+  plugin twice in a row (`memory-backfill -apply`); assert the row
+  count doesn't double. The idempotency test above verifies the unit
+  contract; this checks the operational integration.
+- **Verify-mode parity**: after a backfill, run `memory-backfill
+  -verify`; assert it reports zero mismatches against
+  `agent_memories`.
 
 ## Smoke test against workspace-server
 

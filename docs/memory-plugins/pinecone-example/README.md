@@ -29,7 +29,8 @@ are different:
 | Contract field | Pinecone shape |
 |---|---|
 | `namespace` | `namespace` (Pinecone's first-class concept) |
-| `id` | `id` |
+| `id` (caller-supplied) | `id` (Pinecone vector id; plugin upserts on this) |
+| `id` (omitted) | Plugin generates `uuid.NewString()` before upsert |
 | `content` | metadata.text |
 | `embedding` | `values` |
 | `kind` / `source` / `pin` / `expires_at` | `metadata.{kind, source, pin, expires_at}` |
@@ -37,6 +38,12 @@ are different:
 
 The contract's `expires_at` becomes a metadata field; a separate
 janitor cron periodically queries `expires_at < now` and deletes.
+
+Pinecone's native upsert is the right fit for the idempotency-key
+contract: passing the same `id` twice updates in place. So a
+Pinecone plugin gets idempotent backfill retries "for free" if it
+just forwards `MemoryWrite.id` (or its generated UUID) to the
+upsert call.
 
 ## Skeleton
 
@@ -103,6 +110,9 @@ A production-ready Pinecone plugin would add:
 - **Connection pooling**: keep one Pinecone client alive across requests
 - **Retry + circuit breaker**: Pinecone occasionally returns 5xx
 - **Metrics**: latency histograms per endpoint, write/read counters
+- **Idempotency-key handling**: when `MemoryWrite.id` is supplied,
+  forward it as the Pinecone vector id verbatim; otherwise generate
+  one. Pinecone's `Upsert` is naturally idempotent on id match.
 
 But the mapping above is the load-bearing part — the rest is
 operational hardening, not contract-specific.
