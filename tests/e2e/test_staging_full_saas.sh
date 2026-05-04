@@ -504,6 +504,54 @@ for wid in $WS_TO_CHECK; do
   fi
 done
 
+# ─── 7c. Workspace files API config.yaml round-trip ────────────────────
+# Pin the config-save path that drives the Canvas Config tab's Save &
+# Restart. Two failure classes this gate catches in one shot:
+#
+#   1. Path map drift (PR #2769). Runtime falls through to the wrong
+#      base path (e.g. /opt/configs when user-data only created /configs)
+#      → SSH `install -D` fails with EACCES on a parent dir that doesn't
+#      exist. The user-visible 500 was unobservable without exercising
+#      this code path on a fresh workspace.
+#   2. Permission drift on /configs. The path is root-owned by cloud-init,
+#      so the SSH-as-ubuntu install needs `sudo -n`. Any future change
+#      that drops the sudo, switches to a non-passwordless-sudo OS user,
+#      or moves the path to a non-ubuntu-writable dir without sudo will
+#      regress this gate.
+#
+# Round-trip: PUT a known marker, GET it back, assert content matches.
+# Marker shape includes the run id so a stale file from a prior canary
+# can't false-pass.
+log "7c/11 Files API config.yaml round-trip..."
+CONFIG_MARKER="# molecule-synth-e2e: ${E2E_RUN_ID:-unknown} ${RUNTIME} $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+CONFIG_PAYLOAD="${CONFIG_MARKER}
+name: synth-canary
+runtime: ${RUNTIME}
+"
+for wid in $WS_TO_CHECK; do
+  PUT_BODY=$(python3 -c "import json,sys; print(json.dumps({'content': sys.stdin.read()}))" <<< "$CONFIG_PAYLOAD")
+  PUT_RESP=$(tenant_call PUT "/workspaces/$wid/files/config.yaml" \
+    -H "Content-Type: application/json" \
+    -d "$PUT_BODY" \
+    -w $'\n%{http_code}\n' \
+    2>/dev/null || printf '\n500\n')
+  PUT_CODE=$(echo "$PUT_RESP" | tail -n 2 | head -n 1)
+  PUT_BODY_OUT=$(echo "$PUT_RESP" | sed '$d' | sed '$d')
+  if [ "$PUT_CODE" != "200" ] && [ "$PUT_CODE" != "204" ]; then
+    fail "Workspace $wid Files API PUT config.yaml returned $PUT_CODE: $PUT_BODY_OUT — likely a path-map or permission regression in workspace-server template_files_eic.go"
+  fi
+  # GET back and assert the marker line is present. Don't require exact
+  # equality — the runtime's loader may normalize trailing newline /
+  # quoting; presence of the marker proves the content landed at the
+  # path the runtime reads from (vs landing at a host path that's
+  # invisible to the bind-mounted container).
+  GET_RESP=$(tenant_call GET "/workspaces/$wid/files/config.yaml" 2>/dev/null || echo "")
+  if ! echo "$GET_RESP" | grep -qF "$CONFIG_MARKER"; then
+    fail "Workspace $wid Files API GET config.yaml does not contain the marker just written ('$CONFIG_MARKER'). Either the PUT landed at a host path the container doesn't bind-mount, or the GET reads from a different path. Either way, Canvas Save & Restart will appear to succeed but the workspace won't pick up the change."
+  fi
+  ok "    $wid config.yaml round-trip OK"
+done
+
 # ─── 8. A2A round-trip on parent ───────────────────────────────────────
 log "8/11 Sending A2A message to parent — expecting agent response..."
 # Smoke prompt phrasing — DO NOT trim back to the bare "Reply with exactly: PONG"
