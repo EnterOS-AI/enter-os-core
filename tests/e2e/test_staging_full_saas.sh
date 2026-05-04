@@ -742,11 +742,24 @@ print(len(d if isinstance(d, list) else d.get('events', [])))" 2>/dev/null || ec
   [ "$EDIT_VAL2" = "2" ] || fail "memory KV Edit did not persist new value. Body: ${EDIT_GET2:0:200}"
 
   # 5. stale-version POST must 409 — pin the optimistic-lock contract.
-  EDIT_STALE_CODE=$(tenant_call POST "/workspaces/$PARENT_ID/memory" \
+  #
+  # tenant_call uses CURL_COMMON which carries --fail-with-body, so an
+  # expected-409 makes curl exit 22. The previous shape
+  #   $(tenant_call ... -w "%{http_code}" || echo "000")
+  # concatenated the captured "409" with the fallback "000" giving a
+  # bogus "409000" value (caught on PR #2792's first E2E run, which is
+  # also why staging-saas E2E has been silent-failing this gate since
+  # PR #2787 merged). Fix: route the status code into its own tempfile
+  # so curl's exit code can't pollute the captured stdout. set +e/-e
+  # keeps the 22 from tripping the outer `set -e` pipeline.
+  set +e
+  tenant_call POST "/workspaces/$PARENT_ID/memory" \
     -H "Content-Type: application/json" \
     -d "{\"key\":\"$EDIT_KEY\",\"value\":{\"step\":3},\"if_match_version\":$EDIT_VER}" \
-    -o /tmp/memory_stale_resp.txt -w "%{http_code}" 2>/dev/null || echo "000")
-  [ "$EDIT_STALE_CODE" = "409" ] || fail "memory KV stale Edit must 409 (optimistic-lock). Got $EDIT_STALE_CODE: $(cat /tmp/memory_stale_resp.txt 2>/dev/null | head -c 200)"
+    -o /tmp/memory_stale_resp.txt -w "%{http_code}" >/tmp/memory_stale_code.txt 2>/dev/null
+  set -e
+  EDIT_STALE_CODE=$(cat /tmp/memory_stale_code.txt 2>/dev/null || echo "000")
+  [ "$EDIT_STALE_CODE" = "409" ] || fail "memory KV stale Edit must 409 (optimistic-lock). Got '$EDIT_STALE_CODE': $(cat /tmp/memory_stale_resp.txt 2>/dev/null | head -c 200)"
 
   # cleanup
   tenant_call DELETE "/workspaces/$PARENT_ID/memory/$EDIT_KEY" >/dev/null 2>&1 || true
