@@ -349,6 +349,57 @@ func TestHasProvisioner_FalseWhenNeitherWired(t *testing.T) {
 	}
 }
 
+// TestNoBareBothNilCheck — source-level pin: any code that wants to ask
+// "is no backend wired?" must use !HasProvisioner(), not the verbose
+// `h.provisioner == nil && h.cpProv == nil` shape. Two reasons:
+//
+//  1. Single source of truth — when a third backend lands (k8s,
+//     containerd, whatever), HasProvisioner gets the new field added in
+//     one place. Bare both-nil checks each need to be hunted down.
+//  2. Symmetry — easier to read `!h.HasProvisioner()` and know the
+//     intent than to mentally evaluate `nil && nil`.
+//
+// Allowed exception: workspace.go's HasProvisioner() definition itself.
+// Test files are also exempt — assertions on internal field state are
+// fine.
+func TestNoBareBothNilCheck(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	entries, err := os.ReadDir(wd)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	bareShapes := []string{
+		"h.provisioner == nil && h.cpProv == nil",
+		"h.cpProv == nil && h.provisioner == nil",
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if filepath.Ext(name) != ".go" {
+			continue
+		}
+		// Allow tests (legitimate field-state assertions).
+		if len(name) > len("_test.go") &&
+			name[len(name)-len("_test.go"):] == "_test.go" {
+			continue
+		}
+		// workspace.go houses HasProvisioner's definition + can reference
+		// the fields directly — but with the !HasProvisioner() refactor
+		// it shouldn't contain the bare both-nil shape any more.
+		src, err := os.ReadFile(filepath.Join(wd, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		for _, needle := range bareShapes {
+			if bytes.Contains(src, []byte(needle)) {
+				t.Errorf("%s contains bare `%s` — must use `!h.HasProvisioner()` for SSOT.", name, needle)
+			}
+		}
+	}
+}
+
 // TestOrgImportGate_UsesHasProvisionerNotBareField — source-level pin
 // for the org-import gate. Pre-fix the gate read `h.provisioner != nil`,
 // which checked only the Docker pointer and silently dropped every
