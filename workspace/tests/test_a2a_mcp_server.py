@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import time
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1897,3 +1898,94 @@ def test_enrich_peer_metadata_nonblocking_invalid_peer_id_returns_none(
 
     assert client.get.call_count == 0
     assert "not-a-uuid" not in a2a_client._enrich_in_flight
+
+
+# ---- #2482 bounded-cache tests ----
+
+
+def test_peer_metadata_set_evicts_lru_when_at_maxsize(_reset_peer_metadata_cache, monkeypatch):
+    """Cache size never exceeds ``_PEER_METADATA_MAXSIZE``. When the
+    next write would push past the bound, the least-recently-used entry
+    is evicted. Pin: a workspace receiving from N > maxsize peers ends
+    up with exactly maxsize entries — the oldest get dropped, the
+    newest stay.
+    """
+    import a2a_client
+
+    # Shrink the bound to make the test fast + deterministic. The real
+    # bound (1024) is too large to exercise per-test.
+    monkeypatch.setattr(a2a_client, "_PEER_METADATA_MAXSIZE", 4)
+
+    now = time.monotonic()
+    for i in range(6):
+        # Distinct UUIDs — generate via the static template + index so
+        # _validate_peer_id accepts them.
+        peer = f"00000000-0000-0000-0000-00000000000{i}"
+        a2a_client._peer_metadata_set(peer, (now + i, {"id": peer, "name": f"p{i}"}))
+
+    # Size capped at maxsize.
+    assert len(a2a_client._peer_metadata) == 4
+    # Oldest two evicted, newest four remain.
+    assert "00000000-0000-0000-0000-000000000000" not in a2a_client._peer_metadata
+    assert "00000000-0000-0000-0000-000000000001" not in a2a_client._peer_metadata
+    assert "00000000-0000-0000-0000-000000000002" in a2a_client._peer_metadata
+    assert "00000000-0000-0000-0000-000000000005" in a2a_client._peer_metadata
+
+
+def test_peer_metadata_get_promotes_to_lru_head(_reset_peer_metadata_cache, monkeypatch):
+    """Read promotes the entry to most-recently-used. Steady-state
+    pushes from a busy peer must NOT be evicted by a cold-start burst
+    from new peers — the LRU touch on read is what makes that hold.
+    """
+    import a2a_client
+
+    monkeypatch.setattr(a2a_client, "_PEER_METADATA_MAXSIZE", 3)
+
+    now = time.monotonic()
+    a = "00000000-0000-0000-0000-aaaaaaaaaaaa"
+    b = "00000000-0000-0000-0000-bbbbbbbbbbbb"
+    c = "00000000-0000-0000-0000-cccccccccccc"
+    d = "00000000-0000-0000-0000-dddddddddddd"
+
+    # Insert in order a, b, c. LRU position: a (oldest) → c (newest).
+    a2a_client._peer_metadata_set(a, (now, {"id": a}))
+    a2a_client._peer_metadata_set(b, (now, {"id": b}))
+    a2a_client._peer_metadata_set(c, (now, {"id": c}))
+
+    # Touch `a` via _peer_metadata_get → moves to MRU. Eviction order:
+    # b (oldest now) → c → a (newest).
+    a2a_client._peer_metadata_get(a)
+
+    # Insert `d` — pushes `b` out (not `a` even though `a` was inserted first).
+    a2a_client._peer_metadata_set(d, (now, {"id": d}))
+
+    assert a in a2a_client._peer_metadata, (
+        "recently-touched entry must survive eviction; LRU touch on read is broken"
+    )
+    assert b not in a2a_client._peer_metadata, (
+        "oldest-untouched entry must be evicted first"
+    )
+    assert c in a2a_client._peer_metadata
+    assert d in a2a_client._peer_metadata
+
+
+def test_peer_metadata_set_replaces_existing_entry_in_place(_reset_peer_metadata_cache):
+    """Re-write of an existing key updates the value in place — does
+    NOT evict to maxsize-1 then re-insert. The LRU move-to-end on
+    update keeps the entry as MRU.
+    """
+    import a2a_client
+
+    peer = "00000000-0000-0000-0000-aaaaaaaaaaaa"
+    now = time.monotonic()
+    a2a_client._peer_metadata_set(peer, (now, {"id": peer, "name": "v1"}))
+    assert len(a2a_client._peer_metadata) == 1
+
+    # Re-write — same key, new value.
+    a2a_client._peer_metadata_set(peer, (now + 100, {"id": peer, "name": "v2"}))
+
+    assert len(a2a_client._peer_metadata) == 1, (
+        "re-write must not duplicate the entry"
+    )
+    cached = a2a_client._peer_metadata[peer]
+    assert cached[1]["name"] == "v2", "re-write must update the value in place"
