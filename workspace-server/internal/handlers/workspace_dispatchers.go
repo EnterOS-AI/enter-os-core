@@ -49,6 +49,32 @@ func (h *WorkspaceHandler) HasProvisioner() bool {
 	return h.cpProv != nil || h.provisioner != nil
 }
 
+// IsSaaS reports whether the CP (EC2) provisioner is wired. Each SaaS
+// workspace runs on its own sibling EC2, so the per-workspace tier
+// boundary is a Docker resource limit applied to the only container
+// on that EC2 — there's no neighbour to protect from. Self-hosted
+// runs many workspaces in one Docker daemon on a single host, so
+// the tier-2-by-default safe-neighbour-share posture stays.
+//
+// Tier defaults across Create / OrgImport / canvas EmptyState branch
+// on IsSaaS so SaaS users get T4 (full host access) by default and
+// self-hosted users keep the lower-trust caps.
+func (h *WorkspaceHandler) IsSaaS() bool {
+	return h.cpProv != nil
+}
+
+// DefaultTier is the SaaS-aware default tier. T4 on SaaS (single
+// container per EC2 — full host access matches the boundary), T3 on
+// self-hosted (read-write workspace mount + Docker daemon access,
+// most templates' baseline). Callers default to this when the user
+// hasn't explicitly picked a tier.
+func (h *WorkspaceHandler) DefaultTier() int {
+	if h.IsSaaS() {
+		return 4
+	}
+	return 3
+}
+
 // provisionWorkspaceAuto picks the backend (CP for SaaS, local Docker
 // for self-hosted) and starts provisioning in a goroutine. Returns true
 // when a backend was kicked off, false when neither is wired.

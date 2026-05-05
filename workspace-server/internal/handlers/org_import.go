@@ -61,7 +61,17 @@ func (h *OrgHandler) createWorkspaceTree(ws OrgWorkspace, parentID *string, absX
 		tier = defaults.Tier
 	}
 	if tier == 0 {
-		tier = 2
+		// SaaS-aware fallback. SaaS → T4 (one container per sibling
+		// EC2, no neighbour to protect from). Self-hosted → T2
+		// (safe shared-Docker-daemon default — many workspaces in
+		// one kernel). Templates that want a different floor
+		// declare `tier:` in their config.yaml or the org-template's
+		// `defaults.tier`.
+		if h.workspace != nil && h.workspace.IsSaaS() {
+			tier = 4
+		} else {
+			tier = 2
+		}
 	}
 
 	ctxLookup := context.Background()

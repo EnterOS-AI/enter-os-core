@@ -48,16 +48,21 @@ export function EmptyState() {
   });
 
   // "Create blank" bypasses templates entirely — no preflight, no
-  // modal, just POST /workspaces with a default name and tier.
-  // Deliberately NOT routed through useTemplateDeploy because it
-  // has no `template.id` to deploy against.
+  // modal, just POST /workspaces with a default name. Deliberately
+  // NOT routed through useTemplateDeploy because it has no
+  // `template.id` to deploy against.
+  //
+  // tier is omitted so the backend picks a SaaS-aware default
+  // (T4 on SaaS, T3 on self-hosted — see WorkspaceHandler.DefaultTier).
+  // The previous hardcoded `tier: 2` shipped every fresh-tenant agent
+  // at Standard regardless of host, which surprised SaaS users whose
+  // CreateWorkspaceDialog already defaults to T4.
   const createBlank = async () => {
     setBlankCreating(true);
     setBlankError(null);
     try {
       const ws = await api.post<{ id: string }>("/workspaces", {
         name: "My First Agent",
-        tier: 2,
         canvas: firstDeployCoords(),
       });
       handleDeployed(ws.id);
