@@ -115,7 +115,7 @@ func (h *WorkspaceHandler) Restart(c *gin.Context) {
 	// available — previously only `provisioner` was checked, which broke
 	// restart entirely on every SaaS tenant (the workspace EC2 couldn't
 	// be terminated + relaunched, the endpoint 503'd on every try).
-	if h.provisioner == nil && h.cpProv == nil {
+	if !h.HasProvisioner() {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "provisioner not available"})
 		return
 	}
@@ -360,7 +360,7 @@ func (h *WorkspaceHandler) RestartByID(workspaceID string) {
 	// reactive auto-restart on every SaaS tenant (where the local Docker
 	// provisioner is intentionally nil). The runRestartCycle below now
 	// branches on which one is set for the Stop call.
-	if h.provisioner == nil && h.cpProv == nil {
+	if !h.HasProvisioner() {
 		return
 	}
 	coalesceRestart(workspaceID, func() { h.runRestartCycle(workspaceID) })
@@ -657,7 +657,7 @@ func (h *WorkspaceHandler) Resume(c *gin.Context) {
 	// Accept either provisioner (Docker self-hosted OR CP SaaS). See the
 	// same guard in Restart above for context — Resume previously 503'd
 	// on every SaaS tenant.
-	if h.provisioner == nil && h.cpProv == nil {
+	if !h.HasProvisioner() {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "provisioner not available"})
 		return
 	}

@@ -163,7 +163,7 @@ func (h *WorkspaceHandler) maybeMarkContainerDead(ctx context.Context, workspace
 	if wsRuntime == "external" {
 		return false
 	}
-	if h.provisioner == nil && h.cpProv == nil {
+	if !h.HasProvisioner() {
 		return false
 	}
 

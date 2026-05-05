@@ -200,8 +200,11 @@ jobs:
             -H "Authorization: Bearer $CP_ADMIN_API_TOKEN" \
             -H "Content-Type: application/json" \
             -X POST "$CP_URL/cp/admin/tenants/redeploy-fleet" \
-            -d "$BODY" >"$HTTP_CODE_FILE" 2>/dev/null
+            -d "$BODY" >"$HTTP_CODE_FILE"
           set -e
+          # Stderr from curl (e.g. dial errors with -sS) goes to the runner
+          # log so operators can see WHY a connection failed. Stdout is
+          # captured to $HTTP_CODE_FILE because that's where -w writes.
           HTTP_CODE=$(cat "$HTTP_CODE_FILE" 2>/dev/null || echo "000")
           [ -z "$HTTP_CODE" ] && HTTP_CODE="000"
 

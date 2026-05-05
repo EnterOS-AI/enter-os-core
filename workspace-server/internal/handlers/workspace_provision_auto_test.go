@@ -67,12 +67,27 @@ func (r *trackingCPProv) startedSnapshot() []string {
 	return out
 }
 
-// TestProvisionWorkspaceAuto_NoBackendReturnsFalse — when neither
-// cpProv nor provisioner is wired, the dispatcher returns false so the
-// caller knows it must own the persist + mark-failed path. Pre-fix,
-// TeamHandler had no equivalent fallback at all and silently dropped
-// children on the floor.
-func TestProvisionWorkspaceAuto_NoBackendReturnsFalse(t *testing.T) {
+// TestProvisionWorkspaceAuto_NoBackendMarksFailed — when neither cpProv
+// nor provisioner is wired, the dispatcher must:
+//  1. Return false (so the caller can do its own extra cleanup if
+//     needed — Create persists workspace_config for the Config tab).
+//  2. Mark the workspace failed via markProvisionFailed (defense in
+//     depth: if a future caller bypasses the bool return, the workspace
+//     still doesn't sit stuck in 'provisioning' for 10 min until the
+//     sweeper fires).
+//
+// Pre-2026-05-05 the false return was silent and TeamHandler /
+// OrgHandler.createWorkspaceTree dropped workspaces on the floor when
+// they ignored it. This test pins the new contract that Auto owns the
+// failed-mark on no-backend.
+func TestProvisionWorkspaceAuto_NoBackendMarksFailed(t *testing.T) {
+	mock := setupTestDB(t)
+	mock.MatchExpectationsInOrder(false)
+	// markProvisionFailed does a single UPDATE workspaces ... SET status='failed'.
+	mock.ExpectExec(`UPDATE workspaces SET status =`).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
 	bcast := &concurrentSafeBroadcaster{}
 	h := NewWorkspaceHandler(bcast, nil, "http://localhost:8080", t.TempDir())
 	// Do NOT call SetCPProvisioner — both backends nil.
@@ -82,6 +97,9 @@ func TestProvisionWorkspaceAuto_NoBackendReturnsFalse(t *testing.T) {
 	})
 	if ok {
 		t.Fatalf("expected provisionWorkspaceAuto to return false with no backend wired")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expected markProvisionFailed UPDATE to fire on no-backend path: %v", err)
 	}
 }
 
@@ -283,5 +301,134 @@ func TestOrgImport_UsesAutoNotDirectDockerPath(t *testing.T) {
 	}
 	if !bytes.Contains(src, []byte("h.workspace.provisionWorkspaceAuto(")) {
 		t.Errorf("org_import.go must call h.workspace.provisionWorkspaceAuto for child provisioning — current code does not")
+	}
+}
+
+// TestHasProvisioner_TrueOnCPOnly — SaaS tenants run with cpProv set and
+// the local Docker provisioner nil. HasProvisioner must report true so
+// gate-y callers (org-import prep block) don't skip provisioning.
+//
+// Pre-2026-05-05 the org-import gate checked `h.provisioner != nil`
+// directly — false on SaaS — and the entire provisioning prep block was
+// skipped. The Auto call inside the block was unreachable; PR #2798's
+// "route through Auto" fix didn't help because the gate fired earlier.
+// Symptom: 7-workspace org-import on hongming sat in 'provisioning' for
+// the full 10-minute sweep window.
+func TestHasProvisioner_TrueOnCPOnly(t *testing.T) {
+	bcast := &concurrentSafeBroadcaster{}
+	h := NewWorkspaceHandler(bcast, nil, "http://localhost:8080", t.TempDir())
+	h.SetCPProvisioner(&trackingCPProv{})
+	if !h.HasProvisioner() {
+		t.Errorf("HasProvisioner() == false with cpProv wired (Docker nil) — every gate that uses this would skip provisioning on SaaS, reproducing the hongming 7-workspace stuck-in-provisioning incident from 2026-05-05")
+	}
+}
+
+// TestHasProvisioner_TrueOnDockerOnly — self-hosted operators run with
+// the local Docker provisioner wired and cpProv nil. HasProvisioner must
+// report true.
+func TestHasProvisioner_TrueOnDockerOnly(t *testing.T) {
+	bcast := &concurrentSafeBroadcaster{}
+	// NewWorkspaceHandler guards the typed-nil-interface trap (workspace.go
+	// docstring) — pass a real *Provisioner stub via the test fixture
+	// rather than a nil pointer cast to the interface.
+	h := NewWorkspaceHandler(bcast, &provisioner.Provisioner{}, "http://localhost:8080", t.TempDir())
+	if !h.HasProvisioner() {
+		t.Errorf("HasProvisioner() == false with Docker wired (cpProv nil) — would break self-hosted operators")
+	}
+}
+
+// TestHasProvisioner_FalseWhenNeitherWired — misconfigured deployment
+// with neither backend reachable. HasProvisioner must report false so
+// the org-import prep block is skipped (no point doing template/secret
+// prep work when nothing can run the resulting container).
+func TestHasProvisioner_FalseWhenNeitherWired(t *testing.T) {
+	bcast := &concurrentSafeBroadcaster{}
+	h := NewWorkspaceHandler(bcast, nil, "http://localhost:8080", t.TempDir())
+	if h.HasProvisioner() {
+		t.Errorf("HasProvisioner() == true with no backend wired — gate should short-circuit and not waste prep cycles")
+	}
+}
+
+// TestNoBareBothNilCheck — source-level pin: any code that wants to ask
+// "is no backend wired?" must use !HasProvisioner(), not the verbose
+// `h.provisioner == nil && h.cpProv == nil` shape. Two reasons:
+//
+//  1. Single source of truth — when a third backend lands (k8s,
+//     containerd, whatever), HasProvisioner gets the new field added in
+//     one place. Bare both-nil checks each need to be hunted down.
+//  2. Symmetry — easier to read `!h.HasProvisioner()` and know the
+//     intent than to mentally evaluate `nil && nil`.
+//
+// Allowed exception: workspace.go's HasProvisioner() definition itself.
+// Test files are also exempt — assertions on internal field state are
+// fine.
+func TestNoBareBothNilCheck(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	entries, err := os.ReadDir(wd)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	bareShapes := []string{
+		"h.provisioner == nil && h.cpProv == nil",
+		"h.cpProv == nil && h.provisioner == nil",
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if filepath.Ext(name) != ".go" {
+			continue
+		}
+		// Allow tests (legitimate field-state assertions).
+		if len(name) > len("_test.go") &&
+			name[len(name)-len("_test.go"):] == "_test.go" {
+			continue
+		}
+		// workspace.go houses HasProvisioner's definition + can reference
+		// the fields directly — but with the !HasProvisioner() refactor
+		// it shouldn't contain the bare both-nil shape any more.
+		src, err := os.ReadFile(filepath.Join(wd, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		for _, needle := range bareShapes {
+			if bytes.Contains(src, []byte(needle)) {
+				t.Errorf("%s contains bare `%s` — must use `!h.HasProvisioner()` for SSOT.", name, needle)
+			}
+		}
+	}
+}
+
+// TestOrgImportGate_UsesHasProvisionerNotBareField — source-level pin
+// for the org-import gate. Pre-fix the gate read `h.provisioner != nil`,
+// which checked only the Docker pointer and silently dropped every
+// SaaS workspace. The fix routes through HasProvisioner so both
+// backends count.
+//
+// Substring match because the failure shape is "wrong field" — a plain
+// text gate suffices, same rationale as TestTeamExpand_UsesAutoNotDirectDockerPath
+// above.
+func TestOrgImportGate_UsesHasProvisionerNotBareField(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	src, err := os.ReadFile(filepath.Join(wd, "org_import.go"))
+	if err != nil {
+		t.Fatalf("read org_import.go: %v", err)
+	}
+	// The provisioning gate is the `else if ...` clause that follows the
+	// `if ws.External {` external-workspace branch. If org_import.go
+	// reintroduces a bare `h.provisioner` check there, every SaaS tenant
+	// silently drops org-imported workspaces again. Auto's nil check is
+	// the right routing layer; the gate just decides whether to do prep
+	// work at all, and HasProvisioner is the symmetric question.
+	if bytes.Contains(src, []byte("} else if h.provisioner != nil {")) {
+		t.Errorf("org_import.go gates the provisioning prep block on `h.provisioner != nil` (bare Docker check) — must use `h.workspace.HasProvisioner()` so SaaS tenants (cpProv set, provisioner nil) reach the Auto call. " +
+			"Repro: 2026-05-05 hongming org-import incident — 7 claude-code workspaces stuck in 'provisioning' for 10 min because the gate skipped the entire block on SaaS, hiding the Auto call PR #2798 introduced.")
+	}
+	if !bytes.Contains(src, []byte("h.workspace.HasProvisioner()")) {
+		t.Errorf("org_import.go must call h.workspace.HasProvisioner() in the provisioning gate — current code does not")
 	}
 }

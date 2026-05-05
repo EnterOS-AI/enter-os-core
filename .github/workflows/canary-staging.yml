@@ -302,7 +302,7 @@ jobs:
               -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
               -H "Authorization: Bearer $ADMIN_TOKEN" \
               -H "Content-Type: application/json" \
-              -d "{\"confirm\":\"$slug\"}" >/tmp/canary-cleanup.code 2>/dev/null
+              -d "{\"confirm\":\"$slug\"}" >/tmp/canary-cleanup.code
             set -e
             code=$(cat /tmp/canary-cleanup.code 2>/dev/null || echo "000")
             if [ "$code" = "200" ] || [ "$code" = "204" ]; then

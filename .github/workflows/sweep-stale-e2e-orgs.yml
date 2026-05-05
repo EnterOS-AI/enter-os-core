@@ -167,8 +167,9 @@ jobs:
               -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
               -H "Authorization: Bearer $ADMIN_TOKEN" \
               -H "Content-Type: application/json" \
-              -d "{\"confirm\":\"$slug\"}" >/tmp/del_code 2>/dev/null
+              -d "{\"confirm\":\"$slug\"}" >/tmp/del_code
             set -e
+            # Stderr from curl (-sS shows dial errors etc.) goes to runner log.
             http_code=$(cat /tmp/del_code 2>/dev/null || echo "000")
             if [ "$http_code" = "200" ] || [ "$http_code" = "204" ]; then
               deleted=$((deleted+1))
