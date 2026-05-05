@@ -153,9 +153,26 @@ async function loadMessagesFromDB(
   beforeTs?: string,
 ): Promise<{ messages: ChatMessage[]; error: string | null; reachedEnd: boolean }> {
   try {
+    // Reported on reno-stars (production, 2026-05-05): "received [a
+    // message] while the chat was open but it's not persisted." Live
+    // delivery via WebSocket worked; refresh + reopen-tab dropped it.
+    //
+    // Root cause: this fetch was filtering `source=canvas` (source_id
+    // IS NULL), which only returns rows where the canvas-user is the
+    // initiator. Peer-initiated rows — another agent A2A-sending into
+    // this workspace — have source_id set to the peer's UUID and were
+    // excluded from history even though they ARE persisted in
+    // activity_log. Result: a real message visible live, gone on reload.
+    //
+    // Fix: drop the source filter and return BOTH user-initiated and
+    // peer-initiated a2a_receive rows. activityRowToMessages handles
+    // the role assignment per row (user vs agent vs system) — a peer-
+    // initiated row's request_body is rendered as a "user" bubble that
+    // labels itself with the peer's source. A future polish PR will
+    // distinguish the bubble visually (e.g. "via <peer name>") but the
+    // critical fix is stopping the data loss.
     const params = new URLSearchParams({
       type: "a2a_receive",
-      source: "canvas",
       limit: String(limit),
     });
     if (beforeTs) params.set("before_ts", beforeTs);

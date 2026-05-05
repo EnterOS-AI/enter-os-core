@@ -34,17 +34,25 @@ afterEach(cleanup);
 
 // Both ChatTab sub-panels (MyChat + AgentComms) mount simultaneously so
 // keyboard tab order and aria-controls land on a real DOM. Both fire
-// /activity GETs on mount: MyChat's hits `type=a2a_receive&source=canvas`,
+// /activity GETs on mount: MyChat's hits `type=a2a_receive` (no source
+// filter so peer-initiated rows are also included — see fix for the
+// reno-stars chat-history persistence bug, ChatTab.tsx loadHistory),
 // AgentComms's hits a different filter. Route the mock by URL so each
 // gets a sensible default and only MyChat's call is what the assertions
 // scrutinise.
+//
+// IMPORTANT: AgentComms's activity URL also contains
+// `type=a2a_receive`, so we must distinguish via a feature unique to
+// MyChat. AgentComms appends source=agent (peer-only); MyChat now has
+// no source param at all. The discriminator below picks MyChat by
+// "no source param" in the URL.
 const myChatActivityCalls: string[] = [];
 let myChatNextResponse: { ok: true; rows: unknown[] } | { ok: false; err: Error } = {
   ok: true,
   rows: [],
 };
 const apiGet = vi.fn((path: string): Promise<unknown> => {
-  if (path.includes("type=a2a_receive") && path.includes("source=canvas")) {
+  if (path.includes("type=a2a_receive") && !path.includes("source=")) {
     myChatActivityCalls.push(path);
     if (myChatNextResponse.ok) return Promise.resolve(myChatNextResponse.rows);
     return Promise.reject(myChatNextResponse.err);
