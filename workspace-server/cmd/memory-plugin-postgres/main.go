@@ -31,7 +31,13 @@ const (
 	envListenAddr  = "MEMORY_PLUGIN_LISTEN_ADDR"
 	envSkipMigrate = "MEMORY_PLUGIN_SKIP_MIGRATE"
 
-	defaultListenAddr = ":9100"
+	// Loopback-only by default (defense in depth). The platform talks to
+	// the plugin over `http://localhost:9100` from the same container, so
+	// binding to all interfaces would only widen the reachable surface
+	// without enabling any in-design caller. Operators running the plugin
+	// on a separate host override via MEMORY_PLUGIN_LISTEN_ADDR=:9100 (or
+	// some other interface).
+	defaultListenAddr = "127.0.0.1:9100"
 )
 
 func main() {

@@ -201,7 +201,7 @@ func TestPollUpload_HappyPath_OneFile_StagesAndLogs(t *testing.T) {
 	expectActivityInsert(mock)
 
 	store := newInMemStorage()
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	body, ct := pollUploadFixture(t, map[string][]byte{"report.pdf": []byte("PDF-bytes")})
@@ -259,7 +259,7 @@ func TestPollUpload_MultipleFiles_AllStagedAndLogged(t *testing.T) {
 	expectActivityInsert(mock)
 
 	store := newInMemStorage()
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	body, ct := pollUploadFixture(t, map[string][]byte{
@@ -297,7 +297,7 @@ func TestPollUpload_PushModeFallsThroughToForward(t *testing.T) {
 	// URL empty + mode=push → 503 (no inbound secret check needed).
 
 	store := newInMemStorage()
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	body, ct := pollUploadFixture(t, map[string][]byte{"x": []byte("data")})
@@ -321,7 +321,7 @@ func TestPollUpload_NotConfigured_FallsThrough(t *testing.T) {
 	wsID := "33333333-2222-3333-4444-555555555555"
 	expectURLAndMode(mock, wsID, "", "poll") // resolveWorkspaceForwardCreds emits 422
 
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil))
 	// No WithPendingUploads — pendingUploads is nil.
 
 	body, ct := pollUploadFixture(t, map[string][]byte{"x": []byte("data")})
@@ -342,7 +342,7 @@ func TestPollUpload_WorkspaceMissing_404(t *testing.T) {
 	wsID := "44444444-2222-3333-4444-555555555555"
 	expectPollDeliveryModeMissing(mock, wsID)
 
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(newInMemStorage(), nil)
 
 	body, ct := pollUploadFixture(t, map[string][]byte{"x": []byte("d")})
@@ -362,7 +362,7 @@ func TestPollUpload_DeliveryModeLookupDBError_500(t *testing.T) {
 	mock.ExpectQuery(`SELECT delivery_mode FROM workspaces WHERE id = \$1`).
 		WithArgs(wsID).WillReturnError(errors.New("connection lost"))
 
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(newInMemStorage(), nil)
 
 	body, ct := pollUploadFixture(t, map[string][]byte{"x": []byte("d")})
@@ -382,7 +382,7 @@ func TestPollUpload_NoFilesField_400(t *testing.T) {
 	expectPollDeliveryMode(mock, wsID, "poll")
 
 	store := newInMemStorage()
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	// Multipart with a non-files field — no actual files.
@@ -407,7 +407,7 @@ func TestPollUpload_MalformedMultipart_400(t *testing.T) {
 	expectPollDeliveryMode(mock, wsID, "poll")
 
 	store := newInMemStorage()
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	// Body that doesn't match the boundary in Content-Type.
@@ -428,7 +428,7 @@ func TestPollUpload_StorageError_500(t *testing.T) {
 
 	store := newInMemStorage()
 	store.putErr = errors.New("disk full")
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	body, ct := pollUploadFixture(t, map[string][]byte{"x.bin": []byte("data")})
@@ -449,7 +449,7 @@ func TestPollUpload_StorageTooLarge_413(t *testing.T) {
 
 	store := newInMemStorage()
 	store.putErr = pendinguploads.ErrTooLarge
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	body, ct := pollUploadFixture(t, map[string][]byte{"x.bin": []byte("data")})
@@ -469,7 +469,7 @@ func TestPollUpload_TooManyFiles_400(t *testing.T) {
 	expectPollDeliveryMode(mock, wsID, "poll")
 
 	store := newInMemStorage()
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	// 65 files — over the per-batch cap.
@@ -504,7 +504,7 @@ func TestPollUpload_NullDeliveryMode_TreatedAsPush(t *testing.T) {
 	expectURLAndMode(mock, wsID, "", "")
 
 	store := newInMemStorage()
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	body, ct := pollUploadFixture(t, map[string][]byte{"x.bin": []byte("data")})
@@ -537,7 +537,7 @@ func TestPollUpload_PerFileCapPreStorage_413(t *testing.T) {
 	expectPollDeliveryMode(mock, wsID, "poll")
 
 	store := newInMemStorage()
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	// 25 MB + 1 byte. Single file, large enough to trip the early
@@ -572,7 +572,7 @@ func TestPollUpload_SanitizesFilenameInResponse(t *testing.T) {
 	expectActivityInsert(mock)
 
 	store := newInMemStorage()
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	body, ct := pollUploadFixture(t, map[string][]byte{"hello world!.pdf": []byte("data")})
@@ -616,7 +616,7 @@ func TestPollUpload_AtomicRollbackOnSecondFileTooLarge(t *testing.T) {
 	expectPollDeliveryMode(mock, wsID, "poll")
 
 	store := newInMemStorage()
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	// Two files: first OK, second over the per-file cap. Pre-validation
@@ -653,7 +653,7 @@ func TestPollUpload_AtomicRollbackOnPutBatchError(t *testing.T) {
 
 	store := newInMemStorage()
 	store.putErr = errors.New("db down mid-batch")
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	body, ct := pollUploadFixture(t, map[string][]byte{
@@ -734,7 +734,7 @@ func TestPollUpload_ActivityRowDiscriminator(t *testing.T) {
 	expectActivityInsertWithTypeAndMethod(mock, wsID, "a2a_receive", "chat_upload_receive")
 
 	store := newInMemStorage()
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	body, ct := pollUploadFixture(t, map[string][]byte{"x.pdf": []byte("xx")})

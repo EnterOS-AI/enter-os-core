@@ -71,7 +71,7 @@ func TestSecurity_GetTemplates_NoAuth_Returns401(t *testing.T) {
 	authDB, authMock := newEnrolledAuthDB(t)
 
 	tmpDir := t.TempDir()
-	tmplh := NewTemplatesHandler(tmpDir, nil)
+	tmplh := NewTemplatesHandler(tmpDir, nil, nil)
 
 	r := gin.New()
 	r.GET("/templates", middleware.AdminAuth(authDB), tmplh.List)
@@ -98,7 +98,7 @@ func TestSecurity_GetTemplates_FreshInstall_FailsOpen(t *testing.T) {
 	authDB, authMock := newFreshInstallAuthDB(t)
 
 	tmpDir := t.TempDir()
-	tmplh := NewTemplatesHandler(tmpDir, nil)
+	tmplh := NewTemplatesHandler(tmpDir, nil, nil)
 
 	r := gin.New()
 	r.GET("/templates", middleware.AdminAuth(authDB), tmplh.List)

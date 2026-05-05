@@ -519,8 +519,9 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 	r.GET("/canvas/viewport", vh.Get)
 	r.PUT("/canvas/viewport", middleware.CanvasOrBearer(db.DB), vh.Save)
 
-	// Templates
-	tmplh := handlers.NewTemplatesHandler(configsDir, dockerCli)
+	// Templates — wh threaded so generateDefaultConfig picks the
+	// SaaS-aware default tier in Import + ReplaceFiles (#2910 PR-B).
+	tmplh := handlers.NewTemplatesHandler(configsDir, dockerCli, wh)
 	// #686: GET /templates lists all template names+metadata from configsDir.
 	// Open access lets unauthenticated callers enumerate org configurations and
 	// installed plugins. AdminAuth-gate it alongside POST /templates/import.

@@ -31,10 +31,20 @@ const maxUploadFiles = 200
 type TemplatesHandler struct {
 	configsDir string
 	docker     *client.Client
+	// wh is used by Import and ReplaceFiles to call DefaultTier() so a
+	// generated config.yaml's tier matches the SaaS-vs-self-hosted
+	// boundary (#2910 PR-B). nil-tolerant — the field is unused when
+	// the caller doesn't import templates that need a fresh config
+	// generated.
+	wh *WorkspaceHandler
 }
 
-func NewTemplatesHandler(configsDir string, dockerCli *client.Client) *TemplatesHandler {
-	return &TemplatesHandler{configsDir: configsDir, docker: dockerCli}
+// NewTemplatesHandler constructs a TemplatesHandler. wh may be nil for
+// callers that only use the read-only template surfaces (List,
+// ReadFile, ListFiles). Import + ReplaceFiles need wh non-nil so the
+// generated config.yaml picks the SaaS-aware default tier.
+func NewTemplatesHandler(configsDir string, dockerCli *client.Client, wh *WorkspaceHandler) *TemplatesHandler {
+	return &TemplatesHandler{configsDir: configsDir, docker: dockerCli, wh: wh}
 }
 
 // modelSpec describes a single supported model on a template: its id (sent

@@ -105,7 +105,7 @@ func TestChatUpload_InvalidWorkspaceID(t *testing.T) {
 	setupTestDB(t)
 	setupTestRedis(t)
 
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil))
 
 	c, w := makeUploadRequest(t, "not-a-uuid", &bytes.Buffer{}, "")
 	h.Upload(c)
@@ -122,7 +122,7 @@ func TestChatUpload_WorkspaceNotInDB(t *testing.T) {
 	wsID := "00000000-0000-0000-0000-000000000099"
 	expectURLMissing(mock, wsID)
 
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil))
 	body, ct := uploadFixture(t)
 	c, w := makeUploadRequest(t, wsID, body, ct)
 	h.Upload(c)
@@ -166,7 +166,7 @@ func TestChatUpload_NoInboundSecret_LazyHeal(t *testing.T) {
 		WithArgs(sqlmock.AnyArg(), wsID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil))
 	body, ct := uploadFixture(t)
 	c, w := makeUploadRequest(t, wsID, body, ct)
 	h.Upload(c)
@@ -203,7 +203,7 @@ func TestChatUpload_NoInboundSecret_LazyHealFailure(t *testing.T) {
 		WithArgs(sqlmock.AnyArg(), wsID).
 		WillReturnError(sql.ErrConnDone) // mint fails
 
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil))
 	body, ct := uploadFixture(t)
 	c, w := makeUploadRequest(t, wsID, body, ct)
 	h.Upload(c)
@@ -231,7 +231,7 @@ func TestChatUpload_NoURL(t *testing.T) {
 	wsID := "00000000-0000-0000-0000-000000000042"
 	expectURLAndMode(mock, wsID, "", "push")
 
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil))
 	body, ct := uploadFixture(t)
 	c, w := makeUploadRequest(t, wsID, body, ct)
 	h.Upload(c)
@@ -256,7 +256,7 @@ func TestChatUpload_PollModeEmptyURL(t *testing.T) {
 	wsID := "00000000-0000-0000-0000-000000000099"
 	expectURLAndMode(mock, wsID, "", "poll")
 
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil))
 	body, ct := uploadFixture(t)
 	c, w := makeUploadRequest(t, wsID, body, ct)
 	h.Upload(c)
@@ -286,7 +286,7 @@ func TestChatUpload_NullModeEmptyURL(t *testing.T) {
 	wsID := "30ba7f0b-b303-4a20-aefe-3a4a675b8aa4" // user's "mac laptop"
 	expectURLNullMode(mock, wsID, "")
 
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil))
 	body, ct := uploadFixture(t)
 	c, w := makeUploadRequest(t, wsID, body, ct)
 	h.Upload(c)
@@ -338,7 +338,7 @@ func TestChatUpload_ForwardsToWorkspace_HappyPath(t *testing.T) {
 	expectURL(mock, wsID, srv.URL)
 	expectInboundSecret(mock, wsID, "super-secret-123")
 
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil))
 	body, ct := uploadFixture(t)
 	c, w := makeUploadRequest(t, wsID, body, ct)
 	h.Upload(c)
@@ -380,7 +380,7 @@ func TestChatUpload_ForwardsErrorStatusUnchanged(t *testing.T) {
 	expectURL(mock, wsID, srv.URL)
 	expectInboundSecret(mock, wsID, "tok")
 
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil))
 	body, ct := uploadFixture(t)
 	c, w := makeUploadRequest(t, wsID, body, ct)
 	h.Upload(c)
@@ -402,7 +402,7 @@ func TestChatUpload_WorkspaceUnreachable(t *testing.T) {
 	expectURL(mock, wsID, "http://127.0.0.1:1")
 	expectInboundSecret(mock, wsID, "tok")
 
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil))
 	body, ct := uploadFixture(t)
 	c, w := makeUploadRequest(t, wsID, body, ct)
 	h.Upload(c)
@@ -418,7 +418,7 @@ func TestChatDownload_InvalidPath(t *testing.T) {
 	setupTestDB(t)
 	setupTestRedis(t)
 
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil))
 
 	cases := []struct {
 		name, path, wantSubstr string
@@ -507,7 +507,7 @@ func TestChatDownload_WorkspaceNotInDB(t *testing.T) {
 		WithArgs(wsID).
 		WillReturnError(sql.ErrNoRows)
 
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil))
 	c, w := makeDownloadRequest(t, wsID, "/workspace/foo.txt")
 	h.Download(c)
 
@@ -533,7 +533,7 @@ func TestChatDownload_NoInboundSecret_LazyHeal(t *testing.T) {
 		WithArgs(sqlmock.AnyArg(), wsID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil))
 	c, w := makeDownloadRequest(t, wsID, "/workspace/foo.txt")
 	h.Download(c)
 
@@ -559,7 +559,7 @@ func TestChatDownload_NoInboundSecret_LazyHealFailure(t *testing.T) {
 		WithArgs(sqlmock.AnyArg(), wsID).
 		WillReturnError(sql.ErrConnDone)
 
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil))
 	c, w := makeDownloadRequest(t, wsID, "/workspace/foo.txt")
 	h.Download(c)
 
@@ -592,7 +592,7 @@ func TestChatDownload_ForwardsToWorkspace_HappyPath(t *testing.T) {
 	expectURL(mock, wsID, srv.URL)
 	expectInboundSecret(mock, wsID, "the-secret")
 
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil))
 	c, w := makeDownloadRequest(t, wsID, "/workspace/report.txt")
 	h.Download(c)
 
@@ -634,7 +634,7 @@ func TestChatDownload_404FromWorkspacePropagated(t *testing.T) {
 	expectURL(mock, wsID, srv.URL)
 	expectInboundSecret(mock, wsID, "tok")
 
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil))
 	c, w := makeDownloadRequest(t, wsID, "/workspace/missing.txt")
 	h.Download(c)
 

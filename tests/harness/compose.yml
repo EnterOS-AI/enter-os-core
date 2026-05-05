@@ -94,6 +94,13 @@ services:
       CP_UPSTREAM_URL: "http://cp-stub:9090"
       RATE_LIMIT: "1000"
       CANVAS_PROXY_URL: "http://localhost:3000"
+      # Memory v2 sidecar (PR #2906) bundles the plugin into the
+      # tenant image and starts it before the main server. The plugin
+      # runs `CREATE EXTENSION vector` on first boot, which fails on
+      # the harness's plain postgres:15-alpine (no pgvector). The
+      # harness doesn't exercise memory features, so disable the
+      # sidecar via the entrypoint's documented escape hatch.
+      MEMORY_PLUGIN_DISABLE: "1"
     networks: [harness-net]
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://localhost:8080/health || exit 1"]
@@ -142,6 +149,13 @@ services:
       CP_UPSTREAM_URL: "http://cp-stub:9090"
       RATE_LIMIT: "1000"
       CANVAS_PROXY_URL: "http://localhost:3000"
+      # Memory v2 sidecar (PR #2906) bundles the plugin into the
+      # tenant image and starts it before the main server. The plugin
+      # runs `CREATE EXTENSION vector` on first boot, which fails on
+      # the harness's plain postgres:15-alpine (no pgvector). The
+      # harness doesn't exercise memory features, so disable the
+      # sidecar via the entrypoint's documented escape hatch.
+      MEMORY_PLUGIN_DISABLE: "1"
     networks: [harness-net]
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://localhost:8080/health || exit 1"]

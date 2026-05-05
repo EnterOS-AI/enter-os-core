@@ -61,16 +61,20 @@ func (h *OrgHandler) createWorkspaceTree(ws OrgWorkspace, parentID *string, absX
 		tier = defaults.Tier
 	}
 	if tier == 0 {
-		// SaaS-aware fallback. SaaS → T4 (one container per sibling
-		// EC2, no neighbour to protect from). Self-hosted → T2
-		// (safe shared-Docker-daemon default — many workspaces in
-		// one kernel). Templates that want a different floor
-		// declare `tier:` in their config.yaml or the org-template's
-		// `defaults.tier`.
-		if h.workspace != nil && h.workspace.IsSaaS() {
-			tier = 4
+		// Resolved via the same DefaultTier helper Create + Templates
+		// use (#2910 PR-E). SaaS → T4 (one container per sibling EC2,
+		// no neighbour to protect from), self-hosted → T3. Pre-#2910
+		// this path returned T2 on self-hosted, asymmetric with
+		// workspace.go's T3 — undocumented drift. Lifting to
+		// DefaultTier collapses both call sites onto one source of
+		// truth so a future tier-default change sweeps every entry
+		// point at once. Templates that want a different floor still
+		// declare `tier:` in config.yaml or `defaults.tier` in
+		// org.yaml.
+		if h.workspace != nil {
+			tier = h.workspace.DefaultTier()
 		} else {
-			tier = 2
+			tier = 3
 		}
 	}
 
