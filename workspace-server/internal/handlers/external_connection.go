@@ -259,7 +259,6 @@ pip install 'git+https://github.com/Molecule-AI/hermes-channel-molecule.git'
 export MOLECULE_WORKSPACE_ID={{WORKSPACE_ID}}
 export MOLECULE_PLATFORM_URL={{PLATFORM_URL}}
 export MOLECULE_WORKSPACE_TOKEN="<paste from create response>"
-export MOLECULE_ORG_ID="<your org id>"
 
 # 3. Edit ~/.hermes/config.yaml — under your existing top-level
 #    gateway: block, add a plugin_platforms entry:
@@ -338,7 +337,6 @@ mkdir -p ~/.codex
 # WORKSPACE_ID = "{{WORKSPACE_ID}}"
 # PLATFORM_URL = "{{PLATFORM_URL}}"
 # MOLECULE_WORKSPACE_TOKEN = "<paste from create response>"
-# MOLECULE_ORG_ID = "<your org id>"
 
 # 3. Run codex — the molecule tools are now available to the agent:
 codex
@@ -380,7 +378,6 @@ pip install molecule-ai-workspace-runtime
 # 3. Wire the molecule MCP server. {{WORKSPACE_ID}} + {{PLATFORM_URL}}
 # are stamped server-side; paste the auth token before running.
 WORKSPACE_TOKEN="<paste from create response>"
-MOLECULE_ORG_ID="<your org id>"
 openclaw mcp set molecule "$(cat <<EOF
 {
   "command": "python3",
@@ -388,8 +385,7 @@ openclaw mcp set molecule "$(cat <<EOF
   "env": {
     "WORKSPACE_ID": "{{WORKSPACE_ID}}",
     "PLATFORM_URL": "{{PLATFORM_URL}}",
-    "MOLECULE_WORKSPACE_TOKEN": "$WORKSPACE_TOKEN",
-    "MOLECULE_ORG_ID": "$MOLECULE_ORG_ID"
+    "MOLECULE_WORKSPACE_TOKEN": "$WORKSPACE_TOKEN"
   }
 }
 EOF
