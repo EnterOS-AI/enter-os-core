@@ -290,10 +290,37 @@ directory** by the `publish-runtime` GitHub Actions workflow on every
 Operators running an agent outside the platform's container fleet
 (any runtime that supports MCP stdio — Claude Code, hermes, codex,
 etc.) can install this wheel and run the universal MCP server
-locally:
+locally.
+
+### Requirements
+
+* **Python ≥3.11.** The wheel sets `requires-python = ">=3.11"`. On
+  older interpreters `pip install` returns the cryptic
+  `Could not find a version that satisfies the requirement` — that
+  message is pip filtering this wheel out, NOT the package missing
+  from PyPI. Upgrade with `brew install python@3.12` /
+  `apt install python3.12` / `pyenv install 3.12` first.
+* **`pipx` recommended over `pip`.** `pipx install` puts
+  `molecule-mcp` on PATH automatically and isolates the runtime's
+  deps from your system Python. Plain `pip install --user` works
+  but the binary lands in `~/.local/bin` (Linux) or
+  `~/Library/Python/3.X/bin` (macOS) which is often not on PATH on
+  a fresh shell — `claude mcp add molecule -- molecule-mcp` then
+  fails with "command not found" at first use.
+
+### Install
 
 ```sh
-pip install molecule-ai-workspace-runtime
+# Recommended:
+pipx install molecule-ai-workspace-runtime
+
+# Alternative (manage PATH yourself):
+pip install --user molecule-ai-workspace-runtime
+```
+
+### Run
+
+```sh
 WORKSPACE_ID=<uuid> \\
   PLATFORM_URL=https://<tenant>.staging.moleculesai.app \\
   MOLECULE_WORKSPACE_TOKEN=<bearer> \\
@@ -306,9 +333,63 @@ runtimes already get via the workspace's auto-spawned MCP. Register
 the binary in your agent's MCP config (e.g. Claude Code's
 `claude mcp add molecule -- molecule-mcp` with the env above).
 
+### Keeping the token out of shell history
+
+Inline `MOLECULE_WORKSPACE_TOKEN=<bearer>` ends up in `~/.zsh_history`
+and (when registered via `claude mcp add`) plaintext in
+`~/.claude.json`. To avoid that, write the token to a 0600 file and
+point `MOLECULE_WORKSPACE_TOKEN_FILE` at it:
+
+```sh
+umask 077
+printf '%s' "<bearer>" > ~/.config/molecule/token
+WORKSPACE_ID=<uuid> \\
+  PLATFORM_URL=https://<tenant>.staging.moleculesai.app \\
+  MOLECULE_WORKSPACE_TOKEN_FILE=$HOME/.config/molecule/token \\
+  molecule-mcp
+```
+
+Token resolution order: `MOLECULE_WORKSPACE_TOKEN` (inline env) →
+`MOLECULE_WORKSPACE_TOKEN_FILE` (path) → `${CONFIGS_DIR}/.auth_token`
+(in-container default).
+
 The token comes from the canvas → Tokens tab. Restarting an external
 workspace from the canvas no longer revokes the token (PR #2412), so
 operator tokens persist across status nudges.
+
+### Push vs poll delivery (Claude Code specifics)
+
+By default the inbox runs in **poll mode** — every turn the agent
+calls `wait_for_message`, which blocks up to ~60s on
+`/activity?since_id=…`. Real-time push delivery is also supported,
+but on Claude Code it requires THREE conditions, ALL of which must
+hold:
+
+1. **The MCP server declares `experimental.claude/channel`** — this
+   wheel does (see `_build_initialize_result`). Nothing for you to
+   do.
+2. **Claude Code installs the server as a marketplace plugin** — a
+   plain `claude mcp add molecule -- molecule-mcp` produces a
+   non-plugin-sourced server, which Claude Code rejects with
+   `channel_enable requires a marketplace plugin`. Until the
+   official `moleculesai/claude-code-plugin` marketplace lands
+   (issue #2934 follow-up), operators who want push must scaffold
+   their own local marketplace under
+   `~/.claude/marketplaces/molecule-local/` containing a
+   `marketplace.json` + `plugin.json` that points at this wheel.
+3. **Claude Code is launched with the dev-channels flag** — pass
+   `--dangerously-load-development-channels plugin:molecule@<marketplace>`
+   on the `claude` invocation. Without this flag the channel
+   capability is silently ignored.
+
+Symptom of any condition failing: messages arrive but only via the
+poll path (every ~1–60s), not real-time. There's currently no
+diagnostic surfaced — `molecule-mcp doctor` (issue #2934 follow-up)
+is planned.
+
+If you don't need real-time push, the default poll path works
+universally with no extra setup; both modes converge on the same
+`inbox_pop` ack so messages never duplicate.
 
 See [`docs/workspace-runtime-package.md`](https://github.com/Molecule-AI/molecule-core/blob/main/docs/workspace-runtime-package.md)
 for the publish flow and architecture.

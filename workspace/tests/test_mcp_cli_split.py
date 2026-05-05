@@ -229,3 +229,87 @@ class TestResolveWorkspacesDirect:
         out, errors = mcp_workspace_resolver.resolve_workspaces()
         assert out == [("ws-a", "a"), ("ws-b", "b")]
         assert errors == []
+
+
+# ============== Token-from-file env var (issue #2934) ==============
+
+class TestTokenFileEnv:
+    """``MOLECULE_WORKSPACE_TOKEN_FILE`` lets operators keep the bearer
+    out of shell history and out of MCP-host config plaintext (e.g.
+    ~/.claude.json). Resolution order: inline TOKEN env > TOKEN_FILE
+    env > ${CONFIGS_DIR}/.auth_token.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, monkeypatch, tmp_path):
+        for v in (
+            "WORKSPACE_ID",
+            "MOLECULE_WORKSPACE_TOKEN",
+            "MOLECULE_WORKSPACE_TOKEN_FILE",
+            "MOLECULE_WORKSPACES",
+        ):
+            monkeypatch.delenv(v, raising=False)
+        # Point CONFIGS_DIR at an empty tmp_path so the .auth_token
+        # fallback returns "" — keeps the test cases unambiguous.
+        monkeypatch.setenv("CONFIGS_DIR", str(tmp_path))
+        yield tmp_path
+
+    def test_token_file_env_resolves(self, monkeypatch, tmp_path):
+        token_path = tmp_path / "token.txt"
+        token_path.write_text("file-tok-123\n")  # trailing newline must strip
+        monkeypatch.setenv("WORKSPACE_ID", "ws-1")
+        monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN_FILE", str(token_path))
+        out, errors = mcp_workspace_resolver.resolve_workspaces()
+        assert out == [("ws-1", "file-tok-123")]
+        assert errors == []
+
+    def test_inline_token_takes_precedence_over_file(self, monkeypatch, tmp_path):
+        # If both env vars are set, inline wins — matches the docstring's
+        # documented order. (Operators sometimes set both during a
+        # rotation; we want predictable behavior.)
+        token_path = tmp_path / "token.txt"
+        token_path.write_text("file-tok")
+        monkeypatch.setenv("WORKSPACE_ID", "ws-1")
+        monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN", "inline-tok")
+        monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN_FILE", str(token_path))
+        out, _ = mcp_workspace_resolver.resolve_workspaces()
+        assert out == [("ws-1", "inline-tok")]
+
+    def test_missing_file_falls_through_to_error(self, monkeypatch, tmp_path):
+        # Pointed at a non-existent path — resolver should return the
+        # combined "no token" error, NOT crash.
+        monkeypatch.setenv("WORKSPACE_ID", "ws-1")
+        monkeypatch.setenv(
+            "MOLECULE_WORKSPACE_TOKEN_FILE", str(tmp_path / "does-not-exist")
+        )
+        out, errors = mcp_workspace_resolver.resolve_workspaces()
+        assert out == []
+        assert any("MOLECULE_WORKSPACE_TOKEN_FILE" in e for e in errors)
+
+    def test_empty_file_falls_through_to_error(self, monkeypatch, tmp_path):
+        # File exists but is blank — same shape as no token at all.
+        token_path = tmp_path / "empty.txt"
+        token_path.write_text("")
+        monkeypatch.setenv("WORKSPACE_ID", "ws-1")
+        monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN_FILE", str(token_path))
+        out, errors = mcp_workspace_resolver.resolve_workspaces()
+        assert out == []
+        assert errors  # at least one combined error message
+
+    def test_blank_env_var_treated_as_unset(self, monkeypatch):
+        # Empty string is treated as "not set" — common pitfall when
+        # users export an unset shell var.
+        monkeypatch.setenv("WORKSPACE_ID", "ws-1")
+        monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN_FILE", "")
+        out, errors = mcp_workspace_resolver.resolve_workspaces()
+        assert out == []
+        assert errors
+
+    def test_help_message_advertises_token_file(self, capsys):
+        # Help text must mention TOKEN_FILE so a first-run operator
+        # learns about the safer option without grepping the source.
+        mcp_workspace_resolver.print_missing_env_help(
+            ["WORKSPACE_ID", "MOLECULE_WORKSPACE_TOKEN"], have_token_file=False
+        )
+        err = capsys.readouterr().err
+        assert "MOLECULE_WORKSPACE_TOKEN_FILE" in err

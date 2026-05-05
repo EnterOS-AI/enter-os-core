@@ -35,9 +35,15 @@ def resolve_workspaces() -> tuple[list[tuple[str, str]], list[str]]:
        N workspaces). When set, ``WORKSPACE_ID`` / ``MOLECULE_WORKSPACE_TOKEN``
        are IGNORED — the JSON is the source of truth.
 
-    2. Single-workspace fallback — ``WORKSPACE_ID`` env var + token from
-       ``MOLECULE_WORKSPACE_TOKEN`` or ``${CONFIGS_DIR}/.auth_token``.
-       This is the pre-existing path; back-compat exact.
+    2. Single-workspace fallback — ``WORKSPACE_ID`` env var + token
+       resolved in this order:
+         a. ``MOLECULE_WORKSPACE_TOKEN`` (inline env — convenient but
+            leaks into shell history + plaintext MCP-host config).
+         b. ``MOLECULE_WORKSPACE_TOKEN_FILE`` (path to a file holding
+            the token — operator can keep it 0600 in their home dir;
+            survives shell-history scrubs).
+         c. ``${CONFIGS_DIR}/.auth_token`` (in-container runtimes —
+            the platform writes this on provision).
 
     Returns ``(workspaces, errors)``:
       * ``workspaces``: list of ``(workspace_id, token)`` — non-empty
@@ -98,14 +104,45 @@ def resolve_workspaces() -> tuple[list[tuple[str, str]], list[str]]:
     wsid = os.environ.get("WORKSPACE_ID", "").strip()
     if not wsid:
         return [], ["WORKSPACE_ID (or MOLECULE_WORKSPACES) is required"]
+    # Token resolution order (#2934): inline env → file path → CONFIGS_DIR
+    # default. The file-path option exists so operators can keep the
+    # bearer out of shell history and out of MCP-host config plaintext
+    # (e.g. ~/.claude.json) — set MOLECULE_WORKSPACE_TOKEN_FILE to a
+    # 0600 file containing the token. The CONFIGS_DIR/.auth_token
+    # fallback predates this and stays for in-container runtimes.
     tok = os.environ.get("MOLECULE_WORKSPACE_TOKEN", "").strip()
+    if not tok:
+        tok = _read_token_from_file_env()
     if not tok:
         tok = read_token_file()
     if not tok:
         return [], [
-            "MOLECULE_WORKSPACE_TOKEN (or CONFIGS_DIR/.auth_token) is required"
+            "MOLECULE_WORKSPACE_TOKEN, MOLECULE_WORKSPACE_TOKEN_FILE, or "
+            "CONFIGS_DIR/.auth_token is required"
         ]
     return [(wsid, tok)], []
+
+
+def _read_token_from_file_env() -> str:
+    """Read the token from the file path in MOLECULE_WORKSPACE_TOKEN_FILE.
+
+    Returns "" on:
+      - env var unset / blank
+      - file not found, unreadable, or empty
+      - any OSError on read
+
+    Empty-on-failure (rather than raising) lets the resolver fall through
+    to the CONFIGS_DIR fallback. The caller surfaces the combined "no
+    token" error if every source is empty.
+    """
+    path = os.environ.get("MOLECULE_WORKSPACE_TOKEN_FILE", "").strip()
+    if not path:
+        return ""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
 
 
 def print_missing_env_help(missing: list[str], have_token_file: bool) -> None:
@@ -121,6 +158,16 @@ def print_missing_env_help(missing: list[str], have_token_file: bool) -> None:
         print(
             "  MOLECULE_WORKSPACE_TOKEN    — bearer token for this workspace "
             "(canvas → Tokens tab)",
+            file=sys.stderr,
+        )
+        print(
+            "                              OR set MOLECULE_WORKSPACE_TOKEN_FILE"
+            " to a path that holds the token",
+            file=sys.stderr,
+        )
+        print(
+            "                              (keeps the secret out of shell"
+            " history and MCP-host config plaintext)",
             file=sys.stderr,
         )
     print("", file=sys.stderr)
