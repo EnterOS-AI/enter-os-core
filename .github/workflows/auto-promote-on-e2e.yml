@@ -186,7 +186,7 @@ jobs:
               echo "proceed=true" >> "$GITHUB_OUTPUT"
               echo "::notice::E2E green for this SHA — proceeding with promote"
               ;;
-            completed/failure|completed/cancelled|completed/timed_out)
+            completed/failure|completed/timed_out)
               echo "proceed=false" >> "$GITHUB_OUTPUT"
               {
                 echo "## ❌ Auto-promote aborted — E2E Staging SaaS failed"
@@ -197,6 +197,27 @@ jobs:
                 echo "If the failure was a flake, manually dispatch this workflow with the same sha to override."
               } >> "$GITHUB_STEP_SUMMARY"
               exit 1
+              ;;
+            completed/cancelled)
+              # cancelled ≠ failure. Per-SHA concurrency cancels older E2E
+              # runs when a newer push lands (memory:
+              # feedback_concurrency_group_per_sha) — the newer SHA will
+              # have its own E2E + promote chain. Treat the same as
+              # in_progress: defer without aborting, let the next E2E run
+              # promote when it lands.
+              #
+              # Caught 2026-05-05 02:03 on sha 31f9a5e — auto-promote
+              # blocked the whole chain because this case fell through to
+              # exit 1 instead of clean defer.
+              echo "proceed=false" >> "$GITHUB_OUTPUT"
+              {
+                echo "## ⏭ Auto-promote deferred — E2E Staging SaaS was cancelled"
+                echo
+                echo "E2E Staging SaaS for \`${SHA:0:7}\`: \`$RESULT\`"
+                echo "Likely per-SHA concurrency (newer push superseded this E2E run)."
+                echo "The newer SHA's E2E will fire its own promote when it lands."
+                echo "If you need this specific SHA promoted, manually dispatch."
+              } >> "$GITHUB_STEP_SUMMARY"
               ;;
             in_progress/*|queued/*|requested/*|waiting/*|pending/*)
               echo "proceed=false" >> "$GITHUB_OUTPUT"
