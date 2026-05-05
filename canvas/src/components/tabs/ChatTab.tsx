@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useLayoutEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "@/lib/api";
@@ -124,14 +124,43 @@ function extractReplyText(resp: A2AResponse): string {
 // doesn't). Single source of truth for file-part parsing across
 // live chat, activity log replay, and any future consumers.
 
+/** Initial chat history page size. The newest N messages are rendered
+ *  on first paint; older history is fetched on demand via loadOlder()
+ *  when the user scrolls the top sentinel into view. */
+const INITIAL_HISTORY_LIMIT = 10;
+/** Subsequent older-history batch size. Larger than INITIAL so a long
+ *  scroll-back doesn't fan out into many round-trips. */
+const OLDER_HISTORY_BATCH = 20;
+
 /**
  * Load chat history from the activity_logs database via the platform API.
  * Uses source=canvas to only get user-initiated messages (not agent-to-agent).
+ *
+ * Pagination:
+ *  - Pass `limit` to bound the page size (newest-first from server).
+ *  - Pass `beforeTs` (RFC3339) to fetch rows STRICTLY OLDER than that
+ *    timestamp. Combined with limit, this yields the next-older page
+ *    when scrolling backward through history.
+ *
+ * `reachedEnd` is true when the server returned fewer rows than asked
+ * for — caller uses this to disable further older-batch fetches.
+ * (Counts row-level returns, not chat-bubble count: each row may
+ * produce 1-2 bubbles.)
  */
-async function loadMessagesFromDB(workspaceId: string): Promise<{ messages: ChatMessage[]; error: string | null }> {
+async function loadMessagesFromDB(
+  workspaceId: string,
+  limit: number,
+  beforeTs?: string,
+): Promise<{ messages: ChatMessage[]; error: string | null; reachedEnd: boolean }> {
   try {
+    const params = new URLSearchParams({
+      type: "a2a_receive",
+      source: "canvas",
+      limit: String(limit),
+    });
+    if (beforeTs) params.set("before_ts", beforeTs);
     const activities = await api.get<ActivityRowForHydration[]>(
-      `/workspaces/${workspaceId}/activity?type=a2a_receive&source=canvas&limit=50`,
+      `/workspaces/${workspaceId}/activity?${params.toString()}`,
     );
 
     const messages: ChatMessage[] = [];
@@ -142,11 +171,12 @@ async function loadMessagesFromDB(workspaceId: string): Promise<{ messages: Chat
     for (const a of [...activities].reverse()) {
       messages.push(...activityRowToMessages(a, isInternalSelfMessage));
     }
-    return { messages, error: null };
+    return { messages, error: null, reachedEnd: activities.length < limit };
   } catch (err) {
     return {
       messages: [],
       error: err instanceof Error ? err.message : "Failed to load chat history",
+      reachedEnd: true,
     };
   }
 }
@@ -256,6 +286,52 @@ function MyChatPanel({ workspaceId, data }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [confirmRestart, setConfirmRestart] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  // Lazy-load older history on scroll-up.
+  // - containerRef = the scrollable messages viewport
+  // - topRef       = sentinel above the messages list; IO observes it
+  //                  and triggers loadOlder() when it enters view
+  // - hasMore      = false once a fetch returns < limit rows; stops IO
+  // - loadingOlder = drives the "Loading older messages…" UI label
+  // - inflightRef  = synchronous guard against double-entry of loadOlder
+  //                  when the IO callback fires twice in the same
+  //                  microtask (state-based guard would be stale until
+  //                  the next React commit)
+  // - scrollAnchorRef = saves distance-from-bottom before a prepend
+  //                  so the useLayoutEffect below can restore the
+  //                  user's exact viewport position. Without this,
+  //                  prepending older messages would jump the scroll
+  //                  position by the height of the new content.
+  // - oldestMessageRef / hasMoreRef = let the loadOlder closure read
+  //                  the latest values without taking them as deps —
+  //                  every live agent push mutates `messages`, and
+  //                  having loadOlder depend on `messages` would tear
+  //                  down + re-arm the IntersectionObserver on every
+  //                  push. Refs decouple the observer lifecycle from
+  //                  message-list updates.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const topRef = useRef<HTMLDivElement>(null);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const inflightRef = useRef(false);
+  // The scroll anchor includes the first-message id as it was BEFORE
+  // the prepend — see useLayoutEffect below for why. Without this tag,
+  // a live agent push that appends WHILE loadOlder is in flight would
+  // run useLayoutEffect against the append (anchor still set), the
+  // "restore" math would scroll the user to a stale offset, AND the
+  // append's normal scroll-to-bottom would be swallowed.
+  const scrollAnchorRef = useRef<
+    { savedDistanceFromBottom: number; expectFirstIdNotEqual: string | null } | null
+  >(null);
+  const oldestMessageRef = useRef<ChatMessage | null>(null);
+  const hasMoreRef = useRef(true);
+  // Monotonic token bumped on workspace switch + on every loadOlder
+  // entry. Each fetch's .then() captures its own token; if the token
+  // has moved, the resolved messages belong to a stale workspace or a
+  // superseded fetch and we silently drop them. Without this guard, a
+  // workspace switch mid-fetch would have the in-flight promise
+  // resolve into the new workspace's setMessages — the user sees
+  // someone else's history briefly.
+  const fetchTokenRef = useRef(0);
   // Files the user has picked but not yet sent. Cleared on send
   // (upload success) or by the × on each pill.
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
@@ -294,16 +370,143 @@ function MyChatPanel({ workspaceId, data }: Props) {
     sendInFlightRef.current = false;
   }, []);
 
-  // Load chat history from database on mount
-  useEffect(() => {
+  // Initial-load fetch — used by the mount effect and the "Retry"
+  // button below. Single source of truth so the two paths can't drift
+  // (e.g. INITIAL_HISTORY_LIMIT bumped in the effect but not the
+  // retry, leading to inconsistent first-paint sizes).
+  const loadInitial = useCallback(() => {
     setLoading(true);
     setLoadError(null);
-    loadMessagesFromDB(workspaceId).then(({ messages: msgs, error: fetchErr }) => {
-      setMessages(msgs);
-      setLoadError(fetchErr);
-      setLoading(false);
-    });
+    setHasMore(true);
+    // Bump the token; any in-flight fetch from the previous workspace
+    // (or a previous retry) will see token != myToken in its .then()
+    // and silently bail — the late response can't clobber the new
+    // workspace's state.
+    fetchTokenRef.current += 1;
+    const myToken = fetchTokenRef.current;
+    loadMessagesFromDB(workspaceId, INITIAL_HISTORY_LIMIT).then(
+      ({ messages: msgs, error: fetchErr, reachedEnd }) => {
+        if (fetchTokenRef.current !== myToken) return;
+        setMessages(msgs);
+        setLoadError(fetchErr);
+        setHasMore(!reachedEnd);
+        setLoading(false);
+      },
+    );
   }, [workspaceId]);
+
+  // Load chat history on mount / workspace switch.
+  // Initial load is bounded to INITIAL_HISTORY_LIMIT (newest 10) — the
+  // rest streams in as the user scrolls up via loadOlder() below. Pre-
+  // 2026-05-05 this fetched the newest 50 in one shot; on a long-running
+  // workspace that meant 50× message-bubble paint + DOM cost on every
+  // tab-open even when the user only wanted to read the last few.
+  useEffect(() => {
+    loadInitial();
+  }, [loadInitial]);
+
+  // Mirror the latest oldest-message + hasMore into refs so loadOlder
+  // can read them without taking `messages` as a dep. Every live push
+  // through agentMessages would otherwise recreate loadOlder and tear
+  // down the IO observer.
+  useEffect(() => {
+    oldestMessageRef.current = messages[0] ?? null;
+  }, [messages]);
+  useEffect(() => {
+    hasMoreRef.current = hasMore;
+  }, [hasMore]);
+
+  // Fetch the next-older batch and prepend. Stable identity (deps =
+  // [workspaceId]) so the IntersectionObserver effect below doesn't
+  // re-arm on every messages update.
+  const loadOlder = useCallback(async () => {
+    // inflightRef is the load-bearing guard — synchronous, set BEFORE
+    // any await, so two IO callbacks dispatched in the same microtask
+    // can't both pass. The state checks are defensive secondary
+    // gates for the slow-scroll case.
+    if (inflightRef.current || !hasMoreRef.current) return;
+    const oldest = oldestMessageRef.current;
+    if (!oldest) return;
+    const container = containerRef.current;
+    if (!container) return;
+    inflightRef.current = true;
+    // Capture the user's distance-from-bottom BEFORE we prepend so the
+    // useLayoutEffect can restore it after the new DOM lands. The
+    // expectFirstIdNotEqual tag is what the layout effect checks
+    // against `messages[0].id` to disambiguate prepend (id changed) vs
+    // append (id unchanged → live message landed mid-fetch). Without
+    // it, an agent push during loadOlder runs the "restore" against a
+    // stale anchor — user gets yanked + the append's bottom-pin is
+    // swallowed.
+    scrollAnchorRef.current = {
+      savedDistanceFromBottom: container.scrollHeight - container.scrollTop,
+      expectFirstIdNotEqual: oldest.id,
+    };
+    fetchTokenRef.current += 1;
+    const myToken = fetchTokenRef.current;
+    setLoadingOlder(true);
+    try {
+      const { messages: older, reachedEnd } = await loadMessagesFromDB(
+        workspaceId,
+        OLDER_HISTORY_BATCH,
+        oldest.timestamp,
+      );
+      // Workspace switched (or another loadOlder bumped the token)
+      // mid-fetch — drop these results, they belong to a stale tab.
+      if (fetchTokenRef.current !== myToken) {
+        scrollAnchorRef.current = null;
+        return;
+      }
+      if (older.length > 0) {
+        setMessages((prev) => [...older, ...prev]);
+      } else {
+        // Nothing came back — clear the anchor so the next paint doesn't
+        // try to "restore" against a no-op prepend.
+        scrollAnchorRef.current = null;
+      }
+      setHasMore(!reachedEnd);
+    } finally {
+      setLoadingOlder(false);
+      inflightRef.current = false;
+    }
+  }, [workspaceId]);
+
+  // IntersectionObserver on the top sentinel. Fires loadOlder() the
+  // moment the user scrolls within 200px of the top. AbortController
+  // unwires cleanly on workspace switch / unmount; root is the
+  // scrollable container so we observe only what's visible inside it.
+  //
+  // Dependencies:
+  //  - loadOlder    — stable per workspaceId (refs decouple it from
+  //                   message updates), so this dep is here for the
+  //                   workspace-switch case only
+  //  - hasMore      — re-run when older history runs out so we
+  //                   disconnect cleanly
+  //  - hasMessages  — load-bearing: the sentinel JSX is gated on
+  //                   `messages.length > 0`, so topRef.current is null
+  //                   on the empty-messages render. We re-arm exactly
+  //                   once when messages first land. NOT depending on
+  //                   `messages.length` (or `messages`) directly so
+  //                   each subsequent message append doesn't tear down
+  //                   + re-arm the observer.
+  const hasMessages = messages.length > 0;
+  useEffect(() => {
+    const top = topRef.current;
+    const container = containerRef.current;
+    if (!top || !container) return;
+    if (!hasMore) return; // stop observing when no older history exists
+    const ac = new AbortController();
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (ac.signal.aborted) return;
+        if (entries[0]?.isIntersecting) loadOlder();
+      },
+      { root: container, rootMargin: "200px 0px 0px 0px", threshold: 0 },
+    );
+    io.observe(top);
+    ac.signal.addEventListener("abort", () => io.disconnect());
+    return () => ac.abort();
+  }, [loadOlder, hasMore, hasMessages]);
 
   // Agent reachability
   useEffect(() => {
@@ -316,7 +519,32 @@ function MyChatPanel({ workspaceId, data }: Props) {
     currentTaskRef.current = data.currentTask;
   }, [data.currentTask]);
 
-  useEffect(() => {
+  // Scroll behavior across messages updates:
+  //  - Prepend (loadOlder landed)  → restore the user's saved
+  //    distance-from-bottom so their reading position is unchanged.
+  //  - Append / initial            → pin to latest bubble.
+  // useLayoutEffect (not useEffect) so scroll restoration runs BEFORE
+  // paint — otherwise the user sees the page jump for one frame.
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    const anchor = scrollAnchorRef.current;
+    // Only honor the anchor when this messages-update is the prepend
+    // we expected. messages[0].id is the test:
+    //   - prepend  → messages[0] is one of the older rows → id !== expectFirstIdNotEqual
+    //   - append   → messages[0] unchanged → id === expectFirstIdNotEqual → fall through
+    // Without this check, an agent push that lands mid-loadOlder would
+    // run the restore against the append's update, yank the user's
+    // scroll, AND swallow the append's bottom-pin.
+    if (
+      anchor &&
+      container &&
+      messages.length > 0 &&
+      messages[0].id !== anchor.expectFirstIdNotEqual
+    ) {
+      container.scrollTop = container.scrollHeight - anchor.savedDistanceFromBottom;
+      scrollAnchorRef.current = null;
+      return;
+    }
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
@@ -735,7 +963,7 @@ function MyChatPanel({ workspaceId, data }: Props) {
         </div>
       )}
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-3">
+      <div ref={containerRef} className="flex-1 overflow-y-auto p-3 space-y-3">
         {loading && (
           <div className="text-xs text-ink-soft text-center py-4">Loading chat history...</div>
         )}
@@ -748,15 +976,7 @@ function MyChatPanel({ workspaceId, data }: Props) {
               Failed to load chat history: {loadError}
             </p>
             <button
-              onClick={() => {
-                setLoading(true);
-                setLoadError(null);
-                loadMessagesFromDB(workspaceId).then(({ messages: msgs, error: fetchErr }) => {
-                  setMessages(msgs);
-                  setLoadError(fetchErr);
-                  setLoading(false);
-                });
-              }}
+              onClick={loadInitial}
               className="text-[10px] px-2 py-0.5 rounded bg-red-800/40 text-bad hover:bg-red-700/50 transition-colors"
             >
               Retry
@@ -766,6 +986,24 @@ function MyChatPanel({ workspaceId, data }: Props) {
         {!loading && loadError === null && messages.length === 0 && (
           <div className="text-xs text-ink-soft text-center py-8">
             No messages yet. Send a message to start chatting with this agent.
+          </div>
+        )}
+        {/* Top sentinel for lazy-loading older history. The IO observer
+            in the effect above watches this; entering view triggers the
+            next-older batch fetch. Sits ABOVE messages.map so it's the
+            first thing the user reaches when scrolling up.
+
+            Only mounted when there might be more history (hasMore) so a
+            short conversation doesn't pay an idle observer. The
+            "Loading older messages…" line replaces the sentinel during
+            the fetch so the user sees feedback for the scroll-up
+            gesture. Once we hit the end, we drop the sentinel entirely
+            instead of showing a "no more messages" footer — the user's
+            scroll resting against the top of the conversation IS the
+            signal. */}
+        {hasMore && messages.length > 0 && (
+          <div ref={topRef} className="text-xs text-ink-soft text-center py-1">
+            {loadingOlder ? "Loading older messages…" : " "}
           </div>
         )}
         {messages.map((msg) => (
