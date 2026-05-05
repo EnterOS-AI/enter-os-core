@@ -432,7 +432,17 @@ def _is_self_notify_row(row: dict[str, Any]) -> bool:
 
 
 def message_from_activity(row: dict[str, Any]) -> InboxMessage:
-    """Convert one /activity row into an InboxMessage."""
+    """Convert one /activity row into an InboxMessage.
+
+    Mutates ``row['request_body']`` in-place to swap any
+    ``platform-pending:`` URIs to the locally-staged ``workspace:`` URIs
+    (see ``inbox_uploads.rewrite_request_body``) — by the time the
+    upstream chat message arrives via this path, the upload-receive row
+    that staged the bytes has already populated the URI cache (lower
+    activity_logs.id, processed earlier in the same poll batch). A
+    cache miss leaves the URI untouched; the agent surfaces an
+    unresolvable URI rather than the inbox silently dropping the part.
+    """
     request_body = row.get("request_body")
     if isinstance(request_body, str):
         # The Go handler returns request_body as json.RawMessage; httpx
@@ -442,6 +452,14 @@ def message_from_activity(row: dict[str, Any]) -> InboxMessage:
             request_body = json.loads(request_body)
         except (TypeError, ValueError):
             request_body = None
+
+    # Rewrite platform-pending: URIs → workspace: URIs in-place. Imported
+    # at call time to keep the import graph clean for the in-container
+    # path that doesn't use this module (also avoids a circular: the
+    # uploads module is small enough that re-importing per call is
+    # cheap, and the Python import cache makes it free after the first).
+    from inbox_uploads import rewrite_request_body
+    rewrite_request_body(request_body)
 
     return InboxMessage(
         activity_id=str(row.get("id", "")),
@@ -532,10 +550,33 @@ def _poll_once(
     if cursor is None:
         rows = list(reversed(rows))
 
+    # Imported lazily at use-site so a runtime that never sees an
+    # upload-receive row never imports the module. Cheap on the hot
+    # path because Python caches the import.
+    from inbox_uploads import is_chat_upload_row, fetch_and_stage
+
     new_count = 0
     last_id: str | None = None
     for row in rows:
         if not isinstance(row, dict):
+            continue
+        if is_chat_upload_row(row):
+            # Side-effect row from the platform's poll-mode chat-upload
+            # handler — fetch the bytes, stage to /workspace/.molecule/
+            # chat-uploads, ack. NOT enqueued as an InboxMessage; the
+            # agent will see the chat message that REFERENCES this
+            # upload via a separate (later) activity row, with the
+            # pending: URI rewritten to a workspace: URI by
+            # message_from_activity. We DO advance the cursor past
+            # this row so a permanent network outage on /content
+            # doesn't stall the cursor and block real chat traffic.
+            fetch_and_stage(
+                row,
+                platform_url=platform_url,
+                workspace_id=workspace_id,
+                headers=headers,
+            )
+            last_id = str(row.get("id", "")) or last_id
             continue
         if _is_self_notify_row(row):
             # The workspace-server's `/notify` handler writes the agent's

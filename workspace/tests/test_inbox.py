@@ -701,3 +701,165 @@ def test_set_notification_callback_none_clears(state: inbox.InboxState):
     state.record(_msg("act-1"))
 
     assert received == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — chat_upload_receive rows route to inbox_uploads.fetch_and_stage
+# ---------------------------------------------------------------------------
+
+
+def test_poll_once_skips_chat_upload_row_from_queue(state: inbox.InboxState, monkeypatch, tmp_path):
+    """A row with method='chat_upload_receive' must NOT enqueue as a
+    chat message — it's a side-effect telling the workspace to fetch
+    bytes. Pin the contract so a refactor that flattens the row loop
+    can't silently re-enqueue these as 'empty A2A message' rows."""
+    import inbox_uploads
+    monkeypatch.setattr(inbox_uploads, "CHAT_UPLOAD_DIR", str(tmp_path / "chat-uploads"))
+    inbox_uploads.get_cache().clear()
+
+    rows = [
+        {
+            "id": "act-1",
+            "source_id": None,
+            "method": "chat_upload_receive",
+            "summary": "chat_upload_receive: foo.pdf",
+            "request_body": {
+                "file_id": "abc123",
+                "name": "foo.pdf",
+                "mimeType": "application/pdf",
+                "size": 4,
+                "uri": "platform-pending:ws-1/abc123",
+            },
+            "created_at": "2026-05-04T10:00:00Z",
+        },
+    ]
+    resp = _make_response(200, rows)
+    p, _ = _patch_httpx(resp)
+    fetch_called = []
+
+    def fake_fetch(row, **kwargs):
+        fetch_called.append((row.get("id"), kwargs["workspace_id"]))
+        return "workspace:/local/foo.pdf"
+
+    with p, patch.object(inbox_uploads, "fetch_and_stage", fake_fetch):
+        n = inbox._poll_once(state, "http://platform", "ws-1", {})
+
+    # Not enqueued + cursor advanced.
+    assert n == 0
+    assert state.peek(10) == []
+    assert state.load_cursor() == "act-1"
+    # fetch_and_stage was invoked with the row and workspace_id.
+    assert fetch_called == [("act-1", "ws-1")]
+
+
+def test_poll_once_chat_upload_row_then_chat_message_rewrites_uri(state: inbox.InboxState, monkeypatch, tmp_path):
+    """The classic ordering: upload-receive row first (lower id), chat
+    message referencing platform-pending: URI second. The chat message
+    that lands in the inbox must have its URI rewritten to the local
+    workspace: URI before the agent sees it.
+    """
+    import inbox_uploads
+    monkeypatch.setattr(inbox_uploads, "CHAT_UPLOAD_DIR", str(tmp_path / "chat-uploads"))
+    cache = inbox_uploads.get_cache()
+    cache.clear()
+
+    # Pretend the fetch already populated the cache. (The real flow
+    # populates it inside fetch_and_stage; we patch that to keep the
+    # test focused on the rewrite contract.)
+    cache.set("platform-pending:ws-1/abc123", "workspace:/workspace/.molecule/chat-uploads/xx-foo.pdf")
+
+    rows = [
+        {
+            "id": "act-1",
+            "source_id": None,
+            "method": "chat_upload_receive",
+            "summary": "chat_upload_receive: foo.pdf",
+            "request_body": {
+                "file_id": "abc123",
+                "name": "foo.pdf",
+                "mimeType": "application/pdf",
+                "size": 4,
+                "uri": "platform-pending:ws-1/abc123",
+            },
+            "created_at": "2026-05-04T10:00:00Z",
+        },
+        {
+            "id": "act-2",
+            "source_id": None,
+            "method": "message/send",
+            "summary": None,
+            "request_body": {
+                "params": {
+                    "message": {
+                        "parts": [
+                            {"kind": "text", "text": "look at this"},
+                            {
+                                "kind": "file",
+                                "file": {
+                                    "uri": "platform-pending:ws-1/abc123",
+                                    "name": "foo.pdf",
+                                },
+                            },
+                        ]
+                    }
+                }
+            },
+            "created_at": "2026-05-04T10:00:01Z",
+        },
+    ]
+    resp = _make_response(200, rows)
+    p, _ = _patch_httpx(resp)
+
+    def fake_fetch(row, **kwargs):
+        return "workspace:/workspace/.molecule/chat-uploads/xx-foo.pdf"
+
+    with p, patch.object(inbox_uploads, "fetch_and_stage", fake_fetch):
+        n = inbox._poll_once(state, "http://platform", "ws-1", {})
+
+    # Only the chat message is enqueued.
+    assert n == 1
+    queue = state.peek(10)
+    assert len(queue) == 1
+    msg = queue[0]
+    assert msg.activity_id == "act-2"
+    # The URI in the row's request_body was mutated by message_from_activity
+    # → rewrite_request_body. Re-extracting reveals the rewritten value.
+    rewritten = rows[1]["request_body"]["params"]["message"]["parts"][1]["file"]["uri"]
+    assert rewritten == "workspace:/workspace/.molecule/chat-uploads/xx-foo.pdf"
+
+
+def test_poll_once_chat_upload_row_advances_cursor_even_on_fetch_failure(
+    state: inbox.InboxState, monkeypatch, tmp_path
+):
+    """A permanent network failure on /content must NOT stall the cursor
+    — otherwise one bad upload blocks all real chat traffic for the
+    workspace. fetch_and_stage returns None on failure, but the row is
+    still considered handled from the cursor's perspective."""
+    import inbox_uploads
+    monkeypatch.setattr(inbox_uploads, "CHAT_UPLOAD_DIR", str(tmp_path / "chat-uploads"))
+
+    rows = [
+        {
+            "id": "act-broken",
+            "source_id": None,
+            "method": "chat_upload_receive",
+            "summary": "chat_upload_receive: doomed.pdf",
+            "request_body": {
+                "file_id": "doom",
+                "name": "doomed.pdf",
+                "uri": "platform-pending:ws-1/doom",
+            },
+            "created_at": "2026-05-04T10:00:00Z",
+        },
+    ]
+    resp = _make_response(200, rows)
+    p, _ = _patch_httpx(resp)
+
+    def fake_fetch(row, **kwargs):
+        return None  # network failure
+
+    with p, patch.object(inbox_uploads, "fetch_and_stage", fake_fetch):
+        inbox._poll_once(state, "http://platform", "ws-1", {})
+
+    assert state.peek(10) == []
+    assert state.load_cursor() == "act-broken"
