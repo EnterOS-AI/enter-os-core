@@ -172,36 +172,6 @@ func TestProvisionWorkspaceAuto_RoutesToCPWhenSet(t *testing.T) {
 	}
 }
 
-// TestTeamExpand_UsesAutoNotDirectDockerPath — source-level guard: if
-// a future refactor reintroduces a hardcoded `h.wh.provisionWorkspace`
-// call in team.go, this fails. Pre-fix the hardcoded call was the bug.
-//
-// Substring match on the source rather than AST because the failure
-// shape is "wrong function name" — a plain text gate suffices.
-// Per `feedback_behavior_based_ast_gates.md` we'd usually pin the
-// behavior, but the behavior here ("calls dispatcher, not dispatcher's
-// docker leg") is awkward to assert without standing up the entire
-// Expand stack — the auto test above covers the dispatcher behavior;
-// this test is the cheap source-level seatbelt for the call site.
-func TestTeamExpand_UsesAutoNotDirectDockerPath(t *testing.T) {
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	src, err := os.ReadFile(filepath.Join(wd, "team.go"))
-	if err != nil {
-		t.Fatalf("read team.go: %v", err)
-	}
-	if bytes.Contains(src, []byte("h.wh.provisionWorkspace(")) {
-		t.Errorf("team.go calls h.wh.provisionWorkspace directly — must use h.wh.provisionWorkspaceAuto so SaaS tenants route to CP. " +
-			"Pre-2026-05-04 the direct call sent every team child down the Docker path on SaaS, " +
-			"creating workspace rows with no EC2 instance.")
-	}
-	if !bytes.Contains(src, []byte("h.wh.provisionWorkspaceAuto(")) {
-		t.Errorf("team.go must call h.wh.provisionWorkspaceAuto for child provisioning — current code does not")
-	}
-}
-
 // TestNoCallSiteCallsDirectProvisionerExceptAuto — generic source-level
 // gate covering ANY future caller, not just team.go and org_import.go.
 //

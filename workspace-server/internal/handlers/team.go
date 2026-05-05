@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -12,165 +11,26 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 )
 
-// TeamHandler delegates child-workspace provisioning to wh so child
-// workspaces go through the same prepare/mint/preflight pipeline that
-// every other provision path uses. Pre-fix (issue #2367): Expand
-// directly invoked h.provisioner.Start which skipped mintWorkspaceSecrets,
-// leaving every team-expanded child with NULL platform_inbound_secret +
-// NULL auth_token — same drift class as the SaaS bug fixed in #2366.
+// TeamHandler now hosts only Collapse — the visual "expand" action is
+// canvas-side and creating children goes through the regular
+// WorkspaceHandler.Create path with parent_id set, like any other
+// workspace. Every workspace can have children; "team" is just the
+// state of having children. The old Expand handler bulk-created
+// children by reading sub_workspaces from a parent's config and was
+// non-idempotent — calling it N times leaked N×children EC2s, which
+// is how tenant-hongming accumulated 72 stale workspaces.
 type TeamHandler struct {
-	broadcaster *events.Broadcaster
-	wh          *WorkspaceHandler
-	platformURL string
-	configsDir  string
+	wh *WorkspaceHandler
+	b  *events.Broadcaster
 }
 
-// NewTeamHandler constructs a TeamHandler. Backend selection (Docker vs
-// CP) goes through h.wh.StopWorkspaceAuto + h.wh.provisionWorkspaceAuto;
-// no per-handler provisioner field is needed here.
+// NewTeamHandler constructs a TeamHandler. wh is used by Collapse to
+// route StopWorkspaceAuto through the backend dispatcher.
 func NewTeamHandler(b *events.Broadcaster, wh *WorkspaceHandler, platformURL, configsDir string) *TeamHandler {
-	return &TeamHandler{
-		broadcaster: b,
-		wh:          wh,
-		platformURL: platformURL,
-		configsDir:  configsDir,
-	}
-}
-
-// Expand handles POST /workspaces/:id/expand
-// Reads sub_workspaces from the workspace's config and provisions child workspaces.
-func (h *TeamHandler) Expand(c *gin.Context) {
-	parentID := c.Param("id")
-	ctx := c.Request.Context()
-
-	// Verify workspace exists and is online
-	var name string
-	var tier int
-	var status string
-	err := db.DB.QueryRowContext(ctx,
-		`SELECT name, tier, status FROM workspaces WHERE id = $1`, parentID,
-	).Scan(&name, &tier, &status)
-	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
-		return
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "lookup failed"})
-		return
-	}
-
-	// Find the workspace's config to get sub_workspaces
-	templateDir := findTemplateDirByName(h.configsDir, name)
-	if templateDir == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "no config found for workspace"})
-		return
-	}
-
-	configData, err := os.ReadFile(filepath.Join(templateDir, "config.yaml"))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read config"})
-		return
-	}
-
-	var config struct {
-		SubWorkspaces []struct {
-			Config string `yaml:"config"`
-			Name   string `yaml:"name"`
-			Role   string `yaml:"role"`
-		} `yaml:"sub_workspaces"`
-	}
-	if err := yaml.Unmarshal(configData, &config); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to parse config"})
-		return
-	}
-
-	if len(config.SubWorkspaces) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "workspace has no sub_workspaces defined in config"})
-		return
-	}
-
-	// Create child workspaces
-	children := make([]map[string]interface{}, 0)
-	for _, sub := range config.SubWorkspaces {
-		childID := uuid.New().String()
-		childName := sub.Name
-		if childName == "" {
-			childName = sub.Config
-		}
-
-		_, err := db.DB.ExecContext(ctx, `
-			INSERT INTO workspaces (id, name, role, tier, status, parent_id)
-			VALUES ($1, $2, $3, $4, 'provisioning', $5)
-		`, childID, childName, nilStr(sub.Role), tier, parentID)
-		if err != nil {
-			log.Printf("Expand: failed to create child %s: %v", childName, err)
-			continue
-		}
-
-		// Insert canvas layout (offset from parent)
-		if _, err := db.DB.ExecContext(ctx, `
-			INSERT INTO canvas_layouts (workspace_id, x, y) VALUES ($1, $2, $3)
-		`, childID, 0, 0); err != nil {
-			log.Printf("Team expand: failed to insert layout for child %s: %v", childID, err)
-		}
-
-		h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_PROVISIONING", childID, map[string]interface{}{
-			"name":      childName,
-			"tier":      tier,
-			"parent_id": parentID,
-		})
-
-		// Delegate child-workspace provisioning to the shared
-		// provision pipeline. Issue #2367: previously Expand called
-		// h.provisioner.Start directly, bypassing mintWorkspaceSecrets
-		// and every other preflight (secrets, env mutators, identity
-		// injection, missing-env). That left every child with NULL
-		// platform_inbound_secret and never-issued auth_token. Now
-		// children go through the same provisionWorkspaceAuto path as
-		// Create/Restart, so adding a future provision-time step
-		// automatically covers Expand too.
-		//
-		// 2026-05-04 follow-up: switched from provisionWorkspace
-		// (hardcoded Docker) to provisionWorkspaceAuto (picks CP for
-		// SaaS, Docker for self-hosted). Pre-fix, deploying a team on
-		// a SaaS tenant created child rows but never an EC2 instance —
-		// the 600s sweeper logged the misleading "container started
-		// but never called /registry/register". Templates only own
-		// shape (config/prompts/files/plugins/runtime); the platform
-		// owns where it runs.
-		if h.wh != nil && sub.Config != "" {
-			templatePath := filepath.Join(h.configsDir, sub.Config)
-			if _, err := os.Stat(templatePath); err == nil {
-				parent := parentID // copy for closure
-				h.wh.provisionWorkspaceAuto(childID, templatePath, nil, models.CreateWorkspacePayload{
-					Name:     childName,
-					Role:     sub.Role,
-					Tier:     tier,
-					ParentID: &parent,
-				})
-			}
-		}
-
-		children = append(children, map[string]interface{}{
-			"id":   childID,
-			"name": childName,
-			"role": sub.Role,
-		})
-	}
-
-	// Mark parent as expanded
-	h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_EXPANDED", parentID, map[string]interface{}{
-		"children": children,
-	})
-
-	c.JSON(http.StatusOK, gin.H{
-		"status":   "expanded",
-		"children": children,
-	})
+	return &TeamHandler{wh: wh, b: b}
 }
 
 // Collapse handles POST /workspaces/:id/collapse
@@ -215,12 +75,12 @@ func (h *TeamHandler) Collapse(c *gin.Context) {
 			log.Printf("Team collapse: failed to delete layout for %s: %v", childID, err)
 		}
 
-		h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_REMOVED", childID, map[string]interface{}{})
+		h.b.RecordAndBroadcast(ctx, "WORKSPACE_REMOVED", childID, map[string]interface{}{})
 
 		removed = append(removed, childName)
 	}
 
-	h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_COLLAPSED", parentID, map[string]interface{}{
+	h.b.RecordAndBroadcast(ctx, "WORKSPACE_COLLAPSED", parentID, map[string]interface{}{
 		"removed_children": removed,
 	})
 
@@ -230,13 +90,12 @@ func (h *TeamHandler) Collapse(c *gin.Context) {
 	})
 }
 
-func nilStr(s string) interface{} {
-	if s == "" {
-		return nil
-	}
-	return s
-}
-
+// findTemplateDirByName resolves a workspace name to its template
+// directory. Kept here because callers outside this package may use
+// it, even though the in-package consumer (Expand) is gone.
+//
+// TODO: relocate alongside the templates handler if no other callers
+// surface, or delete entirely after a deprecation cycle.
 func findTemplateDirByName(configsDir, name string) string {
 	normalized := normalizeName(name)
 
@@ -265,7 +124,6 @@ func findTemplateDirByName(configsDir, name string) string {
 		if json.Unmarshal(data, &cfg) == nil && cfg.Name == name {
 			return filepath.Join(configsDir, e.Name())
 		}
-		// Try yaml unmarshal too
 		if yaml.Unmarshal(data, &cfg) == nil && cfg.Name == name {
 			return filepath.Join(configsDir, e.Name())
 		}

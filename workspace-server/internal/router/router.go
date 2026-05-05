@@ -242,9 +242,12 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		// entire platform. Gated behind AdminAuth (issue #180).
 		r.GET("/approvals/pending", middleware.AdminAuth(db.DB), apph.ListAll)
 
-		// Team Expansion
+		// Team handlers — Collapse only. The bulk-Expand path is gone:
+		// every workspace can have children via the regular CreateWorkspace
+		// flow with parent_id set, so a separate handler that bulk-creates
+		// from sub_workspaces (and was non-idempotent — calling it twice
+		// duplicated the team) earned its way out.
 		teamh := handlers.NewTeamHandler(broadcaster, wh, platformURL, configsDir)
-		wsAuth.POST("/expand", teamh.Expand)
 		wsAuth.POST("/collapse", teamh.Collapse)
 
 		// Agents
