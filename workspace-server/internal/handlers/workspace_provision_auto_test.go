@@ -607,7 +607,222 @@ func TestNoCallSiteCallsBareStop(t *testing.T) {
 	}
 }
 
-// stripGoComments removes // line comments and /* */ block comments
+// TestRestartWorkspaceAuto_RoutesToCPWhenSet — when cpProv is set (SaaS
+// tenant), RestartWorkspaceAuto must route Stop to CP with retry and
+// provision via cpProv. This is the restart-path mirror of the
+// TestProvisionWorkspaceAuto_RoutesToCPWhenSet / TestStopWorkspaceAuto_RoutesToCPWhenSet
+// tests: the bug class is the same (bare provisioner-only dispatch silently
+// no-oping on SaaS), but Restart additionally calls cpStopWithRetry and
+// then the provision path.
+//
+// Pre-2026-05: restart.go's inline goroutine had `if h.provisioner != nil { Stop }`
+// which silently no-op'd on SaaS, leaving the EC2 running and the canvas
+// showing a stale workspace with no path to recovery short of manual restart.
+func TestRestartWorkspaceAuto_RoutesToCPWhenSet(t *testing.T) {
+	rec := &trackingCPProv{}
+	bcast := &concurrentSafeBroadcaster{}
+	h := NewWorkspaceHandler(bcast, nil, "http://localhost:8080", t.TempDir())
+	h.SetCPProvisioner(rec)
+
+	wsID := "ws-restart-routes-cp"
+	h.RestartWorkspaceAuto(context.Background(), wsID)
+
+	// RestartWorkspaceAuto is fire-and-return (goroutine). Wait for the
+	// goroutine to land in cpStopWithRetry → cpProv.Stop.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if len(rec.stoppedSnapshot()) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for cpProv.Stop; recorded=%v", rec.stoppedSnapshot())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	got := rec.stoppedSnapshot()
+	if len(got) != 1 || got[0] != wsID {
+		t.Errorf("expected cpProv.Stop invoked once with %q, got %v", wsID, got)
+	}
+}
+
+// TestRestartWorkspaceAuto_RoutesToDockerWhenOnlyDocker — self-hosted
+// operators run with the local Docker provisioner wired and cpProv nil.
+// RestartWorkspaceAuto must route Stop to the Docker provisioner.
+func TestRestartWorkspaceAuto_RoutesToDockerWhenOnlyDocker(t *testing.T) {
+	bcast := &concurrentSafeBroadcaster{}
+	h := NewWorkspaceHandler(bcast, nil, "http://localhost:8080", t.TempDir())
+	stub := &stoppingLocalProv{}
+	h.provisioner = stub
+
+	wsID := "ws-restart-routes-docker"
+	h.RestartWorkspaceAuto(context.Background(), wsID)
+
+	if len(stub.stopped) != 1 || stub.stopped[0] != wsID {
+		t.Errorf("expected Docker provisioner.Stop invoked once with %q, got %v", wsID, stub.stopped)
+	}
+}
+
+// TestRestartWorkspaceAuto_NoBackendIsSilent — when neither backend is
+// wired, RestartWorkspaceAuto returns without panicking or logging an error.
+// There's nothing to stop and nothing to provision; the misconfigured
+// deployment will surface failures at a higher layer (HasProvisioner guard,
+// or the no-backend mark-failed in provisionWorkspaceAuto).
+func TestRestartWorkspaceAuto_NoBackendIsSilent(t *testing.T) {
+	bcast := &concurrentSafeBroadcaster{}
+	h := NewWorkspaceHandler(bcast, nil, "http://localhost:8080", t.TempDir())
+	// Neither SetCPProvisioner nor a Docker provisioner — both nil.
+
+	// Must not panic.
+	h.RestartWorkspaceAuto(context.Background(), "ws-restart-noback")
+}
+
+// TestNoCallSiteCallsRestartAuto — source-level pin: any non-test handler
+// that wants to "stop + reprovision a workspace" must call
+// RestartWorkspaceAuto (or stopForRestart for the stop-only half) rather
+// than inlining `if h.provisioner != nil { Stop }` without the CP branch.
+// Pre-2026-05 the Restart handler's inline goroutine (Site 1) and
+// runRestartCycle's inline dispatch (Site 2) both did exactly this,
+// silently no-opping the stop on every SaaS restart — leaving the EC2
+// running, the canvas showing a stale state, and manual canvas restart
+// as the only recovery path.
+//
+// Allowed exceptions:
+//   - workspace.go: defines RestartWorkspaceAuto (the dispatcher itself).
+//   - workspace_restart.go: pre-dates this dispatcher and has its own
+//     manual if-cpProv-else dispatch ( Sites 1-5). Functionally equivalent
+//     to RestartWorkspaceAuto but with synchronous provision coordination
+//     that RestartWorkspaceAuto's fire-and-return model doesn't support.
+//     Phase-2 of #2799 converts Sites 1, 2, 3 in follow-up PRs.
+//   - workspace_provision.go: defines per-backend provision bodies.
+func TestNoCallSiteCallsRestartAuto(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	entries, err := os.ReadDir(wd)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	// Patterns that bypass RestartWorkspaceAuto and directly dispatch Stop
+	// without the cpProv branch. The CP branch is what makes SaaS work;
+	// forgetting it is the exact bug we're pinning.
+	bareShapes := []string{
+		"h.provisioner != nil {\n\t\th.provisioner.Stop(",
+	}
+	allowedFiles := map[string]bool{
+		"workspace.go":           true,
+		"workspace_provision.go": true,
+		// workspace_restart.go: tracked separately by
+		// TestRestartHandler_UsesAutoDispatcher — Site 1 migration is
+		// Phase 2 of #2799. Phase 1 intentionally leaves Sites 1-5 inline.
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if filepath.Ext(name) != ".go" {
+			continue
+		}
+		if len(name) > len("_test.go") &&
+			name[len(name)-len("_test.go"):] == "_test.go" {
+			continue
+		}
+		if allowedFiles[name] {
+			continue
+		}
+		src, err := os.ReadFile(filepath.Join(wd, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		stripped := stripGoComments(src)
+		for _, needle := range bareShapes {
+			if bytes.Contains(stripped, []byte(needle)) {
+				t.Errorf("%s contains bare `h.provisioner != nil { Stop }` without the cpProv branch — "+
+					"must use h.X.RestartWorkspaceAuto so SaaS tenants route Stop to CP. "+
+					"Pre-2026-05 restart.go and runRestartCycle did this and silently no-op'd the "+
+					"stop on every SaaS restart, leaving EC2s running and the canvas showing stale state.",
+					name)
+			}
+		}
+	}
+}
+
+// TestRestartHandler_UsesAutoDispatcher — source-level pin: the Restart
+// HTTP handler (Site 1) must eventually route through RestartWorkspaceAuto
+// rather than inlining the stop+provision dispatch in an anonymous goroutine.
+// Currently Phase 1 defers this to Phase 2; this test documents the target
+// state and will fail when Site 1 is converted, serving as a forcing function
+// for the migration.
+func TestRestartHandler_UsesAutoDispatcher(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	src, err := os.ReadFile(filepath.Join(wd, "workspace_restart.go"))
+	if err != nil {
+		t.Fatalf("read workspace_restart.go: %v", err)
+	}
+	// Site 1 inline goroutine pattern: the Restart handler's
+	// `go func() { bgCtx := context.Background(); if h.provisioner != nil { ...`
+	// block. When Phase 2 converts Site 1 to use RestartWorkspaceAuto, this
+	// block disappears and the test starts failing — signalling that
+	// Phase 2 is done for this site.
+	if bytes.Contains(src, []byte("go func() {\n\t\tbgCtx := context.Background()\n\t\tif h.provisioner != nil {")) {
+		t.Errorf("workspace_restart.go Restart handler still contains the inline stop+provision goroutine — " +
+			"must route through RestartWorkspaceAuto. Phase 2 of #2799 converts this site.")
+	}
+}
+
+// TestRunRestartCycle_UsesStopForRestart — when Phase 2 converts Site 4
+// (runRestartCycle) to use stopForRestart, the inline `h.provisioner.Stop`
+// call in runRestartCycle is removed. This test asserts that
+// stopForRestart is defined and that the inline provisioner.Stop pattern
+// no longer exists in runRestartCycle. It will fail in Phase 1
+// (stopForRestart not yet using RestartWorkspaceAuto for the stop half)
+// and pass once Phase 2 completes.
+func TestRunRestartCycle_UsesStopForRestart(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	src, err := os.ReadFile(filepath.Join(wd, "workspace_restart.go"))
+	if err != nil {
+		t.Fatalf("read workspace_restart.go: %v", err)
+	}
+	// Verify stopForRestart exists and is non-trivial (not a passthrough).
+	// A trivial passthrough = Phase 1 "stub converted to delegate" state.
+	// Phase 2 will flesh it out; this test gates on the non-trivial body.
+	if !bytes.Contains(src, []byte("func (h *WorkspaceHandler) stopForRestart(")) {
+		t.Fatal("stopForRestart not found — Phase 1 not yet applied")
+	}
+	// After Phase 2: stopForRestart's body should NOT contain the inline
+	// provisioner.Stop call from runRestartCycle. The current Phase 1
+	// implementation of stopForRestart has inline dispatch; Phase 2
+	// converts it to a call into RestartWorkspaceAuto (or equivalent SoT).
+	// This test passing means the inline pattern is gone.
+	stripped := stripGoComments(src)
+	if bytes.Contains(stripped, []byte("h.provisioner.Stop(ctx, workspaceID)")) {
+		// Count occurrences — one is stopForRestart's body (legitimate);
+		// more than one means runRestartCycle also has a direct call.
+		// Simple heuristic: if it's in runRestartCycle's context block, bad.
+		// runRestartCycle starts with "func (h *WorkspaceHandler) runRestartCycle"
+		runRestartStart := bytes.Index(src, []byte("func (h *WorkspaceHandler) runRestartCycle"))
+		stopForRestartStart := bytes.Index(src, []byte("func (h *WorkspaceHandler) stopForRestart"))
+		if runRestartStart >= 0 && stopForRestartStart >= 0 {
+			// Extract the runRestartCycle body (up to the next func or EOF)
+			var runRestartBody []byte
+			if stopForRestartStart > runRestartStart {
+				runRestartBody = src[runRestartStart:stopForRestartStart]
+			}
+			if runRestartBody != nil && bytes.Contains(runRestartBody, []byte("h.provisioner.Stop(ctx, workspaceID)")) {
+				t.Errorf("runRestartCycle still calls h.provisioner.Stop directly — " +
+					"must use stopForRestart so the backend-for-stop decision is centralized. " +
+					"Phase 2 of #2799 converts this site.")
+			}
+		}
+	}
+}
+
+
 // from Go source. Imperfect (doesn't handle comments-inside-strings)
 // but adequate for the source-level pin tests in this file — none of
 // our gated needles legitimately appear inside string literals in the

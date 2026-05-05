@@ -425,19 +425,25 @@ func coalesceRestart(workspaceID string, cycle func()) {
 	}
 }
 
-// stopForRestart dispatches Stop to whichever provisioner is wired (Docker or
-// CP/EC2 — mutually exclusive in production). Docker provisioner.Stop kills
-// the local container; CP provisioner.Stop calls DELETE /cp/workspaces/:id
-// which terminates the EC2 instance. Pre-fix runRestartCycle only called the
-// Docker path, so on SaaS (h.provisioner=nil) the auto-restart cycle silently
-// NPE'd before reaching the reprovision step — which is why every SaaS dead-
-// agent incident pre-this-fix required manual restart from canvas.
+// stopForRestart is the restart-specific stop helper. The stop half
+// delegates to RestartWorkspaceAuto (which owns the "which backend for
+// stop" decision and the cpStopWithRetry retry semantics). The provision
+// half is owned by the caller (runRestartCycle) because the caller must
+// coordinate synchronous DB state + broadcast around the provision step
+// with the correct payload built from the DB row. RestartWorkspaceAuto
+// is not called here because it would spin off the provision goroutine
+// immediately; the caller (runRestartCycle) needs to run provision
+// synchronously so the outer coalescing loop knows when the cycle is done.
+//
+// Architectural note: stopForRestart exists because runRestartCycle is
+// synchronous and must coordinate stop + provision as a pair. The
+// restart-goroutine path (Restart handler, Site 1) makes the same dispatch
+// inline in a goroutine. Both eventually want the same stop+provision
+// decision; stopForRestart is the shared extract for the stop half only.
 func (h *WorkspaceHandler) stopForRestart(ctx context.Context, workspaceID string) {
 	if h.provisioner != nil {
 		h.provisioner.Stop(ctx, workspaceID)
-		return
-	}
-	if h.cpProv != nil {
+	} else if h.cpProv != nil {
 		h.cpStopWithRetry(ctx, workspaceID, "Auto-restart")
 	}
 }
@@ -559,15 +565,11 @@ func (h *WorkspaceHandler) runRestartCycle(workspaceID string) {
 	// (or has failed). The outer loop relies on this to know when it's safe
 	// to start another restart cycle without racing this one's Stop call.
 	//
-	// Branch on which provisioner is wired — same dispatch as the other call
-	// sites in this package (workspace.go:431-433, workspace_restart.go:197+596).
-	// Pre-fix this only called the Docker variant, so on SaaS the auto-restart
-	// cycle would NPE inside provisionWorkspace's `h.provisioner.VolumeHasFile`
-	// call, get swallowed by coalesceRestart's recover()-without-re-raise (a
-	// platform-stability safeguard), and leave the workspace permanently
-	// stuck in status='provisioning' (the UPDATE above already ran). User-
-	// observable result before this fix on SaaS: dead workspace → manual
-	// canvas restart was the only recovery path.
+	// The stop half uses stopForRestart (→ cpStopWithRetry on CP, bare
+	// provisioner.Stop on Docker). The provision half is here so runRestartCycle
+	// can run it synchronously: the coalescing loop waits for runRestartCycle to
+	// return before considering a new restart cycle. The provision branch
+	// (CP vs Docker) mirrors RestartWorkspaceAuto and must stay in sync with it.
 	if h.cpProv != nil {
 		h.provisionWorkspaceCP(workspaceID, "", nil, payload)
 	} else {

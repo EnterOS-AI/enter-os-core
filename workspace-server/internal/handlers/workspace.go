@@ -207,6 +207,48 @@ func (h *WorkspaceHandler) StopWorkspaceAuto(ctx context.Context, workspaceID st
 	return nil
 }
 
+// RestartWorkspaceAuto stops the running workload (with retry semantics
+// tuned for the restart hot path) then starts provisioning again, in a
+// detached goroutine. Returns without waiting for completion.
+//
+// Single source of truth for "restart a workspace" — symmetric with
+// provisionWorkspaceAuto and StopWorkspaceAuto. The retry on the Stop leg
+// is intentional and distinguishes this from StopWorkspaceAuto:
+//
+//   - StopWorkspaceAuto (Stop-on-delete contract): no retry, no-backend
+//     is a silent no-op. Different verb, different stakes.
+//
+//   - RestartWorkspaceAuto: bounded exponential backoff on cpProv.Stop
+//     (cpStopWithRetry). Restart's contract is "make the workspace alive
+//     again" — refusing to reprovision when Stop fails strands the user
+//     with a dead workspace and no recovery path other than manual canvas
+//     intervention. Retry absorbs the transient CP/AWS hiccups that cause
+//     most EC2-leak-adjacent incidents. On final exhaustion, logs
+//     LEAK-SUSPECT and proceeds with reprovision regardless, bridging to
+//     the (forthcoming) CP-side orphan reconciler.
+//
+// Docker provisioner.Stop has no retry — a local container that fails to
+// stop is a local infrastructure problem (OOM, resource pressure) and
+// retries won't help; the subsequent provision attempt will surface it.
+//
+// Architectural note: this helper encapsulates the stop+reprovision
+// pair. The "which backend for stop" and "which backend for provision"
+// decisions live here and must stay in sync. Callers that need only the
+// stop half use stopForRestart (restart path) or StopWorkspaceAuto
+// (delete path) directly.
+func (h *WorkspaceHandler) RestartWorkspaceAuto(ctx context.Context, workspaceID string) {
+	if h.provisioner != nil {
+		h.provisioner.Stop(ctx, workspaceID)
+	} else if h.cpProv != nil {
+		h.cpStopWithRetry(ctx, workspaceID, "Restart")
+	}
+	if h.cpProv != nil {
+		go h.provisionWorkspaceCP(workspaceID, "", nil, models.CreateWorkspacePayload{})
+	} else {
+		go h.provisionWorkspaceOpts(workspaceID, "", nil, models.CreateWorkspacePayload{}, false)
+	}
+}
+
 // SetEnvMutators wires a provisionhook.Registry into the handler. Plugins
 // living in separate repos register on the same Registry instance during
 // boot (see cmd/server/main.go) and main.go calls this setter once before
