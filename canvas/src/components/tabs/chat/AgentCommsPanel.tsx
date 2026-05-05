@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "@/lib/api";
@@ -184,13 +184,23 @@ function unwrapErrorText(raw: string | null): string {
 export function AgentCommsPanel({ workspaceId }: { workspaceId: string }) {
   const [messages, setMessages] = useState<CommMessage[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   // Dedup by timestamp+type+peer to handle API load + WebSocket race
   const seenKeys = useRef(new Set<string>());
   const bottomRef = useRef<HTMLDivElement>(null);
+  // Mirrors the my-chat scroll behaviour from ChatTab (PR #2903) —
+  // smooth-scroll on a long history gets interrupted by concurrent
+  // renders and lands the panel mid-conversation. Switch the first
+  // arrival to instant; subsequent appends animate.
+  const hasInitialScrollRef = useRef(false);
 
-  // Load history
-  useEffect(() => {
+  // Load history. Extracted so the error-state retry button can
+  // re-invoke without remount. ChatTab uses the same shape
+  // (loadInitial → loadError state → retry button).
+  const loadInitial = useCallback(() => {
     setLoading(true);
+    setLoadError(null);
+    seenKeys.current.clear();
     api.get<ActivityEntry[]>(`/workspaces/${workspaceId}/activity?source=agent&limit=50`)
       .then((entries) => {
         const filtered = (entries ?? [])
@@ -234,9 +244,14 @@ export function AgentCommsPanel({ workspaceId }: { workspaceId: string }) {
         // the .then body) — the panel just sat on the empty state
         // with zero signal.
         console.warn("AgentCommsPanel: load activity failed", err);
+        setLoadError(err instanceof Error ? err.message : String(err));
         setLoading(false);
       });
   }, [workspaceId]);
+
+  useEffect(() => {
+    loadInitial();
+  }, [loadInitial]);
 
   // Live updates routed through the global ReconnectingSocket. The
   // previous pattern of `new WebSocket(WS_URL)` per panel had no
@@ -358,12 +373,44 @@ export function AgentCommsPanel({ workspaceId }: { workspaceId: string }) {
     } catch { /* ignore */ }
   });
 
-  useEffect(() => {
+  // useLayoutEffect (not useEffect) so the scroll runs BEFORE paint —
+  // otherwise the user sees the panel jump for one frame on every
+  // append. Mirrors ChatTab's MyChatPanel scroll block.
+  useLayoutEffect(() => {
+    if (!hasInitialScrollRef.current && messages.length > 0) {
+      // Instant on first arrival — smooth-scroll on a long history
+      // gets interrupted by concurrent renders and lands the panel
+      // mid-conversation (the chat-opens-in-middle bug class).
+      hasInitialScrollRef.current = true;
+      bottomRef.current?.scrollIntoView({ behavior: "instant" as ScrollBehavior });
+      return;
+    }
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
   if (loading) {
     return <div className="text-xs text-ink-soft text-center py-8">Loading agent communications...</div>;
+  }
+
+  if (loadError !== null && messages.length === 0) {
+    // Mirrors ChatTab my-chat error UI — surfaces the load failure
+    // with a retry button instead of silently rendering empty state.
+    return (
+      <div
+        role="alert"
+        className="mx-2 mt-2 rounded-lg border border-red-800/50 bg-red-950/30 px-3 py-2.5"
+      >
+        <p className="text-[11px] text-bad mb-1.5">
+          Failed to load agent communications: {loadError}
+        </p>
+        <button
+          onClick={loadInitial}
+          className="text-[10px] px-2 py-0.5 rounded bg-red-800/40 text-bad hover:bg-red-700/50 transition-colors"
+        >
+          Retry
+        </button>
+      </div>
+    );
   }
 
   if (messages.length === 0) {
