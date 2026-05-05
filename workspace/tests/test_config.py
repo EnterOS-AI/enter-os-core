@@ -496,24 +496,24 @@ def test_initial_prompt_file_missing(tmp_path):
     assert cfg.initial_prompt == ""
 
 
-def test_shared_context_default(tmp_path):
-    """shared_context defaults to empty list when not specified in YAML."""
-    config_yaml = tmp_path / "config.yaml"
-    config_yaml.write_text(yaml.dump({}))
+def test_shared_context_field_removed(tmp_path):
+    """Drop-shared_context regression gate: a config.yaml that still uses
+    the legacy `shared_context` key must load without crashing AND must
+    NOT carry it onto the WorkspaceConfig dataclass.
 
-    cfg = load_config(str(tmp_path))
-    assert cfg.shared_context == []
-
-
-def test_shared_context_from_yaml(tmp_path):
-    """shared_context reads file paths from YAML."""
+    The field was removed; YAML files in the wild may still mention it
+    until operators migrate. Loader silently ignores unknown YAML keys —
+    we pin the behavior so a future re-introduction is loud."""
     config_yaml = tmp_path / "config.yaml"
     config_yaml.write_text(
         yaml.dump({"shared_context": ["guidelines.md", "architecture.md"]})
     )
 
     cfg = load_config(str(tmp_path))
-    assert cfg.shared_context == ["guidelines.md", "architecture.md"]
+    assert not hasattr(cfg, "shared_context"), (
+        "shared_context is removed; reintroducing it requires a new design "
+        "(see RFC #2789 for platform-owned shared file storage)"
+    )
 
 
 # ===== Compliance default lock (#2059) =====

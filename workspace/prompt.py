@@ -71,7 +71,6 @@ def build_system_prompt(
     prompt_files: list[str] | None = None,
     plugin_rules: list[str] | None = None,
     plugin_prompts: list[str] | None = None,
-    parent_context: list[dict] | None = None,
     platform_instructions: str = "",
     a2a_mcp: bool = True,
 ) -> str:
@@ -134,18 +133,6 @@ def build_system_prompt(
             content = file_path.read_text().strip()
             if content:
                 parts.append(content)
-
-    # Inject parent's shared context (if this workspace is a child)
-    if parent_context:
-        parts.append("\n## Parent Context\n")
-        parts.append("The following context was shared by your parent workspace:\n")
-        for ctx_file in parent_context:
-            path = ctx_file.get("path", "unknown")
-            content = ctx_file.get("content", "")
-            if content.strip():
-                parts.append(f"### {path}")
-                parts.append(content.strip())
-                parts.append("")
 
     # Inject plugin rules (always-on guidelines from ECC, Superpowers, etc.)
     if plugin_rules:

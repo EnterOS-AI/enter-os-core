@@ -1126,107 +1126,6 @@ func TestDeleteFile_WorkspaceNotFound(t *testing.T) {
 	}
 }
 
-// ==================== GET /workspaces/:id/shared-context ====================
-
-func TestSharedContext_WorkspaceNotFound(t *testing.T) {
-	mock := setupTestDB(t)
-	setupTestRedis(t)
-
-	handler := NewTemplatesHandler(t.TempDir(), nil)
-
-	mock.ExpectQuery("SELECT name FROM workspaces WHERE id =").
-		WithArgs("ws-sc-nf").
-		WillReturnError(sql.ErrNoRows)
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Params = gin.Params{{Key: "id", Value: "ws-sc-nf"}}
-	c.Request = httptest.NewRequest("GET", "/workspaces/ws-sc-nf/shared-context", nil)
-
-	handler.SharedContext(c)
-
-	if w.Code != http.StatusNotFound {
-		t.Errorf("expected 404, got %d: %s", w.Code, w.Body.String())
-	}
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet sqlmock expectations: %v", err)
-	}
-}
-
-func TestSharedContext_NoTemplate(t *testing.T) {
-	mock := setupTestDB(t)
-	setupTestRedis(t)
-
-	tmpDir := t.TempDir()
-	handler := NewTemplatesHandler(tmpDir, nil) // no docker
-
-	mock.ExpectQuery("SELECT name FROM workspaces WHERE id =").
-		WithArgs("ws-sc-nt").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Unknown Agent"))
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Params = gin.Params{{Key: "id", Value: "ws-sc-nt"}}
-	c.Request = httptest.NewRequest("GET", "/workspaces/ws-sc-nt/shared-context", nil)
-
-	handler.SharedContext(c)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	// Should return empty array
-	var resp []interface{}
-	json.Unmarshal(w.Body.Bytes(), &resp)
-	if len(resp) != 0 {
-		t.Errorf("expected empty list, got %d items", len(resp))
-	}
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet sqlmock expectations: %v", err)
-	}
-}
-
-func TestSharedContext_WithFiles(t *testing.T) {
-	mock := setupTestDB(t)
-	setupTestRedis(t)
-
-	tmpDir := t.TempDir()
-	tmplDir := filepath.Join(tmpDir, "ctx-agent")
-	os.MkdirAll(tmplDir, 0755)
-	os.WriteFile(filepath.Join(tmplDir, "config.yaml"), []byte("name: Ctx Agent\nshared_context:\n  - rules.md\n  - style.md\n"), 0644)
-	os.WriteFile(filepath.Join(tmplDir, "rules.md"), []byte("# Rules\nBe nice"), 0644)
-	os.WriteFile(filepath.Join(tmplDir, "style.md"), []byte("# Style\nBe clear"), 0644)
-
-	handler := NewTemplatesHandler(tmpDir, nil)
-
-	mock.ExpectQuery("SELECT name FROM workspaces WHERE id =").
-		WithArgs("ws-sc-ok").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Ctx Agent"))
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Params = gin.Params{{Key: "id", Value: "ws-sc-ok"}}
-	c.Request = httptest.NewRequest("GET", "/workspaces/ws-sc-ok/shared-context", nil)
-
-	handler.SharedContext(c)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var resp []map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &resp)
-	if len(resp) != 2 {
-		t.Fatalf("expected 2 context files, got %d", len(resp))
-	}
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet sqlmock expectations: %v", err)
-	}
-}
-
 // ==================== resolveTemplateDir ====================
 
 func TestResolveTemplateDir_ByNormalizedName(t *testing.T) {
@@ -1253,7 +1152,7 @@ func TestResolveTemplateDir_NotFound(t *testing.T) {
 }
 
 // ==================== CWE-78 hardening regression (issue #2011) ====================
-// These tests lock in the defence-in-depth guards for DeleteFile and SharedContext.
+// These tests lock in the defence-in-depth guards for DeleteFile.
 // The primary guard is validateRelPath (fires before any exec/file-read path);
 // the exec-form path construction (filepath.Join / separate args) is defence-in-depth.
 
@@ -1298,60 +1197,3 @@ func TestCWE78_DeleteFile_TraversalVariants(t *testing.T) {
 	}
 }
 
-// TestCWE78_SharedContext_SkipsTraversalPaths asserts that when a workspace's
-// config.yaml lists traversal paths in shared_context, SharedContext skips them
-// via validateRelPath rather than passing them to exec or os.ReadFile.
-// Uses the filesystem fallback path (no docker client) so no container mock needed.
-func TestCWE78_SharedContext_SkipsTraversalPaths(t *testing.T) {
-	mock := setupTestDB(t)
-	setupTestRedis(t)
-
-	tmpDir := t.TempDir()
-	// Create a template directory that SharedContext will resolve for "Cwe Agent".
-	tmplDir := filepath.Join(tmpDir, "cwe-agent")
-	os.MkdirAll(tmplDir, 0755)
-	// config.yaml with a mix of safe and traversal-attack paths.
-	configYAML := "name: Cwe Agent\nshared_context:\n  - safe-file.md\n  - ../../etc/passwd\n  - ../shadow\n  - another-safe.md\n"
-	os.WriteFile(filepath.Join(tmplDir, "config.yaml"), []byte(configYAML), 0644)
-	// Only write the safe files — traversal paths must not be reachable.
-	os.WriteFile(filepath.Join(tmplDir, "safe-file.md"), []byte("# safe"), 0644)
-	os.WriteFile(filepath.Join(tmplDir, "another-safe.md"), []byte("# also safe"), 0644)
-
-	mock.ExpectQuery("SELECT name FROM workspaces WHERE id =").
-		WithArgs("ws-cwe78-sc").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Cwe Agent"))
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Params = gin.Params{{Key: "id", Value: "ws-cwe78-sc"}}
-	c.Request = httptest.NewRequest("GET", "/workspaces/ws-cwe78-sc/shared-context", nil)
-
-	handler := NewTemplatesHandler(tmpDir, nil) // nil docker → filesystem fallback
-	handler.SharedContext(c)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var files []struct {
-		Path    string `json:"path"`
-		Content string `json:"content"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &files); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	// Only the two safe files must appear; traversal paths must be absent.
-	if len(files) != 2 {
-		t.Errorf("expected 2 safe files, got %d: %v", len(files), files)
-	}
-	for _, f := range files {
-		if strings.Contains(f.Path, "..") || strings.Contains(f.Path, "etc") || strings.Contains(f.Path, "shadow") {
-			t.Errorf("traversal path %q must not appear in shared-context response", f.Path)
-		}
-	}
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet sqlmock expectations: %v", err)
-	}
-}

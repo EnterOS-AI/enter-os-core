@@ -68,7 +68,6 @@ Full contract: `docs/runbooks/admin-auth.md`.
 | GET | /channels/adapters | channels.go (list available platforms) |
 | POST | /channels/discover | channels.go (auto-detect chats for a bot token) |
 | POST | /webhooks/:type | channels.go (incoming social webhook) |
-| GET | /workspaces/:id/shared-context | templates.go |
 | GET/PUT/DELETE | /workspaces/:id/files[/*path] | templates.go |
 | GET | /canvas/viewport | viewport.go — open, no auth required (cosmetic, bootstrap-friendly) |
 | PUT | /canvas/viewport | viewport.go — `CanvasOrBearer` middleware; accepts bearer OR Origin matching `CORS_ORIGINS`. Cosmetic-only route — worst case viewport corruption, recovered by page refresh. |

@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -562,67 +560,6 @@ func TestProxyA2A_WorkspaceOffline(t *testing.T) {
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected status 503, got %d: %s", w.Code, w.Body.String())
-	}
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet sqlmock expectations: %v", err)
-	}
-}
-
-// ---------- TestSharedContext ----------
-
-func TestSharedContext(t *testing.T) {
-	mock := setupTestDB(t)
-
-	// Create a temp configs directory with a workspace config
-	tmpDir := t.TempDir()
-	wsDir := filepath.Join(tmpDir, "test-workspace")
-	if err := os.MkdirAll(wsDir, 0755); err != nil {
-		t.Fatalf("failed to create config dir: %v", err)
-	}
-
-	// Write config.yaml with shared_context
-	configYAML := "name: Test Workspace\nshared_context:\n  - test.md\n"
-	if err := os.WriteFile(filepath.Join(wsDir, "config.yaml"), []byte(configYAML), 0644); err != nil {
-		t.Fatalf("failed to write config.yaml: %v", err)
-	}
-
-	// Write the shared context file
-	testContent := "# Shared Context\nThis is shared context content."
-	if err := os.WriteFile(filepath.Join(wsDir, "test.md"), []byte(testContent), 0644); err != nil {
-		t.Fatalf("failed to write test.md: %v", err)
-	}
-
-	handler := NewTemplatesHandler(tmpDir, nil)
-
-	// Mock DB returning workspace name that normalizes to "test-workspace"
-	mock.ExpectQuery("SELECT name FROM workspaces WHERE id =").
-		WithArgs("ws-ctx").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Test Workspace"))
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Params = gin.Params{{Key: "id", Value: "ws-ctx"}}
-	c.Request = httptest.NewRequest("GET", "/workspaces/ws-ctx/shared-context", nil)
-
-	handler.SharedContext(c)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var resp []map[string]interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to parse response: %v", err)
-	}
-	if len(resp) != 1 {
-		t.Fatalf("expected 1 file, got %d", len(resp))
-	}
-	if resp[0]["path"] != "test.md" {
-		t.Errorf("expected path 'test.md', got %v", resp[0]["path"])
-	}
-	if resp[0]["content"] != testContent {
-		t.Errorf("expected content %q, got %v", testContent, resp[0]["content"])
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -1211,53 +1148,6 @@ func TestWorkspaceGet_CurrentTask(t *testing.T) {
 	}
 	if resp["active_tasks"] != float64(2) {
 		t.Errorf("expected active_tasks 2, got %v", resp["active_tasks"])
-	}
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet sqlmock expectations: %v", err)
-	}
-}
-
-func TestSharedContext_NoSharedFiles(t *testing.T) {
-	mock := setupTestDB(t)
-
-	// Create a temp configs directory with a workspace config that has no shared_context
-	tmpDir := t.TempDir()
-	wsDir := filepath.Join(tmpDir, "empty-workspace")
-	if err := os.MkdirAll(wsDir, 0755); err != nil {
-		t.Fatalf("failed to create config dir: %v", err)
-	}
-
-	// Write config.yaml without shared_context
-	configYAML := "name: Empty Workspace\ndescription: No shared context\n"
-	if err := os.WriteFile(filepath.Join(wsDir, "config.yaml"), []byte(configYAML), 0644); err != nil {
-		t.Fatalf("failed to write config.yaml: %v", err)
-	}
-
-	handler := NewTemplatesHandler(tmpDir, nil)
-
-	// Mock DB returning workspace name that normalizes to "empty-workspace"
-	mock.ExpectQuery("SELECT name FROM workspaces WHERE id =").
-		WithArgs("ws-empty").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Empty Workspace"))
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Params = gin.Params{{Key: "id", Value: "ws-empty"}}
-	c.Request = httptest.NewRequest("GET", "/workspaces/ws-empty/shared-context", nil)
-
-	handler.SharedContext(c)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var resp []interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to parse response: %v", err)
-	}
-	if len(resp) != 0 {
-		t.Errorf("expected empty array, got %d items", len(resp))
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {

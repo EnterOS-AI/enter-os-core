@@ -523,7 +523,8 @@ runtime_config:                            # Runtime-specific settings
 skills: ["skill1", "skill2"]               # Folder names under skills/
 tools: ["web_search", "filesystem"]        # Built-in tool names
 prompt_files: ["system-prompt.md"]         # Additional prompt text files
-shared_context: []                         # Files from parent workspace
+# `shared_context` was removed; team-shared knowledge now lives in memory v2's
+# team:<id> namespace (recall_memory MCP tool). See RFC #2789 for shared files.
 
 a2a:
   port: 8000

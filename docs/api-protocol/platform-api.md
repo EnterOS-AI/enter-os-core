@@ -199,7 +199,6 @@ Install safeguards bound the cost of a single install (env-tunable via `PLUGIN_I
 | `GET` | `/templates` | List available templates. **Requires AdminAuth** (PR #701). |
 | `GET` | `/org/templates` | List available org templates. **Requires AdminAuth** (PR #701). |
 | `POST` | `/templates/import` | Import an agent folder as a new template |
-| `GET` | `/workspaces/:id/shared-context` | Read parent shared-context files |
 | `GET` | `/workspaces/:id/files` | List files under an allowed root |
 | `GET` | `/workspaces/:id/files/*path` | Read a file |
 | `PUT` | `/workspaces/:id/files/*path` | Write a file |

@@ -10,6 +10,7 @@ interface Props {
 interface MemoryEntry {
   key: string;
   value: unknown;
+  version?: number;
   expires_at: string | null;
   updated_at: string;
 }
@@ -28,6 +29,10 @@ export function MemoryTab({ workspaceId }: Props) {
   const [newValue, setNewValue] = useState("");
   const [newTTL, setNewTTL] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const [editTTL, setEditTTL] = useState("");
+  const [editError, setEditError] = useState<string | null>(null);
 
   const awarenessUrl = useMemo(() => {
     try {
@@ -106,6 +111,69 @@ export function MemoryTab({ workspaceId }: Props) {
       if (expanded === key) setExpanded(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to delete entry");
+    }
+  };
+
+  const beginEdit = (entry: MemoryEntry) => {
+    setEditError(null);
+    setEditingKey(entry.key);
+    // Stringify objects/arrays as pretty JSON; render plain strings raw so the
+    // editor doesn't surprise users with surrounding quotes.
+    setEditValue(
+      typeof entry.value === "string"
+        ? entry.value
+        : JSON.stringify(entry.value, null, 2),
+    );
+    if (entry.expires_at) {
+      const remainingMs = new Date(entry.expires_at).getTime() - Date.now();
+      const ttl = Math.max(0, Math.floor(remainingMs / 1000));
+      setEditTTL(ttl > 0 ? String(ttl) : "");
+    } else {
+      setEditTTL("");
+    }
+  };
+
+  const cancelEdit = () => {
+    setEditingKey(null);
+    setEditValue("");
+    setEditTTL("");
+    setEditError(null);
+  };
+
+  const handleEditSave = async (entry: MemoryEntry) => {
+    setEditError(null);
+
+    let parsedValue: unknown;
+    try {
+      parsedValue = JSON.parse(editValue);
+    } catch {
+      parsedValue = editValue;
+    }
+
+    // if_match_version closes the silent-overwrite hole when two writers
+    // race. The handler returns 409 with the current version on mismatch
+    // — surface that as a retry hint and reload to pick up the new state.
+    const body: Record<string, unknown> = { key: entry.key, value: parsedValue };
+    if (typeof entry.version === "number") {
+      body.if_match_version = entry.version;
+    }
+    if (editTTL) {
+      const ttl = parseInt(editTTL);
+      if (!Number.isNaN(ttl) && ttl > 0) body.ttl_seconds = ttl;
+    }
+
+    try {
+      await api.post(`/workspaces/${workspaceId}/memory`, body);
+      cancelEdit();
+      loadMemory();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to save";
+      if (message.includes("409") || /if_match_version mismatch/i.test(message)) {
+        setEditError("This entry changed since you opened it. Reloading.");
+        loadMemory();
+      } else {
+        setEditError(message);
+      }
     }
   };
 
@@ -308,24 +376,71 @@ export function MemoryTab({ workspaceId }: Props) {
 
                   {expanded === entry.key && (
                     <div className="px-3 pb-2 space-y-2">
-                      <pre className="text-[10px] text-ink-mid bg-surface-sunken rounded p-2 overflow-x-auto max-h-40">
-                        {JSON.stringify(entry.value, null, 2)}
-                      </pre>
+                      {editingKey === entry.key ? (
+                        <div className="space-y-2">
+                          <textarea
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            rows={4}
+                            aria-label={`Edit value for ${entry.key}`}
+                            className="w-full bg-surface-sunken border border-line rounded px-2 py-1 text-xs font-mono text-ink focus:outline-none focus:border-accent resize-none"
+                          />
+                          <input
+                            value={editTTL}
+                            onChange={(e) => setEditTTL(e.target.value)}
+                            placeholder="TTL in seconds (blank = no expiry)"
+                            aria-label={`Edit TTL for ${entry.key}`}
+                            className="w-full bg-surface-sunken border border-line rounded px-2 py-1 text-xs text-ink focus:outline-none focus:border-accent"
+                          />
+                          {editError && (
+                            <div role="alert" className="text-[10px] text-bad">
+                              {editError}
+                            </div>
+                          )}
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleEditSave(entry)}
+                              className="px-3 py-1 bg-accent hover:bg-accent-strong text-xs rounded text-white"
+                            >
+                              Save
+                            </button>
+                            <button
+                              type="button"
+                              onClick={cancelEdit}
+                              className="px-3 py-1 bg-surface-card hover:bg-surface-elevated text-xs rounded text-ink-mid"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <pre className="text-[10px] text-ink-mid bg-surface-sunken rounded p-2 overflow-x-auto max-h-40">
+                          {JSON.stringify(entry.value, null, 2)}
+                        </pre>
+                      )}
                       <div className="flex items-center justify-between">
                         <span className="text-[9px] text-ink-soft">
                           Updated: {new Date(entry.updated_at).toLocaleString()}
                         </span>
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(entry.key)}
-                          // hover:text-bad on top of text-bad was a no-op.
-                          // Switch to a hover bg + focus-visible ring so
-                          // the destructive button visibly responds and
-                          // keyboard users see focus.
-                          className="text-[10px] text-bad hover:bg-red-950/40 rounded px-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/60"
-                        >
-                          Delete
-                        </button>
+                        <div className="flex items-center gap-2">
+                          {editingKey !== entry.key && (
+                            <button
+                              type="button"
+                              onClick={() => beginEdit(entry)}
+                              className="text-[10px] text-ink-mid hover:bg-surface-elevated rounded px-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                            >
+                              Edit
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleDelete(entry.key)}
+                            className="text-[10px] text-bad hover:bg-red-950/40 rounded px-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/60"
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )}

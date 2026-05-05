@@ -24,21 +24,19 @@ When you receive a task, break it into sub-tasks and delegate to your team.
 Always review work before reporting completion to the caller.
 ```
 
-### 2. Parent Context (if child workspace)
+### 2. Team-shared knowledge (on demand)
 
-If this workspace was created via team expansion (has a `PARENT_ID` env var), it fetches its parent's shared context files at startup via `GET /workspaces/{parent_id}/shared-context`. The parent declares which files to share in its `config.yaml`:
+Team-scoped knowledge is no longer injected at boot. The previous
+`shared_context` field + `GET /workspaces/{parent_id}/shared-context`
+fetch was removed; agents now pull team-shared knowledge on demand via
+memory v2's `team:<id>` namespace using the `recall_memory` MCP tool.
 
-```yaml
-shared_context:
-  - architecture.md
-  - conventions.md
-```
-
-These files are injected as a `## Parent Context` section, with each file rendered under a `### {filename}` heading. This gives children the parent's project knowledge (architecture, conventions, API schemas) without exposing the parent's system prompt or full config.
-
-**1-level inheritance only:** A grandchild sees its direct parent's shared context, not its grandparent's. This mirrors the L2 Team Memory scope.
-
-**Graceful degradation:** If the parent is offline or the endpoint returns an error, the child starts normally without parent context.
+This shifts cost from "every boot, always" to "only when the agent
+asks", and lets team members write to the shared store from anywhere
+that can resolve the namespace (canvas Memory tab, agent
+`commit_memory`, admin import). For large blob-shaped artefacts (full
+architecture docs, brand assets, PDFs) see RFC #2789 (platform-owned
+shared file storage).
 
 ### 3. Skill Instructions
 

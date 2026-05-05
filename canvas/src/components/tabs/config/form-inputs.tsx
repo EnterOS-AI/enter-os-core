@@ -22,7 +22,6 @@ export interface ConfigData {
   // task_budget maps to output_config.task_budget.total (requires beta header task-budgets-2026-03-13)
   task_budget?: number;
   prompt_files: string[];
-  shared_context: string[];
   skills: string[];
   tools: string[];
   a2a: { port: number; streaming: boolean; push_notifications: boolean };
@@ -40,7 +39,6 @@ export const DEFAULT_CONFIG: ConfigData = {
   effort: "",
   task_budget: 0,
   prompt_files: [],
-  shared_context: [],
   skills: [],
   tools: [],
   a2a: { port: 8000, streaming: true, push_notifications: true },

@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/channels"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
@@ -25,10 +27,62 @@ import (
 // during org import. Prevents overwhelming Docker when creating many containers.
 const workspaceCreatePacingMs = 2000
 
-// provisionConcurrency limits how many Docker containers can be provisioned
-// simultaneously during org import. Without this, importing 39+ workspaces
-// fires 39 goroutines that all hit Docker at once, causing timeouts (#1084).
-const provisionConcurrency = 3
+// defaultProvisionConcurrency is the fallback cap for parallel
+// workspace-provision goroutines when MOLECULE_PROVISION_CONCURRENCY
+// is unset. Originally a hard constant of 3 (PR #1084) calibrated for
+// Docker-mode workspaces. The constant is now a default — operators
+// running on EC2 (where each provision is a RunInstances call AWS
+// happily parallelises) typically want a much higher cap, while
+// Docker-mode dev environments still prefer the conservative 3.
+//
+// 3 keeps the existing Docker-mode behavior. SaaS deployments override
+// via env (see resolveProvisionConcurrency below).
+const defaultProvisionConcurrency = 3
+
+// resolveProvisionConcurrency returns the effective semaphore size for
+// org-import workspace provisioning, honoring MOLECULE_PROVISION_CONCURRENCY:
+//
+//   - unset / empty / non-numeric → defaultProvisionConcurrency (3)
+//   - "0"                          → unlimited (a very large cap;
+//                                    practically no semaphore — used on
+//                                    SaaS where AWS RunInstances is the
+//                                    rate-limiter, not us)
+//   - any positive integer N       → N
+//   - negative integer             → defaultProvisionConcurrency (3),
+//                                    log warning so operator notices
+//                                    the misconfiguration
+//
+// The "0 = unlimited" mapping was a deliberate choice: an env var of "0"
+// is the natural shorthand for "no cap" without forcing operators to
+// type a magic large number. The implementation hands off a large but
+// finite value (1<<20) so the channel still works as a regular
+// buffered chan; goroutines will never block on the semaphore in
+// practice.
+func resolveProvisionConcurrency() int {
+	raw := strings.TrimSpace(os.Getenv("MOLECULE_PROVISION_CONCURRENCY"))
+	if raw == "" {
+		return defaultProvisionConcurrency
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		log.Printf("org_import: MOLECULE_PROVISION_CONCURRENCY=%q is not an integer; falling back to default %d",
+			raw, defaultProvisionConcurrency)
+		return defaultProvisionConcurrency
+	}
+	if n < 0 {
+		log.Printf("org_import: MOLECULE_PROVISION_CONCURRENCY=%d is negative; falling back to default %d",
+			n, defaultProvisionConcurrency)
+		return defaultProvisionConcurrency
+	}
+	if n == 0 {
+		// Unlimited semantics — use a large but finite cap so the
+		// chan-based semaphore stays a no-op. 1M is well past any
+		// realistic org-import size; AWS RunInstances rate-limit and
+		// account vCPU quota are the real backpressure here.
+		return 1 << 20
+	}
+	return n
+}
 
 // Child grid layout constants — kept in sync with canvas-topology.ts on
 // the client. Children laid on import use the same 2-column grid so the
@@ -600,8 +654,16 @@ func (h *OrgHandler) Import(c *gin.Context) {
 	results := []map[string]interface{}{}
 	var createErr error
 
-	// Semaphore limits concurrent Docker provisioning (#1084).
-	provisionSem := make(chan struct{}, provisionConcurrency)
+	// Semaphore limits concurrent provision goroutines (#1084).
+	// Cap is configurable via MOLECULE_PROVISION_CONCURRENCY:
+	//   unset → 3 (Docker-mode default)
+	//   "0"   → effectively unlimited (SaaS / EC2 backend)
+	//   N>0   → exactly N
+	// See resolveProvisionConcurrency for the full env-parse contract.
+	concurrency := resolveProvisionConcurrency()
+	provisionSem := make(chan struct{}, concurrency)
+	log.Printf("org_import: provision concurrency cap=%d (env MOLECULE_PROVISION_CONCURRENCY=%q)",
+		concurrency, os.Getenv("MOLECULE_PROVISION_CONCURRENCY"))
 
 	// Recursively create workspaces. Root workspaces keep their YAML
 	// canvas coords; children are positioned by createWorkspaceTree

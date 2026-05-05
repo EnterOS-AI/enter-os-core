@@ -437,7 +437,6 @@ if "coordinator" not in sys.modules:
     except (ImportError, RuntimeError):
         coordinator_mod = ModuleType("coordinator")
         coordinator_mod.get_children = MagicMock()
-        coordinator_mod.get_parent_context = MagicMock()
         coordinator_mod.build_children_description = MagicMock()
         coordinator_mod.route_task_to_team = MagicMock()
         coordinator_mod.route_task_to_team.name = "route_task_to_team"

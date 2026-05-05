@@ -27,11 +27,11 @@ prompt_files:
 # AGENTS.md-style example:
 #   prompt_files: [AGENTS.md]
 
-# Files to share with direct children (1-level inheritance)
-# Children fetch these at startup via GET /workspaces/:id/shared-context
-shared_context:
-  - architecture.md
-  - conventions.md
+# NOTE: `shared_context` (parent → child file injection at boot) was removed.
+# To share knowledge across a team, use memory v2's team:<id> namespace via
+# the recall_memory MCP tool — the agent pulls it on demand instead of
+# paying for it at every boot. For large blob-shaped artefacts, see RFC
+# #2789 (platform-owned shared file storage).
 
 # Skills to load -- folder names under skills/
 skills:
@@ -123,7 +123,6 @@ env:
 | `runtime` | No | Adapter to use: `langgraph` (default), `claude-code`, `crewai`, `autogen`, `deepagents`, `openclaw`. See [Agent Runtime Adapters](./cli-runtime.md). |
 | `model` | Yes | LangChain-compatible provider string (e.g. `anthropic:claude-sonnet-4-6`). Overridden by `MODEL_PROVIDER` env var if set. |
 | `prompt_files` | No | Ordered list of markdown files to load as system prompt. Defaults to `["system-prompt.md"]` if omitted. `MEMORY.md` and `USER.md` are auto-appended when present so frozen memory snapshots do not need to be duplicated here. Supports any agent framework's file structure (OpenClaw, Claude Code, etc.) |
-| `shared_context` | No | Files from this workspace's config dir to share with direct children. Children fetch these at startup and inject into their system prompt as `## Parent Context`. 1-level inheritance only (grandchildren don't see grandparent's context). |
 | `skills` | Yes | List of skill folder names to load from `skills/` |
 | `tools` | No | Built-in tools from workspace-template |
 | `memory` | No | Memory backend config (defaults to filesystem) |
@@ -157,7 +156,6 @@ The file watcher monitors the entire config directory. When `config.yaml` change
 | `name`, `description`, `version` | Yes | Rebuild Agent Card with new metadata |
 | `a2a` | **No** | Port and protocol changes require container restart |
 | `delegation` | Yes | Retry/timeout defaults take effect on next delegation call |
-| `shared_context` | Yes | Children fetch on next prompt rebuild; no restart needed |
 | `sub_workspaces` | **No** | Team structure changes go through `POST /workspaces/:id/expand` |
 
 See [Skills — Live Reload](./skills.md#live-reload) for the full file watcher flow.

@@ -706,8 +706,80 @@ print(json.dumps({
 d=json.load(sys.stdin)
 print(len(d if isinstance(d, list) else d.get('events', [])))" 2>/dev/null || echo 0)
   log "    Activity events observed: $ACTIVITY_COUNT"
+
+  # ─── 9c. Workspace KV memory Edit round-trip ─────────────────────────
+  # Pins the Edit affordance added to the canvas Memory tab. The UI calls
+  # POST /workspaces/:id/memory with if_match_version, so the contract is:
+  #   1. initial POST creates row at version 1
+  #   2. GET returns version 1 + value
+  #   3. POST with if_match_version=1 updates → version 2
+  #   4. POST with if_match_version=1 again → 409 (optimistic-lock enforcement)
+  # Without (3) there is no Edit; without (4) two concurrent writers can
+  # silently overwrite each other and the agent loses delegation-ledger state.
+  log "9c.  Memory KV Edit round-trip (Edit affordance + 409 gate)"
+  EDIT_KEY="e2e_edit_gate_$SLUG"
+
+  # 1. seed
+  tenant_call POST "/workspaces/$PARENT_ID/memory" \
+    -H "Content-Type: application/json" \
+    -d "{\"key\":\"$EDIT_KEY\",\"value\":{\"step\":1}}" >/dev/null \
+    || fail "memory KV seed POST failed"
+
+  # 2. read back, capture version
+  EDIT_GET=$(tenant_call GET "/workspaces/$PARENT_ID/memory/$EDIT_KEY")
+  EDIT_VER=$(echo "$EDIT_GET" | python3 -c "import json,sys; print(json.load(sys.stdin)['version'])" 2>/dev/null || echo "")
+  [ -z "$EDIT_VER" ] && fail "memory KV GET missing version field. Body: ${EDIT_GET:0:200}"
+
+  # 3. conditional update with matching version
+  tenant_call POST "/workspaces/$PARENT_ID/memory" \
+    -H "Content-Type: application/json" \
+    -d "{\"key\":\"$EDIT_KEY\",\"value\":{\"step\":2},\"if_match_version\":$EDIT_VER}" >/dev/null \
+    || fail "memory KV conditional Edit failed (if_match_version=$EDIT_VER)"
+
+  # 4. value flipped + version incremented?
+  EDIT_GET2=$(tenant_call GET "/workspaces/$PARENT_ID/memory/$EDIT_KEY")
+  EDIT_VAL2=$(echo "$EDIT_GET2" | python3 -c "import json,sys; print(json.load(sys.stdin)['value'].get('step'))" 2>/dev/null || echo "")
+  [ "$EDIT_VAL2" = "2" ] || fail "memory KV Edit did not persist new value. Body: ${EDIT_GET2:0:200}"
+
+  # 5. stale-version POST must 409 — pin the optimistic-lock contract.
+  #
+  # tenant_call uses CURL_COMMON which carries --fail-with-body, so an
+  # expected-409 makes curl exit 22. The previous shape
+  #   $(tenant_call ... -w "%{http_code}" || echo "000")
+  # concatenated the captured "409" with the fallback "000" giving a
+  # bogus "409000" value (caught on PR #2792's first E2E run, which is
+  # also why staging-saas E2E has been silent-failing this gate since
+  # PR #2787 merged). Fix: route the status code into its own tempfile
+  # so curl's exit code can't pollute the captured stdout. set +e/-e
+  # keeps the 22 from tripping the outer `set -e` pipeline.
+  set +e
+  tenant_call POST "/workspaces/$PARENT_ID/memory" \
+    -H "Content-Type: application/json" \
+    -d "{\"key\":\"$EDIT_KEY\",\"value\":{\"step\":3},\"if_match_version\":$EDIT_VER}" \
+    -o /tmp/memory_stale_resp.txt -w "%{http_code}" >/tmp/memory_stale_code.txt 2>/dev/null
+  set -e
+  EDIT_STALE_CODE=$(cat /tmp/memory_stale_code.txt 2>/dev/null || echo "000")
+  [ "$EDIT_STALE_CODE" = "409" ] || fail "memory KV stale Edit must 409 (optimistic-lock). Got '$EDIT_STALE_CODE': $(cat /tmp/memory_stale_resp.txt 2>/dev/null | head -c 200)"
+
+  # cleanup
+  tenant_call DELETE "/workspaces/$PARENT_ID/memory/$EDIT_KEY" >/dev/null 2>&1 || true
+  ok "Memory KV Edit round-trip + 409 gate passed"
+
+  # ─── 9d. shared_context removal gate ─────────────────────────────────
+  # Pin the deletion of GET /workspaces/:id/shared-context. The route + handler
+  # were removed; team-shared knowledge now flows through memory v2's
+  # team:<id> namespace. If anyone re-introduces a shared-context endpoint
+  # without going through RFC #2789, this gate fires.
+  set +e
+  SC_CODE=$(tenant_call GET "/workspaces/$PARENT_ID/shared-context" \
+    -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000")
+  set -e
+  if [ "$SC_CODE" = "200" ]; then
+    fail "shared-context route should be gone but returned 200 — regression. See task #304."
+  fi
+  ok "shared-context route confirmed removed (HTTP $SC_CODE)"
 else
-  log "9/11 Canary mode — skipping HMA / peers / activity"
+  log "9/11 Canary mode — skipping HMA / peers / activity / memory-edit / shared-context-gone"
 fi
 
 # ─── 10. Delegation mechanics (full mode + child) ──────────────────────

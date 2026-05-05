@@ -1,7 +1,7 @@
 # Coverage Floor
 
-CI enforces three coverage gates on `workspace-server` (Go). All defined in
-`.github/workflows/ci.yml` → `platform-build` job.
+CI enforces coverage gates on two surfaces — `workspace-server` (Go) and
+`workspace/` (Python). All defined in `.github/workflows/ci.yml`.
 
 ## Current floors (2026-04-23)
 
@@ -76,3 +76,51 @@ This gate makes "no untested critical paths merged" a mechanical property of
 the CI, not a behavioural property of QA agents or individual reviewers —
 which is the only way to make it survive fleet outages, agent rotations, or
 QA process changes.
+
+## Python (workspace/) — added 2026-05-04 from #2790
+
+The Python side has its own gates in the `python-lint` job:
+
+| Gate | Threshold | Where |
+|---|---|---|
+| **Total floor** | `86%` | `workspace/pytest.ini` `--cov-fail-under=86` (issue #1817) |
+| **Critical-path per-file floor** | `75%` | Inline shell step after the pytest run |
+
+### Critical-path Python files
+
+These handle multi-tenant routing, auth tokens, and inbox dispatch. A
+coverage drop here is the same risk shape as a Go-side `tokens*` /
+`secrets*` file regressing below 10%.
+
+- `workspace/a2a_mcp_server.py` — MCP dispatcher (PR #2766 / #2771)
+- `workspace/mcp_cli.py` — molecule-mcp standalone CLI entry
+- `workspace/a2a_tools.py` — workspace-scoped tool implementations
+- `workspace/inbox.py` — multi-workspace inbox + per-workspace cursors
+- `workspace/platform_auth.py` — per-workspace token resolver
+
+### Why 75% (vs 86% total)
+
+The total floor averages ~6000 lines across `workspace/`. A single MCP
+file could drop to ~50% with no CI complaint as long as other modules
+compensate. The per-file floor closes that distribution gap. 75% sits
+below current actuals (80–96% as of 2026-05-04) — strictly additive,
+no existing PR fails.
+
+### Python ratchet plan
+
+| Date | Total | Per-file critical | Notes |
+|---|---|---|---|
+| 2026-05-04 | 86% | 75% | Initial gate (this file). |
+| 2026-06-04 | 86% | 80% | First ratchet — at-floor files must catch up. |
+| 2026-07-04 | 88% | 85% | |
+| 2026-08-04 | 90% | 90% | Target steady-state. |
+
+### Why this Python gate exists
+
+Issue #2790, after the PR #2766 → PR #2771 cycle. PR #2766 added
+multi-workspace routing through `a2a_tools.py` + `a2a_mcp_server.py`,
+shipped to main with green CI, but the dispatcher silently dropped a
+load-bearing kwarg for 4 of 9 tools — caught only by post-merge code
+review. The structural drift gate (`test_dispatcher_schema_drift.py`,
+PR #2791) catches the schema↔dispatcher mismatch class; this floor
+catches the broader "MCP-critical file regressed" class.

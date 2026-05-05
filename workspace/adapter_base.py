@@ -444,7 +444,7 @@ class BaseAdapter(ABC):
         """
         from plugins import load_plugins
         from skill_loader.loader import load_skills
-        from coordinator import get_children, get_parent_context, build_children_description
+        from coordinator import get_children, build_children_description
         from prompt import build_system_prompt, get_peer_capabilities, get_platform_instructions
         from builtin_tools.approval import request_approval
         from builtin_tools.delegation import delegate_task, delegate_task_async, check_task_status
@@ -500,10 +500,13 @@ class BaseAdapter(ABC):
             logger.info(f"Coordinator mode: {len(children)} children")
             all_tools.append(route_task_to_team)
 
-        # Parent context (if this is a child workspace)
-        parent_context = await get_parent_context()
-
-        # Build system prompt with all context
+        # Build system prompt with all context. Parent→child knowledge sharing
+        # was previously handled by `shared_context` (parent's config.yaml file
+        # paths injected into the child's prompt at boot). That path was removed
+        # — agents now pull team-scoped knowledge via memory v2's team:<id>
+        # namespace (recall_memory) on demand instead of paying for it on every
+        # boot regardless of need. See RFC #2789 for the future shared-file
+        # storage that complements this for large blob-shaped artefacts.
         peers = await get_peer_capabilities(platform_url, config.workspace_id)
         platform_instructions = await get_platform_instructions(platform_url, config.workspace_id)
         coordinator_prompt = build_children_description(children) if is_coordinator else ""
@@ -516,7 +519,6 @@ class BaseAdapter(ABC):
             prompt_files=config.prompt_files,
             plugin_rules=plugins.rules,
             plugin_prompts=extra_prompts,
-            parent_context=parent_context,
             platform_instructions=platform_instructions,
         )
 

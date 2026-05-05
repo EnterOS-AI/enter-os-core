@@ -505,7 +505,6 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		tmplAdmin.GET("/templates", tmplh.List)
 		tmplAdmin.POST("/templates/import", tmplh.Import)
 	}
-	wsAuth.GET("/shared-context", tmplh.SharedContext)
 	wsAuth.PUT("/files", tmplh.ReplaceFiles)
 	wsAuth.GET("/files", tmplh.ListFiles)
 	wsAuth.GET("/files/*path", tmplh.ReadFile)

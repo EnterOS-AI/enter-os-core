@@ -358,6 +358,72 @@ jobs:
       - if: needs.changes.outputs.python == 'true'
         run: python -m pytest --tb=short
 
+      - if: needs.changes.outputs.python == 'true'
+        name: Per-file critical-path coverage (MCP / inbox / auth)
+        # MCP-critical Python files have a per-file floor on top of the
+        # 86% total floor in pytest.ini. Rationale (issue #2790, after
+        # the PR #2766 → PR #2771 cycle): the total floor averages ~6000
+        # lines, so a single MCP file could regress to ~50% with no
+        # complaint as long as other modules compensate. These five
+        # files handle multi-tenant routing + auth + inbox dispatch —
+        # a coverage drop here is the same risk shape as a Go-side
+        # workspace-server token/secrets file dropping below 10%.
+        #
+        # Floor 75% sits below current actuals (80-96%) so this gate is
+        # strictly additive — no existing PR fails. Ratchet plan in
+        # COVERAGE_FLOOR.md.
+        run: |
+          set -e
+          PER_FILE_FLOOR=75
+          CRITICAL_FILES=(
+            "a2a_mcp_server.py"
+            "mcp_cli.py"
+            "a2a_tools.py"
+            "inbox.py"
+            "platform_auth.py"
+          )
+
+          # pytest already wrote .coverage; emit a JSON view scoped to
+          # the critical files so jq/python can read the per-file pct
+          # without parsing tabular text. --include uses fnmatch, and
+          # the leading "*" allows the file to live anywhere under the
+          # workspace root (today they sit at workspace/<name>.py).
+          INCLUDES=$(printf '*%s,' "${CRITICAL_FILES[@]}")
+          INCLUDES="${INCLUDES%,}"
+          python -m coverage json -o /tmp/critical-cov.json --include="$INCLUDES"
+
+          FAILED=0
+          for f in "${CRITICAL_FILES[@]}"; do
+            # Match by top-level path key (e.g. "a2a_tools.py", not
+            # "builtin_tools/a2a_tools.py" — different file at 100%).
+            # The keys in coverage.json are paths relative to the run
+            # cwd (workspace/), so the critical-path entry sits at the
+            # bare basename.
+            pct=$(jq -r --arg f "$f" '.files | to_entries | map(select(.key == $f)) | .[0].value.summary.percent_covered // "MISSING"' /tmp/critical-cov.json)
+            if [ "$pct" = "MISSING" ]; then
+              echo "::error file=workspace/$f::No coverage data — file may have moved or test exclusion mis-set."
+              FAILED=$((FAILED+1))
+              continue
+            fi
+            echo "$f: ${pct}%"
+            if awk "BEGIN{exit !($pct < $PER_FILE_FLOOR)}"; then
+              echo "::error file=workspace/$f::${pct}% < ${PER_FILE_FLOOR}% per-file floor (MCP critical path). See COVERAGE_FLOOR.md."
+              FAILED=$((FAILED+1))
+            fi
+          done
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo ""
+            echo "$FAILED MCP critical-path file(s) below the ${PER_FILE_FLOOR}% per-file floor."
+            echo "These paths handle multi-tenant routing, auth tokens, and inbox dispatch."
+            echo "A coverage drop here is the same risk shape as Go-side tokens/secrets files"
+            echo "dropping below 10% (see COVERAGE_FLOOR.md). Either:"
+            echo "  (a) add tests to raise coverage back above ${PER_FILE_FLOOR}%, or"
+            echo "  (b) if this is unavoidable historical debt, file an issue and propose"
+            echo "      adjusting the floor with rationale in COVERAGE_FLOOR.md."
+            exit 1
+          fi
+
       # SDK + plugin validation moved to standalone repo:
       # github.com/Molecule-AI/molecule-sdk-python
 

@@ -120,7 +120,6 @@ export function toYaml(config: ConfigData): string {
   if (config.effort) { lines.push(""); simple("effort", config.effort); }
   if (config.task_budget && config.task_budget > 0) { simple("task_budget", config.task_budget); }
   if (config.prompt_files?.length) { lines.push(""); list("prompt_files", config.prompt_files); }
-  if (config.shared_context?.length) { lines.push(""); list("shared_context", config.shared_context); }
   lines.push(""); list("skills", config.skills);
   if (config.tools?.length) { list("tools", config.tools); }
   lines.push(""); obj("a2a", config.a2a as unknown as Record<string, unknown>);

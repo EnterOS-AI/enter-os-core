@@ -254,33 +254,14 @@ def test_delegation_failure_section_always_present(tmp_path):
     assert "Retry transient failures" in result
 
 
-def test_parent_context_injection(tmp_path):
-    """parent_context creates a '## Parent Context' section with file contents."""
-    (tmp_path / "system-prompt.md").write_text("Base.")
+def test_no_parent_context_section_after_shared_context_removal(tmp_path):
+    """Drop-shared_context regression gate: build_system_prompt must NOT
+    emit a '## Parent Context' section, since parent→child knowledge sharing
+    now flows through memory v2's team:<id> namespace via recall_memory.
 
-    parent_context = [
-        {"path": "guidelines.md", "content": "Always use type hints."},
-        {"path": "architecture.md", "content": "We use hexagonal architecture."},
-    ]
-
-    result = build_system_prompt(
-        config_path=str(tmp_path),
-        workspace_id="ws-1",
-        loaded_skills=[],
-        peers=[],
-        parent_context=parent_context,
-    )
-
-    assert "## Parent Context" in result
-    assert "shared by your parent workspace" in result
-    assert "### guidelines.md" in result
-    assert "Always use type hints." in result
-    assert "### architecture.md" in result
-    assert "We use hexagonal architecture." in result
-
-
-def test_parent_context_empty(tmp_path):
-    """No '## Parent Context' section when parent_context is an empty list."""
+    The previous parent_context= kwarg was removed wholesale; if anyone
+    re-introduces a path that injects parent files at boot, this gate
+    fails so the regression is visible in CI."""
     (tmp_path / "system-prompt.md").write_text("Base.")
 
     result = build_system_prompt(
@@ -288,50 +269,10 @@ def test_parent_context_empty(tmp_path):
         workspace_id="ws-1",
         loaded_skills=[],
         peers=[],
-        parent_context=[],
     )
 
     assert "## Parent Context" not in result
-
-
-def test_parent_context_none(tmp_path):
-    """No '## Parent Context' section when parent_context is None."""
-    (tmp_path / "system-prompt.md").write_text("Base.")
-
-    result = build_system_prompt(
-        config_path=str(tmp_path),
-        workspace_id="ws-1",
-        loaded_skills=[],
-        peers=[],
-        parent_context=None,
-    )
-
-    assert "## Parent Context" not in result
-
-
-def test_parent_context_skips_empty_content(tmp_path):
-    """Files with empty/whitespace-only content are skipped."""
-    (tmp_path / "system-prompt.md").write_text("Base.")
-
-    parent_context = [
-        {"path": "empty.md", "content": ""},
-        {"path": "whitespace.md", "content": "   \n  "},
-        {"path": "real.md", "content": "Real content here."},
-    ]
-
-    result = build_system_prompt(
-        config_path=str(tmp_path),
-        workspace_id="ws-1",
-        loaded_skills=[],
-        peers=[],
-        parent_context=parent_context,
-    )
-
-    assert "## Parent Context" in result
-    assert "### empty.md" not in result
-    assert "### whitespace.md" not in result
-    assert "### real.md" in result
-    assert "Real content here." in result
+    assert "shared by your parent workspace" not in result
 
 
 # ---------------------------------------------------------------------------

@@ -32,29 +32,6 @@ if not _WORKSPACE_ID_raw:
 WORKSPACE_ID = _WORKSPACE_ID_raw
 
 
-async def get_parent_context() -> list[dict]:
-    """Fetch shared context files from this workspace's parent.
-
-    Returns a list of {"path": str, "content": str} dicts.
-    Returns empty list if no parent, parent unreachable, or no shared context.
-    """
-    parent_id = os.environ.get("PARENT_ID", "")
-    if not parent_id:
-        return []
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                f"{PLATFORM_URL}/workspaces/{parent_id}/shared-context",
-                headers={"X-Workspace-ID": WORKSPACE_ID},
-            )
-            if resp.status_code == 200:
-                return resp.json()
-    except Exception as e:
-        logger.warning("Failed to fetch parent context: %s", e)
-    return []
-
-
 async def get_children() -> list[dict]:
     """Fetch this workspace's children from the platform."""
     try:
