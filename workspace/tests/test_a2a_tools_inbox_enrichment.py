@@ -27,12 +27,9 @@ import os
 # imports a2a_client). conftest.py mocks the SDK but not this env var.
 os.environ.setdefault("WORKSPACE_ID", "00000000-0000-0000-0000-000000000001")
 
-import json
 import sys
 import types
 from unittest.mock import patch
-
-import pytest
 
 
 PEER_UUID = "11111111-2222-3333-4444-555555555555"
