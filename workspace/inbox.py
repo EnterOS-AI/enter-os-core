@@ -553,10 +553,26 @@ def _poll_once(
     # Imported lazily at use-site so a runtime that never sees an
     # upload-receive row never imports the module. Cheap on the hot
     # path because Python caches the import.
-    from inbox_uploads import is_chat_upload_row, fetch_and_stage
+    from inbox_uploads import is_chat_upload_row, BatchFetcher
 
     new_count = 0
     last_id: str | None = None
+    # ``batch_fetcher`` is lazy: a poll batch with no upload rows pays
+    # zero overhead. Once the first upload row appears we open one
+    # BatchFetcher and submit every subsequent upload row to its thread
+    # pool; before processing the FIRST non-upload row we drain the
+    # pool (wait_all) so the URI cache is hot when message rewriting
+    # runs. Without the barrier, the chat message that references the
+    # upload would arrive at the agent with the un-rewritten
+    # platform-pending: URI.
+    batch_fetcher: BatchFetcher | None = None
+
+    def _drain_uploads(bf: BatchFetcher | None) -> None:
+        if bf is None:
+            return
+        bf.wait_all()
+        bf.close()
+
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -570,14 +586,21 @@ def _poll_once(
             # message_from_activity. We DO advance the cursor past
             # this row so a permanent network outage on /content
             # doesn't stall the cursor and block real chat traffic.
-            fetch_and_stage(
-                row,
-                platform_url=platform_url,
-                workspace_id=workspace_id,
-                headers=headers,
-            )
+            if batch_fetcher is None:
+                batch_fetcher = BatchFetcher(
+                    platform_url=platform_url,
+                    workspace_id=workspace_id,
+                    headers=headers,
+                )
+            batch_fetcher.submit(row)
             last_id = str(row.get("id", "")) or last_id
             continue
+        # Non-upload row: drain any pending uploads first so the URI
+        # cache is populated before we run rewrite_request_body /
+        # message_from_activity on a row that may reference one.
+        if batch_fetcher is not None:
+            _drain_uploads(batch_fetcher)
+            batch_fetcher = None
         if _is_self_notify_row(row):
             # The workspace-server's `/notify` handler writes the agent's
             # own send_message_to_user POSTs to activity_logs with
@@ -611,6 +634,13 @@ def _poll_once(
         state.record(message)
         last_id = message.activity_id
         new_count += 1
+
+    # Drain any uploads still in flight if the batch ended with upload
+    # rows (no chat-message row to trigger the inline drain). Without
+    # this, a future poll that picks up the chat-message row first
+    # would race with the still-running fetches.
+    if batch_fetcher is not None:
+        _drain_uploads(batch_fetcher)
 
     if last_id is not None:
         state.save_cursor(last_id, cursor_key)
@@ -654,6 +684,7 @@ def start_poller_thread(
     platform_url: str,
     workspace_id: str,
     interval: float = POLL_INTERVAL_SECONDS,
+    stop_event: threading.Event | None = None,
 ) -> threading.Thread:
     """Spawn the poller as a daemon thread. Returns the Thread handle.
 
@@ -665,13 +696,18 @@ def start_poller_thread(
     operator running ``ps -eL`` or eyeballing ``threading.enumerate()``
     can tell which thread is which without reverse-engineering it from
     crash tracebacks.
+
+    Pass ``stop_event`` to enable graceful shutdown — used by tests so
+    the daemon thread doesn't outlive the test that started it and race
+    with later tests' httpx patches. Production code passes None and
+    relies on the daemon flag for process-exit cleanup.
     """
     name = "molecule-mcp-inbox-poller"
     if workspace_id:
         name = f"{name}-{workspace_id[:8]}"
     t = threading.Thread(
         target=_poll_loop,
-        args=(state, platform_url, workspace_id, interval),
+        args=(state, platform_url, workspace_id, interval, stop_event),
         name=name,
         daemon=True,
     )

@@ -37,6 +37,7 @@ read another tenant's bytes even if a token is misrouted.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import mimetypes
 import os
@@ -67,6 +68,24 @@ MAX_FILE_BYTES = 25 * 1024 * 1024
 # plus headroom for TLS + platform auth. Aligned with inbox poller's
 # 10s default for /activity calls — both are user-perceived latency.
 DEFAULT_FETCH_TIMEOUT = 60.0
+
+# Concurrency cap for ``BatchFetcher``. Four workers is enough headroom
+# for the realistic "user dragged 3-4 files into chat at once" case
+# while bounding the platform's per-workspace fan-out. The cap matters
+# because the platform's /content endpoint reads bytea from Postgres in
+# a single round-trip per request — N workers = N concurrent DB reads
+# of up to 25 MB each, so a higher cap could pressure platform memory
+# without much UX win (network bandwidth is the bottleneck once the
+# bytes are buffered).
+DEFAULT_BATCH_FETCH_WORKERS = 4
+
+# Upper bound on how long ``BatchFetcher.wait_all`` blocks the inbox
+# poll loop before giving up on still-in-flight fetches. Aligned with
+# DEFAULT_FETCH_TIMEOUT so a single hung fetch can't stall the loop
+# longer than its own deadline. A timeout fires only if a worker thread
+# is stuck past the underlying httpx timeout — pathological case;
+# normal completion is bounded by per-fetch timeout × ceil(N/W).
+DEFAULT_BATCH_WAIT_TIMEOUT = DEFAULT_FETCH_TIMEOUT + 5.0
 
 # Cap on the URI cache. A long-lived workspace handling thousands of
 # uploads shouldn't grow without bound; an LRU cap of 1024 keeps the
@@ -275,6 +294,7 @@ def fetch_and_stage(
     workspace_id: str,
     headers: dict[str, str],
     timeout_secs: float = DEFAULT_FETCH_TIMEOUT,
+    client: Any = None,
 ) -> str | None:
     """Fetch the row's bytes, stage them under chat-uploads, and ack.
 
@@ -289,6 +309,11 @@ def fetch_and_stage(
     On success, the URI cache is updated so a subsequent chat message
     referencing the same ``platform-pending:`` URI is rewritten before
     the agent sees it.
+
+    Pass ``client`` to reuse a shared ``httpx.Client`` for both GET and
+    POST ack (saves one TLS handshake per row vs. constructing one
+    per-call). ``BatchFetcher`` does this across an entire poll batch so
+    N concurrent fetches share one connection pool.
     """
     body = _request_body_dict(row)
     if body is None:
@@ -317,25 +342,58 @@ def fetch_and_stage(
     if not isinstance(filename, str):
         filename = "file"
 
-    # Lazy httpx import: the standalone MCP path uses httpx; an in-
-    # container caller that imports this module by accident shouldn't
-    # explode at import time.
-    try:
-        import httpx  # noqa: WPS433
-    except ImportError:
-        logger.error("inbox_uploads: httpx not installed; cannot fetch %s", file_id)
-        return None
+    # Caller-supplied client: reuse for both GET + POST ack. Otherwise
+    # build a one-shot client and close it on the way out. Lazy httpx
+    # import keeps the standalone MCP path's optional dep optional.
+    own_client = client is None
+    if own_client:
+        try:
+            import httpx  # noqa: WPS433
+        except ImportError:
+            logger.error("inbox_uploads: httpx not installed; cannot fetch %s", file_id)
+            return None
+        client = httpx.Client(timeout=timeout_secs)
 
+    try:
+        return _fetch_and_stage_with_client(
+            client,
+            platform_url=platform_url,
+            workspace_id=workspace_id,
+            headers=headers,
+            file_id=file_id,
+            pending_uri=pending_uri,
+            filename=filename,
+            body=body,
+        )
+    finally:
+        if own_client:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001 — close should never crash the caller
+                pass
+
+
+def _fetch_and_stage_with_client(
+    client: Any,
+    *,
+    platform_url: str,
+    workspace_id: str,
+    headers: dict[str, str],
+    file_id: str,
+    pending_uri: str,
+    filename: str,
+    body: dict[str, Any],
+) -> str | None:
+    """Inner body of fetch_and_stage. Always uses the supplied client for
+    both GET and POST so the connection pool is shared across the call.
+    """
     content_url = f"{platform_url}/workspaces/{workspace_id}/pending-uploads/{file_id}/content"
     ack_url = f"{platform_url}/workspaces/{workspace_id}/pending-uploads/{file_id}/ack"
 
     try:
-        with httpx.Client(timeout=timeout_secs) as client:
-            resp = client.get(content_url, headers=headers)
+        resp = client.get(content_url, headers=headers)
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "inbox_uploads: GET %s failed: %s", content_url, exc
-        )
+        logger.warning("inbox_uploads: GET %s failed: %s", content_url, exc)
         return None
 
     if resp.status_code == 404:
@@ -403,8 +461,7 @@ def fetch_and_stage(
     # back the on-disk file — the platform's sweep will clean up
     # eventually.
     try:
-        with httpx.Client(timeout=timeout_secs) as client:
-            ack_resp = client.post(ack_url, headers=headers)
+        ack_resp = client.post(ack_url, headers=headers)
         if ack_resp.status_code >= 400:
             logger.warning(
                 "inbox_uploads: ack %s returned %d: %s",
@@ -416,6 +473,168 @@ def fetch_and_stage(
         logger.warning("inbox_uploads: POST %s failed: %s", ack_url, exc)
 
     return local_uri
+
+
+# ---------------------------------------------------------------------------
+# BatchFetcher — concurrent fetch across a single poll batch
+# ---------------------------------------------------------------------------
+
+
+class BatchFetcher:
+    """Fetch + stage + ack a batch of upload-receive rows concurrently.
+
+    Why this exists: the inbox poll loop used to call ``fetch_and_stage``
+    serially per row. With N upload rows in a batch (a user dragging
+    multiple files into chat at once), the loop blocked for
+    ``N × per_fetch_latency`` before processing the chat message that
+    referenced them — a 4-file upload at 5s each = 20s of stall
+    before the agent saw the user's prompt. ``BatchFetcher`` runs the
+    fetches on a small thread pool (default 4 workers) so the stall is
+    bounded by ``ceil(N/W) × per_fetch_latency`` instead.
+
+    Connection reuse: one ``httpx.Client`` is shared across every fetch
+    in the batch. httpx clients carry a connection pool, so a second
+    fetch to the same platform host reuses the TCP+TLS handshake from
+    the first — measurable win when fetches happen back-to-back.
+
+    Correctness invariant the caller MUST preserve: the inbox loop is
+    expected to call ``wait_all()`` before processing the chat-message
+    activity row that REFERENCES one of these uploads. Without the
+    barrier, the URI cache is empty when ``rewrite_request_body`` runs
+    and the agent sees the un-rewritten ``platform-pending:`` URI. The
+    caller-side test ``test_poll_once_waits_for_uploads_before_messages``
+    pins this end-to-end.
+
+    Use as a context manager so the executor + client are torn down
+    even if the caller raises mid-batch.
+    """
+
+    def __init__(
+        self,
+        *,
+        platform_url: str,
+        workspace_id: str,
+        headers: dict[str, str],
+        timeout_secs: float = DEFAULT_FETCH_TIMEOUT,
+        max_workers: int = DEFAULT_BATCH_FETCH_WORKERS,
+        client: Any = None,
+    ):
+        self._platform_url = platform_url
+        self._workspace_id = workspace_id
+        self._headers = dict(headers)  # copy so caller mutations don't leak in
+        self._timeout_secs = timeout_secs
+
+        # Caller can inject a client (tests do this); production callers
+        # let us build one. Track ownership so we only close ours.
+        self._own_client = client is None
+        if self._own_client:
+            try:
+                import httpx  # noqa: WPS433
+            except ImportError:
+                # Match fetch_and_stage's behavior: log + degrade rather
+                # than raising at construction time. submit() will then
+                # return None for every row.
+                logger.error("inbox_uploads: httpx not installed; BatchFetcher inert")
+                self._client: Any = None
+            else:
+                self._client = httpx.Client(timeout=timeout_secs)
+        else:
+            self._client = client
+
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="upload-fetch",
+        )
+        self._futures: list[concurrent.futures.Future[Any]] = []
+        self._closed = False
+
+    def submit(self, row: dict[str, Any]) -> concurrent.futures.Future[Any] | None:
+        """Submit ``row`` for fetch + stage + ack. Non-blocking — the
+        worker thread runs ``fetch_and_stage`` with the shared client.
+
+        Returns the Future so a caller that wants per-row outcome can
+        await it; ``None`` if the BatchFetcher is in a degraded state
+        (httpx missing).
+        """
+        if self._closed:
+            raise RuntimeError("BatchFetcher: submit after close")
+        if self._client is None:
+            return None
+        fut = self._executor.submit(
+            fetch_and_stage,
+            row,
+            platform_url=self._platform_url,
+            workspace_id=self._workspace_id,
+            headers=self._headers,
+            timeout_secs=self._timeout_secs,
+            client=self._client,
+        )
+        self._futures.append(fut)
+        return fut
+
+    def wait_all(self, timeout: float | None = DEFAULT_BATCH_WAIT_TIMEOUT) -> None:
+        """Block until every submitted future completes (or times out).
+
+        Per-future exceptions are logged + swallowed — ``fetch_and_stage``
+        already converts every error path to ``return None``, so a real
+        exception propagating up to here is unexpected and we don't want
+        one bad fetch to abort the whole batch.
+
+        Timeouts are also logged + swallowed; the caller will move on
+        and the un-acked rows will be retried by the next poll.
+        """
+        if not self._futures:
+            return
+        try:
+            done, not_done = concurrent.futures.wait(
+                self._futures,
+                timeout=timeout,
+                return_when=concurrent.futures.ALL_COMPLETED,
+            )
+        except Exception as exc:  # noqa: BLE001 — concurrent.futures shouldn't raise here
+            logger.warning("inbox_uploads: BatchFetcher.wait_all crashed: %s", exc)
+            return
+        for fut in done:
+            exc = fut.exception()
+            if exc is not None:
+                logger.warning(
+                    "inbox_uploads: BatchFetcher worker raised: %s", exc
+                )
+        if not_done:
+            logger.warning(
+                "inbox_uploads: BatchFetcher.wait_all left %d in-flight after %ss timeout",
+                len(not_done),
+                timeout,
+            )
+
+    def close(self) -> None:
+        """Tear down the executor + (if owned) the httpx client.
+
+        Idempotent. After close, ``submit`` raises and the BatchFetcher
+        cannot be reused — construct a fresh one for the next poll.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        # Drain remaining futures so worker threads aren't killed mid-
+        # request. wait=True is the safe default; for an inbox poller a
+        # 60s tail at shutdown is acceptable since uploads in flight are
+        # the only thing close() is called between.
+        try:
+            self._executor.shutdown(wait=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("inbox_uploads: executor shutdown error: %s", exc)
+        if self._own_client and self._client is not None:
+            try:
+                self._client.close()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("inbox_uploads: client close error: %s", exc)
+
+    def __enter__(self) -> "BatchFetcher":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
 
 
 # ---------------------------------------------------------------------------

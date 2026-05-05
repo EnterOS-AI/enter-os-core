@@ -695,3 +695,342 @@ def test_rewrite_request_body_handles_non_list_parts():
 def test_rewrite_request_body_handles_non_dict_file():
     body = {"parts": [{"kind": "file", "file": "not a dict"}]}
     inbox_uploads.rewrite_request_body(body)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# fetch_and_stage with shared client — Phase 5b client-reuse contract
+# ---------------------------------------------------------------------------
+#
+# When a caller passes ``client=`` to fetch_and_stage, that client must be
+# used for BOTH the GET /content and the POST /ack — no fresh
+# ``httpx.Client(...)`` constructions should happen. The pre-Phase-5b
+# implementation made one new client for GET and another for ack; the new
+# shape lets BatchFetcher share one connection pool across an entire batch.
+
+
+def test_fetch_and_stage_with_supplied_client_does_not_construct_new_client(monkeypatch):
+    row = _row(uri="platform-pending:ws-1/file-1")
+    get_resp = _make_resp(200, content=b"PDF", content_type="application/pdf")
+    ack_resp = _make_resp(200)
+    supplied = MagicMock()
+    supplied.get = MagicMock(return_value=get_resp)
+    supplied.post = MagicMock(return_value=ack_resp)
+    # Sentinel: any code path that constructs httpx.Client when one was
+    # already supplied is a regression — count constructions.
+    constructed: list[Any] = []
+
+    class _ShouldNotBeCalled:
+        def __init__(self, *a, **kw):
+            constructed.append((a, kw))
+
+    monkeypatch.setattr("httpx.Client", _ShouldNotBeCalled)
+
+    local_uri = inbox_uploads.fetch_and_stage(
+        row,
+        platform_url="http://plat",
+        workspace_id="ws-1",
+        headers={"Authorization": "Bearer t"},
+        client=supplied,
+    )
+    assert local_uri is not None
+    assert constructed == [], "supplied client must be reused; no new Client should be constructed"
+    # GET + POST ack both went through the supplied client.
+    supplied.get.assert_called_once()
+    supplied.post.assert_called_once()
+    # Caller-owned client must NOT be closed by fetch_and_stage; the
+    # batch fetcher (or test) closes it once the whole batch is done.
+    supplied.close.assert_not_called()
+
+
+def test_fetch_and_stage_without_supplied_client_constructs_and_closes_one(monkeypatch):
+    row = _row(uri="platform-pending:ws-1/file-1")
+    get_resp = _make_resp(200, content=b"PDF", content_type="application/pdf")
+    ack_resp = _make_resp(200)
+    built: list[MagicMock] = []
+
+    def _factory(*args, **kwargs):
+        c = MagicMock()
+        c.get = MagicMock(return_value=get_resp)
+        c.post = MagicMock(return_value=ack_resp)
+        built.append(c)
+        return c
+
+    monkeypatch.setattr("httpx.Client", _factory)
+
+    local_uri = inbox_uploads.fetch_and_stage(
+        row, platform_url="http://plat", workspace_id="ws-1", headers={}
+    )
+    assert local_uri is not None
+    # Pre-Phase-5b built TWO clients (one for GET, one for ack); now exactly one.
+    assert len(built) == 1, f"expected 1 httpx.Client construction, got {len(built)}"
+    # Same client must serve BOTH calls.
+    built[0].get.assert_called_once()
+    built[0].post.assert_called_once()
+    # Owned client must be closed by fetch_and_stage on the way out.
+    built[0].close.assert_called_once()
+
+
+def test_fetch_and_stage_with_supplied_client_does_not_close_caller_client():
+    # Even on failure the supplied client must not be closed — the
+    # BatchFetcher owns the lifecycle for the whole batch.
+    row = _row(uri="platform-pending:ws-1/file-1")
+    supplied = MagicMock()
+    supplied.get = MagicMock(side_effect=RuntimeError("network down"))
+    supplied.post = MagicMock()  # should not be reached on GET failure
+    inbox_uploads.fetch_and_stage(
+        row,
+        platform_url="http://plat",
+        workspace_id="ws-1",
+        headers={},
+        client=supplied,
+    )
+    supplied.close.assert_not_called()
+    supplied.post.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# BatchFetcher — concurrent fetch + URI cache barrier
+# ---------------------------------------------------------------------------
+
+
+def _row_with_id(act_id: str, file_id: str) -> dict:
+    """Helper: an upload-receive row with a distinct activity id + file id."""
+    return {
+        "id": act_id,
+        "method": "chat_upload_receive",
+        "request_body": {
+            "file_id": file_id,
+            "name": f"{file_id}.pdf",
+            "uri": f"platform-pending:ws-1/{file_id}",
+            "mimeType": "application/pdf",
+            "size": 1,
+        },
+    }
+
+
+def _stub_client_for_batch(get_responses: dict[str, MagicMock]) -> MagicMock:
+    """Build one MagicMock client that returns per-file_id responses
+    based on the file_id segment of the URL.
+    """
+    client = MagicMock()
+
+    def _get(url: str, headers: dict[str, str] | None = None) -> MagicMock:
+        for fid, resp in get_responses.items():
+            if f"/pending-uploads/{fid}/content" in url:
+                return resp
+        return _make_resp(404)
+
+    def _post(url: str, headers: dict[str, str] | None = None) -> MagicMock:
+        return _make_resp(200)
+
+    client.get = MagicMock(side_effect=_get)
+    client.post = MagicMock(side_effect=_post)
+    return client
+
+
+def test_batch_fetcher_runs_submitted_rows_concurrently():
+    # Three rows whose .get() blocks for ~120ms each. With 4 workers the
+    # batch should complete in ~120ms (parallel), not ~360ms (serial).
+    # The 250ms ceiling accommodates CI scheduler jitter while still
+    # discriminating concurrent (~120ms) from serial (~360ms).
+    import time
+
+    barrier_start = [0.0]
+
+    def _slow_get(url: str, headers: dict[str, str] | None = None) -> MagicMock:
+        time.sleep(0.12)
+        for fid in ("a", "b", "c"):
+            if f"/pending-uploads/{fid}/content" in url:
+                return _make_resp(200, content=b"X", content_type="text/plain")
+        return _make_resp(404)
+
+    client = MagicMock()
+    client.get = MagicMock(side_effect=_slow_get)
+    client.post = MagicMock(return_value=_make_resp(200))
+
+    bf = inbox_uploads.BatchFetcher(
+        platform_url="http://plat",
+        workspace_id="ws-1",
+        headers={},
+        client=client,
+        max_workers=4,
+    )
+    barrier_start[0] = time.time()
+    for fid in ("a", "b", "c"):
+        bf.submit(_row_with_id(f"act-{fid}", fid))
+    bf.wait_all()
+    elapsed = time.time() - barrier_start[0]
+    bf.close()
+
+    assert elapsed < 0.25, (
+        f"3 rows × 120ms with 4 workers should finish in <250ms; got {elapsed:.3f}s "
+        "(suggests serial execution — Phase 5b regression)"
+    )
+    assert client.get.call_count == 3
+    assert client.post.call_count == 3
+
+
+def test_batch_fetcher_wait_all_blocks_until_uri_cache_populated():
+    """Pin the correctness invariant: when wait_all returns, the URI
+    cache is hot for every submitted row. Without this barrier the
+    inbox loop would process the chat-message row before its uploads
+    were staged, and rewrite_request_body would surface the un-rewritten
+    platform-pending: URI to the agent.
+    """
+    import time
+
+    def _slow_get(url: str, headers: dict[str, str] | None = None) -> MagicMock:
+        time.sleep(0.05)
+        return _make_resp(200, content=b"data", content_type="text/plain")
+
+    client = MagicMock()
+    client.get = MagicMock(side_effect=_slow_get)
+    client.post = MagicMock(return_value=_make_resp(200))
+
+    inbox_uploads.get_cache().clear()
+    with inbox_uploads.BatchFetcher(
+        platform_url="http://plat", workspace_id="ws-1", headers={}, client=client
+    ) as bf:
+        bf.submit(_row_with_id("act-a", "a"))
+        bf.submit(_row_with_id("act-b", "b"))
+        bf.wait_all()
+        # Cache must be hot for BOTH rows by the time wait_all returns.
+        assert inbox_uploads.get_cache().get("platform-pending:ws-1/a") is not None
+        assert inbox_uploads.get_cache().get("platform-pending:ws-1/b") is not None
+
+
+def test_batch_fetcher_isolates_per_row_failure():
+    """One failing fetch must not abort siblings. Sibling rows complete,
+    URI cache populates for them; the bad row's cache entry stays absent.
+    """
+    def _get(url: str, headers: dict[str, str] | None = None) -> MagicMock:
+        if "/pending-uploads/bad/content" in url:
+            return _make_resp(500, text="upstream broken")
+        return _make_resp(200, content=b"ok", content_type="text/plain")
+
+    client = MagicMock()
+    client.get = MagicMock(side_effect=_get)
+    client.post = MagicMock(return_value=_make_resp(200))
+
+    inbox_uploads.get_cache().clear()
+    with inbox_uploads.BatchFetcher(
+        platform_url="http://plat", workspace_id="ws-1", headers={}, client=client
+    ) as bf:
+        bf.submit(_row_with_id("act-1", "good1"))
+        bf.submit(_row_with_id("act-2", "bad"))
+        bf.submit(_row_with_id("act-3", "good2"))
+        bf.wait_all()
+
+    cache = inbox_uploads.get_cache()
+    assert cache.get("platform-pending:ws-1/good1") is not None
+    assert cache.get("platform-pending:ws-1/good2") is not None
+    assert cache.get("platform-pending:ws-1/bad") is None
+
+
+def test_batch_fetcher_reuses_one_client_across_all_submits():
+    """Every row in the batch must share the same client instance. This
+    is the connection-pool-reuse leg of the perf win: a second fetch
+    to the same host reuses the TCP+TLS handshake from the first.
+    """
+    client = MagicMock()
+    client.get = MagicMock(return_value=_make_resp(200, content=b"x", content_type="text/plain"))
+    client.post = MagicMock(return_value=_make_resp(200))
+
+    with inbox_uploads.BatchFetcher(
+        platform_url="http://plat", workspace_id="ws-1", headers={}, client=client
+    ) as bf:
+        for fid in ("a", "b", "c"):
+            bf.submit(_row_with_id(f"act-{fid}", fid))
+        bf.wait_all()
+
+    # 3 GETs + 3 POST acks all on the same client — no per-row Client
+    # construction.
+    assert client.get.call_count == 3
+    assert client.post.call_count == 3
+
+
+def test_batch_fetcher_close_idempotent():
+    client = MagicMock()
+    bf = inbox_uploads.BatchFetcher(
+        platform_url="http://plat", workspace_id="ws-1", headers={}, client=client
+    )
+    bf.close()
+    bf.close()  # second call must not raise
+
+
+def test_batch_fetcher_submit_after_close_raises():
+    client = MagicMock()
+    bf = inbox_uploads.BatchFetcher(
+        platform_url="http://plat", workspace_id="ws-1", headers={}, client=client
+    )
+    bf.close()
+    with pytest.raises(RuntimeError, match="submit after close"):
+        bf.submit(_row_with_id("act-x", "x"))
+
+
+def test_batch_fetcher_owns_client_when_not_supplied(monkeypatch):
+    built: list[MagicMock] = []
+
+    def _factory(*args, **kwargs):
+        c = MagicMock()
+        c.get = MagicMock(return_value=_make_resp(200, content=b"x", content_type="text/plain"))
+        c.post = MagicMock(return_value=_make_resp(200))
+        built.append(c)
+        return c
+
+    monkeypatch.setattr("httpx.Client", _factory)
+
+    bf = inbox_uploads.BatchFetcher(
+        platform_url="http://plat", workspace_id="ws-1", headers={}
+    )
+    bf.submit(_row_with_id("act-a", "a"))
+    bf.wait_all()
+    bf.close()
+
+    assert len(built) == 1, "expected one owned client per BatchFetcher"
+    built[0].close.assert_called_once()
+
+
+def test_batch_fetcher_does_not_close_supplied_client():
+    client = MagicMock()
+    client.get = MagicMock(return_value=_make_resp(200, content=b"x", content_type="text/plain"))
+    client.post = MagicMock(return_value=_make_resp(200))
+    with inbox_uploads.BatchFetcher(
+        platform_url="http://plat", workspace_id="ws-1", headers={}, client=client
+    ) as bf:
+        bf.submit(_row_with_id("act-a", "a"))
+        bf.wait_all()
+    # Supplied client survives the BatchFetcher's close — caller's lifecycle.
+    client.close.assert_not_called()
+
+
+def test_batch_fetcher_wait_all_no_op_on_empty_batch():
+    client = MagicMock()
+    with inbox_uploads.BatchFetcher(
+        platform_url="http://plat", workspace_id="ws-1", headers={}, client=client
+    ) as bf:
+        bf.wait_all()  # nothing submitted; must not block, must not raise
+    client.get.assert_not_called()
+    client.post.assert_not_called()
+
+
+def test_batch_fetcher_httpx_missing_makes_submit_a_noop(monkeypatch):
+    # No client supplied + httpx import fails → BatchFetcher degrades
+    # gracefully: submit() returns None and the row is silently skipped.
+    import sys
+
+    real_httpx = sys.modules.pop("httpx", None)
+    monkeypatch.setitem(sys.modules, "httpx", None)
+    try:
+        bf = inbox_uploads.BatchFetcher(
+            platform_url="http://plat", workspace_id="ws-1", headers={}
+        )
+        result = bf.submit(_row_with_id("act-a", "a"))
+        bf.wait_all()
+        bf.close()
+    finally:
+        if real_httpx is not None:
+            sys.modules["httpx"] = real_httpx
+        else:
+            sys.modules.pop("httpx", None)
+    assert result is None
