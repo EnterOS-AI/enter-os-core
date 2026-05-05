@@ -172,6 +172,9 @@ jobs:
       - name: Run poll-mode + since_id cursor E2E (#2339)
         if: needs.detect-changes.outputs.api == 'true'
         run: bash tests/e2e/test_poll_mode_e2e.sh
+      - name: Run poll-mode chat upload E2E (RFC #2891)
+        if: needs.detect-changes.outputs.api == 'true'
+        run: bash tests/e2e/test_poll_mode_chat_upload_e2e.sh
       - name: Dump platform log on failure
         if: failure() && needs.detect-changes.outputs.api == 'true'
         run: cat workspace-server/platform.log || true
