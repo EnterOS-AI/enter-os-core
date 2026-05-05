@@ -1,5 +1,14 @@
 # Workspace Runtime PyPI Package
 
+## Requires Python >= 3.11
+
+The wheel pins `requires_python>=3.11`. On Python 3.10 or older, `pip install
+molecule-ai-workspace-runtime` fails with `Could not find a version that
+satisfies the requirement (from versions: none)` — the pin filters the only
+available artifact before pip even attempts install. Upgrade the interpreter
+(`brew install python@3.12` / `apt install python3.12` / etc.) or use a
+3.11+ venv.
+
 ## Overview
 
 The shared workspace runtime infrastructure has **one editable source** and

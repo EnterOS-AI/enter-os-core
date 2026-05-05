@@ -198,6 +198,13 @@ const externalUniversalMcpTemplate = `# Universal MCP — standalone register + 
 # Pair with the Claude Code or Python SDK tab if your runtime needs
 # inbound A2A delivery (canvas messages → agent conversation turns).
 
+# Requires Python >= 3.11. On 3.10 or older pip says
+# "Could not find a version that satisfies the requirement
+# (from versions: none)" — the wheel's requires_python pin filters
+# the only available artifact before pip even attempts install.
+# Upgrade the interpreter (brew install python@3.12 / apt install
+# python3.12 / etc.) or use a 3.11+ venv.
+
 # 1. Install the workspace runtime wheel:
 pip install molecule-ai-workspace-runtime
 
