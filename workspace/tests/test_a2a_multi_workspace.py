@@ -241,7 +241,7 @@ class TestToolListPeersAggregation:
                 return [{"id": "2222bbbb-2222-2222-2222-222222222222", "name": "bob", "status": "online", "role": "dev"}], None
             return [], None
 
-        with patch("a2a_tools.get_peers_with_diagnostic", side_effect=fake_get_peers):
+        with patch("a2a_tools_messaging.get_peers_with_diagnostic", side_effect=fake_get_peers):
             output = await a2a_tools.tool_list_peers()
 
         assert "alice" in output
@@ -263,7 +263,7 @@ class TestToolListPeersAggregation:
             assert source_workspace_id == a2a_client.WORKSPACE_ID
             return [{"id": "1111aaaa-1111-1111-1111-111111111111", "name": "alice", "status": "online", "role": "ops"}], None
 
-        with patch("a2a_tools.get_peers_with_diagnostic", side_effect=fake_get_peers):
+        with patch("a2a_tools_messaging.get_peers_with_diagnostic", side_effect=fake_get_peers):
             output = await a2a_tools.tool_list_peers()
 
         assert "alice" in output
@@ -286,7 +286,7 @@ class TestToolListPeersAggregation:
             seen.append(source_workspace_id)
             return [{"id": "1111aaaa-1111-1111-1111-111111111111", "name": "alice", "status": "online", "role": "ops"}], None
 
-        with patch("a2a_tools.get_peers_with_diagnostic", side_effect=fake_get_peers):
+        with patch("a2a_tools_messaging.get_peers_with_diagnostic", side_effect=fake_get_peers):
             output = await a2a_tools.tool_list_peers(source_workspace_id=ws_a)
 
         assert seen == [ws_a]
@@ -309,7 +309,7 @@ class TestToolListPeersAggregation:
                 return [], "auth failed"
             return [], "platform 5xx"
 
-        with patch("a2a_tools.get_peers_with_diagnostic", side_effect=fake_get_peers):
+        with patch("a2a_tools_messaging.get_peers_with_diagnostic", side_effect=fake_get_peers):
             out = await a2a_tools.tool_list_peers()
 
         assert "[aaaa1111] auth failed" in out
