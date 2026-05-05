@@ -374,8 +374,9 @@ hold:
    non-plugin-sourced server, which Claude Code rejects with
    `channel_enable requires a marketplace plugin`. Until the
    official `moleculesai/claude-code-plugin` marketplace lands
-   (issue #2934 follow-up), operators who want push must scaffold
-   their own local marketplace under
+   (tracking [#2936](https://github.com/Molecule-AI/molecule-core/issues/2936)),
+   operators who want push must scaffold their own local marketplace
+   under
    `~/.claude/marketplaces/molecule-local/` containing a
    `marketplace.json` + `plugin.json` that points at this wheel.
 3. **Claude Code is launched with the dev-channels flag** — pass
@@ -385,8 +386,9 @@ hold:
 
 Symptom of any condition failing: messages arrive but only via the
 poll path (every ~1–60s), not real-time. There's currently no
-diagnostic surfaced — `molecule-mcp doctor` (issue #2934 follow-up)
-is planned.
+diagnostic surfaced — `molecule-mcp doctor` (tracking
+[#2937](https://github.com/Molecule-AI/molecule-core/issues/2937)) is
+planned.
 
 If you don't need real-time push, the default poll path works
 universally with no extra setup; both modes converge on the same

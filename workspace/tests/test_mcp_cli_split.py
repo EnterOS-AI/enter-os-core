@@ -275,26 +275,68 @@ class TestTokenFileEnv:
         out, _ = mcp_workspace_resolver.resolve_workspaces()
         assert out == [("ws-1", "inline-tok")]
 
-    def test_missing_file_falls_through_to_error(self, monkeypatch, tmp_path):
-        # Pointed at a non-existent path — resolver should return the
-        # combined "no token" error, NOT crash.
+    def test_missing_file_returns_specific_error(self, monkeypatch, tmp_path):
+        # Operator EXPLICITLY pointed TOKEN_FILE at a non-existent path —
+        # surface the SPECIFIC failure (not the generic "set one of these
+        # three vars" message). Otherwise they hit the silent failure mode
+        # #2934 flagged ("a new user has no chance").
+        bad_path = tmp_path / "does-not-exist"
         monkeypatch.setenv("WORKSPACE_ID", "ws-1")
-        monkeypatch.setenv(
-            "MOLECULE_WORKSPACE_TOKEN_FILE", str(tmp_path / "does-not-exist")
-        )
+        monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN_FILE", str(bad_path))
         out, errors = mcp_workspace_resolver.resolve_workspaces()
         assert out == []
-        assert any("MOLECULE_WORKSPACE_TOKEN_FILE" in e for e in errors)
+        assert len(errors) == 1
+        assert "MOLECULE_WORKSPACE_TOKEN_FILE" in errors[0]
+        assert "does not exist" in errors[0]
+        assert str(bad_path) in errors[0]
 
-    def test_empty_file_falls_through_to_error(self, monkeypatch, tmp_path):
-        # File exists but is blank — same shape as no token at all.
+    def test_empty_file_returns_specific_error(self, monkeypatch, tmp_path):
+        # Blank file — operator's intent was clearly the file path, so a
+        # generic "no token" error would mask their config bug.
         token_path = tmp_path / "empty.txt"
         token_path.write_text("")
         monkeypatch.setenv("WORKSPACE_ID", "ws-1")
         monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN_FILE", str(token_path))
         out, errors = mcp_workspace_resolver.resolve_workspaces()
         assert out == []
-        assert errors  # at least one combined error message
+        assert len(errors) == 1
+        assert "MOLECULE_WORKSPACE_TOKEN_FILE" in errors[0]
+        assert "is empty" in errors[0]
+
+    def test_multi_line_file_rejected(self, monkeypatch, tmp_path):
+        # CSV cell or accidental multi-token paste — would otherwise become
+        # a malformed bearer that 401s against the platform with no
+        # diagnostic. Reject upfront with a specific error.
+        token_path = tmp_path / "junk.txt"
+        token_path.write_text("tok-a tok-b\n")
+        monkeypatch.setenv("WORKSPACE_ID", "ws-1")
+        monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN_FILE", str(token_path))
+        out, errors = mcp_workspace_resolver.resolve_workspaces()
+        assert out == []
+        assert len(errors) == 1
+        assert "internal whitespace" in errors[0]
+
+    def test_token_file_error_skips_configs_dir_fallback(
+        self, monkeypatch, tmp_path
+    ):
+        # When TOKEN_FILE is explicitly set but broken, do NOT fall through
+        # to a valid CONFIGS_DIR/.auth_token — the operator's intent is
+        # clearly to use the file path; deferring to a different source
+        # would mask their config error.
+        configs_dir = tmp_path / "configs"
+        configs_dir.mkdir()
+        (configs_dir / ".auth_token").write_text("configs-tok")
+        monkeypatch.setenv("CONFIGS_DIR", str(configs_dir))
+        monkeypatch.setenv("WORKSPACE_ID", "ws-1")
+        monkeypatch.setenv(
+            "MOLECULE_WORKSPACE_TOKEN_FILE", str(tmp_path / "missing")
+        )
+        out, errors = mcp_workspace_resolver.resolve_workspaces()
+        assert out == []
+        # Specific TOKEN_FILE error — not the generic "no token" fallback
+        # and crucially not the silent success of using configs-tok.
+        assert len(errors) == 1
+        assert "does not exist" in errors[0]
 
     def test_blank_env_var_treated_as_unset(self, monkeypatch):
         # Empty string is treated as "not set" — common pitfall when

@@ -112,7 +112,18 @@ def resolve_workspaces() -> tuple[list[tuple[str, str]], list[str]]:
     # fallback predates this and stays for in-container runtimes.
     tok = os.environ.get("MOLECULE_WORKSPACE_TOKEN", "").strip()
     if not tok:
-        tok = _read_token_from_file_env()
+        tok, tf_err = _read_token_from_file_env()
+        if tf_err:
+            # Operator explicitly pointed TOKEN_FILE somewhere — surface
+            # the SPECIFIC failure (path doesn't exist, isn't readable,
+            # or holds a blank file) instead of falling through to the
+            # generic "set one of these three vars" message. Otherwise
+            # they get exactly the silent failure mode #2934 flagged
+            # ("a new user has no chance"). Skip the CONFIGS_DIR
+            # fallback in this case — the operator's intent is clearly
+            # to use the file path; deferring to a different source
+            # would mask their config error.
+            return [], [tf_err]
     if not tok:
         tok = read_token_file()
     if not tok:
@@ -123,26 +134,62 @@ def resolve_workspaces() -> tuple[list[tuple[str, str]], list[str]]:
     return [(wsid, tok)], []
 
 
-def _read_token_from_file_env() -> str:
+def _read_token_from_file_env() -> tuple[str, str]:
     """Read the token from the file path in MOLECULE_WORKSPACE_TOKEN_FILE.
 
-    Returns "" on:
-      - env var unset / blank
-      - file not found, unreadable, or empty
-      - any OSError on read
-
-    Empty-on-failure (rather than raising) lets the resolver fall through
-    to the CONFIGS_DIR fallback. The caller surfaces the combined "no
-    token" error if every source is empty.
+    Returns ``(token, error)``:
+      * env var unset/blank → ``("", "")`` — caller falls through silently
+        to the next source; the operator didn't ask for this path.
+      * file open/read fails (missing, permission denied, decode error)
+        → ``("", "<specific error>")`` — caller surfaces it directly.
+        The operator EXPLICITLY pointed at this path, so a generic
+        fallthrough error would mask their config bug (#2934).
+      * file is blank → ``("", "<blank file error>")`` — same reasoning.
+      * file read returns junk with internal whitespace/newlines (e.g.
+        a CSV cell, accidental multi-token paste) → ``("", "<error>")``
+        rather than concatenating into a malformed bearer that 401s
+        against the platform with no context.
+      * happy path → ``("<token>", "")``.
     """
     path = os.environ.get("MOLECULE_WORKSPACE_TOKEN_FILE", "").strip()
     if not path:
-        return ""
+        return "", ""
     try:
         with open(path, encoding="utf-8") as fh:
-            return fh.read().strip()
-    except OSError:
-        return ""
+            raw = fh.read()
+    except FileNotFoundError:
+        return "", (
+            f"MOLECULE_WORKSPACE_TOKEN_FILE points to {path!r} which "
+            f"does not exist"
+        )
+    except PermissionError:
+        return "", (
+            f"MOLECULE_WORKSPACE_TOKEN_FILE={path!r} is not readable "
+            f"(permission denied)"
+        )
+    except OSError as exc:
+        return "", (
+            f"MOLECULE_WORKSPACE_TOKEN_FILE={path!r} could not be read: "
+            f"{exc}"
+        )
+    except UnicodeDecodeError:
+        return "", (
+            f"MOLECULE_WORKSPACE_TOKEN_FILE={path!r} is not valid UTF-8"
+        )
+    tok = raw.strip()
+    if not tok:
+        return "", (
+            f"MOLECULE_WORKSPACE_TOKEN_FILE={path!r} is empty"
+        )
+    # Reject tokens with internal whitespace — a CSV cell or accidental
+    # multi-token paste would otherwise become a malformed bearer that
+    # 401s against the platform with no diagnostic.
+    if any(ch.isspace() for ch in tok):
+        return "", (
+            f"MOLECULE_WORKSPACE_TOKEN_FILE={path!r} contains internal "
+            f"whitespace — expected a single token"
+        )
+    return tok, ""
 
 
 def print_missing_env_help(missing: list[str], have_token_file: bool) -> None:
