@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provlog"
 )
 
 // HasProvisioner reports whether either backend (CP or local Docker) is
@@ -101,6 +102,14 @@ func (h *WorkspaceHandler) DefaultTier() int {
 // lives in prepareProvisionContext (shared by both per-backend
 // goroutines).
 func (h *WorkspaceHandler) provisionWorkspaceAuto(workspaceID, templatePath string, configFiles map[string][]byte, payload models.CreateWorkspacePayload) bool {
+	provlog.Event("provision.start", map[string]any{
+		"workspace_id": workspaceID,
+		"name":         payload.Name,
+		"tier":         payload.Tier,
+		"runtime":      payload.Runtime,
+		"template":     payload.Template,
+		"sync":         false,
+	})
 	if h.cpProv != nil {
 		go h.provisionWorkspaceCP(workspaceID, templatePath, configFiles, payload)
 		return true
@@ -136,6 +145,14 @@ func (h *WorkspaceHandler) provisionWorkspaceAuto(workspaceID, templatePath stri
 // Keep these two helpers in sync — when one grows a new arm (third
 // backend, retry semantics), the other should too.
 func (h *WorkspaceHandler) provisionWorkspaceAutoSync(workspaceID, templatePath string, configFiles map[string][]byte, payload models.CreateWorkspacePayload) bool {
+	provlog.Event("provision.start", map[string]any{
+		"workspace_id": workspaceID,
+		"name":         payload.Name,
+		"tier":         payload.Tier,
+		"runtime":      payload.Runtime,
+		"template":     payload.Template,
+		"sync":         true,
+	})
 	if h.cpProv != nil {
 		h.provisionWorkspaceCP(workspaceID, templatePath, configFiles, payload)
 		return true

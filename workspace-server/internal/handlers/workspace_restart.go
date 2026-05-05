@@ -12,6 +12,7 @@ import (
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provlog"
 	"github.com/gin-gonic/gin"
 )
 
@@ -431,6 +432,16 @@ func coalesceRestart(workspaceID string, cycle func()) {
 // NPE'd before reaching the reprovision step — which is why every SaaS dead-
 // agent incident pre-this-fix required manual restart from canvas.
 func (h *WorkspaceHandler) stopForRestart(ctx context.Context, workspaceID string) {
+	backend := "none"
+	if h.provisioner != nil {
+		backend = "docker"
+	} else if h.cpProv != nil {
+		backend = "cp"
+	}
+	provlog.Event("restart.pre_stop", map[string]any{
+		"workspace_id": workspaceID,
+		"backend":      backend,
+	})
 	if h.provisioner != nil {
 		h.provisioner.Stop(ctx, workspaceID)
 		return

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provlog"
 )
 
 // CPProvisionerAPI is the contract WorkspaceHandler uses to talk to the
@@ -214,6 +215,13 @@ func (p *CPProvisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string,
 	}
 
 	log.Printf("CP provisioner: workspace %s → EC2 instance %s (%s)", cfg.WorkspaceID, result.InstanceID, result.State)
+	provlog.Event("provision.ec2_started", map[string]any{
+		"workspace_id": cfg.WorkspaceID,
+		"instance_id":  result.InstanceID,
+		"state":        result.State,
+		"tier":         cfg.Tier,
+		"runtime":      cfg.Runtime,
+	})
 	return result.InstanceID, nil
 }
 
@@ -273,6 +281,10 @@ func (p *CPProvisioner) Stop(ctx context.Context, workspaceID string) error {
 		return fmt.Errorf("cp provisioner: stop %s: unexpected %d: %s",
 			workspaceID, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
+	provlog.Event("provision.ec2_stopped", map[string]any{
+		"workspace_id": workspaceID,
+		"instance_id":  instanceID,
+	})
 	return nil
 }
 

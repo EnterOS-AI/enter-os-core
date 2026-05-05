@@ -21,6 +21,7 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provlog"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/scheduler"
 	"github.com/google/uuid"
 )
@@ -96,6 +97,16 @@ func (h *OrgHandler) createWorkspaceTree(ws OrgWorkspace, parentID *string, absX
 	}
 	if existing {
 		log.Printf("Org import: %q already exists (id=%s) — skipping create+provision, recursing into children for partial-match", ws.Name, existingID)
+		parentRef := ""
+		if parentID != nil {
+			parentRef = *parentID
+		}
+		provlog.Event("provision.skip_existing", map[string]any{
+			"name":        ws.Name,
+			"existing_id": existingID,
+			"parent_id":   parentRef,
+			"tier":        tier,
+		})
 		*results = append(*results, map[string]interface{}{
 			"id":      existingID,
 			"name":    ws.Name,
