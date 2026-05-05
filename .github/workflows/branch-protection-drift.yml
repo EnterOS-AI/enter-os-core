@@ -31,12 +31,34 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Per memory feedback_schedule_vs_dispatch_secrets_hardening.md:
+      # schedule + pull_request triggers MUST hard-fail when the admin
+      # token is missing — silent soft-skip masks the gate disappearing.
+      # workflow_dispatch keeps soft-skip so an operator can run a
+      # diagnostic one-off without configuring the secret first.
+      - name: Verify admin token present (hard-fail on schedule/PR)
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          GH_TOKEN_FOR_ADMIN_API: ${{ secrets.GH_TOKEN_FOR_ADMIN_API }}
+        run: |
+          if [[ -z "$GH_TOKEN_FOR_ADMIN_API" ]]; then
+            echo "::error::GH_TOKEN_FOR_ADMIN_API secret missing." >&2
+            echo "" >&2
+            echo "drift_check requires repo-admin scope to read /branches/:b/protection." >&2
+            echo "GITHUB_TOKEN does not have that scope." >&2
+            echo "Set GH_TOKEN_FOR_ADMIN_API at Settings → Secrets and variables → Actions." >&2
+            echo "" >&2
+            echo "On workflow_dispatch this step soft-skips for one-off operator runs." >&2
+            exit 1
+          fi
+
       - name: Run drift check
         env:
           # GH_TOKEN_FOR_ADMIN_API — repo-admin scope, needed for the
           # /branches/:b/protection endpoint. Falls back to GITHUB_TOKEN
-          # for read-only mode (gh api on the protection endpoint
-          # returns 200 to maintainers, 404 to read-only). Configure at
-          # Settings → Secrets and variables → Actions.
+          # only on workflow_dispatch (operator override); the verify
+          # step above hard-fails any other trigger when the secret is
+          # missing.
           GH_TOKEN: ${{ secrets.GH_TOKEN_FOR_ADMIN_API || secrets.GITHUB_TOKEN }}
         run: bash tools/branch-protection/drift_check.sh
