@@ -269,6 +269,9 @@ func insertDelegationRow(ctx context.Context, c *gin.Context, sourceID string, b
 		VALUES ($1, 'delegation', 'delegate', $2, $3, $4, $5::jsonb, 'pending', $6)
 	`, sourceID, sourceID, body.TargetID, "Delegating to "+body.TargetID, string(taskJSON), idemArg)
 	if err == nil {
+		// RFC #2829 #318 — mirror to the durable delegations ledger
+		// (gated by DELEGATION_LEDGER_WRITE; default off → no-op).
+		recordLedgerInsert(ctx, sourceID, body.TargetID, delegationID, body.Task, body.IdempotencyKey)
 		return insertOK
 	}
 	// A unique-constraint hit means a concurrent request just took the
@@ -409,6 +412,10 @@ func (h *DelegationHandler) executeDelegation(sourceID, targetID, delegationID s
 	}
 
 	h.updateDelegationStatus(sourceID, delegationID, "completed", "")
+	// RFC #2829 #318 — mirror result_preview to the durable ledger
+	// (updateDelegationStatus handles the status flip; ledger gets the
+	// preview field set on the same row).
+	recordLedgerStatus(ctx, delegationID, "completed", "", responseText)
 	h.broadcaster.RecordAndBroadcast(ctx, "DELEGATION_COMPLETE", sourceID, map[string]interface{}{
 		"delegation_id":    delegationID,
 		"target_id":        targetID,
@@ -420,7 +427,8 @@ func (h *DelegationHandler) executeDelegation(sourceID, targetID, delegationID s
 
 // updateDelegationStatus updates the status of a delegation record in activity_logs.
 func (h *DelegationHandler) updateDelegationStatus(workspaceID, delegationID, status, errorDetail string) {
-	if _, err := db.DB.ExecContext(context.Background(), `
+	ctx := context.Background()
+	if _, err := db.DB.ExecContext(ctx, `
 		UPDATE activity_logs
 		SET status = $1, error_detail = CASE WHEN $2 = '' THEN error_detail ELSE $2 END
 		WHERE workspace_id = $3
@@ -428,6 +436,14 @@ func (h *DelegationHandler) updateDelegationStatus(workspaceID, delegationID, st
 		  AND request_body->>'delegation_id' = $4
 	`, status, errorDetail, workspaceID, delegationID); err != nil {
 		log.Printf("Delegation %s: status update failed: %v", delegationID, err)
+	}
+	// RFC #2829 #318 — mirror status transition to the durable ledger
+	// (gated). Note: the ledger uses different vocabulary for "pending"
+	// (its initial state is `queued`); map "received" / unknown values
+	// the ledger doesn't accept by skipping them rather than failing.
+	switch status {
+	case "queued", "dispatched", "in_progress", "completed", "failed", "stuck":
+		recordLedgerStatus(ctx, delegationID, status, errorDetail, "")
 	}
 }
 
@@ -473,6 +489,15 @@ func (h *DelegationHandler) Record(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record delegation"})
 		return
 	}
+
+	// RFC #2829 #318 — mirror to durable ledger (gated). Record always
+	// reflects an A2A request the agent already fired itself, so the
+	// initial activity_logs status is 'dispatched' — but the ledger's
+	// CHECK constraint only accepts 'queued' as the initial state via
+	// Insert. Insert as queued first; the very next SetStatus(...,
+	// dispatched) below promotes it to dispatched on the same row.
+	recordLedgerInsert(ctx, sourceID, body.TargetID, body.DelegationID, body.Task, "")
+	recordLedgerStatus(ctx, body.DelegationID, "dispatched", "", "")
 
 	h.broadcaster.RecordAndBroadcast(ctx, "DELEGATION_SENT", sourceID, map[string]interface{}{
 		"delegation_id": body.DelegationID,
