@@ -37,6 +37,7 @@ import (
 	"context"
 	"database/sql"
 	"os"
+	"strings"
 	"testing"
 
 	mdb "github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
@@ -47,6 +48,12 @@ import (
 // skips the test if INTEGRATION_DB_URL is unset. Local devs run the
 // docker-postgres incantation in the file header; CI's workflow sets the
 // env var via a service container.
+//
+// NOT SAFE FOR `t.Parallel()`. Each call hot-swaps the package-level
+// `mdb.DB` and restores via `t.Cleanup`. If two tests using this helper
+// run in parallel they race on the global; tests that need parallelism
+// should drive a local `*sql.DB` they own and pass it into helpers
+// directly rather than going through the package global.
 func integrationDB(t *testing.T) *sql.DB {
 	t.Helper()
 	url := os.Getenv("INTEGRATION_DB_URL")
@@ -227,9 +234,12 @@ func TestIntegration_Sweeper_DeadlineExceededIsMarkedFailed(t *testing.T) {
 	recordLedgerStatus(context.Background(), id, "dispatched", "", "")
 
 	// Force the deadline into the past — Insert defaults to now+6h, so
-	// we override.
+	// we override. We don't touch last_heartbeat: the sweeper checks
+	// deadline FIRST (it's the stronger statement) and short-circuits
+	// before evaluating heartbeat staleness, so a NULL or stale beat is
+	// irrelevant for the deadline-failure path.
 	if _, err := conn.ExecContext(context.Background(),
-		`UPDATE delegations SET deadline = now() - interval '1 minute', last_heartbeat = now() WHERE delegation_id = $1`, id,
+		`UPDATE delegations SET deadline = now() - interval '1 minute' WHERE delegation_id = $1`, id,
 	); err != nil {
 		t.Fatalf("backdate deadline: %v", err)
 	}
@@ -280,8 +290,8 @@ func TestIntegration_Sweeper_StaleHeartbeatIsMarkedStuck(t *testing.T) {
 	if status != "stuck" {
 		t.Errorf("status: want stuck, got %q", status)
 	}
-	if errDet == "" {
-		t.Errorf("error_detail should mention 'no heartbeat for Xs'; got empty")
+	if !strings.Contains(errDet, "no heartbeat for") {
+		t.Errorf("error_detail should contain 'no heartbeat for'; got %q", errDet)
 	}
 }
 
