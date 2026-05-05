@@ -8,12 +8,50 @@ package handlers
 // to piece together workspace_id + platform_url + auth_token + API
 // shape from the docs. curl snippet has zero dependencies; Python
 // snippet pairs with molecule-sdk-python's A2AServer + RemoteAgentClient.
+//
+// BuildExternalConnectionPayload (below) is the single source of truth
+// for the payload shape — used by Create (#workspace.go), Rotate
+// (#external_rotate.go), and the read-only "show instructions again"
+// endpoint. Adding a snippet means adding it here once; the three
+// callers pick it up automatically.
 
 import (
 	"os"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
+
+// BuildExternalConnectionPayload assembles the gin.H payload that the
+// canvas's ExternalConnectModal consumes. Pure data — caller owns DB
+// reads (workspace_id) and token minting (auth_token).
+//
+// authToken may be empty for the read-only "show instructions again"
+// path; the modal masks the field in that case rather than displaying
+// an empty string.
+func BuildExternalConnectionPayload(platformURL, workspaceID, authToken string) gin.H {
+	pURL := strings.TrimSuffix(platformURL, "/")
+	stamp := func(tmpl string) string {
+		return strings.ReplaceAll(
+			strings.ReplaceAll(tmpl, "{{PLATFORM_URL}}", pURL),
+			"{{WORKSPACE_ID}}", workspaceID,
+		)
+	}
+	return gin.H{
+		"workspace_id":                workspaceID,
+		"platform_url":                pURL,
+		"auth_token":                  authToken,
+		"registry_endpoint":           pURL + "/registry/register",
+		"heartbeat_endpoint":          pURL + "/registry/heartbeat",
+		"curl_register_template":      stamp(externalCurlTemplate),
+		"python_snippet":              stamp(externalPythonTemplate),
+		"claude_code_channel_snippet": stamp(externalChannelTemplate),
+		"universal_mcp_snippet":       stamp(externalUniversalMcpTemplate),
+		"hermes_channel_snippet":      stamp(externalHermesChannelTemplate),
+		"codex_snippet":               stamp(externalCodexTemplate),
+		"openclaw_snippet":            stamp(externalOpenClawTemplate),
+	}
+}
 
 // externalPlatformURL returns the public URL at which this workspace-
 // server instance is reachable by the operator's external agent. This

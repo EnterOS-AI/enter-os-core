@@ -6,6 +6,7 @@ import { useCanvasStore } from "@/store/canvas";
 import { type ConfigData, DEFAULT_CONFIG, TextInput, NumberInput, Toggle, TagList, Section } from "./config/form-inputs";
 import { parseYaml, toYaml } from "./config/yaml-utils";
 import { SecretsSection } from "./config/secrets-section";
+import { ExternalConnectionSection } from "./ExternalConnectionSection";
 import {
   ProviderModelSelector,
   buildProviderCatalog,
@@ -959,6 +960,9 @@ export function ConfigTab({ workspaceId }: Props) {
             ? "Hermes manages its own config at ~/.hermes/config.yaml on the workspace host. Edit it via the Terminal tab or the hermes CLI, not this form."
             : "This runtime manages its own config outside the platform template."}
         </div>
+      )}
+      {!error && config.runtime === "external" && (
+        <ExternalConnectionSection workspaceId={workspaceId} />
       )}
       {success && (
         <div className="mx-3 mb-2 px-3 py-1.5 bg-green-900/30 border border-green-800 rounded text-xs text-good">Saved</div>

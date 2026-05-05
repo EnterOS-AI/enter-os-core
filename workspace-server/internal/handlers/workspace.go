@@ -617,8 +617,8 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 			if tokErr != nil {
 				log.Printf("External workspace %s: token issuance failed: %v", id, tokErr)
 				// Non-fatal — the workspace row still exists; the
-				// operator can call POST /workspaces/:id/tokens later
-				// to mint one. Return a 201 with a hint instead of
+				// operator can call POST /workspaces/:id/external/rotate
+				// later to recover. Return a 201 with a hint instead of
 				// 500'ing a partial-success write.
 			} else {
 				connectionToken = tok
@@ -638,91 +638,16 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 		} else {
 			resp["status"] = "awaiting_agent"
 			// Connection snippet payload. Returned ONCE on create —
-			// the token is not recoverable from any later read. UI
-			// is responsible for surfacing this in a copy-paste modal.
-			platformURL := strings.TrimSuffix(externalPlatformURL(c), "/")
-			resp["connection"] = gin.H{
-				"workspace_id": id,
-				"platform_url": platformURL,
-				"auth_token":   connectionToken, // may be "" if IssueToken failed above
-				"registry_endpoint": platformURL + "/registry/register",
-				"heartbeat_endpoint": platformURL + "/registry/heartbeat",
-				// Pre-formatted snippet that a non-Go operator can
-				// paste verbatim. curl-based so there's no SDK
-				// install dependency. The external agent only
-				// needs to replace $AGENT_URL with its own public URL.
-				"curl_register_template": strings.ReplaceAll(
-					strings.ReplaceAll(externalCurlTemplate,
-						"{{PLATFORM_URL}}", platformURL),
-					"{{WORKSPACE_ID}}", id,
-				),
-				// Python/SDK snippet. molecule-sdk-python PR #13
-				// shipped A2AServer + RemoteAgentClient specifically
-				// for this flow. The SDK is not yet on PyPI — the
-				// snippet pins @main until we cut a release.
-				"python_snippet": strings.ReplaceAll(
-					strings.ReplaceAll(externalPythonTemplate,
-						"{{PLATFORM_URL}}", platformURL),
-					"{{WORKSPACE_ID}}", id,
-				),
-				// Claude Code channel plugin snippet. For operators
-				// whose external agent IS a Claude Code session —
-				// the snippet sets up ~/.claude/channels/molecule/.env
-				// and points at the canonical first-party plugin at
-				// github.com/Molecule-AI/molecule-mcp-claude-channel.
-				// Polling-based; no tunnel needed.
-				"claude_code_channel_snippet": strings.ReplaceAll(
-					strings.ReplaceAll(externalChannelTemplate,
-						"{{PLATFORM_URL}}", platformURL),
-					"{{WORKSPACE_ID}}", id,
-				),
-				// Universal MCP snippet — runtime-agnostic outbound
-				// tool path via the molecule-mcp console script. Same
-				// 8 platform tools any MCP-aware runtime can register
-				// (Claude Code, hermes, codex, etc.). Outbound-only:
-				// the snippet calls out that heartbeat/inbound need
-				// pairing with the SDK or channel tab.
-				"universal_mcp_snippet": strings.ReplaceAll(
-					strings.ReplaceAll(externalUniversalMcpTemplate,
-						"{{PLATFORM_URL}}", platformURL),
-					"{{WORKSPACE_ID}}", id,
-				),
-				// Hermes channel snippet — for operators whose external
-				// agent IS a hermes-agent session. Routes A2A traffic
-				// into the hermes gateway via the molecule-channel
-				// plugin (Molecule-AI/hermes-channel-molecule). Long-
-				// poll based (no tunnel) — same UX as the Claude Code
-				// channel tab. Gives hermes true push parity with the
-				// other runtime templates.
-				"hermes_channel_snippet": strings.ReplaceAll(
-					strings.ReplaceAll(externalHermesChannelTemplate,
-						"{{PLATFORM_URL}}", platformURL),
-					"{{WORKSPACE_ID}}", id,
-				),
-				// Codex MCP config snippet — for operators whose
-				// external agent is a codex CLI (@openai/codex)
-				// session. Wires the molecule MCP server into
-				// ~/.codex/config.toml. Outbound-tools-only today;
-				// codex's MCP client doesn't route arbitrary
-				// notifications/* so push parity needs a separate
-				// bridge daemon (future work).
-				"codex_snippet": strings.ReplaceAll(
-					strings.ReplaceAll(externalCodexTemplate,
-						"{{PLATFORM_URL}}", platformURL),
-					"{{WORKSPACE_ID}}", id,
-				),
-				// OpenClaw MCP config snippet — for operators whose
-				// external agent is an openclaw session. Wires the
-				// molecule MCP server via `openclaw mcp set` + starts
-				// the gateway on loopback. Outbound-tools-only today;
-				// full push parity needs a sessions.steer bridge
-				// daemon (future work).
-				"openclaw_snippet": strings.ReplaceAll(
-					strings.ReplaceAll(externalOpenClawTemplate,
-						"{{PLATFORM_URL}}", platformURL),
-					"{{WORKSPACE_ID}}", id,
-				),
-			}
+			// the token is not recoverable from any later read.
+			//
+			// Payload assembly + per-snippet template stamping lives
+			// in BuildExternalConnectionPayload (external_connection.go)
+			// so the rotate + re-show endpoints emit byte-identical
+			// shape. Adding a new snippet means adding it once there;
+			// all three callers pick it up automatically.
+			resp["connection"] = BuildExternalConnectionPayload(
+				externalPlatformURL(c), id, connectionToken,
+			)
 		}
 		c.JSON(http.StatusCreated, resp)
 		return

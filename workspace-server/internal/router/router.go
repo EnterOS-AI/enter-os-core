@@ -190,6 +190,18 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		// to 'hibernated'. The workspace auto-wakes on the next A2A message.
 		wsAuth.POST("/hibernate", wh.Hibernate)
 
+		// External-workspace credential lifecycle (issue #319 follow-up to
+		// the Create flow). Both endpoints reject runtime ≠ external with
+		// 400 — see external_rotate.go for the rationale.
+		//
+		//   POST .../external/rotate     — mint fresh token, revoke prior,
+		//                                  return ExternalConnectionInfo
+		//   GET  .../external/connection — return ExternalConnectionInfo
+		//                                  with auth_token="" (re-show
+		//                                  instructions without rotating)
+		wsAuth.POST("/external/rotate", wh.RotateExternalCredentials)
+		wsAuth.GET("/external/connection", wh.GetExternalConnection)
+
 		// Async Delegation
 		delh := handlers.NewDelegationHandler(wh, broadcaster)
 		wsAuth.POST("/delegate", delh.Delegate)
