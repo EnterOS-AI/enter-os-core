@@ -5,14 +5,15 @@
 //
 // Exposed metrics:
 //
-//	molecule_http_requests_total{method,path,status}   - counter
-//	molecule_http_request_duration_seconds{method,path} - counter (sum, for avg rate)
-//	molecule_websocket_connections_active               - gauge
-//	go_goroutines                                       - gauge
-//	go_memstats_alloc_bytes                             - gauge
-//	go_memstats_sys_bytes                               - gauge
-//	go_memstats_heap_inuse_bytes                        - gauge
-//	go_gc_duration_seconds_total                        - counter
+//	molecule_http_requests_total{method,path,status}      - counter
+//	molecule_http_request_duration_seconds{method,path}   - counter (sum, for avg rate)
+//	molecule_websocket_connections_active                  - gauge
+//	molecule_pending_uploads_swept_total{outcome}          - counter (acked|expired|error)
+//	go_goroutines                                          - gauge
+//	go_memstats_alloc_bytes                                - gauge
+//	go_memstats_sys_bytes                                  - gauge
+//	go_memstats_heap_inuse_bytes                           - gauge
+//	go_gc_duration_seconds_total                           - counter
 package metrics
 
 import (
@@ -38,6 +39,12 @@ var (
 	reqCounts     = map[reqKey]int64{}   // molecule_http_requests_total
 	reqDurSums    = map[reqKey]float64{} // sum of durations (seconds)
 	activeWSConns int64                  // molecule_websocket_connections_active
+
+	// pendinguploads sweeper counters — atomic so the sweeper goroutine
+	// doesn't contend with the /metrics handler.
+	pendingUploadsSweptAcked   int64 // molecule_pending_uploads_swept_total{outcome="acked"}
+	pendingUploadsSweptExpired int64 // molecule_pending_uploads_swept_total{outcome="expired"}
+	pendingUploadsSweepErrors  int64 // molecule_pending_uploads_swept_total{outcome="error"}
 )
 
 // Middleware records per-request counts and latency.
@@ -75,6 +82,50 @@ func TrackWSConnect() { atomic.AddInt64(&activeWSConns, 1) }
 // TrackWSDisconnect decrements the active WebSocket connections gauge.
 // Call from the WebSocket disconnect / cleanup path.
 func TrackWSDisconnect() { atomic.AddInt64(&activeWSConns, -1) }
+
+// phantomBusyResets is the cumulative count of workspace rows the
+// phantom-busy sweep reset (active_tasks=0 → active_tasks=0+counter
+// cleared). Surfaced as molecule_phantom_busy_resets_total — a high
+// reset rate signals a regression in task-lifecycle accounting (most
+// often: missing env vars cause claude --print to time out, the
+// agent loop never decrements active_tasks, and the sweep cleans up
+// the counter ~10 min later). Issue #2865.
+var phantomBusyResets int64
+
+// TrackPhantomBusyReset increments the phantom-busy reset counter.
+// Called from sweepPhantomBusy in workspace-server/internal/scheduler/
+// after each row whose active_tasks was reset to 0. Idempotent +
+// goroutine-safe; called once per row per sweep tick.
+func TrackPhantomBusyReset() { atomic.AddInt64(&phantomBusyResets, 1) }
+
+// PendingUploadsSwept records a successful sweep cycle. acked/expired
+// are added to the per-outcome counters so dashboards can spot the
+// stuck-fetch pattern (high expired, low acked) vs healthy churn.
+func PendingUploadsSwept(acked, expired int) {
+	if acked > 0 {
+		atomic.AddInt64(&pendingUploadsSweptAcked, int64(acked))
+	}
+	if expired > 0 {
+		atomic.AddInt64(&pendingUploadsSweptExpired, int64(expired))
+	}
+}
+
+// PendingUploadsSweepError records a sweeper-cycle failure (transient
+// DB error etc). Counted separately so the rate of errored sweeps is
+// observable independent of how many rows the successful sweeps deleted.
+func PendingUploadsSweepError() {
+	atomic.AddInt64(&pendingUploadsSweepErrors, 1)
+}
+
+// PendingUploadsSweepCounts returns the current (acked, expired, error)
+// totals. Exposed for tests that need a deterministic delta probe of
+// the sweeper's metric writes — the /metrics endpoint is the production
+// observability surface; this is a unit-test escape hatch.
+func PendingUploadsSweepCounts() (acked, expired, errored int64) {
+	return atomic.LoadInt64(&pendingUploadsSweptAcked),
+		atomic.LoadInt64(&pendingUploadsSweptExpired),
+		atomic.LoadInt64(&pendingUploadsSweepErrors)
+}
 
 // Handler returns a Gin handler that serialises all collected metrics in
 // Prometheus text exposition format (v0.0.4). Mount this at GET /metrics.
@@ -144,6 +195,21 @@ func Handler() gin.HandlerFunc {
 		writeln(w, "# HELP molecule_websocket_connections_active Number of active WebSocket connections.")
 		writeln(w, "# TYPE molecule_websocket_connections_active gauge")
 		fmt.Fprintf(w, "molecule_websocket_connections_active %d\n", atomic.LoadInt64(&activeWSConns))
+
+		// ── Molecule AI scheduler ──────────────────────────────────────────────
+		writeln(w, "# HELP molecule_phantom_busy_resets_total Cumulative count of workspace rows reset by the phantom-busy sweep (active_tasks cleared after >10 min of activity_log silence). High reset rate signals task-lifecycle accounting regressions — see issue #2865.")
+		writeln(w, "# TYPE molecule_phantom_busy_resets_total counter")
+		fmt.Fprintf(w, "molecule_phantom_busy_resets_total %d\n", atomic.LoadInt64(&phantomBusyResets))
+
+		// ── Pending-uploads sweeper ────────────────────────────────────────────
+		writeln(w, "# HELP molecule_pending_uploads_swept_total Pending-uploads rows deleted by the GC sweeper, by outcome.")
+		writeln(w, "# TYPE molecule_pending_uploads_swept_total counter")
+		fmt.Fprintf(w, "molecule_pending_uploads_swept_total{outcome=\"acked\"} %d\n",
+			atomic.LoadInt64(&pendingUploadsSweptAcked))
+		fmt.Fprintf(w, "molecule_pending_uploads_swept_total{outcome=\"expired\"} %d\n",
+			atomic.LoadInt64(&pendingUploadsSweptExpired))
+		fmt.Fprintf(w, "molecule_pending_uploads_swept_total{outcome=\"error\"} %d\n",
+			atomic.LoadInt64(&pendingUploadsSweepErrors))
 	}
 }
 

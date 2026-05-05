@@ -71,6 +71,18 @@ const (
 		SELECT acked_at FROM pending_uploads
 		WHERE file_id = $1 AND expires_at > now()
 	`
+	sweepSQL = `
+		WITH deleted AS (
+			DELETE FROM pending_uploads
+			WHERE (acked_at IS NOT NULL AND acked_at < now() - make_interval(secs => $1))
+			   OR (acked_at IS NULL     AND expires_at < now())
+			RETURNING (acked_at IS NOT NULL) AS was_acked
+		)
+		SELECT
+			COALESCE(SUM(CASE WHEN was_acked     THEN 1 ELSE 0 END), 0)::int AS acked,
+			COALESCE(SUM(CASE WHEN NOT was_acked THEN 1 ELSE 0 END), 0)::int AS expired
+		FROM deleted
+	`
 )
 
 // ----- Put ------------------------------------------------------------------
@@ -396,5 +408,106 @@ func TestAck_DBErrorOnDisambiguate_Wrapped(t *testing.T) {
 	err := store.Ack(context.Background(), fid)
 	if err == nil || !strings.Contains(err.Error(), "disambiguate") {
 		t.Fatalf("expected wrapped disambiguate error, got %v", err)
+	}
+}
+
+// ----- Sweep ----------------------------------------------------------------
+
+func TestSweep_DeletesAckedAndExpired_ReturnsCounts(t *testing.T) {
+	db, mock := newMockDB(t)
+	store := pendinguploads.NewPostgres(db)
+
+	mock.ExpectQuery(sweepSQL).
+		WithArgs(int64(3600)). // 1h retention
+		WillReturnRows(sqlmock.NewRows([]string{"acked", "expired"}).AddRow(7, 2))
+
+	res, err := store.Sweep(context.Background(), time.Hour)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if res.Acked != 7 || res.Expired != 2 || res.Total() != 9 {
+		t.Errorf("got %+v want acked=7 expired=2 total=9", res)
+	}
+}
+
+func TestSweep_NothingToDelete_ReturnsZero(t *testing.T) {
+	db, mock := newMockDB(t)
+	store := pendinguploads.NewPostgres(db)
+
+	mock.ExpectQuery(sweepSQL).
+		WithArgs(int64(3600)).
+		WillReturnRows(sqlmock.NewRows([]string{"acked", "expired"}).AddRow(0, 0))
+
+	res, err := store.Sweep(context.Background(), time.Hour)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if res.Total() != 0 {
+		t.Errorf("got %+v, want zero result", res)
+	}
+}
+
+func TestSweep_NegativeRetentionClampedToZero(t *testing.T) {
+	db, mock := newMockDB(t)
+	store := pendinguploads.NewPostgres(db)
+
+	// Negative retention must clamp to 0; the SQL gets `secs => 0` so an
+	// acked-just-now row is eligible for deletion immediately. Pinned
+	// here because passing the raw negative through `make_interval` would
+	// silently shift acked_at → future and effectively retain rows
+	// forever — exactly the wrong behavior for a "delete more aggressively"
+	// caller.
+	mock.ExpectQuery(sweepSQL).
+		WithArgs(int64(0)).
+		WillReturnRows(sqlmock.NewRows([]string{"acked", "expired"}).AddRow(3, 0))
+
+	res, err := store.Sweep(context.Background(), -1*time.Second)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if res.Acked != 3 {
+		t.Errorf("got %+v want acked=3", res)
+	}
+}
+
+func TestSweep_ZeroRetentionImmediatelyDeletesAcked(t *testing.T) {
+	db, mock := newMockDB(t)
+	store := pendinguploads.NewPostgres(db)
+
+	mock.ExpectQuery(sweepSQL).
+		WithArgs(int64(0)).
+		WillReturnRows(sqlmock.NewRows([]string{"acked", "expired"}).AddRow(5, 1))
+
+	res, err := store.Sweep(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if res.Acked != 5 || res.Expired != 1 {
+		t.Errorf("got %+v want acked=5 expired=1", res)
+	}
+}
+
+func TestSweep_DBError_Wrapped(t *testing.T) {
+	db, mock := newMockDB(t)
+	store := pendinguploads.NewPostgres(db)
+
+	mock.ExpectQuery(sweepSQL).
+		WithArgs(int64(60)).
+		WillReturnError(errors.New("connection lost"))
+
+	_, err := store.Sweep(context.Background(), time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "sweep") {
+		t.Fatalf("expected wrapped sweep error, got %v", err)
+	}
+}
+
+func TestSweepResult_TotalSumsCounts(t *testing.T) {
+	r := pendinguploads.SweepResult{Acked: 4, Expired: 3}
+	if r.Total() != 7 {
+		t.Errorf("Total = %d, want 7", r.Total())
+	}
+	z := pendinguploads.SweepResult{}
+	if z.Total() != 0 {
+		t.Errorf("zero Total = %d, want 0", z.Total())
 	}
 }

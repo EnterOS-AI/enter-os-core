@@ -71,6 +71,12 @@ func (f *fakeStorage) Ack(_ context.Context, fileID uuid.UUID) error {
 	return nil
 }
 
+// Sweep is required by the Storage interface (Phase 3 GC). Not exercised
+// by these handler tests — the dedicated sweeper_test.go covers it.
+func (f *fakeStorage) Sweep(_ context.Context, _ time.Duration) (pendinguploads.SweepResult, error) {
+	return pendinguploads.SweepResult{}, nil
+}
+
 func newRouter(handler *handlers.PendingUploadsHandler) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()

@@ -14,6 +14,7 @@ import (
 	cronlib "github.com/robfig/cron/v3"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/metrics"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/supervised"
 )
 
@@ -741,6 +742,11 @@ func (s *Scheduler) sweepPhantomBusy(ctx context.Context) {
 			continue
 		}
 		log.Printf("Scheduler: phantom-busy sweep — reset %s (no activity in %d min)", name, int(phantomStaleThreshold.Minutes()))
+		// #2865: surface as molecule_phantom_busy_resets_total. High
+		// reset rate signals task-lifecycle accounting regressions
+		// (e.g. missing env vars causing claude --print timeouts that
+		// leave active_tasks elevated until this sweep fires).
+		metrics.TrackPhantomBusyReset()
 		count++
 	}
 	if err := rows.Err(); err != nil {
