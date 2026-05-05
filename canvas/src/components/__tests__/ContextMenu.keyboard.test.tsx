@@ -228,4 +228,34 @@ describe("ContextMenu — keyboard accessibility", () => {
     );
     expect(closeContextMenu).toHaveBeenCalled();
   });
+
+  // The "Expand to Team" right-click action was removed in Phase 2 of
+  // RFC #2857 — every workspace can already have children via the
+  // regular CreateWorkspace flow with parent_id, so a separate
+  // backend bulk-create handler (which was non-idempotent and leaked
+  // EC2s on every duplicate call) was deleted in PR #2856 and the
+  // canvas affordance is gone with it.
+  it("'Expand to Team' menu item is gone (childless workspace)", () => {
+    // Default mockStore.nodes = [] → no children → workspace is childless.
+    render(<ContextMenu />);
+    const items = screen.getAllByRole("menuitem");
+    const labels = items.map((el) => el.textContent?.trim() ?? "");
+    expect(labels).not.toContain(expect.stringMatching(/Expand to Team/));
+    // Sanity: childless menu still has the regular actions.
+    expect(labels.some((l) => l.includes("Delete"))).toBe(true);
+    expect(labels.some((l) => l.includes("Restart"))).toBe(true);
+  });
+
+  it("'Collapse Team' is still present when the workspace HAS children", () => {
+    // Mark a child belonging to ws-1 so hasChildren() returns true.
+    mockStore.nodes = [{ id: "child-1", data: { parentId: "ws-1" } }];
+    render(<ContextMenu />);
+    const items = screen.getAllByRole("menuitem");
+    const labels = items.map((el) => el.textContent?.trim() ?? "");
+    expect(labels.some((l) => /Collapse Team|Expand Team/.test(l))).toBe(true);
+    expect(labels.some((l) => l.includes("Arrange Children"))).toBe(true);
+    expect(labels.some((l) => l.includes("Zoom to Team"))).toBe(true);
+    // Cleanup for other tests.
+    mockStore.nodes = [];
+  });
 });

@@ -215,16 +215,6 @@ export function ContextMenu() {
     closeContextMenu();
   }, [contextMenu, selectNode, setPanelTab, closeContextMenu]);
 
-  const handleExpand = useCallback(async () => {
-    if (!contextMenu) return;
-    try {
-      await api.post(`/workspaces/${contextMenu.nodeId}/expand`, {});
-    } catch (e) {
-      showToast("Expand failed", "error");
-    }
-    closeContextMenu();
-  }, [contextMenu, closeContextMenu]);
-
   const setCollapsed = useCanvasStore((s) => s.setCollapsed);
   const handleCollapse = useCallback(async () => {
     if (!contextMenu) return;
@@ -295,7 +285,7 @@ export function ContextMenu() {
           },
           { label: "Zoom to Team", icon: "⊕", action: handleZoomToTeam },
         ]
-      : [{ label: "Expand to Team", icon: "▷", action: handleExpand }]),
+      : []),
     { label: "", icon: "", action: () => {}, divider: true },
     ...(isPaused
       ? [{ label: "Resume", icon: "▶", action: handleResume }]
