@@ -313,9 +313,25 @@ function MyChatPanel({ workspaceId, data }: Props) {
   const [hasMore, setHasMore] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const inflightRef = useRef(false);
-  const scrollAnchorRef = useRef<{ savedDistanceFromBottom: number } | null>(null);
+  // The scroll anchor includes the first-message id as it was BEFORE
+  // the prepend — see useLayoutEffect below for why. Without this tag,
+  // a live agent push that appends WHILE loadOlder is in flight would
+  // run useLayoutEffect against the append (anchor still set), the
+  // "restore" math would scroll the user to a stale offset, AND the
+  // append's normal scroll-to-bottom would be swallowed.
+  const scrollAnchorRef = useRef<
+    { savedDistanceFromBottom: number; expectFirstIdNotEqual: string | null } | null
+  >(null);
   const oldestMessageRef = useRef<ChatMessage | null>(null);
   const hasMoreRef = useRef(true);
+  // Monotonic token bumped on workspace switch + on every loadOlder
+  // entry. Each fetch's .then() captures its own token; if the token
+  // has moved, the resolved messages belong to a stale workspace or a
+  // superseded fetch and we silently drop them. Without this guard, a
+  // workspace switch mid-fetch would have the in-flight promise
+  // resolve into the new workspace's setMessages — the user sees
+  // someone else's history briefly.
+  const fetchTokenRef = useRef(0);
   // Files the user has picked but not yet sent. Cleared on send
   // (upload success) or by the × on each pill.
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
@@ -362,8 +378,15 @@ function MyChatPanel({ workspaceId, data }: Props) {
     setLoading(true);
     setLoadError(null);
     setHasMore(true);
+    // Bump the token; any in-flight fetch from the previous workspace
+    // (or a previous retry) will see token != myToken in its .then()
+    // and silently bail — the late response can't clobber the new
+    // workspace's state.
+    fetchTokenRef.current += 1;
+    const myToken = fetchTokenRef.current;
     loadMessagesFromDB(workspaceId, INITIAL_HISTORY_LIMIT).then(
       ({ messages: msgs, error: fetchErr, reachedEnd }) => {
+        if (fetchTokenRef.current !== myToken) return;
         setMessages(msgs);
         setLoadError(fetchErr);
         setHasMore(!reachedEnd);
@@ -408,12 +431,19 @@ function MyChatPanel({ workspaceId, data }: Props) {
     if (!container) return;
     inflightRef.current = true;
     // Capture the user's distance-from-bottom BEFORE we prepend so the
-    // useLayoutEffect can restore it after the new DOM lands. Without
-    // this anchor, the user reading mid-history would get yanked
-    // upward by the height of the newly-prepended messages.
+    // useLayoutEffect can restore it after the new DOM lands. The
+    // expectFirstIdNotEqual tag is what the layout effect checks
+    // against `messages[0].id` to disambiguate prepend (id changed) vs
+    // append (id unchanged → live message landed mid-fetch). Without
+    // it, an agent push during loadOlder runs the "restore" against a
+    // stale anchor — user gets yanked + the append's bottom-pin is
+    // swallowed.
     scrollAnchorRef.current = {
       savedDistanceFromBottom: container.scrollHeight - container.scrollTop,
+      expectFirstIdNotEqual: oldest.id,
     };
+    fetchTokenRef.current += 1;
+    const myToken = fetchTokenRef.current;
     setLoadingOlder(true);
     try {
       const { messages: older, reachedEnd } = await loadMessagesFromDB(
@@ -421,6 +451,12 @@ function MyChatPanel({ workspaceId, data }: Props) {
         OLDER_HISTORY_BATCH,
         oldest.timestamp,
       );
+      // Workspace switched (or another loadOlder bumped the token)
+      // mid-fetch — drop these results, they belong to a stale tab.
+      if (fetchTokenRef.current !== myToken) {
+        scrollAnchorRef.current = null;
+        return;
+      }
       if (older.length > 0) {
         setMessages((prev) => [...older, ...prev]);
       } else {
@@ -491,9 +527,21 @@ function MyChatPanel({ workspaceId, data }: Props) {
   // paint — otherwise the user sees the page jump for one frame.
   useLayoutEffect(() => {
     const container = containerRef.current;
-    if (scrollAnchorRef.current && container) {
-      container.scrollTop =
-        container.scrollHeight - scrollAnchorRef.current.savedDistanceFromBottom;
+    const anchor = scrollAnchorRef.current;
+    // Only honor the anchor when this messages-update is the prepend
+    // we expected. messages[0].id is the test:
+    //   - prepend  → messages[0] is one of the older rows → id !== expectFirstIdNotEqual
+    //   - append   → messages[0] unchanged → id === expectFirstIdNotEqual → fall through
+    // Without this check, an agent push that lands mid-loadOlder would
+    // run the restore against the append's update, yank the user's
+    // scroll, AND swallow the append's bottom-pin.
+    if (
+      anchor &&
+      container &&
+      messages.length > 0 &&
+      messages[0].id !== anchor.expectFirstIdNotEqual
+    ) {
+      container.scrollTop = container.scrollHeight - anchor.savedDistanceFromBottom;
       scrollAnchorRef.current = null;
       return;
     }
