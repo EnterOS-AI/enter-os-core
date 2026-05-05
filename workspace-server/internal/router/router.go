@@ -232,6 +232,20 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		wsAuth.DELETE("/memories/:memoryId", memsh.Delete)
 		wsAuth.PATCH("/memories/:memoryId", memsh.Update)
 
+		// Memory v2 — canvas reads through the plugin so the Memory
+		// tab surfaces post-cutover state (memory_records) instead
+		// of the frozen agent_memories table that memsh.Search hits.
+		// Wired only when MEMORY_PLUGIN_URL is configured; absent
+		// plugin → endpoints return 503 with a clear hint instead
+		// of nil-deref crashing the canvas.
+		memv2 := handlers.NewMemoriesV2Handler()
+		if memBundle != nil {
+			memv2.WithMemoryV2(memBundle.Plugin, memBundle.Resolver)
+		}
+		wsAuth.GET("/v2/namespaces", memv2.Namespaces)
+		wsAuth.GET("/v2/memories", memv2.Search)
+		wsAuth.DELETE("/v2/memories/:memoryId", memv2.Forget)
+
 		// Approvals
 		apph := handlers.NewApprovalsHandler(broadcaster)
 		wsAuth.POST("/approvals", apph.Create)
