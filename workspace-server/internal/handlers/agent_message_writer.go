@@ -160,7 +160,7 @@ func (w *AgentMessageWriter) Send(
 	if len(attachments) > 0 {
 		broadcastPayload["attachments"] = attachments
 	}
-	w.broadcaster.BroadcastOnly(workspaceID, "AGENT_MESSAGE", broadcastPayload)
+	w.broadcaster.BroadcastOnly(workspaceID, string(events.EventAgentMessage), broadcastPayload)
 
 	// 3. Persist for chat-history hydration. response_body shape MUST stay
 	//    in sync with extractResponseText + extractFilesFromTask in
