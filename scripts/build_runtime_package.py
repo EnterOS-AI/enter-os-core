@@ -80,6 +80,7 @@ TOP_LEVEL_MODULES = {
     "internal_file_read",
     "main",
     "mcp_cli",
+    "mcp_doctor",
     "mcp_heartbeat",
     "mcp_inbox_pollers",
     "mcp_workspace_resolver",

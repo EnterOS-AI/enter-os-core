@@ -93,7 +93,34 @@ def main() -> None:
         ``{"id": ..., "token": ...}`` entries. One register + heartbeat
         + inbox poller per entry; messages from any workspace land in
         the same agent inbox tagged with ``arrival_workspace_id``.
+
+    Subcommand:
+      ``molecule-mcp doctor`` runs an onboarding diagnostic against the
+      current shell environment + platform reachability and exits.
+      Closes Ryan's #2934 item 6.
     """
+    # Subcommand dispatch — must come BEFORE env-var validation so
+    # `molecule-mcp doctor` can run on a partially-configured shell
+    # and tell the operator what's missing. Argv shapes:
+    #   molecule-mcp           → run server (this function's main path)
+    #   molecule-mcp doctor    → run diagnostic, exit
+    #   molecule-mcp --help    → defer to doctor for now (no other
+    #                             flags are supported yet)
+    if len(sys.argv) > 1:
+        if sys.argv[1] in ("doctor", "--doctor"):
+            import mcp_doctor
+            sys.exit(mcp_doctor.run())
+        if sys.argv[1] in ("--help", "-h", "help"):
+            print(
+                "molecule-mcp — Molecule AI universal MCP server\n\n"
+                "Usage:\n"
+                "  molecule-mcp           Run the MCP stdio server (registers + heartbeats)\n"
+                "  molecule-mcp doctor    Run onboarding diagnostic + exit\n\n"
+                "Required env: PLATFORM_URL, WORKSPACE_ID (or MOLECULE_WORKSPACES),\n"
+                "              MOLECULE_WORKSPACE_TOKEN (or MOLECULE_WORKSPACE_TOKEN_FILE)\n",
+            )
+            sys.exit(0)
+
     if not os.environ.get("PLATFORM_URL", "").strip():
         _print_missing_env_help(
             ["PLATFORM_URL"],
