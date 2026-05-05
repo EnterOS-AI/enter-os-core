@@ -43,7 +43,20 @@ on:
     types: [checks_requested]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.head.sha || github.sha }}
+  # Include event_name so a PR sync (event=pull_request) and the
+  # subsequent staging push (event=push) on the SAME merge SHA don't
+  # collide in one group. Without event_name, both runs hashed to
+  # the same key and cancel-in-progress=true cancelled whichever
+  # arrived second — usually the push run, which staging branch-
+  # protection then sees as a CANCELLED required check and refuses
+  # to mark merged. Caught 2026-05-05 across PR #2869's runs (run
+  # ids 25371863455 / 25371811486 / 25371078157 / 25370403142 — every
+  # staging push run cancelled, every matching PR run green).
+  #
+  # Per memory `feedback_concurrency_group_per_sha.md` — same drift
+  # class that broke auto-promote-staging on 2026-04-28. Pin invariant:
+  # event_name + sha is the minimum unique key for these workflows.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: true
 
 jobs:
