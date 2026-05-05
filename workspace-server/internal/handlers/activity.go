@@ -465,78 +465,30 @@ func (h *ActivityHandler) Notify(c *gin.Context) {
 		}
 	}
 
-	// Verify workspace exists
-	var wsName string
-	err := db.DB.QueryRowContext(c.Request.Context(),
-		`SELECT name FROM workspaces WHERE id = $1 AND status != 'removed'`, workspaceID,
-	).Scan(&wsName)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
-		return
+	// Single source of truth for chat-bearing agent → user messages —
+	// see agent_message_writer.go for the contract. Pre-RFC-#2945, the
+	// broadcast + INSERT pair was inlined here and again in
+	// mcp_tools.go's send_message_to_user, and the duplication is what
+	// produced the reno-stars data-loss regression. Both paths now
+	// route through the same writer; future channels (Slack, Discord,
+	// Lark) hook in here too.
+	attachments := make([]AgentMessageAttachment, 0, len(body.Attachments))
+	for _, a := range body.Attachments {
+		attachments = append(attachments, AgentMessageAttachment{
+			URI:      a.URI,
+			Name:     a.Name,
+			MimeType: a.MimeType,
+			Size:     a.Size,
+		})
 	}
-
-	broadcastPayload := map[string]interface{}{
-		"message":      body.Message,
-		"workspace_id": workspaceID,
-		"name":         wsName,
-	}
-	if len(body.Attachments) > 0 {
-		broadcastPayload["attachments"] = body.Attachments
-	}
-	h.broadcaster.BroadcastOnly(workspaceID, "AGENT_MESSAGE", broadcastPayload)
-
-	// Persist to activity_logs so the chat history loader restores this
-	// message after a page reload. Pre-fix, send_message_to_user pushes
-	// were broadcast-only — survived the WebSocket session but vanished
-	// when the user refreshed because nothing wrote them to the DB.
-	//
-	// Shape chosen to match the existing loader query
-	// (`type=a2a_receive&source=canvas`):
-	//   - activity_type='a2a_receive' so it joins the same query path
-	//   - source_id=NULL so the canvas-source filter accepts it
-	//   - method='notify' to distinguish from real A2A receives in audits
-	//   - request_body=NULL so the loader doesn't append a duplicate
-	//     "user message" bubble for it
-	//   - response_body={"result": "<text>"} matches extractResponseText's
-	//     simplest branch ({result: string} → take verbatim)
-	//
-	// Errors are logged-only — broadcast already succeeded, the user
-	// sees the message; persistence failure just means the message
-	// won't survive reload (pre-fix behavior). Don't fail the whole
-	// notify on a DB hiccup.
-	// response_body shape — chosen to feed BOTH:
-	//   - extractResponseText: looks at body.result (string) and returns it
-	//   - extractFilesFromTask: looks at body.parts[] for kind=file
-	// so a chat reload after a notify-with-attachments restores both
-	// the text bubble AND the download chips.
-	respPayload := map[string]interface{}{"result": body.Message}
-	if len(body.Attachments) > 0 {
-		fileParts := make([]map[string]interface{}, 0, len(body.Attachments))
-		for _, a := range body.Attachments {
-			fileMeta := map[string]interface{}{"uri": a.URI, "name": a.Name}
-			if a.MimeType != "" {
-				fileMeta["mimeType"] = a.MimeType
-			}
-			if a.Size > 0 {
-				fileMeta["size"] = a.Size
-			}
-			fileParts = append(fileParts, map[string]interface{}{
-				"kind": "file",
-				"file": fileMeta,
-			})
+	writer := NewAgentMessageWriter(db.DB, h.broadcaster)
+	if err := writer.Send(c.Request.Context(), workspaceID, body.Message, attachments); err != nil {
+		if errors.Is(err, ErrWorkspaceNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
+			return
 		}
-		respPayload["parts"] = fileParts
-	}
-	respJSON, _ := json.Marshal(respPayload)
-	preview := body.Message
-	if len(preview) > 80 {
-		preview = preview[:80] + "…"
-	}
-	if _, err := db.DB.ExecContext(c.Request.Context(), `
-		INSERT INTO activity_logs (workspace_id, activity_type, method, summary, response_body, status)
-		VALUES ($1, 'a2a_receive', 'notify', $2, $3::jsonb, 'ok')
-	`, workspaceID, "Agent message: "+preview, string(respJSON)); err != nil {
-		log.Printf("Notify: failed to persist message for %s: %v", workspaceID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "sent"})
