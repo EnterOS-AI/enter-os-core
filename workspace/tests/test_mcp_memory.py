@@ -63,7 +63,7 @@ async def test_commit_memory_success(monkeypatch):
     mcp = _load_mcp()
 
     client = FakeClient()
-    monkeypatch.setattr("a2a_tools.httpx.AsyncClient", lambda **kw: client)
+    monkeypatch.setattr("a2a_tools_memory.httpx.AsyncClient", lambda **kw: client)
 
     result = await mcp.handle_tool_call("commit_memory", {
         "content": "Architecture decision: use Go for backend",
@@ -92,7 +92,7 @@ async def test_commit_memory_default_scope(monkeypatch):
     mcp = _load_mcp()
 
     client = FakeClient()
-    monkeypatch.setattr("a2a_tools.httpx.AsyncClient", lambda **kw: client)
+    monkeypatch.setattr("a2a_tools_memory.httpx.AsyncClient", lambda **kw: client)
 
     result = await mcp.handle_tool_call("commit_memory", {
         "content": "Some note",
@@ -108,7 +108,7 @@ async def test_recall_memory_success(monkeypatch):
     mcp = _load_mcp()
 
     client = FakeClient()
-    monkeypatch.setattr("a2a_tools.httpx.AsyncClient", lambda **kw: client)
+    monkeypatch.setattr("a2a_tools_memory.httpx.AsyncClient", lambda **kw: client)
 
     result = await mcp.handle_tool_call("recall_memory", {"query": "architecture"})
 
@@ -127,7 +127,7 @@ async def test_recall_memory_empty(monkeypatch):
         async def get(self, url, params=None, headers=None, **kwargs):
             return FakeResponse(200, [])
 
-    monkeypatch.setattr("a2a_tools.httpx.AsyncClient", lambda **kw: EmptyClient())
+    monkeypatch.setattr("a2a_tools_memory.httpx.AsyncClient", lambda **kw: EmptyClient())
 
     result = await mcp.handle_tool_call("recall_memory", {})
     assert "No memories found" in result
@@ -139,7 +139,7 @@ async def test_recall_memory_with_scope_filter(monkeypatch):
     mcp = _load_mcp()
 
     client = FakeClient()
-    monkeypatch.setattr("a2a_tools.httpx.AsyncClient", lambda **kw: client)
+    monkeypatch.setattr("a2a_tools_memory.httpx.AsyncClient", lambda **kw: client)
 
     await mcp.handle_tool_call("recall_memory", {"scope": "TEAM"})
 
