@@ -207,6 +207,80 @@ func (h *WorkspaceHandler) StopWorkspaceAuto(ctx context.Context, workspaceID st
 	return nil
 }
 
+// RestartWorkspaceAuto stops the running workload (with retry semantics
+// tuned for the restart hot path) then starts provisioning again, in a
+// detached goroutine. Returns true when a backend was kicked off, false
+// when neither is wired (caller owns the persist + mark-failed surface
+// in that case — symmetric with provisionWorkspaceAuto's bool return).
+//
+// Single source of truth for "restart a workspace" — third in the
+// dispatcher trio alongside provisionWorkspaceAuto and StopWorkspaceAuto.
+// Phase 1 of #2799 introduces this helper + migrates one caller; the
+// remaining workspace_restart.go sites (Restart HTTP handler goroutine,
+// Resume handler, Pause loop) follow in Phase 2/3 because they need
+// async-context reasoning beyond a fire-and-return dispatcher.
+//
+// Retry on the Stop leg is intentional and distinguishes this from
+// StopWorkspaceAuto:
+//
+//   - StopWorkspaceAuto (Stop-on-delete contract): no retry, no-backend
+//     is a silent no-op. Different verb, different stakes — a workspace
+//     nobody is running can't be stopped.
+//
+//   - RestartWorkspaceAuto: bounded exponential backoff on cpProv.Stop
+//     via cpStopWithRetry. Restart's contract is "make the workspace
+//     alive again" — refusing to reprovision when Stop fails strands
+//     the user with a dead workspace and no recovery path other than
+//     manual canvas intervention. Retry absorbs the transient CP/AWS
+//     hiccups that cause most EC2-leak-adjacent incidents. On final
+//     exhaustion, cpStopWithRetry logs LEAK-SUSPECT and proceeds with
+//     reprovision regardless, bridging to the orphan reconciler.
+//
+// Docker provisioner.Stop has no retry — a local container that fails
+// to stop is a local infrastructure problem (OOM, resource pressure)
+// and retries won't help; the subsequent provision attempt will surface
+// the underlying daemon failure.
+//
+// Architectural note: this helper encapsulates the stop+reprovision
+// pair. The "which backend for stop" and "which backend for provision"
+// decisions live here and stay in sync (CP-stop pairs with CP-provision;
+// Docker-stop pairs with Docker-provision). Callers that need only the
+// stop half use StopWorkspaceAuto (delete path) or stopForRestart
+// (restart-path internal helper) directly.
+//
+// Payload requirements: caller MUST construct payload from the live
+// workspace row (name, runtime, tier, model, workspace_dir, etc.) so
+// the reprovision comes up with the workspace's actual configuration.
+// runRestartCycle does this synchronously (line ~538) before delegating
+// — match that pattern in any new caller.
+func (h *WorkspaceHandler) RestartWorkspaceAuto(ctx context.Context, workspaceID, templatePath string, configFiles map[string][]byte, payload models.CreateWorkspacePayload) bool {
+	// Stop leg first. CP-first ordering matches the other dispatchers
+	// (provisionWorkspaceAuto, StopWorkspaceAuto) and the convention
+	// documented in docs/architecture/backends.md.
+	if h.cpProv != nil {
+		h.cpStopWithRetry(ctx, workspaceID, "RestartWorkspaceAuto")
+		go h.provisionWorkspaceCP(workspaceID, templatePath, configFiles, payload)
+		return true
+	}
+	if h.provisioner != nil {
+		// Docker.Stop has no retry — see docstring rationale.
+		h.provisioner.Stop(ctx, workspaceID)
+		go h.provisionWorkspace(workspaceID, templatePath, configFiles, payload)
+		return true
+	}
+	// No backend wired — same shape as provisionWorkspaceAuto's no-backend
+	// arm. Mark the workspace failed so the user sees a meaningful state
+	// rather than a hang. 10s context lets markProvisionFailed broadcast
+	// + UPDATE; the original ctx may already be cancelled.
+	log.Printf("RestartWorkspaceAuto: no provisioning backend wired for %s — marking failed (cpProv=nil, provisioner=nil)", workspaceID)
+	failCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	h.markProvisionFailed(failCtx, workspaceID,
+		"no provisioning backend available — workspace requires either a Docker daemon (self-hosted) or control-plane provisioner (SaaS)",
+		nil)
+	return false
+}
+
 // SetEnvMutators wires a provisionhook.Registry into the handler. Plugins
 // living in separate repos register on the same Registry instance during
 // boot (see cmd/server/main.go) and main.go calls this setter once before
