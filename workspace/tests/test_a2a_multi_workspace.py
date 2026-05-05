@@ -339,8 +339,8 @@ class TestToolDelegateTaskAutoRouting:
             seen_send_src["src"] = source_workspace_id
             return "ok"
 
-        with patch("a2a_tools.discover_peer", side_effect=fake_discover), \
-             patch("a2a_tools.send_a2a_message", side_effect=fake_send), \
+        with patch("a2a_tools_delegation.discover_peer", side_effect=fake_discover), \
+             patch("a2a_tools_delegation.send_a2a_message", side_effect=fake_send), \
              patch("a2a_tools.report_activity", new=AsyncMock()):
             await a2a_tools.tool_delegate_task(peer_id, "do thing")
 
@@ -367,8 +367,8 @@ class TestToolDelegateTaskAutoRouting:
             seen["send"] = source_workspace_id
             return "ok"
 
-        with patch("a2a_tools.discover_peer", side_effect=fake_discover), \
-             patch("a2a_tools.send_a2a_message", side_effect=fake_send), \
+        with patch("a2a_tools_delegation.discover_peer", side_effect=fake_discover), \
+             patch("a2a_tools_delegation.send_a2a_message", side_effect=fake_send), \
              patch("a2a_tools.report_activity", new=AsyncMock()):
             await a2a_tools.tool_delegate_task(
                 peer_id, "do thing", source_workspace_id=ws_explicit,
@@ -395,8 +395,8 @@ class TestToolDelegateTaskAutoRouting:
             seen["send"] = source_workspace_id
             return "ok"
 
-        with patch("a2a_tools.discover_peer", side_effect=fake_discover), \
-             patch("a2a_tools.send_a2a_message", side_effect=fake_send), \
+        with patch("a2a_tools_delegation.discover_peer", side_effect=fake_discover), \
+             patch("a2a_tools_delegation.send_a2a_message", side_effect=fake_send), \
              patch("a2a_tools.report_activity", new=AsyncMock()):
             await a2a_tools.tool_delegate_task(peer_id, "do thing")
 

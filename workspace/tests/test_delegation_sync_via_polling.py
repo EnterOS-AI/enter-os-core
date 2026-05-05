@@ -80,10 +80,10 @@ class TestFlagOffLegacyPath:
         async def fake_report_activity(*_a, **_kw):
             return None
 
-        with patch("a2a_tools.send_a2a_message", side_effect=fake_send), \
-             patch("a2a_tools.discover_peer", side_effect=fake_discover), \
+        with patch("a2a_tools_delegation.send_a2a_message", side_effect=fake_send), \
+             patch("a2a_tools_delegation.discover_peer", side_effect=fake_discover), \
              patch("a2a_tools.report_activity", side_effect=fake_report_activity), \
-             patch("a2a_tools._delegate_sync_via_polling", new=AsyncMock()) as poll_mock:
+             patch("a2a_tools_delegation._delegate_sync_via_polling", new=AsyncMock()) as poll_mock:
             result = await a2a_tools.tool_delegate_task(
                 "ws-target", "task body", source_workspace_id="ws-self"
             )
@@ -105,7 +105,7 @@ class TestFlagOnDispatchFailures:
         import a2a_tools
         mc = _make_client(post_exc=httpx.ConnectError("network down"))
 
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_delegation.httpx.AsyncClient", return_value=mc):
             res = await a2a_tools._delegate_sync_via_polling(
                 "ws-target", "task", "ws-self"
             )
@@ -119,7 +119,7 @@ class TestFlagOnDispatchFailures:
         import a2a_tools
         mc = _make_client(post_resp=_resp(403, {"error": "forbidden"}))
 
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_delegation.httpx.AsyncClient", return_value=mc):
             res = await a2a_tools._delegate_sync_via_polling(
                 "ws-target", "task", "ws-self"
             )
@@ -134,7 +134,7 @@ class TestFlagOnDispatchFailures:
         # 202 Accepted but no delegation_id field — defensive shape check.
         mc = _make_client(post_resp=_resp(202, {"status": "delegated"}))
 
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_delegation.httpx.AsyncClient", return_value=mc):
             res = await a2a_tools._delegate_sync_via_polling(
                 "ws-target", "task", "ws-self"
             )
@@ -168,7 +168,7 @@ class TestFlagOnPollingOutcomes:
             get_resps=[_resp(200, [completed_row])],
         )
 
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_delegation.httpx.AsyncClient", return_value=mc):
             res = await a2a_tools._delegate_sync_via_polling(
                 "ws-target", "task", "ws-self"
             )
@@ -196,7 +196,7 @@ class TestFlagOnPollingOutcomes:
             get_resps=[_resp(200, [failed_row])],
         )
 
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_delegation.httpx.AsyncClient", return_value=mc):
             res = await a2a_tools._delegate_sync_via_polling(
                 "ws-target", "task", "ws-self"
             )
@@ -234,7 +234,7 @@ class TestFlagOnPollingOutcomes:
             get_resps=get_seq,
         )
 
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_delegation.httpx.AsyncClient", return_value=mc):
             res = await a2a_tools._delegate_sync_via_polling(
                 "ws-target", "task", "ws-self"
             )
@@ -266,7 +266,7 @@ class TestFlagOnPollingOutcomes:
             get_resps=get_seq,
         )
 
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_delegation.httpx.AsyncClient", return_value=mc):
             res = await a2a_tools._delegate_sync_via_polling(
                 "ws-target", "task", "ws-self"
             )
@@ -304,7 +304,7 @@ class TestFlagOnPollingOutcomes:
             get_resps=[first_poll, second_poll],
         )
 
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_delegation.httpx.AsyncClient", return_value=mc):
             res = await a2a_tools._delegate_sync_via_polling(
                 "ws-target", "task", "ws-self"
             )
