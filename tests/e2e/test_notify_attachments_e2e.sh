@@ -29,11 +29,20 @@ FAIL=0
 WSID=""
 
 cleanup() {
+  # Workspace teardown — best-effort, ignore errors so an unrelated CP
+  # outage doesn't shadow a real test failure.
   if [ -n "$WSID" ]; then
     curl -s -X DELETE "$BASE/workspaces/$WSID?confirm=true" > /dev/null || true
   fi
+  # /tmp scratch — pre-fix only ran on success path (the unconditional
+  # rm at the bottom of the script). Trap-based path lets the file leak
+  # whenever the script exits non-zero before reaching the rm. RFC #2873
+  # cleanup-hygiene PR.
+  if [ -n "${TMPF:-}" ]; then
+    rm -f "$TMPF"
+  fi
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 assert() {
   local label="$1"
@@ -230,7 +239,8 @@ for r in rows:
   assert "stored URI matches uploaded URI" "$STORED_URI" "$URI"
 fi
 
-rm -f "$TMPF"
+# $TMPF cleanup happens via the trap-cleanup function above — covers
+# both the success path and any early exit / SIGINT.
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

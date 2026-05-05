@@ -273,6 +273,14 @@ jobs:
             | xargs -0 shellcheck --severity=warning
 
       - if: needs.changes.outputs.scripts == 'true'
+        name: Lint cleanup-trap hygiene (RFC #2873)
+        # Asserts every shell E2E test that calls `mktemp` also installs
+        # an EXIT trap. Catches the /tmp-leak class — a missing trap
+        # silently leaks scratch into CI runners (~10-100KB per run).
+        # See tests/e2e/lint_cleanup_traps.sh for the rule + fix pattern.
+        run: bash tests/e2e/lint_cleanup_traps.sh
+
+      - if: needs.changes.outputs.scripts == 'true'
         name: Run E2E bash unit tests (no live infra)
         # Pure-bash unit tests for E2E helper libs (lib/*.sh). These pin
         # behavior of dispatch logic that — when broken — silently masks as

@@ -24,6 +24,15 @@ set -uo pipefail
 BASE="${BASE:-http://localhost:8080}"
 fails=0
 
+# Per-run scratch dir collected under one trap so every per-runtime
+# round_trip mktemp leak path (assertion failure, SIGINT, exit
+# non-zero, function early-return between mktemp and rm) is plugged.
+# Pre-fix, round_trip's `rm -f "$test_file"` only fired on the success
+# path inside the function — every test_failure path before the rm
+# leaked the scratch into /tmp permanently. RFC #2873 cleanup-hygiene PR.
+TMPDIR_E2E=$(mktemp -d -t mr-attachments-e2e-XXXXXX)
+trap 'rm -rf "$TMPDIR_E2E"' EXIT INT TERM
+
 has_patch_in_container() {
   local container="$1"
   # Signal that platform helpers are available AND wired into the
@@ -74,12 +83,16 @@ print(f"executor: claude-code monkey-patch active ({name})")
 round_trip() {
   local label="$1" wsid="$2"
   local test_file expected upload uri payload reply reply_text
-  test_file=$(mktemp -t e2e-mr-XXXX.txt)
+  # Scratch goes under TMPDIR_E2E; the script-level trap rm -rf's the
+  # whole dir on exit, so per-file rm calls are unnecessary AND make
+  # error paths leak when forgotten.
+  # `mktemp <full-template>` is portable across BSD (macOS) + GNU; -p is GNU-only.
+  test_file=$(mktemp "$TMPDIR_E2E/e2e-mr-${label}-XXXX.txt")
   expected="secret-$(openssl rand -hex 6)"
   echo "$expected" > "$test_file"
   upload=$(curl -s -X POST "$BASE/workspaces/$wsid/chat/uploads" -F "files=@$test_file")
   uri=$(echo "$upload" | python3 -c 'import json,sys;print(json.load(sys.stdin)["files"][0]["uri"])' 2>/dev/null)
-  [ -z "$uri" ] && { echo "FAIL $label: upload returned no URI: $upload"; rm -f "$test_file"; return 1; }
+  [ -z "$uri" ] && { echo "FAIL $label: upload returned no URI: $upload"; return 1; }
   payload=$(URI="$uri" python3 -c '
 import json, os
 uri = os.environ["URI"]
@@ -103,7 +116,8 @@ try:
 except Exception as exc:
     print(f"(parse failed: {exc})")
 ' 2>&1)
-  rm -f "$test_file"
+  # $test_file lives under TMPDIR_E2E; the script-level trap rm -rf's
+  # the dir on exit, covering every return path including SIGINT.
 
   if echo "$reply_text" | grep -qF "$expected"; then
     echo "PASS $label round-trip: agent quoted $expected"

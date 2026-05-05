@@ -22,6 +22,13 @@ set -euo pipefail
 WSID="${WSID:?WSID=<workspace-id> required}"
 BASE="${BASE:-http://localhost:8080}"
 
+# Per-run scratch dir collected under one trap so every mktemp leak path
+# (assertion failure, SIGINT, exit non-zero) is plugged. Pre-fix this test
+# created a /tmp/hermes-e2e-XXXXXX.txt and never deleted it — ~10 KB ×
+# every CI run leaked into the runner. RFC #2873 cleanup-hygiene PR.
+TMPDIR_E2E=$(mktemp -d -t chat-attachments-e2e-XXXXXX)
+trap 'rm -rf "$TMPDIR_E2E"' EXIT INT TERM
+
 log() { printf "\n=== %s ===\n" "$*"; }
 
 log "Preflight: workspace online?"
@@ -29,7 +36,9 @@ STATUS=$(curl -s "$BASE/workspaces/$WSID" | python3 -c 'import json,sys;print(js
 [ "$STATUS" = "online" ] || { echo "workspace not online ($STATUS)"; exit 1; }
 
 log "Step 1 — Upload a text file via /chat/uploads"
-TEST_FILE=$(mktemp -t hermes-e2e-XXXXXX.txt)
+# `mktemp <full-template>` is portable across BSD (macOS) + GNU; -p is
+# GNU-only and breaks local dev runs on Mac.
+TEST_FILE=$(mktemp "$TMPDIR_E2E/hermes-e2e-XXXXXX.txt")
 echo "secret code: $(openssl rand -hex 4)-$(openssl rand -hex 4)" > "$TEST_FILE"
 EXPECTED=$(cat "$TEST_FILE" | awk '{print $NF}')
 UPLOAD=$(curl -s -X POST "$BASE/workspaces/$WSID/chat/uploads" -F "files=@$TEST_FILE")
