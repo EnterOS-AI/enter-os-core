@@ -13,6 +13,7 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/handlers"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/pendinguploads"
 	memwiring "github.com/Molecule-AI/molecule-monorepo/platform/internal/memory/wiring"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/metrics"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/middleware"
@@ -540,9 +541,19 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 	// streaming download (agent → user). Namespaced under /chat/ so
 	// the security model is obviously distinct from /files/* (which
 	// handles workspace config/templates and has a different caller).
-	chatfh := handlers.NewChatFilesHandler(tmplh)
+	chatfh := handlers.NewChatFilesHandler(tmplh).
+		WithPendingUploads(pendinguploads.NewPostgres(db.DB), broadcaster)
 	wsAuth.POST("/chat/uploads", chatfh.Upload)
 	wsAuth.GET("/chat/download", chatfh.Download)
+
+	// Phase 1 RFC: poll-mode chat upload — endpoints the workspace's
+	// inbox poller hits to fetch staged file content + ack delivery.
+	// Same wsAuth gate as the activity poll, so a token leak from
+	// workspace A can't read workspace B's pending uploads (the
+	// handler also re-checks workspace_id on each row).
+	puh := handlers.NewPendingUploadsHandler(pendinguploads.NewPostgres(db.DB))
+	wsAuth.GET("/pending-uploads/:file_id/content", puh.GetContent)
+	wsAuth.POST("/pending-uploads/:file_id/ack", puh.Ack)
 
 	// Plugins
 	pluginsDir := findPluginsDir(configsDir)

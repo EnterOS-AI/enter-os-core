@@ -31,23 +31,37 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
-	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/pendinguploads"
 )
 
 // ChatFilesHandler serves file upload + download for chat. Holds a
 // reference to TemplatesHandler so the (still docker-exec) Download
 // path keeps using the shared findContainer/CopyFromContainer helpers
 // without duplicating them. Upload no longer reaches into Docker.
+//
+// pendingUploads + broadcaster are wired only when the platform's
+// migration 20260505100000 has run; nil values fall back to the
+// pre-poll-mode behavior (422 on poll-mode upload, same as before).
+// This lets the binary keep booting in environments where the
+// migration hasn't run yet — the poll branch is gated by a not-nil
+// check at the call site.
 type ChatFilesHandler struct {
 	templates *TemplatesHandler
 
@@ -56,6 +70,19 @@ type ChatFilesHandler struct {
 	// the 50 MB worst case on a slow EC2 link without leaving a
 	// connection hanging forever on a sick workspace.
 	httpClient *http.Client
+
+	// pendingUploads is the platform-side staging layer for poll-mode
+	// uploads. nil → poll branch returns 422 unchanged (the pre-feature
+	// behavior); non-nil → poll branch parses multipart, persists each
+	// file via storage.Put, logs a chat_upload_receive activity row,
+	// and returns 200 with synthetic platform-pending: URIs.
+	pendingUploads pendinguploads.Storage
+
+	// broadcaster is the events.EventEmitter used to notify the canvas
+	// when an activity row lands (so the Agent Comms panel updates
+	// live). Same emitter the rest of the platform uses; nil = no
+	// broadcast (tests).
+	broadcaster events.EventEmitter
 }
 
 func NewChatFilesHandler(t *TemplatesHandler) *ChatFilesHandler {
@@ -67,6 +94,16 @@ func NewChatFilesHandler(t *TemplatesHandler) *ChatFilesHandler {
 			Timeout: 120 * time.Second,
 		},
 	}
+}
+
+// WithPendingUploads enables the poll-mode upload branch by wiring a
+// Storage + broadcaster. Call site (router.go) does this at
+// construction; tests set the fields directly when they want the
+// poll path exercised. Returns the handler for chained construction.
+func (h *ChatFilesHandler) WithPendingUploads(storage pendinguploads.Storage, broadcaster events.EventEmitter) *ChatFilesHandler {
+	h.pendingUploads = storage
+	h.broadcaster = broadcaster
+	return h
 }
 
 // chatUploadMaxBytes caps the full multipart request body so a
@@ -262,6 +299,24 @@ func (h *ChatFilesHandler) Upload(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
+	// Branch on delivery_mode BEFORE attempting the HTTP forward.
+	// Push-mode workspaces continue to do the streaming forward
+	// unchanged. Poll-mode workspaces (typically external runtimes
+	// on a laptop, no public callback URL) get the platform-side
+	// staging path — the file lands in pending_uploads, an activity
+	// row goes into the inbox queue, and the workspace pulls on its
+	// next poll cycle.
+	if h.pendingUploads != nil {
+		mode, modeOK := lookupUploadDeliveryMode(c, ctx, workspaceID)
+		if !modeOK {
+			return
+		}
+		if mode == "poll" {
+			h.uploadPollMode(c, ctx, workspaceID)
+			return
+		}
+	}
+
 	wsURL, secret, ok := resolveWorkspaceForwardCreds(c, ctx, workspaceID, "upload")
 	if !ok {
 		return
@@ -405,3 +460,251 @@ func (h *ChatFilesHandler) streamWorkspaceResponse(
 	}
 }
 
+
+// lookupUploadDeliveryMode returns the workspace's delivery_mode
+// for the chat upload branch. Returns ("", false) and writes the
+// HTTP error response on lookup failure (caller stops). NULL or
+// empty delivery_mode is treated as "push" — that's the schema
+// default and matches the legacy pre-#2339 behavior. Only the
+// explicit string "poll" routes the upload through the poll-mode
+// branch.
+//
+// Why a dedicated helper instead of reusing lookupDeliveryMode
+// from a2a_proxy_helpers.go: that one swallows errors and falls
+// back to "push" so the proxy keeps working on a transient DB
+// hiccup. For upload we want to surface the not-found case as 404
+// (which the workspace-poll branch wouldn't otherwise hit, since
+// the workspace-side row IS the source of truth for the mode).
+func lookupUploadDeliveryMode(c *gin.Context, ctx context.Context, workspaceID string) (string, bool) {
+	var mode sql.NullString
+	err := db.DB.QueryRowContext(ctx,
+		`SELECT delivery_mode FROM workspaces WHERE id = $1`, workspaceID,
+	).Scan(&mode)
+	if errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
+		return "", false
+	}
+	if err != nil {
+		log.Printf("chat_files Upload: delivery_mode lookup failed for %s: %v", workspaceID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "delivery_mode lookup failed"})
+		return "", false
+	}
+	if !mode.Valid || mode.String == "" {
+		return "push", true
+	}
+	return mode.String, true
+}
+
+// unsafeFilenameChars matches every character that isn't in the safe
+// alphanumeric + dot/dash/underscore set. Mirrors the Python regex
+// _UNSAFE_FILENAME_CHARS in workspace/internal_chat_uploads.py — drift
+// here would mean canvas-emitted URIs differ between push and poll
+// paths for the same upload.
+var unsafeFilenameChars = regexp.MustCompile(`[^a-zA-Z0-9._\-]`)
+
+// SanitizeFilename reduces a user-supplied filename to a safe form.
+// Behaviorally identical to sanitize_filename in workspace/
+// internal_chat_uploads.py. Exported so tests in other packages can
+// pin behavior parity, and so a future shared library can move both
+// implementations behind one source of truth.
+func SanitizeFilename(name string) string {
+	base := filepath.Base(name)
+	// filepath.Base on a path-traversal input ("../../etc/passwd")
+	// returns "passwd" (just the last component) — which matches what
+	// Python's os.path.basename does. Tests pin both here and on the
+	// Python side.
+	base = strings.ReplaceAll(base, " ", "_")
+	base = unsafeFilenameChars.ReplaceAllString(base, "_")
+	if len(base) > 100 {
+		ext := ""
+		dot := strings.LastIndex(base, ".")
+		if dot >= 0 && len(base)-dot <= 16 {
+			ext = base[dot:]
+		}
+		base = base[:100-len(ext)] + ext
+	}
+	if base == "" || base == "." || base == ".." {
+		return "file"
+	}
+	return base
+}
+
+// uploadedFile is the per-file response shape the workspace-side
+// /internal/chat/uploads/ingest also produces. Mirroring the schema
+// keeps the canvas client unaware of which path handled the upload.
+type uploadedFile struct {
+	URI      string `json:"uri"`
+	Name     string `json:"name"`
+	Mimetype string `json:"mimeType"`
+	Size     int64  `json:"size"`
+}
+
+// uploadPollMode handles a chat upload bound for a poll-mode
+// workspace. Parses the multipart in-place, persists each file via
+// pendinguploads.Storage, and logs one chat_upload_receive activity
+// row per file so the workspace's inbox poller picks them up on its
+// next cycle.
+//
+// Why one activity row per file (not one per multipart batch):
+//   - Each row carries one URI; agents that consume the inbox treat
+//     each row as one inbound event. A batch row would force every
+//     consumer to deserialize a list, doubling the field-shape
+//     surface for no UX win.
+//   - At-least-once semantics: a workspace can ack files
+//     individually. Batch ack would leak partial-success state on
+//     a fetcher crash mid-batch.
+//
+// Limits enforced here mirror the workspace-side ingest_handler:
+//   - Total body cap: 50 MB (set on c.Request.Body before reaching us)
+//   - Per-file cap: 25 MB (pendinguploads.MaxFileBytes; rejected as 413)
+//   - Filename: sanitized + capped at 100 chars (SanitizeFilename)
+//
+// Logging: every persisted file logs an INFO line with workspace_id,
+// file_id, size, and sanitized name. Failure modes (oversize, missing
+// files field, malformed multipart) log at WARN with the same fields.
+// Phase 3 metrics will hook these structured logs.
+func (h *ChatFilesHandler) uploadPollMode(c *gin.Context, ctx context.Context, workspaceID string) {
+	// Parse multipart with the same per-file/per-form limits the
+	// workspace-side handler uses (workspace/internal_chat_uploads.py:
+	// max_files=64, max_fields=32). gin's MultipartForm does not
+	// expose those limits directly — the underlying ParseMultipartForm
+	// caps memory at 32 MB by default and spills to disk. For poll-
+	// mode we read each file into memory to hand to Storage.Put;
+	// 25 MB-per-file × 64-files ceiling means worst-case is 1.6 GB of
+	// peak memory. Bound the per-file size at the multipart layer so
+	// the spill never gets close.
+	if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
+		log.Printf("chat_files uploadPollMode: parse multipart failed for %s: %v", workspaceID, err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "malformed multipart body"})
+		return
+	}
+	form := c.Request.MultipartForm
+	if form == nil || len(form.File["files"]) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no files field in request"})
+		return
+	}
+	headers := form.File["files"]
+	if len(headers) > 64 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "too many files (limit 64)"})
+		return
+	}
+
+	wsUUID, err := uuid.Parse(workspaceID)
+	if err != nil {
+		// validateWorkspaceID at the top of Upload already gates this;
+		// the re-parse is defence in depth in case validateWorkspaceID
+		// drifts. Keep the error class consistent so a bad-id reaches
+		// the same 400 path. Not separately tested because the gate at
+		// the call site is structurally the same uuid.Parse.
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid workspace ID"})
+		return
+	}
+
+	out := make([]uploadedFile, 0, len(headers))
+	for _, fh := range headers {
+		// Read full content. Per-file cap enforced post-read so an
+		// oversized file fails with a clean 413 rather than a torn
+		// stream. The +1 byte ReadAll trick that the Python side
+		// uses isn't easy through multipart.FileHeader; instead we
+		// rely on the multipart layer's ContentLength header and
+		// short-circuit before opening the part.
+		if fh.Size > pendinguploads.MaxFileBytes {
+			log.Printf("chat_files uploadPollMode: per-file cap exceeded for %s: %s (%d bytes)",
+				workspaceID, fh.Filename, fh.Size)
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{
+				"error":    "file exceeds per-file cap",
+				"filename": fh.Filename,
+				"size":     fh.Size,
+				"max":      pendinguploads.MaxFileBytes,
+			})
+			return
+		}
+		content, err := readMultipartFile(fh)
+		if err != nil {
+			log.Printf("chat_files uploadPollMode: read part failed for %s/%s: %v", workspaceID, fh.Filename, err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "could not read file part"})
+			return
+		}
+
+		sanitized := SanitizeFilename(fh.Filename)
+		mimetype := fh.Header.Get("Content-Type")
+
+		fileID, err := h.pendingUploads.Put(ctx, wsUUID, content, sanitized, mimetype)
+		if err != nil {
+			if errors.Is(err, pendinguploads.ErrTooLarge) {
+				// Belt + suspenders: the size check above already
+				// caught this, but Storage.Put re-validates so a
+				// malformed FileHeader can't slip through. 413 with
+				// the same shape so the client sees one error class.
+				c.JSON(http.StatusRequestEntityTooLarge, gin.H{
+					"error":    "file exceeds per-file cap",
+					"filename": fh.Filename,
+					"size":     len(content),
+					"max":      pendinguploads.MaxFileBytes,
+				})
+				return
+			}
+			log.Printf("chat_files uploadPollMode: storage.Put failed for %s/%s: %v",
+				workspaceID, sanitized, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not stage file"})
+			return
+		}
+
+		// Activity row so the workspace's inbox poller picks this up
+		// on its next cycle. activity_type=a2a_receive (NOT a new
+		// type) so the existing poll filter
+		// `?type=a2a_receive` catches it without poll-side changes;
+		// method=chat_upload_receive is the discriminator the
+		// workspace's adapter (Phase 2) uses to route to the upload
+		// fetcher instead of the agent's message handler. Same
+		// shape as A2A's tasks/send vs message/send method split.
+		uri := fmt.Sprintf("platform-pending:%s/%s", workspaceID, fileID)
+		summary := "chat_upload_receive: " + sanitized
+		method := "chat_upload_receive"
+		LogActivity(ctx, h.broadcaster, ActivityParams{
+			WorkspaceID:  workspaceID,
+			ActivityType: "a2a_receive",
+			TargetID:     &workspaceID,
+			Method:       &method,
+			Summary:      &summary,
+			RequestBody: map[string]interface{}{
+				"file_id":  fileID.String(),
+				"name":     sanitized,
+				"mimeType": mimetype,
+				"size":     len(content),
+				"uri":      uri,
+			},
+			Status: "ok",
+		})
+
+		log.Printf("chat_files uploadPollMode: staged %s/%s (file_id=%s size=%d mimetype=%q)",
+			workspaceID, sanitized, fileID, len(content), mimetype)
+
+		out = append(out, uploadedFile{
+			URI:      uri,
+			Name:     sanitized,
+			Mimetype: mimetype,
+			Size:     int64(len(content)),
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"files": out})
+}
+
+// readMultipartFile reads a multipart part fully into memory. Wraps
+// the open + io.ReadAll + close idiom so the call site stays clean,
+// and so a future change (chunked reads / hashing) has one place to
+// land.
+func readMultipartFile(fh *multipartFileHeader) ([]byte, error) {
+	f, err := fh.Open()
+	if err != nil {
+		return nil, fmt.Errorf("open part: %w", err)
+	}
+	defer f.Close()
+	return io.ReadAll(f)
+}
+
+// multipartFileHeader is a local alias so the readMultipartFile
+// signature doesn't pull "mime/multipart" into every test that
+// touches uploadPollMode.
+type multipartFileHeader = multipart.FileHeader
