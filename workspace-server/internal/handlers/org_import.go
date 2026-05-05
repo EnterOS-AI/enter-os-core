@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -62,6 +63,33 @@ func (h *OrgHandler) createWorkspaceTree(ws OrgWorkspace, parentID *string, absX
 	}
 	if tier == 0 {
 		tier = 2
+	}
+
+	ctxLookup := context.Background()
+	// Idempotency: if a workspace with the same (parent_id, name) already
+	// exists, skip the INSERT + canvas_layouts + broadcast + provisioning.
+	// This is what makes /org/import safe to call multiple times — the
+	// historical leak was every call recreating the entire tree (see
+	// tenant-hongming, 72 distinct child workspaces in 4 days, all from
+	// repeated org-template spawns of the same template).
+	//
+	// Recursion still runs on the existing id so partial-match templates
+	// (parent exists, some children missing) backfill the missing children
+	// instead of either no-op'ing the whole subtree or duplicating the
+	// existing children.
+	existingID, existing, lookupErr := h.lookupExistingChild(ctxLookup, ws.Name, parentID)
+	if lookupErr != nil {
+		return fmt.Errorf("idempotency check for %s: %w", ws.Name, lookupErr)
+	}
+	if existing {
+		log.Printf("Org import: %q already exists (id=%s) — skipping create+provision, recursing into children for partial-match", ws.Name, existingID)
+		*results = append(*results, map[string]interface{}{
+			"id":      existingID,
+			"name":    ws.Name,
+			"tier":    tier,
+			"skipped": true,
+		})
+		return h.recurseChildrenForImport(ws, existingID, absX, absY, defaults, orgBaseDir, results, provisionSem)
 	}
 
 	id := uuid.New().String()
@@ -539,31 +567,63 @@ func (h *OrgHandler) createWorkspaceTree(ws OrgWorkspace, parentID *string, absX
 	}
 	*results = append(*results, resultEntry)
 
-	// Recurse into children. Brief pacing avoids overwhelming Docker when
-	// creating many containers in sequence; container provisioning runs in
-	// goroutines so the main createWorkspaceTree returns quickly.
-	// Children's abs coords = this.abs + childSlotInGrid(index, siblingSizes),
-	// with sibling sizes computed by sizeOfSubtree so a nested-parent
-	// child claims a bigger grid slot than a leaf sibling — no slot
-	// clipping across mixed leaf / parent siblings.
-	if len(ws.Children) > 0 {
-		siblingSizes := make([]nodeSize, len(ws.Children))
-		for i, c := range ws.Children {
-			siblingSizes[i] = sizeOfSubtree(c)
-		}
-		for i, child := range ws.Children {
-			slotX, slotY := childSlotInGrid(i, siblingSizes)
-			childAbsX := absX + slotX
-			childAbsY := absY + slotY
-			// slotX/slotY are already parent-relative — that's
-			// exactly what childSlotInGrid returns.
-			if err := h.createWorkspaceTree(child, &id, childAbsX, childAbsY, slotX, slotY, defaults, orgBaseDir, results, provisionSem); err != nil {
-				return err
-			}
-			time.Sleep(workspaceCreatePacingMs * time.Millisecond)
-		}
-	}
+	// Recurse into children — both create-path and skip-path use the
+	// same helper so partial-match (parent exists, some children missing)
+	// backfills correctly without duplicating the recursion logic.
+	return h.recurseChildrenForImport(ws, id, absX, absY, defaults, orgBaseDir, results, provisionSem)
+}
 
+// lookupExistingChild returns the id of an existing workspace under
+// (parent_id, name) if any, with idempotency-friendly semantics:
+//   - parent_id IS NOT DISTINCT FROM matches NULL too (root workspaces)
+//   - status='removed' rows are ignored — collapsed teams or deleted
+//     workspaces shouldn't block a re-import
+//
+// On sql.ErrNoRows: returns ("", false, nil) — caller should INSERT.
+// On a real DB error: returns ("", false, err) — caller propagates.
+func (h *OrgHandler) lookupExistingChild(ctx context.Context, name string, parentID *string) (string, bool, error) {
+	var existingID string
+	err := db.DB.QueryRowContext(ctx, `
+		SELECT id FROM workspaces
+		WHERE name = $1
+		  AND parent_id IS NOT DISTINCT FROM $2
+		  AND status != 'removed'
+		LIMIT 1
+	`, name, parentID).Scan(&existingID)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return existingID, true, nil
+}
+
+// recurseChildrenForImport walks ws.Children once, computing each child's
+// absolute + parent-relative canvas coordinates from the subtree-aware
+// grid (so nested-parent children don't clip into leaf siblings) and
+// dispatching createWorkspaceTree for each. Pacing prevents Docker
+// container-spam thundering on the self-hosted backend; SaaS dispatches
+// the EC2 provision in a goroutine so the main loop is not blocked.
+func (h *OrgHandler) recurseChildrenForImport(ws OrgWorkspace, parentID string, absX, absY float64, defaults OrgDefaults, orgBaseDir string, results *[]map[string]interface{}, provisionSem chan struct{}) error {
+	if len(ws.Children) == 0 {
+		return nil
+	}
+	siblingSizes := make([]nodeSize, len(ws.Children))
+	for i, c := range ws.Children {
+		siblingSizes[i] = sizeOfSubtree(c)
+	}
+	for i, child := range ws.Children {
+		slotX, slotY := childSlotInGrid(i, siblingSizes)
+		childAbsX := absX + slotX
+		childAbsY := absY + slotY
+		// slotX/slotY are already parent-relative — that's
+		// exactly what childSlotInGrid returns.
+		if err := h.createWorkspaceTree(child, &parentID, childAbsX, childAbsY, slotX, slotY, defaults, orgBaseDir, results, provisionSem); err != nil {
+			return err
+		}
+		time.Sleep(workspaceCreatePacingMs * time.Millisecond)
+	}
 	return nil
 }
 
