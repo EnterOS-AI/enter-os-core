@@ -56,6 +56,7 @@ TOP_LEVEL_MODULES = {
     "a2a_mcp_server",
     "a2a_tools",
     "a2a_tools_delegation",
+    "a2a_tools_memory",
     "a2a_tools_rbac",
     "adapter_base",
     "agent",
