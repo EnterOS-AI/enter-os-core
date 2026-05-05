@@ -18,7 +18,7 @@
 // quick bounce between signup and either Checkout or the tenant UI.
 
 import { useEffect, useState } from "react";
-import { fetchSession, redirectToLogin, type Session } from "@/lib/auth";
+import { fetchSession, redirectToLogin, signOut, type Session } from "@/lib/auth";
 import { PLATFORM_URL } from "@/lib/api";
 import { formatCredits, pillTone, bannerKind } from "@/lib/credits";
 import { TermsGate } from "@/components/TermsGate";
@@ -129,7 +129,7 @@ export default function OrgsPage() {
     return <EmptyState banner={justCheckedOut ? <CheckoutBanner /> : null} />;
   }
   return (
-    <Shell>
+    <Shell session={session}>
       {justCheckedOut && <CheckoutBanner />}
       <ul className="space-y-3">
         {orgs.map((o) => (
@@ -160,11 +160,21 @@ function CheckoutBanner() {
   );
 }
 
-function Shell({ children }: { children: React.ReactNode }) {
+function Shell({
+  children,
+  session,
+}: {
+  children: React.ReactNode;
+  // Optional: when present, the header renders the signed-in email +
+  // a Sign-out button. The empty-state Shell call doesn't have a
+  // session in scope, so accept null and skip the header chrome there.
+  session?: Session | null;
+}) {
   return (
     <main className="min-h-screen bg-surface text-ink">
       <TermsGate>
         <div className="mx-auto max-w-2xl px-6 pt-20 pb-12">
+          {session ? <AccountBar session={session} /> : null}
           <h1 className="text-3xl font-bold text-ink">Your organizations</h1>
           <p className="mt-2 text-ink-mid">
             Each org is an isolated Molecule workspace.
@@ -174,6 +184,40 @@ function Shell({ children }: { children: React.ReactNode }) {
         </div>
       </TermsGate>
     </main>
+  );
+}
+
+// AccountBar renders the signed-in email + a Sign-out button at the
+// top of the page. Without this the user has no way to log out — the
+// /cp/auth/signout endpoint exists on the control plane but no UI ever
+// called it. Reported externally on 2026-05-05; this is the fix.
+//
+// Click → calls signOut() which POSTs /cp/auth/signout (clears the
+// WorkOS session cookie + revokes at the provider) then bounces to
+// /cp/auth/login. The signOut helper is best-effort — even on a 5xx
+// or network failure the redirect fires so the user never gets stuck
+// on an authed-looking page after they clicked Sign out.
+function AccountBar({ session }: { session: Session }) {
+  const [signingOut, setSigningOut] = useState(false);
+  return (
+    <div className="mb-6 flex items-center justify-between text-sm text-ink-mid">
+      <span title="Signed-in user">{session.email}</span>
+      <button
+        type="button"
+        disabled={signingOut}
+        onClick={async () => {
+          setSigningOut(true);
+          await signOut();
+          // Redirect happens inside signOut; this line is for tests +
+          // edge cases (jsdom, blocked navigation) where it doesn't.
+          setSigningOut(false);
+        }}
+        className="rounded border border-line bg-surface-card px-3 py-1 text-xs text-ink hover:bg-surface-card disabled:opacity-50"
+        aria-label="Sign out"
+      >
+        {signingOut ? "Signing out…" : "Sign out"}
+      </button>
+    </div>
   );
 }
 

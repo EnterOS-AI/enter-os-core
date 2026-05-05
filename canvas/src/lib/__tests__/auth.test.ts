@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { fetchSession, redirectToLogin } from "../auth";
+import { fetchSession, redirectToLogin, signOut } from "../auth";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -108,5 +108,90 @@ describe("redirectToLogin", () => {
     });
     redirectToLogin("sign-up");
     expect((window.location as unknown as { href: string }).href).toBe(signupHref);
+  });
+});
+
+describe("signOut", () => {
+  it("POSTs to /cp/auth/signout with credentials:include", async () => {
+    Object.defineProperty(window, "location", {
+      writable: true,
+      value: {
+        href: "https://acme.moleculesai.app/orgs",
+        pathname: "/orgs",
+        hostname: "acme.moleculesai.app",
+        protocol: "https:",
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await signOut();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/cp/auth/signout"),
+      expect.objectContaining({ method: "POST", credentials: "include" }),
+    );
+  });
+
+  it("redirects to /cp/auth/login on the auth origin after signout", async () => {
+    Object.defineProperty(window, "location", {
+      writable: true,
+      value: {
+        href: "https://acme.moleculesai.app/orgs",
+        pathname: "/orgs",
+        hostname: "acme.moleculesai.app",
+        protocol: "https:",
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200 }));
+
+    await signOut();
+
+    const after = (window.location as unknown as { href: string }).href;
+    // Tenant subdomain (acme.moleculesai.app) → auth origin is app.moleculesai.app.
+    expect(after).toBe("https://app.moleculesai.app/cp/auth/login");
+  });
+
+  it("redirects even when the POST fails so the user isn't stuck on an authed page", async () => {
+    // Critical UX invariant: clicking 'Sign out' MUST navigate away from
+    // the authenticated app, even if the network is down or the cookie
+    // is already invalid. Anything else looks like the button is
+    // broken — the precise complaint that triggered this fix.
+    Object.defineProperty(window, "location", {
+      writable: true,
+      value: {
+        href: "https://acme.moleculesai.app/orgs",
+        pathname: "/orgs",
+        hostname: "acme.moleculesai.app",
+        protocol: "https:",
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+
+    await signOut();
+
+    const after = (window.location as unknown as { href: string }).href;
+    expect(after).toBe("https://app.moleculesai.app/cp/auth/login");
+  });
+
+  it("redirects on 401 (session already invalid) just like 200", async () => {
+    // A user with an already-invalid cookie should still see the
+    // logout flow complete — no error, no stuck-on-app dead end.
+    Object.defineProperty(window, "location", {
+      writable: true,
+      value: {
+        href: "https://acme.moleculesai.app/orgs",
+        pathname: "/orgs",
+        hostname: "acme.moleculesai.app",
+        protocol: "https:",
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 401 }));
+
+    await signOut();
+
+    const after = (window.location as unknown as { href: string }).href;
+    expect(after).toBe("https://app.moleculesai.app/cp/auth/login");
   });
 });

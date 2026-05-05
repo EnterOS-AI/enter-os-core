@@ -67,3 +67,41 @@ export function redirectToLogin(screenHint: "sign-up" | "sign-in" = "sign-in"): 
   const dest = `${authOrigin}${AUTH_BASE}/${path}?return_to=${encodeURIComponent(returnTo)}`;
   window.location.href = dest;
 }
+
+/**
+ * signOut posts to /cp/auth/signout to clear the WorkOS session cookie
+ * + revoke at the provider, then bounces to the auth-origin login page.
+ *
+ * Best-effort by design: a 5xx, network failure, or stale cookie still
+ * results in the browser navigation away from the authenticated app —
+ * leaving the user on a logged-in-looking page after they clicked
+ * "Sign out" is the worst possible UX. The cookie is cleared client-
+ * visibly via the redirect target's response (Set-Cookie with maxAge=-1
+ * runs even on a non-200 path). If the user is already anonymous, the
+ * POST 401s harmlessly + we still redirect.
+ *
+ * Throws nothing — callers can disable the button optimistically or
+ * await this and trust it returns. On a redirect-blocked test
+ * environment (jsdom under vitest) we still exit cleanly so unit tests
+ * can spy on the fetch call.
+ */
+export async function signOut(): Promise<void> {
+  // Fire-and-tolerate the POST. credentials:include is mandatory cross-
+  // origin so the SaaS canvas (acme.moleculesai.app) can hit
+  // app.moleculesai.app/cp/auth/signout with the session cookie.
+  try {
+    await fetch(`${getAuthOrigin()}${AUTH_BASE}/signout`, {
+      method: "POST",
+      credentials: "include",
+    });
+  } catch {
+    // Ignore — we still redirect below.
+  }
+  if (typeof window === "undefined") return;
+  // Land on the login screen rather than the current URL: returning to
+  // a tenant URL after signout would just re-redirect through
+  // /cp/auth/login due to AuthGate. Send the user straight there with
+  // no return_to so they don't loop back into the org they just left.
+  const authOrigin = getAuthOrigin();
+  window.location.href = `${authOrigin}${AUTH_BASE}/login`;
+}
