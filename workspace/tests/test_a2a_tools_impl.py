@@ -453,14 +453,14 @@ class TestToolSendMessageToUser:
     async def test_success_200_returns_sent_message(self):
         import a2a_tools
         mc = _make_http_mock(post_resp=_resp(200, {}))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_messaging.httpx.AsyncClient", return_value=mc):
             result = await a2a_tools.tool_send_message_to_user("Hello user!")
         assert result == "Message sent to user"
 
     async def test_non_200_returns_status_code_in_error(self):
         import a2a_tools
         mc = _make_http_mock(post_resp=_resp(503, {}))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_messaging.httpx.AsyncClient", return_value=mc):
             result = await a2a_tools.tool_send_message_to_user("Hello user!")
         assert "503" in result
         assert "Error" in result
@@ -468,7 +468,7 @@ class TestToolSendMessageToUser:
     async def test_exception_returns_error_message(self):
         import a2a_tools
         mc = _make_http_mock(post_exc=RuntimeError("platform unreachable"))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_messaging.httpx.AsyncClient", return_value=mc):
             result = await a2a_tools.tool_send_message_to_user("Hi!")
         assert "Error sending message" in result
         assert "platform unreachable" in result
@@ -495,7 +495,7 @@ class TestToolSendMessageToUser:
         mc = _make_http_mock(post_resp=notify_resp)
         mc.post = AsyncMock(side_effect=[upload_resp, notify_resp])
 
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_messaging.httpx.AsyncClient", return_value=mc):
             result = await a2a_tools.tool_send_message_to_user(
                 "Done — see attached.",
                 attachments=[str(f)],
@@ -523,7 +523,7 @@ class TestToolSendMessageToUser:
         # with a half-rendered attachment chip.
         import a2a_tools
         mc = _make_http_mock()
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_messaging.httpx.AsyncClient", return_value=mc):
             result = await a2a_tools.tool_send_message_to_user(
                 "Hi", attachments=["/no/such/file.zip"],
             )
@@ -541,7 +541,7 @@ class TestToolSendMessageToUser:
         mc = _make_http_mock()
         mc.post = AsyncMock(return_value=upload_resp)
 
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_messaging.httpx.AsyncClient", return_value=mc):
             result = await a2a_tools.tool_send_message_to_user(
                 "Hi", attachments=[str(f)],
             )
@@ -555,7 +555,7 @@ class TestToolSendMessageToUser:
         # an `attachments` field added to the notify body.
         import a2a_tools
         mc = _make_http_mock(post_resp=_resp(200, {}))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_messaging.httpx.AsyncClient", return_value=mc):
             await a2a_tools.tool_send_message_to_user("plain text")
         body = mc.post.await_args.kwargs.get("json") or {}
         assert body == {"message": "plain text"}
@@ -570,7 +570,7 @@ class TestToolListPeers:
     async def test_true_empty_returns_no_peers_message_without_diagnostic(self):
         """200 + empty list → 'no peers in the platform registry' (no failure)."""
         import a2a_tools
-        with patch("a2a_tools.get_peers_with_diagnostic", return_value=([], None)):
+        with patch("a2a_tools_messaging.get_peers_with_diagnostic", return_value=([], None)):
             result = await a2a_tools.tool_list_peers()
         # The new wording explicitly says no peers exist (no parent/sibling/child).
         # Avoids the misleading "may be isolated" hint when discovery succeeded.
@@ -582,7 +582,7 @@ class TestToolListPeers:
         """401/403 → tool_list_peers must surface the auth failure + restart hint, not 'isolated'."""
         import a2a_tools
         diag = "Authentication to platform failed (HTTP 401). Restart the workspace to re-mint."
-        with patch("a2a_tools.get_peers_with_diagnostic", return_value=([], diag)):
+        with patch("a2a_tools_messaging.get_peers_with_diagnostic", return_value=([], diag)):
             result = await a2a_tools.tool_list_peers()
         assert "401" in result
         assert "Authentication" in result
@@ -593,7 +593,7 @@ class TestToolListPeers:
         """404 → tool_list_peers tells the user re-registration is needed."""
         import a2a_tools
         diag = "Workspace ID ws-test is not registered with the platform (HTTP 404). Re-register."
-        with patch("a2a_tools.get_peers_with_diagnostic", return_value=([], diag)):
+        with patch("a2a_tools_messaging.get_peers_with_diagnostic", return_value=([], diag)):
             result = await a2a_tools.tool_list_peers()
         assert "404" in result
         assert "registered" in result.lower()
@@ -602,7 +602,7 @@ class TestToolListPeers:
         """5xx → 'Platform error' surfaced; agent / user can correctly route to oncall."""
         import a2a_tools
         diag = "Platform error: HTTP 503."
-        with patch("a2a_tools.get_peers_with_diagnostic", return_value=([], diag)):
+        with patch("a2a_tools_messaging.get_peers_with_diagnostic", return_value=([], diag)):
             result = await a2a_tools.tool_list_peers()
         assert "503" in result
         assert "Platform error" in result
@@ -611,7 +611,7 @@ class TestToolListPeers:
         """Network error → operator can tell that the workspace can't reach the platform at all."""
         import a2a_tools
         diag = "Cannot reach platform at http://platform.example: timed out"
-        with patch("a2a_tools.get_peers_with_diagnostic", return_value=([], diag)):
+        with patch("a2a_tools_messaging.get_peers_with_diagnostic", return_value=([], diag)):
             result = await a2a_tools.tool_list_peers()
         assert "Cannot reach platform" in result
         assert "timed out" in result
@@ -624,7 +624,7 @@ class TestToolListPeers:
             {"id": "ws-1", "name": "Alpha", "status": "online", "role": "worker"},
             {"id": "ws-2", "name": "Beta", "status": "idle", "role": "analyst"},
         ]
-        with patch("a2a_tools.get_peers_with_diagnostic", return_value=(peers, None)):
+        with patch("a2a_tools_messaging.get_peers_with_diagnostic", return_value=(peers, None)):
             result = await a2a_tools.tool_list_peers()
 
         assert "Alpha" in result
@@ -641,7 +641,7 @@ class TestToolListPeers:
         # Clear any prior cache entries for these IDs
         a2a_tools._peer_names.pop("ws-cache-test", None)
         peers = [{"id": "ws-cache-test", "name": "CacheMe", "status": "online", "role": "w"}]
-        with patch("a2a_tools.get_peers_with_diagnostic", return_value=(peers, None)):
+        with patch("a2a_tools_messaging.get_peers_with_diagnostic", return_value=(peers, None)):
             await a2a_tools.tool_list_peers()
 
         assert a2a_tools._peer_names.get("ws-cache-test") == "CacheMe"
@@ -651,7 +651,7 @@ class TestToolListPeers:
         import a2a_tools
 
         peers = [{"id": "ws-3", "name": "Gamma"}]  # no status, no role
-        with patch("a2a_tools.get_peers_with_diagnostic", return_value=(peers, None)):
+        with patch("a2a_tools_messaging.get_peers_with_diagnostic", return_value=(peers, None)):
             result = await a2a_tools.tool_list_peers()
 
         assert "Gamma" in result
@@ -669,7 +669,7 @@ class TestToolGetWorkspaceInfo:
         import a2a_tools
 
         info = {"id": "ws-test", "name": "My Workspace", "status": "online"}
-        with patch("a2a_tools.get_workspace_info", return_value=info):
+        with patch("a2a_tools_messaging.get_workspace_info", return_value=info):
             result = await a2a_tools.tool_get_workspace_info()
 
         parsed = json.loads(result)
@@ -678,7 +678,7 @@ class TestToolGetWorkspaceInfo:
     async def test_returns_error_dict_as_json(self):
         import a2a_tools
 
-        with patch("a2a_tools.get_workspace_info", return_value={"error": "not found"}):
+        with patch("a2a_tools_messaging.get_workspace_info", return_value={"error": "not found"}):
             result = await a2a_tools.tool_get_workspace_info()
 
         parsed = json.loads(result)
@@ -994,7 +994,7 @@ class TestChatHistory:
         import a2a_tools
 
         mc = _make_http_mock()
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_messaging.httpx.AsyncClient", return_value=mc):
             result = await a2a_tools.tool_chat_history(peer_id="")
 
         mc.get.assert_not_called()
@@ -1006,7 +1006,7 @@ class TestChatHistory:
         import a2a_tools
 
         mc = _make_http_mock(get_resp=_resp(200, []))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_messaging.httpx.AsyncClient", return_value=mc):
             await a2a_tools.tool_chat_history(peer_id=_PEER)
 
         url, kwargs = mc.get.call_args.args[0], mc.get.call_args.kwargs
@@ -1023,7 +1023,7 @@ class TestChatHistory:
         import a2a_tools
 
         mc = _make_http_mock(get_resp=_resp(200, []))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_messaging.httpx.AsyncClient", return_value=mc):
             await a2a_tools.tool_chat_history(peer_id=_PEER, limit=10000)
 
         params = mc.get.call_args.kwargs["params"]
@@ -1035,7 +1035,7 @@ class TestChatHistory:
         import a2a_tools
 
         mc = _make_http_mock(get_resp=_resp(200, []))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_messaging.httpx.AsyncClient", return_value=mc):
             await a2a_tools.tool_chat_history(peer_id=_PEER, limit=0)
 
         assert mc.get.call_args.kwargs["params"]["limit"] == "20"
@@ -1044,7 +1044,7 @@ class TestChatHistory:
         import a2a_tools
 
         mc = _make_http_mock(get_resp=_resp(200, []))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_messaging.httpx.AsyncClient", return_value=mc):
             await a2a_tools.tool_chat_history(
                 peer_id=_PEER, before_ts="2026-05-01T00:00:00Z",
             )
@@ -1063,7 +1063,7 @@ class TestChatHistory:
         import a2a_tools
 
         mc = _make_http_mock(get_resp=_resp(200, []))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_messaging.httpx.AsyncClient", return_value=mc):
             result = await a2a_tools.tool_chat_history(peer_id=_PEER)
 
         # Exact-equality on the JSON literal (per assert-exact memory) —
@@ -1084,7 +1084,7 @@ class TestChatHistory:
             {"id": "act-1", "created_at": "2026-05-01T00:01:00Z"},
         ]
         mc = _make_http_mock(get_resp=_resp(200, rows))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_messaging.httpx.AsyncClient", return_value=mc):
             result = await a2a_tools.tool_chat_history(peer_id=_PEER)
 
         out = json.loads(result)
@@ -1097,7 +1097,7 @@ class TestChatHistory:
         import a2a_tools
 
         mc = _make_http_mock(get_resp=_resp(400, {"error": "peer_id must be a UUID"}))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_messaging.httpx.AsyncClient", return_value=mc):
             result = await a2a_tools.tool_chat_history(peer_id="bad")
 
         assert "peer_id must be a UUID" in result
@@ -1108,7 +1108,7 @@ class TestChatHistory:
         import a2a_tools
 
         mc = _make_http_mock(get_resp=_resp(500, {"error": "internal"}))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_messaging.httpx.AsyncClient", return_value=mc):
             result = await a2a_tools.tool_chat_history(peer_id=_PEER)
 
         assert result.startswith("Error:")
@@ -1121,7 +1121,7 @@ class TestChatHistory:
         import a2a_tools
 
         mc = _make_http_mock(get_exc=httpx.ConnectError("network down"))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_messaging.httpx.AsyncClient", return_value=mc):
             result = await a2a_tools.tool_chat_history(peer_id=_PEER)
 
         assert result.startswith("Error:")
@@ -1135,7 +1135,7 @@ class TestChatHistory:
         import a2a_tools
 
         mc = _make_http_mock(get_resp=_resp(200, {"unexpected": "shape"}))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_messaging.httpx.AsyncClient", return_value=mc):
             result = await a2a_tools.tool_chat_history(peer_id=_PEER)
 
         assert result.startswith("Error:")
