@@ -1061,7 +1061,80 @@ function MyChatPanel({ workspaceId, data }: Props) {
                       : "dark:prose-invert dark:[--tw-prose-invert-body:theme(colors.zinc.100)] dark:[--tw-prose-invert-headings:theme(colors.white)] dark:[--tw-prose-invert-bold:theme(colors.white)] dark:[--tw-prose-invert-code:theme(colors.zinc.100)]"
                   }`}
                 >
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      // Default ReactMarkdown renders `<a href="...">`
+                      // with no target and no scheme handling, so:
+                      //
+                      //   1. http/https links navigate the canvas tab
+                      //      itself away — user loses canvas state.
+                      //   2. workspace://, file://, and bare /workspace/
+                      //      paths from agent-authored markdown produce
+                      //      an unhandled-protocol click → browser ends
+                      //      up at about:blank with no download (the
+                      //      reported bug from 2026-05-05).
+                      //
+                      // Override: external URLs open in a new tab with
+                      // rel="noopener noreferrer"; in-container paths
+                      // route through downloadChatFile so the browser
+                      // gets a real Blob with proper auth headers.
+                      a: ({ href, children, ...rest }) => {
+                        const url = String(href ?? "");
+                        const containerPath = url.startsWith("workspace:") ||
+                          url.startsWith("file:///workspace") ||
+                          url.startsWith("file:///configs") ||
+                          url.startsWith("file:///home") ||
+                          url.startsWith("file:///plugins") ||
+                          url.startsWith("/workspace") ||
+                          url.startsWith("/configs") ||
+                          url.startsWith("/home") ||
+                          url.startsWith("/plugins");
+                        if (containerPath) {
+                          return (
+                            <a
+                              href={url}
+                              {...rest}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                // Construct a synthetic ChatAttachment
+                                // and route through the same
+                                // authenticated download path the
+                                // download chips use. Filename is the
+                                // last path segment so Save-As prefills
+                                // sensibly.
+                                const name = url.split(/[\\/]/).pop() || "download";
+                                downloadChatFile(workspaceId, {
+                                  uri: url,
+                                  name,
+                                }).catch((err) => {
+                                  setError(
+                                    err instanceof Error
+                                      ? `Download failed: ${err.message}`
+                                      : "Download failed",
+                                  );
+                                });
+                              }}
+                            >
+                              {children}
+                            </a>
+                          );
+                        }
+                        // External (http(s) / mailto / unknown scheme):
+                        // open in new tab so canvas state survives.
+                        return (
+                          <a
+                            href={url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            {...rest}
+                          >
+                            {children}
+                          </a>
+                        );
+                      },
+                    }}
+                  >{msg.content}</ReactMarkdown>
                 </div>
               )}
               {msg.attachments && msg.attachments.length > 0 && (
@@ -1167,7 +1240,22 @@ function MyChatPanel({ workspaceId, data }: Props) {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
+              // IME-safe send: while a CJK / Japanese / Korean IME is
+              // composing, Enter accepts the candidate selection — not a
+              // newline, not a send. `e.nativeEvent.isComposing` is the
+              // standard signal (modern WebKit/Blink/Gecko); the keyCode
+              // 229 fallback covers older Safari / WebKit-based mobile
+              // browsers that delay setting isComposing on the
+              // composition-end Enter. Reported 2026-05-05: typing
+              // Chinese with the system IME, pressing Enter to commit
+              // a candidate would inadvertently send the half-typed
+              // message.
+              if (
+                e.key === "Enter" &&
+                !e.shiftKey &&
+                !e.nativeEvent.isComposing &&
+                e.keyCode !== 229
+              ) {
                 e.preventDefault();
                 sendMessage();
               }
