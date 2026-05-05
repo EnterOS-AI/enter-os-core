@@ -651,18 +651,19 @@ func (h *ChatFilesHandler) uploadPollMode(c *gin.Context, ctx context.Context, w
 		}
 
 		// Activity row so the workspace's inbox poller picks this up
-		// on its next cycle. type=chat_upload_receive is a new
-		// activity_type the workspace's message_from_activity adapter
-		// (Phase 2) will handle by fetching content via the GET
-		// endpoint. The request_body carries everything the
-		// workspace needs to dispatch the fetch — including the
-		// synthetic URI canvas embeds in the chat message.
+		// on its next cycle. activity_type=a2a_receive (NOT a new
+		// type) so the existing poll filter
+		// `?type=a2a_receive` catches it without poll-side changes;
+		// method=chat_upload_receive is the discriminator the
+		// workspace's adapter (Phase 2) uses to route to the upload
+		// fetcher instead of the agent's message handler. Same
+		// shape as A2A's tasks/send vs message/send method split.
 		uri := fmt.Sprintf("platform-pending:%s/%s", workspaceID, fileID)
 		summary := "chat_upload_receive: " + sanitized
 		method := "chat_upload_receive"
 		LogActivity(ctx, h.broadcaster, ActivityParams{
 			WorkspaceID:  workspaceID,
-			ActivityType: "chat_upload_receive",
+			ActivityType: "a2a_receive",
 			TargetID:     &workspaceID,
 			Method:       &method,
 			Summary:      &summary,

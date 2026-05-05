@@ -96,6 +96,37 @@ func expectActivityInsert(mock sqlmock.Sqlmock) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 }
 
+// expectActivityInsertWithTypeAndMethod is a strict variant that pins
+// the activity_type and method positional args. Used in the discriminator
+// regression test below — the workspace inbox poller filters
+// `?type=a2a_receive`, so writing any other activity_type silently breaks
+// poll-mode delivery without a build/test error. Pin the two discriminator
+// fields so a refactor that flips activity_type back to a custom value is
+// caught here instead of at runtime by a confused poller.
+//
+// Positional args (LogActivity uses ExecContext with 12 positional params):
+//   $1 workspace_id, $2 activity_type, $3 source_id, $4 target_id,
+//   $5 method, $6 summary, $7 request_body, $8 response_body,
+//   $9 tool_trace, $10 duration_ms, $11 status, $12 error_detail.
+func expectActivityInsertWithTypeAndMethod(mock sqlmock.Sqlmock, workspaceID, activityType, method string) {
+	mock.ExpectExec(`INSERT INTO activity_logs`).
+		WithArgs(
+			workspaceID,             // $1 workspace_id
+			activityType,            // $2 activity_type ← pinned
+			sqlmock.AnyArg(),        // $3 source_id
+			sqlmock.AnyArg(),        // $4 target_id (workspaceID, but already covered)
+			method,                  // $5 method ← pinned
+			sqlmock.AnyArg(),        // $6 summary
+			sqlmock.AnyArg(),        // $7 request_body
+			sqlmock.AnyArg(),        // $8 response_body
+			sqlmock.AnyArg(),        // $9 tool_trace
+			sqlmock.AnyArg(),        // $10 duration_ms
+			sqlmock.AnyArg(),        // $11 status
+			sqlmock.AnyArg(),        // $12 error_detail
+		).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+}
+
 // pollUploadFixture builds a multipart body with N named files.
 func pollUploadFixture(t *testing.T, files map[string][]byte) (*bytes.Buffer, string) {
 	t.Helper()
@@ -516,5 +547,43 @@ func TestPollUpload_SanitizesFilenameInResponse(t *testing.T) {
 	}
 	if len(store.puts) == 0 || store.puts[0].Filename != "hello_world_.pdf" {
 		t.Errorf("storage Put didn't receive sanitized filename: %+v", store.puts)
+	}
+}
+
+// TestPollUpload_ActivityRowDiscriminator pins the
+// activity_type / method shape that the workspace inbox poller depends
+// on. The poller filters `GET /workspaces/:id/activity?type=a2a_receive`
+// so the handler MUST write activity_type=a2a_receive (NOT a custom
+// type), and use method=chat_upload_receive as the
+// upload-vs-message-vs-task discriminator.
+//
+// Why pinned: a previous iteration of this handler used
+// activity_type="chat_upload_receive" — silently invisible to the
+// existing poller. The branch passed every push-mode test, every
+// storage test, and every per-file content test; the bug only
+// surfaced at runtime when the workspace polled and got nothing.
+// Encode the contract in a unit test so the next refactor can't
+// re-break it without a red CI.
+func TestPollUpload_ActivityRowDiscriminator(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	wsID := "abc12345-6789-4abc-8def-000000000999"
+	expectPollDeliveryMode(mock, wsID, "poll")
+	expectActivityInsertWithTypeAndMethod(mock, wsID, "a2a_receive", "chat_upload_receive")
+
+	store := newInMemStorage()
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+		WithPendingUploads(store, nil)
+
+	body, ct := pollUploadFixture(t, map[string][]byte{"x.pdf": []byte("xx")})
+	c, w := makeUploadRequest(t, wsID, body, ct)
+	h.Upload(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
 	}
 }
