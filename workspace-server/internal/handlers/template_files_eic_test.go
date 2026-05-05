@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -63,6 +65,36 @@ func TestResolveWorkspaceFilePath_RejectsTraversal(t *testing.T) {
 				t.Errorf("resolveWorkspaceFilePath(hermes, %q) should have errored, got nil", rel)
 			}
 		})
+	}
+}
+
+// TestSSHArgs_LogLevelErrorBothSites pins that BOTH ssh invocations
+// (writeFileViaEIC + readFileViaEIC) include `-o LogLevel=ERROR`.
+//
+// Without that flag, ssh emits a "Warning: Permanently added
+// '[127.0.0.1]:NNNNN' (ED25519) to the list of known hosts." line on
+// every fresh tunnel connection (even with UserKnownHostsFile=/dev/null
+// — that prevents persistence, not the warning). The warning lands on
+// stderr, which fools readFileViaEIC's "empty stdout + empty stderr →
+// file not found" classifier into thinking the warning is a real
+// ssh-layer error and returning 500 instead of 404.
+//
+// Caught 2026-05-05 02:38 on hongming.moleculesai.app: opening Hermes
+// workspace's Config tab returned 500 with body
+// `ssh cat: exit status 1 (Warning: Permanently added '[127.0.0.1]:37951'…)`.
+//
+// LogLevel=ERROR silences info+warning while keeping real auth/tunnel
+// errors visible. This test reads the source and asserts the flag
+// appears at least twice (one per ssh block) — fires if a future edit
+// removes it from either site.
+func TestSSHArgs_LogLevelErrorBothSites(t *testing.T) {
+	src, err := os.ReadFile("template_files_eic.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	matches := regexp.MustCompile(`"-o", "LogLevel=ERROR"`).FindAllIndex(src, -1)
+	if len(matches) < 2 {
+		t.Errorf("expected LogLevel=ERROR in BOTH ssh blocks (write + read); found %d occurrences", len(matches))
 	}
 }
 

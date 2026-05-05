@@ -178,6 +178,16 @@ func writeFileViaEIC(ctx context.Context, instanceID, runtime, relPath string, c
 		"-i", keyPath,
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
+		// LogLevel=ERROR silences the benign "Warning: Permanently
+		// added '[127.0.0.1]:NNNNN' to known hosts" notice that ssh
+		// emits on every fresh tunnel connection. Without this, the
+		// notice lands on stderr and fools readFileViaEIC's "empty
+		// stdout + empty stderr → file not found" classifier into
+		// thinking the warning is a real ssh-layer error → 500
+		// instead of 404 (Hermes config.yaml load, hongming tenant,
+		// 2026-05-05 02:38). Real auth/tunnel errors stay visible
+		// because they're emitted at ERROR level.
+		"-o", "LogLevel=ERROR",
 		"-o", "ServerAliveInterval=15",
 		"-p", fmt.Sprintf("%d", localPort),
 		fmt.Sprintf("%s@127.0.0.1", osUser),
@@ -292,6 +302,16 @@ func readFileViaEIC(ctx context.Context, instanceID, runtime, relPath string) ([
 		"-i", keyPath,
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
+		// LogLevel=ERROR silences the benign "Warning: Permanently
+		// added '[127.0.0.1]:NNNNN' to known hosts" notice that ssh
+		// emits on every fresh tunnel connection. Without this, the
+		// notice lands on stderr and fools readFileViaEIC's "empty
+		// stdout + empty stderr → file not found" classifier into
+		// thinking the warning is a real ssh-layer error → 500
+		// instead of 404 (Hermes config.yaml load, hongming tenant,
+		// 2026-05-05 02:38). Real auth/tunnel errors stay visible
+		// because they're emitted at ERROR level.
+		"-o", "LogLevel=ERROR",
 		"-o", "ServerAliveInterval=15",
 		"-p", fmt.Sprintf("%d", localPort),
 		fmt.Sprintf("%s@127.0.0.1", osUser),
