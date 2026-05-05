@@ -234,9 +234,14 @@ func TestNoCallSiteCallsDirectProvisionerExceptAuto(t *testing.T) {
 		".provisionWorkspaceCP(",
 	}
 	allowedFiles := map[string]bool{
-		// workspace.go DEFINES the methods + the Auto dispatcher; it's
-		// allowed to reference them directly.
+		// workspace.go holds the WorkspaceHandler struct + constructor.
 		"workspace.go": true,
+		// workspace_dispatchers.go IS the Auto dispatcher — calls the
+		// per-backend bodies directly via `go h.provisionWorkspaceCP(...)`
+		// / `go h.provisionWorkspace(...)`. The whole point of this gate
+		// is "every OTHER caller routes through the dispatcher; the
+		// dispatcher itself routes through the per-backend body".
+		"workspace_dispatchers.go": true,
 		// workspace_provision.go DEFINES the bodies of the direct
 		// methods (and the Auto-internal call from CP-mode itself).
 		"workspace_provision.go": true,
@@ -571,10 +576,11 @@ func TestNoCallSiteCallsBareStop(t *testing.T) {
 		".cpProv.Stop(",
 	}
 	allowedFiles := map[string]bool{
-		"workspace.go":           true,
-		"workspace_provision.go": true,
-		"workspace_restart.go":   true,
-		"container_files.go":     true,
+		"workspace.go":             true,
+		"workspace_dispatchers.go": true,
+		"workspace_provision.go":   true,
+		"workspace_restart.go":     true,
+		"container_files.go":       true,
 	}
 	for _, entry := range entries {
 		name := entry.Name()
