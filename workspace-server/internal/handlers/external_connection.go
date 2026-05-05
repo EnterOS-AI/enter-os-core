@@ -423,14 +423,23 @@ mkdir -p ~/.codex
 # (then open ~/.codex/config.toml in your editor and paste:)
 #
 # [mcp_servers.molecule]
-# command = "python3"
-# args = ["-m", "molecule_runtime.a2a_mcp_server"]
+# command = "molecule-mcp"
+# args = []
 # startup_timeout_sec = 30
 #
 # [mcp_servers.molecule.env]
 # WORKSPACE_ID = "{{WORKSPACE_ID}}"
 # PLATFORM_URL = "{{PLATFORM_URL}}"
 # MOLECULE_WORKSPACE_TOKEN = "<paste from create response>"
+#
+# Use the "molecule-mcp" console-script wrapper (NOT
+# "python3 -m molecule_runtime.a2a_mcp_server"). The wrapper is what
+# keeps the workspace ALIVE on the canvas: it POSTs /registry/register
+# at startup and runs a 20s heartbeat thread alongside the MCP stdio
+# loop. The bare a2a_mcp_server module exposes tools but does NOT
+# heartbeat — pointing codex at it leaves the canvas showing this
+# workspace as awaiting_agent (OFFLINE) within 60-90s even while
+# tools work.
 
 # 3. Run the bridge daemon as a durable background process — this
 #    is the INBOUND path. Long-polls the platform inbox and runs
@@ -507,11 +516,20 @@ pip install molecule-ai-workspace-runtime
 
 # 3. Wire the molecule MCP server. {{WORKSPACE_ID}} + {{PLATFORM_URL}}
 # are stamped server-side; paste the auth token before running.
+#
+# Use the "molecule-mcp" console-script wrapper (NOT
+# "python3 -m molecule_runtime.a2a_mcp_server"). The wrapper is what
+# keeps the workspace ALIVE on the canvas: it POSTs /registry/register
+# at startup and runs a 20s heartbeat thread alongside the MCP stdio
+# loop. The bare a2a_mcp_server module exposes tools but does NOT
+# heartbeat — pointing openclaw at it leaves the canvas showing this
+# workspace as awaiting_agent (OFFLINE) within 60-90s even while
+# tools work.
 WORKSPACE_TOKEN="<paste from create response>"
 openclaw mcp set molecule "$(cat <<EOF
 {
-  "command": "python3",
-  "args": ["-m", "molecule_runtime.a2a_mcp_server"],
+  "command": "molecule-mcp",
+  "args": [],
   "env": {
     "WORKSPACE_ID": "{{WORKSPACE_ID}}",
     "PLATFORM_URL": "{{PLATFORM_URL}}",
