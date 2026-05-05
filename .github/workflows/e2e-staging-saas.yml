@@ -224,12 +224,16 @@ jobs:
           leaks=()
           for slug in $orgs; do
             echo "Safety-net teardown: $slug"
-            code=$(curl -sS -o /tmp/saas-cleanup.out -w "%{http_code}" \
+            # Tempfile-routed -w + set +e/-e prevents curl-exit-code
+            # pollution of the captured status (lint-curl-status-capture.yml).
+            set +e
+            curl -sS -o /tmp/saas-cleanup.out -w "%{http_code}" \
               -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
               -H "Authorization: Bearer $ADMIN_TOKEN" \
               -H "Content-Type: application/json" \
-              -d "{\"confirm\":\"$slug\"}" \
-              || echo "000")
+              -d "{\"confirm\":\"$slug\"}" >/tmp/saas-cleanup.code 2>/dev/null
+            set -e
+            code=$(cat /tmp/saas-cleanup.code 2>/dev/null || echo "000")
             if [ "$code" = "200" ] || [ "$code" = "204" ]; then
               echo "[teardown] deleted $slug (HTTP $code)"
             else

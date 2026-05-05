@@ -1,0 +1,94 @@
+name: Lint curl status-code capture
+
+# Pins the workflow-bash anti-pattern that produced "HTTP 000000" on the
+# 2026-05-04 redeploy-tenants-on-main run for sha 2b862f6:
+#
+#   HTTP_CODE=$(curl ... -w '%{http_code}' ... || echo "000")
+#
+# When curl exits non-zero (connection reset → 56, --fail-with-body 4xx/5xx
+# → 22), the `-w '%{http_code}'` already wrote a status to stdout — usually
+# "000" for connection failures or the actual code for HTTP errors. The
+# `|| echo "000"` then fires AND appends ANOTHER "000" to the captured
+# stdout, producing values like "000000" or "409000" that fail string
+# comparisons against "200" while looking superficially right.
+#
+# Same class of bug the synth-E2E §7c gate hit twice (PRs #2779/#2783 +
+# #2797). Memory: feedback_curl_status_capture_pollution.md.
+#
+# Fix shape (route -w into a tempfile so curl's exit code can't pollute):
+#
+#   set +e
+#   curl ... -w '%{http_code}' >code.txt 2>/dev/null
+#   set -e
+#   HTTP_CODE=$(cat code.txt 2>/dev/null)
+#   [ -z "$HTTP_CODE" ] && HTTP_CODE="000"
+
+on:
+  pull_request:
+    paths: ['.github/workflows/**']
+  push:
+    branches: [main, staging]
+    paths: ['.github/workflows/**']
+  merge_group:
+    types: [checks_requested]
+
+jobs:
+  scan:
+    name: Scan workflows for curl status-capture pollution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Find curl ... -w '%{http_code}' ... || echo "000" subshells
+        run: |
+          set -uo pipefail
+          # Multi-line aware: look for `$(curl ... -w '%{http_code}' ... || echo "000")`
+          # subshell where the entire command-substitution wraps a curl that
+          # ends with `|| echo "000"`. Must distinguish from the SAFE shape
+          # `$(cat tempfile 2>/dev/null || echo "000")` — `cat` with a missing
+          # tempfile produces empty stdout, no pollution.
+          python3 <<'PY'
+          import os, re, sys, glob
+
+          BAD_FILES = []
+
+          # Match the buggy substitution across newlines: $(curl ... -w '%{http_code}' ... || echo "000")
+          # The `\\n` is the bash line-continuation that lets curl flags span lines.
+          # We collapse continuation lines first, then look for the single-line bad pattern.
+          PATTERN = re.compile(
+              r'\$\(\s*curl\b[^)]*-w\s*[\'"]%\{http_code\}[\'"][^)]*\|\|\s*echo\s+"000"\s*\)',
+              re.DOTALL,
+          )
+
+          # Self-skip: this lint workflow contains the literal anti-pattern in
+          # its own docstring — that's intentional, not a bug.
+          SELF = ".github/workflows/lint-curl-status-capture.yml"
+
+          for f in sorted(glob.glob(".github/workflows/*.yml")):
+              if f == SELF:
+                  continue
+              with open(f) as fh:
+                  content = fh.read()
+              # Collapse bash line-continuations (\\\n + leading whitespace)
+              # into a single logical line so the regex can see the full
+              # curl invocation as one chunk.
+              flat = re.sub(r'\\\s*\n\s*', ' ', content)
+              for m in PATTERN.finditer(flat):
+                  BAD_FILES.append((f, m.group(0)[:120]))
+
+          if not BAD_FILES:
+              print("✓ No curl-status-capture pollution patterns detected")
+              sys.exit(0)
+
+          print(f"::error::Found {len(BAD_FILES)} curl-status-capture pollution site(s):")
+          for f, snippet in BAD_FILES:
+              print(f"::error file={f}::Curl status-capture pollution: '|| echo \"000\"' inside a $(curl ... -w '%{{http_code}}' ...) subshell. On non-2xx or connection failure, curl's -w writes a status, then exits non-zero, then the || echo appends another '000' — producing 'HTTP 000000' or '409000' that fails comparisons silently. Fix: route -w into a tempfile so the exit code can't pollute stdout. See memory feedback_curl_status_capture_pollution.md.")
+              print(f"   matched: {snippet}…")
+          print()
+          print("Fix template:")
+          print('  set +e')
+          print('  curl ... -w \'%{http_code}\' >code.txt 2>/dev/null')
+          print('  set -e')
+          print('  HTTP_CODE=$(cat code.txt 2>/dev/null)')
+          print('  [ -z "$HTTP_CODE" ] && HTTP_CODE="000"')
+          sys.exit(1)
+          PY

@@ -184,12 +184,26 @@ jobs:
           echo "  body: $BODY"
 
           HTTP_RESPONSE=$(mktemp)
-          HTTP_CODE=$(curl -sS -o "$HTTP_RESPONSE" -w '%{http_code}' \
+          HTTP_CODE_FILE=$(mktemp)
+          # Route -w into its own tempfile so curl's exit code (e.g. 56
+          # on connection-reset, 22 on --fail-with-body 4xx/5xx) can't
+          # pollute the captured stdout. The previous inline-substitution
+          # shape produced "000000" on connection reset (curl wrote
+          # "000" via -w, then the inline echo-fallback appended another
+          # "000") — caught on the 2026-05-04 redeploy of sha 2b862f6.
+          # set +e/-e keeps the non-zero curl exit from tripping the
+          # outer pipeline. See lint-curl-status-capture.yml for the
+          # CI gate that pins this fix shape.
+          set +e
+          curl -sS -o "$HTTP_RESPONSE" -w '%{http_code}' \
             -m 1200 \
             -H "Authorization: Bearer $CP_ADMIN_API_TOKEN" \
             -H "Content-Type: application/json" \
             -X POST "$CP_URL/cp/admin/tenants/redeploy-fleet" \
-            -d "$BODY" || echo "000")
+            -d "$BODY" >"$HTTP_CODE_FILE" 2>/dev/null
+          set -e
+          HTTP_CODE=$(cat "$HTTP_CODE_FILE" 2>/dev/null || echo "000")
+          [ -z "$HTTP_CODE" ] && HTTP_CODE="000"
 
           echo "HTTP $HTTP_CODE"
           cat "$HTTP_RESPONSE" | jq . || cat "$HTTP_RESPONSE"
