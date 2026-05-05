@@ -283,7 +283,7 @@ export function SidePanel() {
         {panelTab === "skills" && <SkillsTab key={selectedNodeId} workspaceId={selectedNodeId} data={node.data} />}
         {panelTab === "activity" && <ActivityTab key={selectedNodeId} workspaceId={selectedNodeId} />}
         {panelTab === "chat" && <ChatTab key={selectedNodeId} workspaceId={selectedNodeId} data={node.data} />}
-        {panelTab === "terminal" && <TerminalTab key={selectedNodeId} workspaceId={selectedNodeId} />}
+        {panelTab === "terminal" && <TerminalTab key={selectedNodeId} workspaceId={selectedNodeId} data={node.data} />}
         {panelTab === "config" && <ConfigTab key={selectedNodeId} workspaceId={selectedNodeId} />}
         {panelTab === "schedule" && <ScheduleTab key={selectedNodeId} workspaceId={selectedNodeId} />}
         {panelTab === "channels" && <ChannelsTab key={selectedNodeId} workspaceId={selectedNodeId} />}
