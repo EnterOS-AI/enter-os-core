@@ -40,7 +40,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
+	"unicode/utf8"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 )
@@ -48,8 +50,39 @@ import (
 // ErrWorkspaceNotFound is returned by AgentMessageWriter.Send when the
 // workspace lookup turns up nothing (or the workspace is in
 // status='removed'). Callers translate to HTTP 404 / JSON-RPC error /
-// whatever surface they expose.
+// whatever surface they expose. Real DB errors (connection drop, query
+// timeout) surface as wrapped errors and should be treated as 503.
 var ErrWorkspaceNotFound = errors.New("agent_message: workspace not found")
+
+// truncatePreviewRunes returns at most maxRunes runes of s, plus an ellipsis
+// when truncated. Operates on the rune (codepoint) boundary instead of
+// byte indices — the previous byte-slice version produced invalid UTF-8
+// when maxRunes landed mid-codepoint (CJK, emoji, accented characters
+// in agent-authored chat messages), and Postgres JSONB rejects invalid
+// UTF-8, dropping the activity_log INSERT silently. The persistence
+// failure log fires but the message vanishes from chat history — the
+// exact regression class the SSOT consolidation was built to prevent.
+//
+// maxRunes is in runes, not bytes — `truncatePreviewRunes("你好", 1)` returns
+// `"你…"`, not `"\xe4…"`. Set the cap on a UI-friendly basis (visible
+// character count, not stored byte count); 80 runes covers the
+// activity_logs.summary column comfortably.
+func truncatePreviewRunes(s string, maxRunes int) string {
+	if utf8.RuneCountInString(s) <= maxRunes {
+		return s
+	}
+	// Walk runes until we've consumed maxRunes; cut at that byte index.
+	count := 0
+	cut := len(s)
+	for i := range s {
+		if count == maxRunes {
+			cut = i
+			break
+		}
+		count++
+	}
+	return s[:cut] + "…"
+}
 
 // AgentMessageAttachment is one file attached to an agent → user
 // message. Identical to handlers.NotifyAttachment in field set; kept
@@ -96,14 +129,23 @@ func (w *AgentMessageWriter) Send(
 ) error {
 	// 1. Workspace lookup. status='removed' filter is the same shape /notify
 	//    used pre-consolidation; deleted workspaces don't get notifications.
+	//
+	// Distinguish sql.ErrNoRows ("workspace genuinely not present" — caller
+	// should 404) from real DB errors (connection drop, statement timeout,
+	// pool exhaustion — caller should 503). Pre-fix this branch returned
+	// ErrWorkspaceNotFound for any error, so during a DB outage every
+	// notify call surfaced as "workspace not found" and masked real
+	// incidents in the alert path.
 	var wsName string
-	if err := w.db.QueryRowContext(ctx,
+	err := w.db.QueryRowContext(ctx,
 		`SELECT name FROM workspaces WHERE id = $1 AND status != 'removed'`,
 		workspaceID,
-	).Scan(&wsName); err != nil {
-		// Includes sql.ErrNoRows; canonicalize so callers don't have to
-		// import database/sql to compare.
+	).Scan(&wsName)
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrWorkspaceNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("agent_message: workspace lookup: %w", err)
 	}
 
 	// 2. Build broadcast payload + WS-emit. Same shape that ChatTab's
@@ -144,10 +186,7 @@ func (w *AgentMessageWriter) Send(
 		respPayload["parts"] = fileParts
 	}
 	respJSON, _ := json.Marshal(respPayload)
-	preview := message
-	if len(preview) > 80 {
-		preview = preview[:80] + "…"
-	}
+	preview := truncatePreviewRunes(message, 80)
 	if _, err := w.db.ExecContext(ctx, `
 		INSERT INTO activity_logs (workspace_id, activity_type, method, summary, response_body, status)
 		VALUES ($1, 'a2a_receive', 'notify', $2, $3::jsonb, 'ok')

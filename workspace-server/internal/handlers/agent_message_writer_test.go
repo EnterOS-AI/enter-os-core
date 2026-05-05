@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
@@ -300,6 +301,122 @@ func TestAgentMessageWriter_Send_BroadcastsAgentMessageEvent(t *testing.T) {
 	}
 	if pl["attachments"] == nil {
 		t.Error("payload.attachments missing on attachment-bearing send")
+	}
+}
+
+// TestAgentMessageWriter_Send_DBErrorOnLookupReturnsWrapped pins the
+// distinction between sql.ErrNoRows (legit not-found → 404) and real
+// DB errors (connection drop → 503). Pre-followup the lookup branch
+// returned ErrWorkspaceNotFound for ANY error, so during a DB outage
+// every notify call surfaced as "workspace not found" and masked
+// real incidents in alerting.
+func TestAgentMessageWriter_Send_DBErrorOnLookupReturnsWrapped(t *testing.T) {
+	mock := setupTestDB(t)
+	w := NewAgentMessageWriter(db.DB, newTestBroadcaster())
+
+	transientErr := errors.New("connection refused")
+	mock.ExpectQuery("SELECT name FROM workspaces").
+		WithArgs("ws-dbdown").
+		WillReturnError(transientErr)
+
+	err := w.Send(context.Background(), "ws-dbdown", "hi", nil)
+	if err == nil {
+		t.Fatal("expected wrapped DB error, got nil")
+	}
+	if errors.Is(err, ErrWorkspaceNotFound) {
+		t.Errorf("DB outage MUST NOT surface as ErrWorkspaceNotFound (masks incidents in alerting); got %v", err)
+	}
+	if !errors.Is(err, transientErr) {
+		t.Errorf("expected wrapped %v, got %v", transientErr, err)
+	}
+}
+
+// TestTruncatePreviewRunes_RuneBoundary pins the multi-byte-safe
+// truncation. The previous byte-slice version produced invalid UTF-8
+// when the cut landed mid-codepoint (CJK, emoji, accented), and
+// Postgres JSONB rejects invalid UTF-8 — INSERT fails, log.Printf
+// fires, message vanishes from chat history. Per memory
+// feedback_assert_exact_not_substring.md, pin the boundary cases
+// directly.
+func TestTruncatePreviewRunes_RuneBoundary(t *testing.T) {
+	cases := []struct {
+		name     string
+		in       string
+		max      int
+		want     string
+	}{
+		{"under-max ASCII", "hi", 80, "hi"},
+		{"under-max CJK", "你好", 80, "你好"},
+		{"exactly-at-max", "abcde", 5, "abcde"},
+		{"truncate ASCII", "abcdefghij", 5, "abcde…"},
+		{"truncate CJK at rune boundary", "你好世界你好世界", 4, "你好世界…"},
+		{"truncate emoji at rune boundary", "😀😀😀😀😀😀", 3, "😀😀😀…"},
+		// The pre-fix bug shape: byte-slice on non-ASCII would have
+		// mangled the codepoint here. With rune-boundary truncation
+		// the result is well-formed UTF-8.
+		{"non-zero with emoji prefix", "🚀abcdefghijk", 5, "🚀abcd…"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := truncatePreviewRunes(c.in, c.max)
+			if got != c.want {
+				t.Errorf("truncatePreviewRunes(%q, %d) = %q, want %q", c.in, c.max, got, c.want)
+			}
+			// Always-valid UTF-8 invariant. A byte-slice truncation
+			// could leave partial codepoints; this version must not.
+			if !utf8.ValidString(got) {
+				t.Errorf("truncatePreviewRunes(%q, %d) returned invalid UTF-8: %q", c.in, c.max, got)
+			}
+		})
+	}
+}
+
+// TestAgentMessageWriter_Send_NonASCIIMessagePersists pins the end-to-end
+// path for non-ASCII messages — the original reno-stars regression
+// surfaced via byte-slice truncation breaking JSONB INSERT. Every
+// handler-level test had ASCII content, so this branch had no
+// coverage. Now it does.
+func TestAgentMessageWriter_Send_NonASCIIMessagePersists(t *testing.T) {
+	mock := setupTestDB(t)
+	w := NewAgentMessageWriter(db.DB, newTestBroadcaster())
+
+	// 200-rune CJK message — exceeds the 80-rune cap, would have hit
+	// the byte-slice bug.
+	msg := strings.Repeat("你", 200)
+
+	mock.ExpectQuery("SELECT name FROM workspaces").
+		WithArgs("ws-cjk").
+		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("CEO Ryan PC"))
+
+	mock.ExpectExec(`INSERT INTO activity_logs`).
+		WithArgs(
+			"ws-cjk",
+			stringMatcher(func(s string) bool {
+				if !strings.HasPrefix(s, "Agent message: ") {
+					return false
+				}
+				preview := strings.TrimPrefix(s, "Agent message: ")
+				if !strings.HasSuffix(preview, "…") {
+					return false
+				}
+				body := strings.TrimSuffix(preview, "…")
+				// 80 runes of 你 = 80 codepoints. Each is 3 bytes UTF-8.
+				if utf8.RuneCountInString(body) != 80 {
+					return false
+				}
+				// MUST be valid UTF-8 — pre-fix byte-slice would have
+				// returned half a codepoint here.
+				return utf8.ValidString(body)
+			}),
+			sqlmock.AnyArg(),
+		).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	if err := w.Send(context.Background(), "ws-cjk", msg, nil); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("non-ASCII path drift: %v", err)
 	}
 }
 
