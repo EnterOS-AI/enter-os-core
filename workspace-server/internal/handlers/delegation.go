@@ -411,11 +411,15 @@ func (h *DelegationHandler) executeDelegation(sourceID, targetID, delegationID s
 		log.Printf("Delegation %s: failed to insert success log: %v", delegationID, err)
 	}
 
-	h.updateDelegationStatus(sourceID, delegationID, "completed", "")
-	// RFC #2829 #318 — mirror result_preview to the durable ledger
-	// (updateDelegationStatus handles the status flip; ledger gets the
-	// preview field set on the same row).
+	// RFC #2829 #318: write the ledger row with result_preview FIRST,
+	// THEN updateDelegationStatus. Order matters: SetStatus has a
+	// same-status replay no-op — if updateDelegationStatus's nested
+	// recordLedgerStatus(completed, "", "") fires first, the outer call
+	// hits the no-op branch and result_preview is never written.
+	// Caught by the local-Postgres integration test in
+	// delegation_ledger_integration_test.go.
 	recordLedgerStatus(ctx, delegationID, "completed", "", responseText)
+	h.updateDelegationStatus(sourceID, delegationID, "completed", "")
 	h.broadcaster.RecordAndBroadcast(ctx, "DELEGATION_COMPLETE", sourceID, map[string]interface{}{
 		"delegation_id":    delegationID,
 		"target_id":        targetID,
@@ -532,6 +536,13 @@ func (h *DelegationHandler) UpdateStatus(c *gin.Context) {
 	if body.Status != "completed" && body.Status != "failed" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "status must be 'completed' or 'failed'"})
 		return
+	}
+
+	// RFC #2829 #318 — same ordering pin as executeDelegation completion:
+	// write the with-preview ledger row FIRST so updateDelegationStatus's
+	// inner same-status no-op doesn't clobber preview.
+	if body.Status == "completed" {
+		recordLedgerStatus(ctx, delegationID, "completed", "", body.ResponsePreview)
 	}
 
 	h.updateDelegationStatus(sourceID, delegationID, body.Status, body.Error)
