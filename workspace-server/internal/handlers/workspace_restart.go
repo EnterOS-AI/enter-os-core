@@ -613,10 +613,18 @@ func (h *WorkspaceHandler) Pause(c *gin.Context) {
 		}
 	}
 
-	// Stop containers and mark all as paused
+	// Stop containers and mark all as paused. StopWorkspaceAuto routes
+	// to whichever backend is wired (CP for SaaS, Docker for self-hosted)
+	// — pre-2026-05-05 this site inlined `if h.provisioner != nil { Stop }`,
+	// which silently leaked EC2s on every SaaS Pause (same drift class as
+	// the team-collapse leak #2813 and the workspace-delete leak #2814,
+	// both closed by PR #2824). StopWorkspaceAuto returns nil on no-backend
+	// (no-op), so the Pause-specific bookkeeping (mark paused, clear keys,
+	// broadcast) still fires regardless of whether anything was actually
+	// stopped — matches the pre-fix behavior on misconfigured deployments.
 	for _, ws := range toPause {
-		if h.provisioner != nil {
-			h.provisioner.Stop(ctx, ws.id)
+		if err := h.StopWorkspaceAuto(ctx, ws.id); err != nil {
+			log.Printf("Pause: stop %s failed: %v — orphan sweeper will reconcile", ws.id, err)
 		}
 		db.DB.ExecContext(ctx,
 			`UPDATE workspaces SET status = $1, url = '', updated_at = now() WHERE id = $2`, models.StatusPaused, ws.id)
