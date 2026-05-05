@@ -11,6 +11,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -330,57 +331,23 @@ func (h *MCPHandler) toolSendMessageToUser(ctx context.Context, workspaceID stri
 		return "", fmt.Errorf("send_message_to_user is not enabled on this MCP bridge (set MOLECULE_MCP_ALLOW_SEND_MESSAGE=true)")
 	}
 
-	var wsName string
-	err := h.database.QueryRowContext(ctx,
-		`SELECT name FROM workspaces WHERE id = $1 AND status != 'removed'`, workspaceID,
-	).Scan(&wsName)
-	if err != nil {
-		return "", fmt.Errorf("workspace not found")
-	}
-
-	h.broadcaster.BroadcastOnly(workspaceID, "AGENT_MESSAGE", map[string]interface{}{
-		"message":      message,
-		"workspace_id": workspaceID,
-		"name":         wsName,
-	})
-
-	// Persist to activity_logs so chat history loaders surface this
-	// message after a page reload. Pre-fix (reno-stars 2026-05-05),
-	// the MCP-bridge variant of send_message_to_user broadcast WS
-	// only — visible live, gone on reload — while the HTTP /notify
-	// sibling already had this fix (activity.go:535). External
-	// claude-code agents using molecule-mcp's send_message_to_user
-	// tool route through THIS handler, not /notify, so they were
-	// hitting the unfixed path.
+	// Single source of truth for chat-bearing agent → user messages —
+	// see agent_message_writer.go for the contract. The pre-RFC-#2945
+	// duplication of broadcast + INSERT logic between this handler and
+	// activity.go:Notify is what produced the reno-stars data-loss
+	// regression; both paths now route through the same writer.
 	//
-	// Shape mirrors activity.go's Notify handler exactly so the
-	// canvas chat-history hydration treats both the same:
-	//   - activity_type='a2a_receive' joins the source=canvas filter
-	//   - source_id is omitted → defaults to NULL ("canvas-source")
-	//   - method='notify' tags it as a push (vs a real A2A receive)
-	//   - request_body=NULL so the loader doesn't draw a duplicate
-	//     "user" bubble
-	//   - response_body={"result": "<text>"} feeds extractResponseText
-	//     directly
-	//
-	// Errors are log-only — the broadcast already returned ok to the
-	// caller, the user has seen the message, and the persistence
-	// failure mode (DB hiccup) shouldn't block the tool call. The
-	// downside is the same as pre-fix: message vanishes on reload
-	// after a transient DB error. Log it so operators have a signal.
-	respPayload := map[string]interface{}{"result": message}
-	respJSON, _ := json.Marshal(respPayload)
-	preview := message
-	if len(preview) > 80 {
-		preview = preview[:80] + "…"
+	// MCP send_message_to_user does not currently surface attachments
+	// (the tool args don't accept them); pass nil. If a future tool
+	// schema adds an attachments arg, build []AgentMessageAttachment
+	// and pass through.
+	writer := NewAgentMessageWriter(h.database, h.broadcaster)
+	if err := writer.Send(ctx, workspaceID, message, nil); err != nil {
+		if errors.Is(err, ErrWorkspaceNotFound) {
+			return "", fmt.Errorf("workspace not found")
+		}
+		return "", err
 	}
-	if _, err := h.database.ExecContext(ctx, `
-		INSERT INTO activity_logs (workspace_id, activity_type, method, summary, response_body, status)
-		VALUES ($1, 'a2a_receive', 'notify', $2, $3::jsonb, 'ok')
-	`, workspaceID, "Agent message: "+preview, string(respJSON)); err != nil {
-		log.Printf("MCP send_message_to_user: failed to persist for %s: %v", workspaceID, err)
-	}
-
 	return "Message sent.", nil
 }
 
