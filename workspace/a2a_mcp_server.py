@@ -55,6 +55,7 @@ from a2a_client import (  # noqa: F401, E402
     _validate_peer_id,
     discover_peer,
     enrich_peer_metadata,
+    enrich_peer_metadata_nonblocking,
     get_peers,
     get_workspace_info,
     send_a2a_message,
@@ -498,7 +499,15 @@ def _build_channel_notification(msg: dict) -> dict:
             meta["peer_id"] = ""
         else:
             meta["peer_id"] = safe_peer_id
-            record = enrich_peer_metadata(safe_peer_id)
+            # Cache-first non-blocking enrichment (#2484): on cache miss
+            # this returns None immediately and schedules a background
+            # fetch. The first push for a new peer renders bare
+            # peer_id; the next push (within the 5-min TTL) hits the
+            # warm cache and gets full name/role. Push-delivery latency
+            # is bounded by the inbox poll interval, never by registry
+            # RTT — closes the gap that PR #2471's negative-cache path
+            # was meant to avoid amplifying.
+            record = enrich_peer_metadata_nonblocking(safe_peer_id)
             if record is not None:
                 # Sanitise BEFORE storing in meta so both the JSON-RPC
                 # envelope and the rendered content (via

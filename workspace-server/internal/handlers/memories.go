@@ -475,6 +475,177 @@ func (h *MemoriesHandler) Search(c *gin.Context) {
 	c.JSON(http.StatusOK, memories)
 }
 
+// Update handles PATCH /workspaces/:id/memories/:memoryId
+//
+// Edits an existing semantic-memory row's content and/or namespace.
+// Both body fields are optional; at least one must be present (a body
+// with neither returns 400 — there's nothing to do, and silently
+// no-op'ing would let a buggy client think it had succeeded).
+//
+// Content edits re-run the same security pipeline as Commit: secret
+// redaction (#1201) on every scope, plus delimiter-spoofing escape on
+// GLOBAL. Skipping either when content changes would mean an Edit
+// becomes a back-door past the policies a Commit enforces. The same
+// re-embedding rule applies — a stale embedding for the new content
+// would silently break semantic search. GLOBAL audit log fires on
+// content change so the forensic trail captures edits, not just
+// initial writes.
+//
+// Namespace edits are validated against the same 50-char ceiling
+// Commit uses; cross-scope changes (e.g. LOCAL→GLOBAL) are NOT
+// supported here — that's a delete + recreate so the GLOBAL
+// access-control gate (only root workspaces can write GLOBAL) gets
+// re-evaluated from scratch.
+//
+// Returns 200 with the updated row's id+scope+namespace on success,
+// 400 on bad body, 404 when the memory doesn't exist or isn't owned
+// by this workspace, 500 on DB failure.
+func (h *MemoriesHandler) Update(c *gin.Context) {
+	workspaceID := c.Param("id")
+	memoryID := c.Param("memoryId")
+	ctx := c.Request.Context()
+
+	// json.Decode (not gin's ShouldBindJSON) so we can distinguish
+	// "field omitted" from "field set to empty string" — content="" is
+	// invalid; content omitted means "don't change content".
+	var body struct {
+		Content   *string `json:"content,omitempty"`
+		Namespace *string `json:"namespace,omitempty"`
+	}
+	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if body.Content == nil && body.Namespace == nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "at least one of content or namespace must be set",
+		})
+		return
+	}
+	if body.Content != nil && *body.Content == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "content cannot be empty"})
+		return
+	}
+	if body.Namespace != nil {
+		if len(*body.Namespace) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "namespace cannot be empty"})
+			return
+		}
+		if len(*body.Namespace) > 50 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "namespace must be <= 50 characters"})
+			return
+		}
+	}
+
+	// Fetch current row to discover the scope (we need it for the
+	// GLOBAL delimiter-escape + audit log) and to confirm ownership.
+	// One round-trip rather than two: SELECT ... WHERE id AND
+	// workspace_id covers the 404 path without an extra existence check.
+	var existingScope, existingContent, existingNamespace string
+	if err := db.DB.QueryRowContext(ctx, `
+		SELECT scope, content, namespace
+		FROM agent_memories
+		WHERE id = $1 AND workspace_id = $2
+	`, memoryID, workspaceID).Scan(&existingScope, &existingContent, &existingNamespace); err != nil {
+		// sql.ErrNoRows or any other read failure — both surface as 404
+		// to avoid leaking row existence across workspaces.
+		c.JSON(http.StatusNotFound, gin.H{"error": "memory not found or not owned by this workspace"})
+		return
+	}
+
+	// Compute the new content (post-redaction, post-delimiter-escape)
+	// only when content is actually changing. This keeps namespace-only
+	// edits cheap (no embed call, no audit row).
+	newContent := existingContent
+	contentChanged := false
+	if body.Content != nil && *body.Content != existingContent {
+		c2 := *body.Content
+		c2, _ = redactSecrets(workspaceID, c2)
+		if existingScope == "GLOBAL" {
+			c2 = strings.ReplaceAll(c2, "[MEMORY ", "[_MEMORY ")
+		}
+		if c2 != existingContent {
+			newContent = c2
+			contentChanged = true
+		}
+	}
+
+	newNamespace := existingNamespace
+	if body.Namespace != nil && *body.Namespace != existingNamespace {
+		newNamespace = *body.Namespace
+	}
+
+	if !contentChanged && newNamespace == existingNamespace {
+		// Nothing to do post-normalisation (e.g. caller passed the
+		// SAME content + namespace). Return the existing shape so the
+		// caller's response-handling can stay uniform with the change
+		// path — silently no-op would force every client to special-
+		// case 204.
+		c.JSON(http.StatusOK, gin.H{
+			"id": memoryID, "scope": existingScope, "namespace": existingNamespace,
+			"changed": false,
+		})
+		return
+	}
+
+	if _, err := db.DB.ExecContext(ctx, `
+		UPDATE agent_memories
+		SET content = $1, namespace = $2, updated_at = now()
+		WHERE id = $3 AND workspace_id = $4
+	`, newContent, newNamespace, memoryID, workspaceID); err != nil {
+		log.Printf("Update memory error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update memory"})
+		return
+	}
+
+	// GLOBAL content edits write an audit row mirroring Commit's #767
+	// pattern. Namespace-only edits don't get an audit entry — the
+	// content (and its sha256) is unchanged, so there's nothing new
+	// for forensic replay to capture.
+	if existingScope == "GLOBAL" && contentChanged {
+		sum := sha256.Sum256([]byte(newContent))
+		auditBody, _ := json.Marshal(map[string]string{
+			"memory_id":      memoryID,
+			"namespace":      newNamespace,
+			"content_sha256": hex.EncodeToString(sum[:]),
+			"reason":         "edited",
+		})
+		summary := "GLOBAL memory edited: id=" + memoryID + " namespace=" + newNamespace
+		if _, auditErr := db.DB.ExecContext(ctx, `
+			INSERT INTO activity_logs (workspace_id, activity_type, source_id, summary, request_body, status)
+			VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+		`, workspaceID, "memory_edit_global", workspaceID, summary, string(auditBody), "ok"); auditErr != nil {
+			log.Printf("Update: GLOBAL memory audit log failed for %s/%s: %v", workspaceID, memoryID, auditErr)
+		}
+	}
+
+	// Re-embed when content changed. Same non-fatal pattern as Commit:
+	// a failed embed leaves the row with its OLD vector (or no vector
+	// if the original Commit's embed also failed). Future Search calls
+	// fall through to FTS for this row.
+	if contentChanged && h.embed != nil {
+		if vec, embedErr := h.embed(ctx, newContent); embedErr != nil {
+			log.Printf("Update: embedding failed workspace=%s memory=%s: %v (kept stale embedding)",
+				workspaceID, memoryID, embedErr)
+		} else if fmtVec := formatVector(vec); fmtVec != "" {
+			if _, updateErr := db.DB.ExecContext(ctx,
+				`UPDATE agent_memories SET embedding = $1::vector WHERE id = $2`,
+				fmtVec, memoryID,
+			); updateErr != nil {
+				log.Printf("Update: embedding UPDATE failed workspace=%s memory=%s: %v",
+					workspaceID, memoryID, updateErr)
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"id":        memoryID,
+		"scope":     existingScope,
+		"namespace": newNamespace,
+		"changed":   true,
+	})
+}
+
 // Delete handles DELETE /workspaces/:id/memories/:memoryId
 func (h *MemoriesHandler) Delete(c *gin.Context) {
 	workspaceID := c.Param("id")

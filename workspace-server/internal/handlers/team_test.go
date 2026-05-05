@@ -34,7 +34,7 @@ func TestTeamCollapse_NoChildren(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)
 	broadcaster := newTestBroadcaster()
-	handler := NewTeamHandler(broadcaster, nil, nil, "http://localhost:8080", "/tmp/configs")
+	handler := NewTeamHandler(broadcaster, NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir()), "http://localhost:8080", "/tmp/configs")
 
 	// No children
 	mock.ExpectQuery("SELECT id, name FROM workspaces WHERE parent_id").
@@ -66,7 +66,7 @@ func TestTeamCollapse_WithChildren(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)
 	broadcaster := newTestBroadcaster()
-	handler := NewTeamHandler(broadcaster, nil, nil, "http://localhost:8080", "/tmp/configs")
+	handler := NewTeamHandler(broadcaster, NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir()), "http://localhost:8080", "/tmp/configs")
 
 	// Two children
 	mock.ExpectQuery("SELECT id, name FROM workspaces WHERE parent_id").
@@ -122,7 +122,7 @@ func TestTeamCollapse_WithChildren(t *testing.T) {
 func TestTeamExpand_WorkspaceNotFound(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)
-	handler := NewTeamHandler(newTestBroadcaster(), nil, nil, "http://localhost:8080", "/tmp/configs")
+	handler := NewTeamHandler(newTestBroadcaster(), NewWorkspaceHandler(newTestBroadcaster(), nil, "http://localhost:8080", t.TempDir()), "http://localhost:8080", "/tmp/configs")
 
 	mock.ExpectQuery("SELECT name, tier, status FROM workspaces WHERE id").
 		WithArgs("ws-missing").
@@ -143,7 +143,7 @@ func TestTeamExpand_WorkspaceNotFound(t *testing.T) {
 func TestTeamExpand_NoConfigFound(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)
-	handler := NewTeamHandler(newTestBroadcaster(), nil, nil, "http://localhost:8080", t.TempDir())
+	handler := NewTeamHandler(newTestBroadcaster(), NewWorkspaceHandler(newTestBroadcaster(), nil, "http://localhost:8080", t.TempDir()), "http://localhost:8080", t.TempDir())
 
 	mock.ExpectQuery("SELECT name, tier, status FROM workspaces WHERE id").
 		WithArgs("ws-1").
@@ -167,7 +167,7 @@ func TestTeamExpand_EmptySubWorkspaces(t *testing.T) {
 	setupTestRedis(t)
 
 	configDir := makeTeamConfigDir(t, "myagent", "name: MyAgent\nsub_workspaces: []\n")
-	handler := NewTeamHandler(newTestBroadcaster(), nil, nil, "http://localhost:8080", configDir)
+	handler := NewTeamHandler(newTestBroadcaster(), NewWorkspaceHandler(newTestBroadcaster(), nil, "http://localhost:8080", t.TempDir()), "http://localhost:8080", configDir)
 
 	mock.ExpectQuery("SELECT name, tier, status FROM workspaces WHERE id").
 		WithArgs("ws-1").
@@ -199,7 +199,7 @@ sub_workspaces:
     role: code-reviewer
 `
 	configDir := makeTeamConfigDir(t, "teamlead", yaml)
-	handler := NewTeamHandler(broadcaster, nil, nil, "http://localhost:8080", configDir)
+	handler := NewTeamHandler(broadcaster, NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir()), "http://localhost:8080", configDir)
 
 	mock.ExpectQuery("SELECT name, tier, status FROM workspaces WHERE id").
 		WithArgs("ws-lead").

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import time
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -507,11 +508,22 @@ def _reset_peer_metadata_cache(monkeypatch):
     """Each test starts with a clean ``_peer_metadata`` cache so an
     earlier test's hit doesn't satisfy a later test's miss. Mutates the
     module-level dict in place rather than reassigning so other modules
-    that imported the dict by reference still see the same instance."""
+    that imported the dict by reference still see the same instance.
+
+    Also drains and clears ``_enrich_in_flight`` (#2484): a previous
+    test's background fetch worker can leave a peer marked in-flight,
+    and the next test's nonblocking call would short-circuit without
+    scheduling a fetch. Drain BEFORE clearing in case a worker is
+    mid-execution and writes to ``_peer_metadata`` after the clear.
+    """
     import a2a_client
+    a2a_client._wait_for_enrichment_inflight_for_testing(timeout=2.0)
     a2a_client._peer_metadata.clear()
+    a2a_client._enrich_in_flight.clear()
     yield
+    a2a_client._wait_for_enrichment_inflight_for_testing(timeout=2.0)
     a2a_client._peer_metadata.clear()
+    a2a_client._enrich_in_flight.clear()
 
 
 def _make_httpx_response(status_code: int, json_body: object) -> MagicMock:
@@ -586,9 +598,16 @@ def test_envelope_enrichment_uses_cache_when_present(_reset_peer_metadata_cache)
 
 
 def test_envelope_enrichment_fetches_on_cache_miss(_reset_peer_metadata_cache):
-    """Cache miss + registry hit: GET fires, response cached, meta
-    carries fetched fields. Subsequent build for the same peer must
-    NOT re-fetch (cache populated by first call)."""
+    """Cache miss: nonblocking enrichment returns None on the first
+    push (first push arrives metadata-light), schedules a background
+    fetch that populates the cache, second push hits the warm cache.
+
+    Pre-2026-05-05 (#2484) the first push was synchronous: the inbox
+    poller blocked up to 2s on the registry GET before delivering. The
+    nonblocking path means push delivery is bounded by the inbox poll
+    interval, never by registry RTT — at the cost of one push per peer
+    per TTL window arriving without name/role.
+    """
     import a2a_client
     from a2a_mcp_server import _build_channel_notification
 
@@ -602,22 +621,39 @@ def test_envelope_enrichment_fetches_on_cache_miss(_reset_peer_metadata_cache):
         payload1 = _build_channel_notification({
             "peer_id": _PEER_UUID, "kind": "peer_agent", "text": "first",
         })
+        # First push: bare peer_id, fetch is in-flight in the background.
+        # peer_name / peer_role NOT yet present.
+        assert "peer_name" not in payload1["params"]["meta"]
+        assert "peer_role" not in payload1["params"]["meta"]
+
+        # Wait for the background worker to finish populating the cache.
+        a2a_client._wait_for_enrichment_inflight_for_testing(timeout=2.0)
+
         payload2 = _build_channel_notification({
             "peer_id": _PEER_UUID, "kind": "peer_agent", "text": "second",
         })
 
+    # Worker fired exactly one GET (cache miss → fetch); the second push
+    # hit the warm cache and DID NOT fire another GET.
     assert client.get.call_count == 1, (
         f"second push for same peer must use cache, got {client.get.call_count} GETs"
     )
-    assert payload1["params"]["meta"]["peer_name"] == "fetched-name"
+    # Second push has the enriched fields the worker stored.
     assert payload2["params"]["meta"]["peer_name"] == "fetched-name"
+    assert payload2["params"]["meta"]["peer_role"] == "router"
 
 
 def test_envelope_enrichment_degrades_on_registry_failure(_reset_peer_metadata_cache):
     """Registry returns 500 (or 4xx, or network error): enrichment
     silently degrades to bare peer_id. The push must not crash, the
     push must not block, and the agent_card_url must still surface
-    because it's constructable from peer_id alone."""
+    because it's constructable from peer_id alone.
+
+    Post-#2484 the first push always degrades to bare peer_id (the
+    background fetch hasn't run yet); this test captures that
+    "degrades on cache miss + failure path doesn't break" stays true.
+    """
+    import a2a_client
     from a2a_mcp_server import _build_channel_notification
 
     p, _ = _patch_httpx_client(_make_httpx_response(500, {}))
@@ -630,6 +666,9 @@ def test_envelope_enrichment_degrades_on_registry_failure(_reset_peer_metadata_c
             "method": "message/send",
             "created_at": "2026-05-01T00:00:00Z",
         })
+        # Drain the background fetch so a follow-up test starting with
+        # this peer in-flight doesn't see ghost state.
+        a2a_client._wait_for_enrichment_inflight_for_testing(timeout=2.0)
 
     meta = payload["params"]["meta"]
     assert meta["peer_id"] == _PEER_UUID
@@ -649,7 +688,13 @@ def test_envelope_enrichment_negative_caches_registry_failure(_reset_peer_metada
     exact scenarios it most needs to defend against, and the poller
     thread stalls 2s per push for that peer until the registry comes
     back. Pin: two pushes from a 5xx-returning peer fire exactly one
-    GET, not two."""
+    GET, not two.
+
+    Post-#2484 the GETs run in a background worker, so the test waits
+    for in-flight to drain between pushes — the negative-cache write
+    must land in `_peer_metadata` before the second push consults it.
+    """
+    import a2a_client
     from a2a_mcp_server import _build_channel_notification
 
     p, client = _patch_httpx_client(_make_httpx_response(500, {}))
@@ -657,9 +702,13 @@ def test_envelope_enrichment_negative_caches_registry_failure(_reset_peer_metada
         payload1 = _build_channel_notification({
             "peer_id": _PEER_UUID, "kind": "peer_agent", "text": "first",
         })
+        # Wait for the worker to write the negative-cache entry before
+        # the second push reads it.
+        a2a_client._wait_for_enrichment_inflight_for_testing(timeout=2.0)
         payload2 = _build_channel_notification({
             "peer_id": _PEER_UUID, "kind": "peer_agent", "text": "second",
         })
+        a2a_client._wait_for_enrichment_inflight_for_testing(timeout=2.0)
 
     assert client.get.call_count == 1, (
         f"second push from a 5xx-returning peer must use the negative "
@@ -692,7 +741,9 @@ def test_envelope_enrichment_negative_caches_network_exception(_reset_peer_metad
     client.get = MagicMock(side_effect=_httpx.ConnectError("dns down"))
     with patch("httpx.Client", return_value=client):
         _build_channel_notification({"peer_id": _PEER_UUID, "kind": "peer_agent"})
+        a2a_client._wait_for_enrichment_inflight_for_testing(timeout=2.0)
         _build_channel_notification({"peer_id": _PEER_UUID, "kind": "peer_agent"})
+        a2a_client._wait_for_enrichment_inflight_for_testing(timeout=2.0)
 
     assert client.get.call_count == 1, (
         f"network exceptions must be negative-cached, got "
@@ -728,7 +779,9 @@ def test_envelope_enrichment_negative_caches_non_json_200(_reset_peer_metadata_c
     p, client = _patch_httpx_client(resp)
     with p:
         _build_channel_notification({"peer_id": _PEER_UUID, "kind": "peer_agent", "text": "first"})
+        a2a_client._wait_for_enrichment_inflight_for_testing(timeout=2.0)
         _build_channel_notification({"peer_id": _PEER_UUID, "kind": "peer_agent", "text": "second"})
+        a2a_client._wait_for_enrichment_inflight_for_testing(timeout=2.0)
 
     assert client.get.call_count == 1, (
         f"non-JSON 200 must be negative-cached, got {client.get.call_count} GETs"
@@ -756,7 +809,9 @@ def test_envelope_enrichment_negative_caches_non_dict_json_200(_reset_peer_metad
     )
     with p:
         _build_channel_notification({"peer_id": _PEER_UUID, "kind": "peer_agent", "text": "first"})
+        a2a_client._wait_for_enrichment_inflight_for_testing(timeout=2.0)
         _build_channel_notification({"peer_id": _PEER_UUID, "kind": "peer_agent", "text": "second"})
+        a2a_client._wait_for_enrichment_inflight_for_testing(timeout=2.0)
 
     assert client.get.call_count == 1, (
         f"non-dict JSON 200 must be negative-cached, got {client.get.call_count} GETs"
@@ -792,13 +847,25 @@ def test_envelope_enrichment_re_fetches_after_ttl(_reset_peer_metadata_cache):
         )
     )
     with p:
-        payload = _build_channel_notification({
+        # First push: stale cache → background fetch scheduled; the
+        # nonblocking path returns None when the entry is past TTL,
+        # so this first push degrades to bare peer_id (no peer_name).
+        # Wait for the background worker to fill the cache, then issue
+        # a second push to confirm it picked up the fresh values.
+        payload1 = _build_channel_notification({
             "peer_id": _PEER_UUID, "kind": "peer_agent", "text": "ping",
+        })
+        a2a_client._wait_for_enrichment_inflight_for_testing(timeout=2.0)
+        payload2 = _build_channel_notification({
+            "peer_id": _PEER_UUID, "kind": "peer_agent", "text": "pong",
         })
 
     assert client.get.call_count == 1, "stale cache must trigger a re-fetch"
-    assert payload["params"]["meta"]["peer_name"] == "fresh-name"
-    assert payload["params"]["meta"]["peer_role"] == "new"
+    assert "peer_name" not in payload1["params"]["meta"], (
+        "first push past TTL degrades to bare peer_id under nonblocking enrichment"
+    )
+    assert payload2["params"]["meta"]["peer_name"] == "fresh-name"
+    assert payload2["params"]["meta"]["peer_role"] == "new"
 
 
 def test_envelope_enrichment_invalid_peer_id_skips_lookup(_reset_peer_metadata_cache):
@@ -1732,3 +1799,193 @@ def _readable(fd: int) -> bool:
 
     rlist, _, _ = select.select([fd], [], [], 0)
     return bool(rlist)
+
+
+# ---- #2484 nonblocking-enrichment dedicated tests ----
+
+
+def test_enrich_peer_metadata_nonblocking_cache_hit_returns_immediately(
+    _reset_peer_metadata_cache,
+):
+    """Cache hit (fresh entry within TTL): nonblocking helper returns
+    the cached record without scheduling a worker. Pin the fast path —
+    the whole point of the helper is that the steady-state pushes for
+    a known peer don't touch the executor."""
+    import a2a_client
+    import time as _time
+
+    a2a_client._peer_metadata[_PEER_UUID] = (
+        _time.monotonic(),
+        {"id": _PEER_UUID, "name": "ops", "role": "sre"},
+    )
+
+    p, client = _patch_httpx_client(_make_httpx_response(200, {}))
+    with p:
+        record = a2a_client.enrich_peer_metadata_nonblocking(_PEER_UUID)
+
+    assert record is not None
+    assert record["name"] == "ops"
+    assert client.get.call_count == 0, "cache hit must not schedule a worker"
+    # No in-flight marker should have been added since we returned synchronously.
+    assert _PEER_UUID not in a2a_client._enrich_in_flight
+
+
+def test_enrich_peer_metadata_nonblocking_cache_miss_schedules_fetch(
+    _reset_peer_metadata_cache,
+):
+    """Cache miss: helper returns None immediately, schedules a
+    background fetch, the worker fills the cache. After draining the
+    in-flight marker, a follow-up call hits the warm cache."""
+    import a2a_client
+
+    p, client = _patch_httpx_client(
+        _make_httpx_response(
+            200,
+            {"id": _PEER_UUID, "name": "fresh", "role": "router"},
+        )
+    )
+    with p:
+        first = a2a_client.enrich_peer_metadata_nonblocking(_PEER_UUID)
+        assert first is None, "first call on cache miss must return None (bare peer_id)"
+        a2a_client._wait_for_enrichment_inflight_for_testing(timeout=2.0)
+        second = a2a_client.enrich_peer_metadata_nonblocking(_PEER_UUID)
+
+    assert client.get.call_count == 1
+    assert second is not None
+    assert second["name"] == "fresh"
+
+
+def test_enrich_peer_metadata_nonblocking_coalesces_duplicate_pushes(
+    _reset_peer_metadata_cache,
+):
+    """A burst of pushes for the same uncached peer must schedule
+    exactly ONE background fetch. Without the in-flight gate, a chatty
+    peer's first 10 pushes would queue 10 GETs against the registry —
+    exactly the DoS-on-self pattern the negative cache was meant to
+    rate-limit, except now we're amplifying with concurrency.
+    """
+    import a2a_client
+
+    p, client = _patch_httpx_client(
+        _make_httpx_response(
+            200,
+            {"id": _PEER_UUID, "name": "x", "role": "y"},
+        )
+    )
+    with p:
+        # Fire 5 nonblocking calls back-to-back BEFORE the worker has
+        # a chance to drain. All 5 hit the in-flight gate; only the
+        # first schedules a worker.
+        for _ in range(5):
+            assert a2a_client.enrich_peer_metadata_nonblocking(_PEER_UUID) is None
+        a2a_client._wait_for_enrichment_inflight_for_testing(timeout=2.0)
+
+    assert client.get.call_count == 1, (
+        f"in-flight gate must coalesce concurrent pushes; got {client.get.call_count} GETs"
+    )
+
+
+def test_enrich_peer_metadata_nonblocking_invalid_peer_id_returns_none(
+    _reset_peer_metadata_cache,
+):
+    """Defensive: malformed peer_id (not a UUID) must short-circuit
+    without touching the cache OR the executor."""
+    import a2a_client
+
+    p, client = _patch_httpx_client(_make_httpx_response(200, {}))
+    with p:
+        assert a2a_client.enrich_peer_metadata_nonblocking("not-a-uuid") is None
+
+    assert client.get.call_count == 0
+    assert "not-a-uuid" not in a2a_client._enrich_in_flight
+
+
+# ---- #2482 bounded-cache tests ----
+
+
+def test_peer_metadata_set_evicts_lru_when_at_maxsize(_reset_peer_metadata_cache, monkeypatch):
+    """Cache size never exceeds ``_PEER_METADATA_MAXSIZE``. When the
+    next write would push past the bound, the least-recently-used entry
+    is evicted. Pin: a workspace receiving from N > maxsize peers ends
+    up with exactly maxsize entries — the oldest get dropped, the
+    newest stay.
+    """
+    import a2a_client
+
+    # Shrink the bound to make the test fast + deterministic. The real
+    # bound (1024) is too large to exercise per-test.
+    monkeypatch.setattr(a2a_client, "_PEER_METADATA_MAXSIZE", 4)
+
+    now = time.monotonic()
+    for i in range(6):
+        # Distinct UUIDs — generate via the static template + index so
+        # _validate_peer_id accepts them.
+        peer = f"00000000-0000-0000-0000-00000000000{i}"
+        a2a_client._peer_metadata_set(peer, (now + i, {"id": peer, "name": f"p{i}"}))
+
+    # Size capped at maxsize.
+    assert len(a2a_client._peer_metadata) == 4
+    # Oldest two evicted, newest four remain.
+    assert "00000000-0000-0000-0000-000000000000" not in a2a_client._peer_metadata
+    assert "00000000-0000-0000-0000-000000000001" not in a2a_client._peer_metadata
+    assert "00000000-0000-0000-0000-000000000002" in a2a_client._peer_metadata
+    assert "00000000-0000-0000-0000-000000000005" in a2a_client._peer_metadata
+
+
+def test_peer_metadata_get_promotes_to_lru_head(_reset_peer_metadata_cache, monkeypatch):
+    """Read promotes the entry to most-recently-used. Steady-state
+    pushes from a busy peer must NOT be evicted by a cold-start burst
+    from new peers — the LRU touch on read is what makes that hold.
+    """
+    import a2a_client
+
+    monkeypatch.setattr(a2a_client, "_PEER_METADATA_MAXSIZE", 3)
+
+    now = time.monotonic()
+    a = "00000000-0000-0000-0000-aaaaaaaaaaaa"
+    b = "00000000-0000-0000-0000-bbbbbbbbbbbb"
+    c = "00000000-0000-0000-0000-cccccccccccc"
+    d = "00000000-0000-0000-0000-dddddddddddd"
+
+    # Insert in order a, b, c. LRU position: a (oldest) → c (newest).
+    a2a_client._peer_metadata_set(a, (now, {"id": a}))
+    a2a_client._peer_metadata_set(b, (now, {"id": b}))
+    a2a_client._peer_metadata_set(c, (now, {"id": c}))
+
+    # Touch `a` via _peer_metadata_get → moves to MRU. Eviction order:
+    # b (oldest now) → c → a (newest).
+    a2a_client._peer_metadata_get(a)
+
+    # Insert `d` — pushes `b` out (not `a` even though `a` was inserted first).
+    a2a_client._peer_metadata_set(d, (now, {"id": d}))
+
+    assert a in a2a_client._peer_metadata, (
+        "recently-touched entry must survive eviction; LRU touch on read is broken"
+    )
+    assert b not in a2a_client._peer_metadata, (
+        "oldest-untouched entry must be evicted first"
+    )
+    assert c in a2a_client._peer_metadata
+    assert d in a2a_client._peer_metadata
+
+
+def test_peer_metadata_set_replaces_existing_entry_in_place(_reset_peer_metadata_cache):
+    """Re-write of an existing key updates the value in place — does
+    NOT evict to maxsize-1 then re-insert. The LRU move-to-end on
+    update keeps the entry as MRU.
+    """
+    import a2a_client
+
+    peer = "00000000-0000-0000-0000-aaaaaaaaaaaa"
+    now = time.monotonic()
+    a2a_client._peer_metadata_set(peer, (now, {"id": peer, "name": "v1"}))
+    assert len(a2a_client._peer_metadata) == 1
+
+    # Re-write — same key, new value.
+    a2a_client._peer_metadata_set(peer, (now + 100, {"id": peer, "name": "v2"}))
+
+    assert len(a2a_client._peer_metadata) == 1, (
+        "re-write must not duplicate the entry"
+    )
+    cached = a2a_client._peer_metadata[peer]
+    assert cached[1]["name"] == "v2", "re-write must update the value in place"

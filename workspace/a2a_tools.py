@@ -191,6 +191,145 @@ async def report_activity(
         pass  # Best-effort — don't block delegation on activity reporting
 
 
+# RFC #2829 PR-5 cutover constants. The poll cadence + timeout are
+# intentionally generous: 3s gives the platform's executeDelegation
+# goroutine room to dispatch + the callee to respond + the result to
+# write to activity_logs without thrashing the platform with rapid
+# polls; the budget matches the legacy DELEGATION_TIMEOUT (300s) so
+# operators don't see behavior change beyond "no more 600s timeouts".
+_SYNC_POLL_INTERVAL_S = 3.0
+_SYNC_POLL_BUDGET_S = float(os.environ.get("DELEGATION_TIMEOUT", "300.0"))
+
+
+async def _delegate_sync_via_polling(
+    workspace_id: str,
+    task: str,
+    src: str,
+) -> str:
+    """RFC #2829 PR-5: durable async delegation + poll for terminal status.
+
+    Sidesteps the platform proxy's blocking `message/send` HTTP path that
+    hits a hard 600s ceiling. Instead:
+
+      1. POST /workspaces/<src>/delegate (async, returns 202 + delegation_id)
+         — platform's executeDelegation goroutine handles A2A dispatch in
+         the background. No client-side timeout dependency on the platform
+         holding a connection open.
+      2. Poll GET /workspaces/<src>/delegations every 3s for a row with
+         matching delegation_id reaching terminal status (completed/failed).
+      3. Return the response_preview text on completed; surface error_detail
+         on failed (with the same _A2A_ERROR_PREFIX wrapping the legacy
+         path uses, so caller error-detection logic is unchanged).
+
+    Both /delegate and /delegations are existing endpoints — this helper
+    just composes them into a polling synchronous facade. The result is
+    available the moment the platform writes the terminal status row;
+    no extra latency vs. the legacy proxy-blocked path on fast cases.
+    """
+    import asyncio
+    import time
+
+    idem_key = hashlib.sha256(f"{src}:{workspace_id}:{task}".encode()).hexdigest()[:32]
+
+    # 1. Dispatch via /delegate (the async, durable path).
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{PLATFORM_URL}/workspaces/{src}/delegate",
+                json={
+                    "target_id": workspace_id,
+                    "task": task,
+                    "idempotency_key": idem_key,
+                },
+                headers=_auth_headers_for_heartbeat(src),
+            )
+    except Exception as e:  # pylint: disable=broad-except
+        return f"{_A2A_ERROR_PREFIX}delegate dispatch failed: {e}"
+
+    if resp.status_code != 202 and resp.status_code != 200:
+        return f"{_A2A_ERROR_PREFIX}delegate dispatch failed: HTTP {resp.status_code} {resp.text[:200]}"
+
+    try:
+        dispatch = resp.json()
+    except Exception as e:  # pylint: disable=broad-except
+        return f"{_A2A_ERROR_PREFIX}delegate dispatch returned non-JSON: {e}"
+
+    delegation_id = dispatch.get("delegation_id", "")
+    if not delegation_id:
+        return f"{_A2A_ERROR_PREFIX}delegate dispatch missing delegation_id: {dispatch}"
+
+    # 2. Poll for terminal status with a deadline. Each poll is a cheap
+    # /delegations GET — bounded by the platform's existing rate limit.
+    deadline = time.monotonic() + _SYNC_POLL_BUDGET_S
+    last_status = "unknown"
+    while time.monotonic() < deadline:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                poll = await client.get(
+                    f"{PLATFORM_URL}/workspaces/{src}/delegations",
+                    headers=_auth_headers_for_heartbeat(src),
+                )
+        except Exception as e:  # pylint: disable=broad-except
+            # Transient — keep polling. The platform IS holding the
+            # delegation row; we just lost a network request.
+            last_status = f"poll-error: {e}"
+            await asyncio.sleep(_SYNC_POLL_INTERVAL_S)
+            continue
+
+        if poll.status_code != 200:
+            last_status = f"poll HTTP {poll.status_code}"
+            await asyncio.sleep(_SYNC_POLL_INTERVAL_S)
+            continue
+
+        try:
+            rows = poll.json()
+        except Exception as e:  # pylint: disable=broad-except
+            last_status = f"poll non-JSON: {e}"
+            await asyncio.sleep(_SYNC_POLL_INTERVAL_S)
+            continue
+
+        # /delegations returns a flat list of delegation events. Filter to
+        # our delegation_id; pick the first terminal one. The list may
+        # have multiple rows per delegation_id (one for the original
+        # dispatch, one per status update); we want the latest terminal.
+        if not isinstance(rows, list):
+            await asyncio.sleep(_SYNC_POLL_INTERVAL_S)
+            continue
+        terminal = None
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            if r.get("delegation_id") != delegation_id:
+                continue
+            status = (r.get("status") or "").lower()
+            last_status = status
+            if status in ("completed", "failed"):
+                terminal = r
+                break
+        if terminal:
+            if (terminal.get("status") or "").lower() == "completed":
+                return terminal.get("response_preview") or ""
+            err = (
+                terminal.get("error_detail")
+                or terminal.get("summary")
+                or "delegation failed"
+            )
+            return f"{_A2A_ERROR_PREFIX}{err}"
+
+        await asyncio.sleep(_SYNC_POLL_INTERVAL_S)
+
+    # Budget exhausted — the platform's row is still in flight (or queued).
+    # Surface as an error so the caller can decide to retry or fall back;
+    # the platform DOES still have the durable row, so the work isn't
+    # lost — it'll complete eventually and a future check_task_status
+    # will surface the result.
+    return (
+        f"{_A2A_ERROR_PREFIX}polling timeout after {_SYNC_POLL_BUDGET_S}s "
+        f"(delegation_id={delegation_id}, last_status={last_status}); "
+        f"the platform is still working on it — call check_task_status('{delegation_id}') to retrieve later"
+    )
+
+
 async def tool_delegate_task(
     workspace_id: str,
     task: str,
@@ -229,10 +368,22 @@ async def tool_delegate_task(
     # Brief summary for canvas display — just the delegation target
     await report_activity("a2a_send", workspace_id, f"Delegating to {peer_name}", task_text=task)
 
-    # send_a2a_message routes through ${PLATFORM_URL}/workspaces/{id}/a2a
-    # (the platform proxy) so the same code works for in-container and
-    # external (standalone molecule-mcp) callers.
-    result = await send_a2a_message(workspace_id, task, source_workspace_id=src)
+    # RFC #2829 PR-5: agent-side cutover. When DELEGATION_SYNC_VIA_INBOX=1,
+    # use the platform's durable async delegation API (POST /delegate +
+    # poll /delegations) instead of the proxy-blocked message/send path.
+    # This sidesteps the 600s message/send timeout class that broke
+    # iteration-14/90-style long-running delegations on 2026-05-05.
+    #
+    # Default off — staging-canary first, flip default after PR-2's
+    # result-push flag (DELEGATION_RESULT_INBOX_PUSH) has been on for
+    # ≥1 week without incident.
+    if os.environ.get("DELEGATION_SYNC_VIA_INBOX") == "1":
+        result = await _delegate_sync_via_polling(workspace_id, task, src or WORKSPACE_ID)
+    else:
+        # send_a2a_message routes through ${PLATFORM_URL}/workspaces/{id}/a2a
+        # (the platform proxy) so the same code works for in-container and
+        # external (standalone molecule-mcp) callers.
+        result = await send_a2a_message(workspace_id, task, source_workspace_id=src)
 
     # Detect delegation failures — wrap them clearly so the calling agent
     # can decide to retry, use another peer, or handle the task itself.

@@ -170,6 +170,165 @@ func (h *WorkspaceHandler) provisionWorkspaceAuto(workspaceID, templatePath stri
 	return false
 }
 
+// provisionWorkspaceAutoSync is the synchronous variant of
+// provisionWorkspaceAuto — it BLOCKS in the current goroutine until the
+// per-backend provision body returns, instead of spawning a goroutine.
+//
+// Used by callers that need to coordinate stop+provision as a pair and
+// can't return until provision is done — today that's runRestartCycle
+// (auto-restart cycle's pending-flag loop relies on synchronous return
+// to know when it's safe to start the next cycle without racing the
+// in-flight provision goroutine on the next iteration's Stop call).
+//
+// Backend selection + no-backend fallback are identical to
+// provisionWorkspaceAuto. The only difference is the goroutine wrapper.
+// Keep these two helpers in sync — when one grows a new arm (third
+// backend, retry semantics), the other should too.
+func (h *WorkspaceHandler) provisionWorkspaceAutoSync(workspaceID, templatePath string, configFiles map[string][]byte, payload models.CreateWorkspacePayload) bool {
+	if h.cpProv != nil {
+		h.provisionWorkspaceCP(workspaceID, templatePath, configFiles, payload)
+		return true
+	}
+	if h.provisioner != nil {
+		h.provisionWorkspace(workspaceID, templatePath, configFiles, payload)
+		return true
+	}
+	log.Printf("provisionWorkspaceAutoSync: no provisioning backend wired for %s — marking failed (cpProv=nil, provisioner=nil)", workspaceID)
+	failCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	h.markProvisionFailed(failCtx, workspaceID,
+		"no provisioning backend available — workspace requires either a Docker daemon (self-hosted) or control-plane provisioner (SaaS)",
+		nil)
+	return false
+}
+
+// StopWorkspaceAuto picks the backend (CP for SaaS, local Docker for
+// self-hosted) and stops the workspace synchronously. Returns nil when
+// neither backend is wired (a workspace nobody is running can't be
+// stopped — that's a no-op, not an error).
+//
+// Single source of truth for "stop a workspace" — symmetric with
+// provisionWorkspaceAuto. Pre-2026-05-05 the stop side had no Auto
+// dispatcher and every caller wrote `if h.provisioner != nil { Stop }`,
+// which silently leaked EC2s on SaaS:
+//   - team.go:208 (Collapse) — issue #2813
+//   - workspace_crud.go:432 (stopAndRemove during Delete) — issue #2814
+//
+// Both bugs reproduced for ~6 months. The pattern is the same drift
+// class as the org-import provision bug closed by PR #2811.
+//
+// Why CP wins when both are wired (matching provisionWorkspaceAuto):
+// production runs exactly one backend at a time — a SaaS tenant has
+// cpProv set + provisioner nil; a self-hosted operator has provisioner
+// set + cpProv nil. The "both set" case only arises in test fixtures,
+// and the CP-wins ordering matches how Auto picks for provisioning so
+// the test stubs stay on a single side.
+//
+// Volume cleanup (workspace_crud.go) stays Docker-only — CP-managed
+// workspaces have no volumes to clean. Callers that need that extra
+// step keep their `if h.provisioner != nil { RemoveVolume(...) }`
+// gate AFTER calling StopWorkspaceAuto. The abstraction here is "stop
+// the running workload," not "tear down all state."
+func (h *WorkspaceHandler) StopWorkspaceAuto(ctx context.Context, workspaceID string) error {
+	if h.cpProv != nil {
+		return h.cpProv.Stop(ctx, workspaceID)
+	}
+	if h.provisioner != nil {
+		return h.provisioner.Stop(ctx, workspaceID)
+	}
+	return nil
+}
+
+// RestartWorkspaceAuto stops the running workload (with retry semantics
+// tuned for the restart hot path) then starts provisioning again, in a
+// detached goroutine. Returns true when a backend was kicked off, false
+// when neither is wired (caller owns the persist + mark-failed surface
+// in that case — symmetric with provisionWorkspaceAuto's bool return).
+//
+// Single source of truth for "restart a workspace" — third in the
+// dispatcher trio alongside provisionWorkspaceAuto and StopWorkspaceAuto.
+// Phase 1 of #2799 introduces this helper + migrates one caller; the
+// remaining workspace_restart.go sites (Restart HTTP handler goroutine,
+// Resume handler, Pause loop) follow in Phase 2/3 because they need
+// async-context reasoning beyond a fire-and-return dispatcher.
+//
+// Retry on the Stop leg is intentional and distinguishes this from
+// StopWorkspaceAuto:
+//
+//   - StopWorkspaceAuto (Stop-on-delete contract): no retry, no-backend
+//     is a silent no-op. Different verb, different stakes — a workspace
+//     nobody is running can't be stopped.
+//
+//   - RestartWorkspaceAuto: bounded exponential backoff on cpProv.Stop
+//     via cpStopWithRetry. Restart's contract is "make the workspace
+//     alive again" — refusing to reprovision when Stop fails strands
+//     the user with a dead workspace and no recovery path other than
+//     manual canvas intervention. Retry absorbs the transient CP/AWS
+//     hiccups that cause most EC2-leak-adjacent incidents. On final
+//     exhaustion, cpStopWithRetry logs LEAK-SUSPECT and proceeds with
+//     reprovision regardless, bridging to the orphan reconciler.
+//
+// Docker provisioner.Stop has no retry — a local container that fails
+// to stop is a local infrastructure problem (OOM, resource pressure)
+// and retries won't help; the subsequent provision attempt will surface
+// the underlying daemon failure.
+//
+// Architectural note: this helper encapsulates the stop+reprovision
+// pair. The "which backend for stop" and "which backend for provision"
+// decisions live here and stay in sync (CP-stop pairs with CP-provision;
+// Docker-stop pairs with Docker-provision). Callers that need only the
+// stop half use StopWorkspaceAuto (delete path) or stopForRestart
+// (restart-path internal helper) directly.
+//
+// Payload requirements: caller MUST construct payload from the live
+// workspace row (name, runtime, tier, model, workspace_dir, etc.) so
+// the reprovision comes up with the workspace's actual configuration.
+// runRestartCycle does this synchronously (line ~538) before delegating
+// — match that pattern in any new caller.
+func (h *WorkspaceHandler) RestartWorkspaceAuto(ctx context.Context, workspaceID, templatePath string, configFiles map[string][]byte, payload models.CreateWorkspacePayload) bool {
+	return h.RestartWorkspaceAutoOpts(ctx, workspaceID, templatePath, configFiles, payload, false)
+}
+
+// RestartWorkspaceAutoOpts is the variant that carries Docker-only
+// per-invocation knobs that don't fit on CreateWorkspacePayload. Today
+// the only such knob is resetClaudeSession (issue #12 — clears the
+// in-container Claude session before restart so the agent comes up
+// fresh). CP doesn't have a session-reset concept (each EC2 boots from
+// a fresh image), so the flag is silently ignored on the CP path.
+//
+// Most callers should call RestartWorkspaceAuto (resetClaudeSession=
+// false). The Restart HTTP handler is the one site that exposes the
+// flag to operators — it reads ?reset_session=true from the query
+// string when an operator wants to force a fresh session.
+func (h *WorkspaceHandler) RestartWorkspaceAutoOpts(ctx context.Context, workspaceID, templatePath string, configFiles map[string][]byte, payload models.CreateWorkspacePayload, resetClaudeSession bool) bool {
+	// Stop leg first. CP-first ordering matches the other dispatchers
+	// (provisionWorkspaceAuto, StopWorkspaceAuto) and the convention
+	// documented in docs/architecture/backends.md.
+	if h.cpProv != nil {
+		h.cpStopWithRetry(ctx, workspaceID, "RestartWorkspaceAuto")
+		// resetClaudeSession is Docker-only — CP has no session state to clear.
+		go h.provisionWorkspaceCP(workspaceID, templatePath, configFiles, payload)
+		return true
+	}
+	if h.provisioner != nil {
+		// Docker.Stop has no retry — see docstring rationale.
+		h.provisioner.Stop(ctx, workspaceID)
+		go h.provisionWorkspaceOpts(workspaceID, templatePath, configFiles, payload, resetClaudeSession)
+		return true
+	}
+	// No backend wired — same shape as provisionWorkspaceAuto's no-backend
+	// arm. Mark the workspace failed so the user sees a meaningful state
+	// rather than a hang. 10s context lets markProvisionFailed broadcast
+	// + UPDATE; the original ctx may already be cancelled.
+	log.Printf("RestartWorkspaceAuto: no provisioning backend wired for %s — marking failed (cpProv=nil, provisioner=nil)", workspaceID)
+	failCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	h.markProvisionFailed(failCtx, workspaceID,
+		"no provisioning backend available — workspace requires either a Docker daemon (self-hosted) or control-plane provisioner (SaaS)",
+		nil)
+	return false
+}
+
 // SetEnvMutators wires a provisionhook.Registry into the handler. Plugins
 // living in separate repos register on the same Registry instance during
 // boot (see cmd/server/main.go) and main.go calls this setter once before
@@ -458,8 +617,8 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 			if tokErr != nil {
 				log.Printf("External workspace %s: token issuance failed: %v", id, tokErr)
 				// Non-fatal — the workspace row still exists; the
-				// operator can call POST /workspaces/:id/tokens later
-				// to mint one. Return a 201 with a hint instead of
+				// operator can call POST /workspaces/:id/external/rotate
+				// later to recover. Return a 201 with a hint instead of
 				// 500'ing a partial-success write.
 			} else {
 				connectionToken = tok
@@ -479,91 +638,16 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 		} else {
 			resp["status"] = "awaiting_agent"
 			// Connection snippet payload. Returned ONCE on create —
-			// the token is not recoverable from any later read. UI
-			// is responsible for surfacing this in a copy-paste modal.
-			platformURL := strings.TrimSuffix(externalPlatformURL(c), "/")
-			resp["connection"] = gin.H{
-				"workspace_id": id,
-				"platform_url": platformURL,
-				"auth_token":   connectionToken, // may be "" if IssueToken failed above
-				"registry_endpoint": platformURL + "/registry/register",
-				"heartbeat_endpoint": platformURL + "/registry/heartbeat",
-				// Pre-formatted snippet that a non-Go operator can
-				// paste verbatim. curl-based so there's no SDK
-				// install dependency. The external agent only
-				// needs to replace $AGENT_URL with its own public URL.
-				"curl_register_template": strings.ReplaceAll(
-					strings.ReplaceAll(externalCurlTemplate,
-						"{{PLATFORM_URL}}", platformURL),
-					"{{WORKSPACE_ID}}", id,
-				),
-				// Python/SDK snippet. molecule-sdk-python PR #13
-				// shipped A2AServer + RemoteAgentClient specifically
-				// for this flow. The SDK is not yet on PyPI — the
-				// snippet pins @main until we cut a release.
-				"python_snippet": strings.ReplaceAll(
-					strings.ReplaceAll(externalPythonTemplate,
-						"{{PLATFORM_URL}}", platformURL),
-					"{{WORKSPACE_ID}}", id,
-				),
-				// Claude Code channel plugin snippet. For operators
-				// whose external agent IS a Claude Code session —
-				// the snippet sets up ~/.claude/channels/molecule/.env
-				// and points at the canonical first-party plugin at
-				// github.com/Molecule-AI/molecule-mcp-claude-channel.
-				// Polling-based; no tunnel needed.
-				"claude_code_channel_snippet": strings.ReplaceAll(
-					strings.ReplaceAll(externalChannelTemplate,
-						"{{PLATFORM_URL}}", platformURL),
-					"{{WORKSPACE_ID}}", id,
-				),
-				// Universal MCP snippet — runtime-agnostic outbound
-				// tool path via the molecule-mcp console script. Same
-				// 8 platform tools any MCP-aware runtime can register
-				// (Claude Code, hermes, codex, etc.). Outbound-only:
-				// the snippet calls out that heartbeat/inbound need
-				// pairing with the SDK or channel tab.
-				"universal_mcp_snippet": strings.ReplaceAll(
-					strings.ReplaceAll(externalUniversalMcpTemplate,
-						"{{PLATFORM_URL}}", platformURL),
-					"{{WORKSPACE_ID}}", id,
-				),
-				// Hermes channel snippet — for operators whose external
-				// agent IS a hermes-agent session. Routes A2A traffic
-				// into the hermes gateway via the molecule-channel
-				// plugin (Molecule-AI/hermes-channel-molecule). Long-
-				// poll based (no tunnel) — same UX as the Claude Code
-				// channel tab. Gives hermes true push parity with the
-				// other runtime templates.
-				"hermes_channel_snippet": strings.ReplaceAll(
-					strings.ReplaceAll(externalHermesChannelTemplate,
-						"{{PLATFORM_URL}}", platformURL),
-					"{{WORKSPACE_ID}}", id,
-				),
-				// Codex MCP config snippet — for operators whose
-				// external agent is a codex CLI (@openai/codex)
-				// session. Wires the molecule MCP server into
-				// ~/.codex/config.toml. Outbound-tools-only today;
-				// codex's MCP client doesn't route arbitrary
-				// notifications/* so push parity needs a separate
-				// bridge daemon (future work).
-				"codex_snippet": strings.ReplaceAll(
-					strings.ReplaceAll(externalCodexTemplate,
-						"{{PLATFORM_URL}}", platformURL),
-					"{{WORKSPACE_ID}}", id,
-				),
-				// OpenClaw MCP config snippet — for operators whose
-				// external agent is an openclaw session. Wires the
-				// molecule MCP server via `openclaw mcp set` + starts
-				// the gateway on loopback. Outbound-tools-only today;
-				// full push parity needs a sessions.steer bridge
-				// daemon (future work).
-				"openclaw_snippet": strings.ReplaceAll(
-					strings.ReplaceAll(externalOpenClawTemplate,
-						"{{PLATFORM_URL}}", platformURL),
-					"{{WORKSPACE_ID}}", id,
-				),
-			}
+			// the token is not recoverable from any later read.
+			//
+			// Payload assembly + per-snippet template stamping lives
+			// in BuildExternalConnectionPayload (external_connection.go)
+			// so the rotate + re-show endpoints emit byte-identical
+			// shape. Adding a new snippet means adding it once there;
+			// all three callers pick it up automatically.
+			resp["connection"] = BuildExternalConnectionPayload(
+				externalPlatformURL(c), id, connectionToken,
+			)
 		}
 		c.JSON(http.StatusCreated, resp)
 		return

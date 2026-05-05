@@ -297,6 +297,15 @@ func main() {
 		registry.StartHibernationMonitor(c, wh.HibernateWorkspace)
 	})
 
+	// RFC #2829 PR-3: stuck-task sweeper for the durable delegations
+	// ledger. Marks deadline-exceeded rows as failed and heartbeat-stale
+	// in-flight rows as stuck. Both transitions go through the ledger's
+	// terminal forward-only protection so concurrent UpdateStatus calls
+	// are not clobbered. Defaults: 5min interval, 10min stale threshold;
+	// override via DELEGATION_SWEEPER_INTERVAL_S / DELEGATION_STUCK_THRESHOLD_S.
+	delegSweeper := handlers.NewDelegationSweeper(nil, nil)
+	go supervised.RunWithRecover(ctx, "delegation-sweeper", delegSweeper.Start)
+
 	// Channel Manager — social channel integrations (Telegram, Slack, etc.)
 	channelMgr := channels.NewManager(wh, broadcaster)
 	go supervised.RunWithRecover(ctx, "channel-manager", channelMgr.Start)

@@ -131,11 +131,19 @@ func buildBundleConfigFiles(b *Bundle) map[string][]byte {
 }
 
 func markFailed(ctx context.Context, wsID string, broadcaster *events.Broadcaster, err error) {
+	// Set last_sample_error along with status so operators (and the
+	// Canvas E2E + GET /workspaces/:id callers) get a non-null reason
+	// in the row. Pre-2026-05-05 this UPDATE only set status, leaving
+	// last_sample_error NULL — Canvas E2E #2632 surfaced the gap with
+	// `Workspace failed: (no last_sample_error)`. Same UPDATE shape as
+	// markProvisionFailed in workspace-server/internal/handlers/
+	// workspace_provision_shared.go.
+	msg := err.Error()
 	db.DB.ExecContext(ctx,
-		`UPDATE workspaces SET status = $1, updated_at = now() WHERE id = $2`,
-		models.StatusFailed, wsID)
+		`UPDATE workspaces SET status = $1, last_sample_error = $2, updated_at = now() WHERE id = $3`,
+		models.StatusFailed, msg, wsID)
 	broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_PROVISION_FAILED", wsID, map[string]interface{}{
-		"error": err.Error(),
+		"error": msg,
 	})
 }
 

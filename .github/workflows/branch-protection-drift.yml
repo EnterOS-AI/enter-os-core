@@ -1,0 +1,81 @@
+name: branch-protection drift check
+
+# Catches out-of-band edits to branch protection (UI clicks, manual gh
+# api PATCH from a one-off ops session) by comparing live state against
+# tools/branch-protection/apply.sh's desired state every day. Fails the
+# workflow when they drift; the failure is the signal.
+#
+# When it fails: re-run apply.sh to put the live state back to the
+# script's intent, OR update apply.sh to encode the new intent and
+# commit. Either way the script is the source of truth.
+
+on:
+  schedule:
+    # 14:00 UTC daily. Off-hours for most teams; gives a fresh signal
+    # at the start of every working day.
+    - cron: '0 14 * * *'
+  workflow_dispatch:
+  pull_request:
+    branches: [staging, main]
+    paths:
+      - 'tools/branch-protection/**'
+      - '.github/workflows/branch-protection-drift.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    name: Branch protection drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Token strategy by trigger:
+      #
+      # - schedule (daily canary): hard-fail when the admin token is
+      #   missing. This is the *only* trigger where silent soft-skip is
+      #   dangerous — a missing secret on the cron run means the drift
+      #   gate has effectively disappeared with no human in the loop to
+      #   notice. Per feedback_schedule_vs_dispatch_secrets_hardening.md
+      #   the rule is "schedule/automated triggers must hard-fail".
+      #
+      # - pull_request (touching tools/branch-protection/**): soft-skip
+      #   with a prominent warning. A PR cannot retroactively drift the
+      #   live state — drift happens *between* PRs (UI clicks, manual
+      #   gh api PATCH) and is the schedule's job to catch. The PR-time
+      #   gate would only catch typos in apply.sh, which the apply.sh
+      #   *_payload unit tests catch better. A human is reviewing the
+      #   PR and will see the warning in the workflow log.
+      #
+      # - workflow_dispatch (operator one-off): soft-skip with warning,
+      #   so an operator can run a diagnostic without configuring the
+      #   secret first.
+      - name: Verify admin token present (hard-fail on schedule only)
+        env:
+          GH_TOKEN_FOR_ADMIN_API: ${{ secrets.GH_TOKEN_FOR_ADMIN_API }}
+        run: |
+          if [[ -n "$GH_TOKEN_FOR_ADMIN_API" ]]; then
+            echo "GH_TOKEN_FOR_ADMIN_API present — drift_check will run with admin scope."
+            exit 0
+          fi
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            echo "::error::GH_TOKEN_FOR_ADMIN_API secret missing on the daily canary." >&2
+            echo "" >&2
+            echo "The schedule run is the SoT for branch-protection drift detection." >&2
+            echo "Without admin scope it silently passes, hiding any out-of-band edits." >&2
+            echo "Set GH_TOKEN_FOR_ADMIN_API at Settings → Secrets and variables → Actions." >&2
+            exit 1
+          fi
+          echo "::warning::GH_TOKEN_FOR_ADMIN_API secret missing — drift_check will be SKIPPED."
+          echo "::warning::PR drift checks need repo-admin scope to read /branches/:b/protection."
+          echo "::warning::This is non-fatal: the daily schedule run is the canonical drift gate."
+          echo "SKIP_DRIFT_CHECK=1" >> "$GITHUB_ENV"
+
+      - name: Run drift check
+        if: env.SKIP_DRIFT_CHECK != '1'
+        env:
+          # Repo-admin scope, needed for /branches/:b/protection.
+          GH_TOKEN: ${{ secrets.GH_TOKEN_FOR_ADMIN_API }}
+        run: bash tools/branch-protection/drift_check.sh

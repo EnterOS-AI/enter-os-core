@@ -190,6 +190,18 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		// to 'hibernated'. The workspace auto-wakes on the next A2A message.
 		wsAuth.POST("/hibernate", wh.Hibernate)
 
+		// External-workspace credential lifecycle (issue #319 follow-up to
+		// the Create flow). Both endpoints reject runtime ≠ external with
+		// 400 — see external_rotate.go for the rationale.
+		//
+		//   POST .../external/rotate     — mint fresh token, revoke prior,
+		//                                  return ExternalConnectionInfo
+		//   GET  .../external/connection — return ExternalConnectionInfo
+		//                                  with auth_token="" (re-show
+		//                                  instructions without rotating)
+		wsAuth.POST("/external/rotate", wh.RotateExternalCredentials)
+		wsAuth.GET("/external/connection", wh.GetExternalConnection)
+
 		// Async Delegation
 		delh := handlers.NewDelegationHandler(wh, broadcaster)
 		wsAuth.POST("/delegate", delh.Delegate)
@@ -217,6 +229,7 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		wsAuth.POST("/memories", memsh.Commit)
 		wsAuth.GET("/memories", memsh.Search)
 		wsAuth.DELETE("/memories/:memoryId", memsh.Delete)
+		wsAuth.PATCH("/memories/:memoryId", memsh.Update)
 
 		// Approvals
 		apph := handlers.NewApprovalsHandler(broadcaster)
@@ -230,7 +243,7 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		r.GET("/approvals/pending", middleware.AdminAuth(db.DB), apph.ListAll)
 
 		// Team Expansion
-		teamh := handlers.NewTeamHandler(broadcaster, prov, wh, platformURL, configsDir)
+		teamh := handlers.NewTeamHandler(broadcaster, wh, platformURL, configsDir)
 		wsAuth.POST("/expand", teamh.Expand)
 		wsAuth.POST("/collapse", teamh.Collapse)
 
@@ -430,6 +443,15 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 	{
 		qH := handlers.NewAdminQueueHandler()
 		r.POST("/admin/a2a-queue/drop-stale", middleware.AdminAuth(db.DB), qH.DropStale)
+	}
+
+	// Admin — RFC #2829 PR-4 dashboard endpoints over the durable
+	// `delegations` ledger (PR-1 schema). Operators triage in-flight,
+	// stuck, or failed delegations without direct DB access.
+	{
+		adH := handlers.NewAdminDelegationsHandler(db.DB)
+		r.GET("/admin/delegations", middleware.AdminAuth(db.DB), adH.List)
+		r.GET("/admin/delegations/stats", middleware.AdminAuth(db.DB), adH.Stats)
 	}
 
 	// Admin — workspace template image refresh. Pulls latest images from GHCR
