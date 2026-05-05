@@ -886,10 +886,24 @@ export function ConfigTab({ workspaceId }: Props) {
             </Section>
           )}
 
-          <Section title="Skills & Tools" defaultOpen={false}>
-            <TagList label="Skills" values={config.skills || []} onChange={(v) => update("skills", v)} placeholder="e.g. code-review" />
-            <TagList label="Tools" values={config.tools || []} onChange={(v) => update("tools", v)} placeholder="e.g. web_search, filesystem" />
-            <TagList label="Prompt Files" values={config.prompt_files || []} onChange={(v) => update("prompt_files", v)} placeholder="e.g. system-prompt.md" />
+          {/* Skills + Tools used to live here as TagList inputs. They were
+              redundant with their dedicated tabs:
+              - Skills → managed via SkillsTab (per-workspace skill folders)
+              - Tools  → managed via the Plugins tab (install/uninstall)
+              Editing them here only set the config.yaml field; the
+              actual install/load happened elsewhere. Removed to stop
+              showing the misnamed list-input affordance. */}
+
+          <Section title="Prompt Files" defaultOpen={false}>
+            <p className="text-[10px] text-ink-soft px-1 pb-1">
+              Markdown files that compose this workspace&apos;s system prompt.
+              Loaded in order at boot from the workspace config dir
+              (e.g. <code className="font-mono">system-prompt.md</code>,{' '}
+              <code className="font-mono">CLAUDE.md</code>,{' '}
+              <code className="font-mono">AGENTS.md</code>). Edit the file
+              contents directly via the Files tab.
+            </p>
+            <TagList label="Files (load order)" values={config.prompt_files || []} onChange={(v) => update("prompt_files", v)} placeholder="e.g. system-prompt.md" />
           </Section>
 
           <Section title="A2A Protocol" defaultOpen={false}>
