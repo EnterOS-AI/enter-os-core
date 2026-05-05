@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { MemoryEditorDialog } from "@/components/MemoryEditorDialog";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -91,6 +92,13 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
 
   // ── Delete state ─────────────────────────────────────────────────────────────
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+
+  // ── Editor state (Add + Edit share one modal) ───────────────────────────────
+  type EditorState =
+    | { mode: "add" }
+    | { mode: "edit"; entry: MemoryEntry }
+    | null;
+  const [editorState, setEditorState] = useState<EditorState>(null);
 
   // ── Data loading ────────────────────────────────────────────────────────────
 
@@ -241,14 +249,24 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
             ? "1 memory"
             : `${entries.length} memories`}
         </span>
-        <button
-          type="button"
-          onClick={loadEntries}
-          className="px-2 py-1 text-[11px] bg-surface-card hover:bg-surface-card text-ink-mid rounded transition-colors"
-          aria-label="Refresh memories"
-        >
-          ↻ Refresh
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setEditorState({ mode: "add" })}
+            className="px-2 py-1 text-[11px] bg-accent hover:bg-accent-strong text-white rounded transition-colors"
+            aria-label="Add memory"
+          >
+            + Add
+          </button>
+          <button
+            type="button"
+            onClick={loadEntries}
+            className="px-2 py-1 text-[11px] bg-surface-card hover:bg-surface-card text-ink-mid rounded transition-colors"
+            aria-label="Refresh memories"
+          >
+            ↻ Refresh
+          </button>
+        </div>
       </div>
 
       {/* Error banner */}
@@ -307,6 +325,7 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
               <MemoryEntryRow
                 key={entry.id}
                 entry={entry}
+                onEdit={() => setEditorState({ mode: "edit", entry })}
                 onDelete={() => setPendingDeleteId(entry.id)}
               />
             ))}
@@ -324,6 +343,29 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
         onConfirm={confirmDelete}
         onCancel={() => setPendingDeleteId(null)}
       />
+
+      {/* Add / Edit dialog */}
+      {editorState?.mode === "add" && (
+        <MemoryEditorDialog
+          open={true}
+          mode="add"
+          workspaceId={workspaceId}
+          defaultScope={activeScope}
+          defaultNamespace={activeNamespace || "general"}
+          onClose={() => setEditorState(null)}
+          onSaved={loadEntries}
+        />
+      )}
+      {editorState?.mode === "edit" && (
+        <MemoryEditorDialog
+          open={true}
+          mode="edit"
+          workspaceId={workspaceId}
+          entry={editorState.entry}
+          onClose={() => setEditorState(null)}
+          onSaved={loadEntries}
+        />
+      )}
     </div>
   );
 }
@@ -332,10 +374,11 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
 
 interface MemoryEntryRowProps {
   entry: MemoryEntry;
+  onEdit: () => void;
   onDelete: () => void;
 }
 
-function MemoryEntryRow({ entry, onDelete }: MemoryEntryRowProps) {
+function MemoryEntryRow({ entry, onEdit, onDelete }: MemoryEntryRowProps) {
   const [expanded, setExpanded] = useState(false);
   const bodyId = `mem-body-${sanitizeId(entry.id)}`;
 
@@ -413,17 +456,30 @@ function MemoryEntryRow({ entry, onDelete }: MemoryEntryRowProps) {
             <span className="text-[9px] text-ink-soft">
               Created: {new Date(entry.created_at).toLocaleString()}
             </span>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onDelete();
-              }}
-              aria-label="Delete memory"
-              className="text-[10px] px-2 py-0.5 bg-red-950/40 hover:bg-red-900/50 border border-red-900/30 rounded text-bad transition-colors shrink-0"
-            >
-              Delete
-            </button>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onEdit();
+                }}
+                aria-label="Edit memory"
+                className="text-[10px] px-2 py-0.5 bg-surface-card hover:bg-surface-elevated border border-line/40 rounded text-ink-mid hover:text-ink transition-colors"
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete();
+                }}
+                aria-label="Delete memory"
+                className="text-[10px] px-2 py-0.5 bg-red-950/40 hover:bg-red-900/50 border border-red-900/30 rounded text-bad transition-colors"
+              >
+                Delete
+              </button>
+            </div>
           </div>
         </div>
       )}
