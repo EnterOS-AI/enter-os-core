@@ -100,14 +100,48 @@ jobs:
             if pg_isready -h localhost -p 5432 -U postgres -q; then break; fi
             echo "waiting for postgres..."; sleep 2
           done
-          # Apply only the delegations migration — it doesn't FK to
-          # workspaces, so we don't need to fold in the full migration
-          # chain (some earlier migrations have ordering dependencies on
-          # tables that have since been dropped). Per-test migrations
-          # under handlers/ should add their schema files to this list
-          # as needed.
-          psql -h localhost -U postgres -d molecule -v ON_ERROR_STOP=1 \
-            -f migrations/049_delegations.up.sql
+
+          # Apply every .up.sql in lexicographic order with
+          # ON_ERROR_STOP=0 — failing migrations are SKIPPED rather than
+          # blocking the suite. This handles the current schema state
+          # where a few historical migrations (e.g. 017_memories_fts_*)
+          # depend on tables that were later renamed/dropped and so
+          # cannot replay from scratch. The migrations that DO succeed
+          # land their tables, which is sufficient for the integration
+          # tests in handlers/.
+          #
+          # Why not maintain a curated allowlist: every new migration
+          # touching a handlers/-tested table would have to update this
+          # workflow. With apply-all-or-skip, a future migration that
+          # adds a column to delegations runs automatically (its base
+          # table 049_delegations.up.sql already succeeded above it in
+          # the order). Operators only need to revisit this if the
+          # migration chain becomes legitimately replayable end-to-end.
+          #
+          # Per-migration result is logged so a failed migration that
+          # SHOULD have been replayable surfaces in the CI log instead
+          # of silently failing.
+          set +e
+          for migration in migrations/*.up.sql; do
+            if psql -h localhost -U postgres -d molecule -v ON_ERROR_STOP=1 \
+                  -f "$migration" >/dev/null 2>&1; then
+              echo "✓ $(basename "$migration")"
+            else
+              echo "⊘ $(basename "$migration") (skipped — see comment in workflow)"
+            fi
+          done
+          set -e
+
+          # Sanity: the delegations table MUST exist for the integration
+          # tests to be meaningful. Hard-fail if 049 didn't land — that
+          # would be a real regression we want loud.
+          if ! psql -h localhost -U postgres -d molecule -tA \
+              -c "SELECT 1 FROM information_schema.tables WHERE table_name = 'delegations'" \
+              | grep -q 1; then
+            echo "::error::delegations table missing after migration replay — handler integration tests would be meaningless"
+            exit 1
+          fi
+          echo "✓ delegations table present"
 
       - if: needs.detect-changes.outputs.handlers == 'true'
         name: Run integration tests
