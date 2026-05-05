@@ -175,8 +175,18 @@ func (h *OrgHandler) createWorkspaceTree(ws OrgWorkspace, parentID *string, absX
 		h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_ONLINE", id, map[string]interface{}{
 			"name": ws.Name, "external": true,
 		})
-	} else if h.provisioner != nil {
-		// Provision container
+	} else if h.workspace.HasProvisioner() {
+		// Provision container — either backend (CP for SaaS, local Docker
+		// for self-hosted) is fine. Pre-2026-05-05 this gate was
+		// `h.provisioner != nil`, which only checked the Docker pointer
+		// and silently dropped every workspace on a SaaS tenant: the prep
+		// block was skipped, no Auto call ever fired, and the row sat in
+		// 'provisioning' until the 600s sweeper marked it failed with the
+		// misleading "container started but never called /registry/register"
+		// (incident: hongming tenant org-import 2026-05-05 01:14, 7-of-7
+		// claude-code workspaces stuck). Routing to the right backend
+		// happens inside provisionWorkspaceAuto — this gate just decides
+		// whether to do prep at all.
 		payload := models.CreateWorkspacePayload{
 			Name: ws.Name, Tier: tier, Runtime: runtime, Model: model,
 			WorkspaceDir:    ws.WorkspaceDir,

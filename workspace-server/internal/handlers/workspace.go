@@ -112,21 +112,43 @@ func (h *WorkspaceHandler) SetCPProvisioner(cp provisioner.CPProvisionerAPI) {
 	h.cpProv = cp
 }
 
+// HasProvisioner reports whether either backend (CP or local Docker) is
+// wired. Callers that gate prep-work on "do we have something that can
+// provision a container?" should use this rather than direct field access
+// to either provisioner — those individual checks miss the SaaS path
+// (cpProv set, provisioner nil) or the self-hosted path (provisioner set,
+// cpProv nil) symmetrically. Org-import + future bulk paths gate their
+// template/config/secret prep on this so the work isn't wasted on
+// deployments where no backend is available.
+func (h *WorkspaceHandler) HasProvisioner() bool {
+	return h.cpProv != nil || h.provisioner != nil
+}
+
 // provisionWorkspaceAuto picks the backend (CP for SaaS, local Docker
 // for self-hosted) and starts provisioning in a goroutine. Returns true
-// when a backend was kicked off, false when neither is wired (caller
-// owns the persist-config + mark-failed surface in that case).
+// when a backend was kicked off, false when neither is wired.
 //
-// Centralized so every caller — Create, TeamHandler.Expand, future
-// paths — gets the same routing. Pre-2026-05-04 TeamHandler.Expand
-// hardcoded provisionWorkspace (Docker) and silently broke the
-// "deploy a team on SaaS" flow: child workspace rows were created with
-// no EC2 instance, the runtime never ran, and the 600s sweeper logged
-// the misleading "container started but never called /registry/register".
+// Single source of truth for "start provisioning a workspace" across
+// every caller (Create, OrgHandler.createWorkspaceTree, TeamHandler.Expand,
+// future paths). Centralized routing here means callers don't repeat
+// the "Docker vs CP" decision and can't drift on it.
+//
+// Self-marks-failed on the no-backend path: pre-2026-05-05 the false
+// return was silent, and any caller that forgot to handle it (TeamHandler
+// pre-#2367, OrgHandler.createWorkspaceTree pre-this-fix) silently
+// dropped workspaces — they sat in 'provisioning' for 10 min until the
+// sweeper marked them failed with the misleading "container started but
+// never called /registry/register" message. Marking failed inside Auto
+// closes that class: even if a future caller bypasses HasProvisioner
+// gating or ignores the bool return, the workspace ends in a clean
+// failed state with an actionable error message.
 //
 // Architectural principle: templates own runtime/config/prompts/files/
 // plugins; the platform owns where it runs. Anything that picks
-// between CP and local Docker belongs in this one helper.
+// between CP and local Docker belongs in this one helper. Anything
+// post-routing-but-pre-Start (mint secrets, render template, etc.)
+// lives in prepareProvisionContext (shared by both per-backend
+// goroutines).
 func (h *WorkspaceHandler) provisionWorkspaceAuto(workspaceID, templatePath string, configFiles map[string][]byte, payload models.CreateWorkspacePayload) bool {
 	if h.cpProv != nil {
 		go h.provisionWorkspaceCP(workspaceID, templatePath, configFiles, payload)
@@ -136,6 +158,15 @@ func (h *WorkspaceHandler) provisionWorkspaceAuto(workspaceID, templatePath stri
 		go h.provisionWorkspace(workspaceID, templatePath, configFiles, payload)
 		return true
 	}
+	// No backend wired — mark failed so the workspace doesn't linger in
+	// 'provisioning' for the full 10-minute sweep window. 10s is enough
+	// for the broadcast + single UPDATE inside markProvisionFailed.
+	log.Printf("provisionWorkspaceAuto: no provisioning backend wired for %s — marking failed (cpProv=nil, provisioner=nil)", workspaceID)
+	failCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	h.markProvisionFailed(failCtx, workspaceID,
+		"no provisioning backend available — workspace requires either a Docker daemon (self-hosted) or control-plane provisioner (SaaS)",
+		nil)
 	return false
 }
 
@@ -565,29 +596,22 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 	}
 
 	// Auto-provision — pick backend: control plane (SaaS) or Docker (self-hosted).
-	// Routing is centralized in provisionWorkspaceAuto so every caller
-	// (Create, TeamHandler.Expand, future paths) gets the same backend
-	// selection. Pre-2026-05-04 the team-deploy path hardcoded the
-	// Docker route, so on a SaaS tenant 7-of-7 sub-agents were created
-	// as DB rows but had no EC2 — symptom: "container started but never
-	// called /registry/register" + diagnose returns "docker client not
-	// configured". Centralizing here closes that drift class.
+	// Routing AND the no-backend mark-failed path are both inside
+	// provisionWorkspaceAuto (single source of truth). The Create-specific
+	// extra is the workspace_config UPSERT below: when no backend is
+	// wired, Auto marks the row failed but doesn't persist the bare
+	// runtime/model/tier as JSON — the Config tab needs that to render
+	// even on failed workspaces, so Create owns this Create-only side
+	// effect rather than coupling Auto to a UI concern.
 	if !h.provisionWorkspaceAuto(id, templatePath, configFiles, payload) {
-		// No Docker available (SaaS tenant). Persist basic config as JSON
-		// so the Config tab shows the correct runtime/model/name. Then mark
-		// the workspace as failed with a clear message.
 		cfgJSON := fmt.Sprintf(`{"name":%q,"runtime":%q,"tier":%d,"template":%q}`,
 			payload.Name, payload.Runtime, payload.Tier, payload.Template)
-		db.DB.ExecContext(ctx, `
+		if _, err := db.DB.ExecContext(ctx, `
 			INSERT INTO workspace_config (workspace_id, data) VALUES ($1, $2::jsonb)
 			ON CONFLICT (workspace_id) DO UPDATE SET data = $2::jsonb
-		`, id, cfgJSON)
-		db.DB.ExecContext(ctx,
-			`UPDATE workspaces SET status = $1, last_sample_error = 'Docker not available — workspace containers require a Docker daemon or external provisioning.', updated_at = now() WHERE id = $2`, models.StatusFailed, id)
-		h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_PROVISION_FAILED", id, map[string]interface{}{
-			"error": "Docker not available on this platform instance",
-		})
-		log.Printf("Create: no Docker daemon — workspace %s config persisted, marked failed", id)
+		`, id, cfgJSON); err != nil {
+			log.Printf("Create: workspace_config persist failed for %s: %v", id, err)
+		}
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
