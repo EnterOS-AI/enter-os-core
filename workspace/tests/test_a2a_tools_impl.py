@@ -702,9 +702,9 @@ class TestToolCommitMemory:
         import a2a_tools
 
         mc = _make_http_mock(post_resp=_resp(201, {"id": "mem-1"}))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc), \
-             patch("a2a_tools._check_memory_write_permission", return_value=True), \
-             patch("a2a_tools._is_root_workspace", return_value=False):
+        with patch("a2a_tools_memory.httpx.AsyncClient", return_value=mc), \
+             patch("a2a_tools_memory._check_memory_write_permission", return_value=True), \
+             patch("a2a_tools_memory._is_root_workspace", return_value=False):
             result = await a2a_tools.tool_commit_memory("Remember this", scope="local")
 
         data = json.loads(result)
@@ -716,9 +716,9 @@ class TestToolCommitMemory:
         import a2a_tools
 
         mc = _make_http_mock(post_resp=_resp(200, {"id": "mem-2"}))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc), \
-             patch("a2a_tools._check_memory_write_permission", return_value=True), \
-             patch("a2a_tools._is_root_workspace", return_value=False):
+        with patch("a2a_tools_memory.httpx.AsyncClient", return_value=mc), \
+             patch("a2a_tools_memory._check_memory_write_permission", return_value=True), \
+             patch("a2a_tools_memory._is_root_workspace", return_value=False):
             result = await a2a_tools.tool_commit_memory("Remember this", scope="INVALID")
 
         data = json.loads(result)
@@ -728,9 +728,9 @@ class TestToolCommitMemory:
         import a2a_tools
 
         mc = _make_http_mock(post_resp=_resp(200, {"id": "mem-3"}))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc), \
-             patch("a2a_tools._check_memory_write_permission", return_value=True), \
-             patch("a2a_tools._is_root_workspace", return_value=False):
+        with patch("a2a_tools_memory.httpx.AsyncClient", return_value=mc), \
+             patch("a2a_tools_memory._check_memory_write_permission", return_value=True), \
+             patch("a2a_tools_memory._is_root_workspace", return_value=False):
             result = await a2a_tools.tool_commit_memory("Team info", scope="TEAM")
 
         data = json.loads(result)
@@ -741,9 +741,9 @@ class TestToolCommitMemory:
         import a2a_tools
 
         mc = _make_http_mock(post_resp=_resp(201, {"id": "mem-4"}))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc), \
-             patch("a2a_tools._check_memory_write_permission", return_value=True), \
-             patch("a2a_tools._is_root_workspace", return_value=True):
+        with patch("a2a_tools_memory.httpx.AsyncClient", return_value=mc), \
+             patch("a2a_tools_memory._check_memory_write_permission", return_value=True), \
+             patch("a2a_tools_memory._is_root_workspace", return_value=True):
             result = await a2a_tools.tool_commit_memory("Global info", scope="GLOBAL")
 
         data = json.loads(result)
@@ -753,9 +753,9 @@ class TestToolCommitMemory:
         import a2a_tools
 
         mc = _make_http_mock(post_resp=_resp(200, {"id": "mem-5"}))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc), \
-             patch("a2a_tools._check_memory_write_permission", return_value=True), \
-             patch("a2a_tools._is_root_workspace", return_value=False):
+        with patch("a2a_tools_memory.httpx.AsyncClient", return_value=mc), \
+             patch("a2a_tools_memory._check_memory_write_permission", return_value=True), \
+             patch("a2a_tools_memory._is_root_workspace", return_value=False):
             result = await a2a_tools.tool_commit_memory("info")
 
         data = json.loads(result)
@@ -766,9 +766,9 @@ class TestToolCommitMemory:
         import a2a_tools
 
         mc = _make_http_mock(post_resp=_resp(201, {"id": "mem-6"}))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc), \
-             patch("a2a_tools._check_memory_write_permission", return_value=True), \
-             patch("a2a_tools._is_root_workspace", return_value=False):
+        with patch("a2a_tools_memory.httpx.AsyncClient", return_value=mc), \
+             patch("a2a_tools_memory._check_memory_write_permission", return_value=True), \
+             patch("a2a_tools_memory._is_root_workspace", return_value=False):
             result = await a2a_tools.tool_commit_memory("info")
 
         data = json.loads(result)
@@ -779,9 +779,9 @@ class TestToolCommitMemory:
         import a2a_tools
 
         mc = _make_http_mock(post_resp=_resp(400, {"error": "bad request payload"}))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc), \
-             patch("a2a_tools._check_memory_write_permission", return_value=True), \
-             patch("a2a_tools._is_root_workspace", return_value=False):
+        with patch("a2a_tools_memory.httpx.AsyncClient", return_value=mc), \
+             patch("a2a_tools_memory._check_memory_write_permission", return_value=True), \
+             patch("a2a_tools_memory._is_root_workspace", return_value=False):
             result = await a2a_tools.tool_commit_memory("info")
 
         assert "Error" in result
@@ -791,9 +791,9 @@ class TestToolCommitMemory:
         import a2a_tools
 
         mc = _make_http_mock(post_exc=RuntimeError("storage failure"))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc), \
-             patch("a2a_tools._check_memory_write_permission", return_value=True), \
-             patch("a2a_tools._is_root_workspace", return_value=False):
+        with patch("a2a_tools_memory.httpx.AsyncClient", return_value=mc), \
+             patch("a2a_tools_memory._check_memory_write_permission", return_value=True), \
+             patch("a2a_tools_memory._is_root_workspace", return_value=False):
             result = await a2a_tools.tool_commit_memory("info")
 
         assert "Error saving memory" in result
@@ -808,9 +808,9 @@ class TestToolCommitMemory:
         import a2a_tools
 
         mc = _make_http_mock(post_resp=_resp(201, {"id": "mem-poison"}))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc), \
-             patch("a2a_tools._check_memory_write_permission", return_value=True), \
-             patch("a2a_tools._is_root_workspace", return_value=False):
+        with patch("a2a_tools_memory.httpx.AsyncClient", return_value=mc), \
+             patch("a2a_tools_memory._check_memory_write_permission", return_value=True), \
+             patch("a2a_tools_memory._is_root_workspace", return_value=False):
             result = await a2a_tools.tool_commit_memory("poisoned GLOBAL memory", scope="GLOBAL")
 
         # Must NOT have called the platform — early rejection
@@ -824,9 +824,9 @@ class TestToolCommitMemory:
         import a2a_tools
 
         mc = _make_http_mock(post_resp=_resp(201, {"id": "mem-7"}))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc), \
-             patch("a2a_tools._check_memory_write_permission", return_value=False), \
-             patch("a2a_tools._is_root_workspace", return_value=False):
+        with patch("a2a_tools_memory.httpx.AsyncClient", return_value=mc), \
+             patch("a2a_tools_memory._check_memory_write_permission", return_value=False), \
+             patch("a2a_tools_memory._is_root_workspace", return_value=False):
             result = await a2a_tools.tool_commit_memory("should be denied", scope="LOCAL")
 
         mc.post.assert_not_called()
@@ -838,9 +838,9 @@ class TestToolCommitMemory:
         import a2a_tools
 
         mc = _make_http_mock(post_resp=_resp(201, {"id": "mem-8"}))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc), \
-             patch("a2a_tools._check_memory_write_permission", return_value=True), \
-             patch("a2a_tools._is_root_workspace", return_value=False):
+        with patch("a2a_tools_memory.httpx.AsyncClient", return_value=mc), \
+             patch("a2a_tools_memory._check_memory_write_permission", return_value=True), \
+             patch("a2a_tools_memory._is_root_workspace", return_value=False):
             await a2a_tools.tool_commit_memory("test content", scope="LOCAL")
 
         call_kwargs = mc.post.call_args.kwargs
@@ -865,8 +865,8 @@ class TestToolRecallMemory:
             {"scope": "TEAM", "content": "We use Python 3.11"},
         ]
         mc = _make_http_mock(get_resp=_resp(200, memories))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc), \
-             patch("a2a_tools._check_memory_read_permission", return_value=True):
+        with patch("a2a_tools_memory.httpx.AsyncClient", return_value=mc), \
+             patch("a2a_tools_memory._check_memory_read_permission", return_value=True):
             result = await a2a_tools.tool_recall_memory(query="capital")
 
         assert "[LOCAL]" in result
@@ -878,8 +878,8 @@ class TestToolRecallMemory:
         import a2a_tools
 
         mc = _make_http_mock(get_resp=_resp(200, []))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc), \
-             patch("a2a_tools._check_memory_read_permission", return_value=True):
+        with patch("a2a_tools_memory.httpx.AsyncClient", return_value=mc), \
+             patch("a2a_tools_memory._check_memory_read_permission", return_value=True):
             result = await a2a_tools.tool_recall_memory(query="anything")
 
         assert result == "No memories found."
@@ -890,8 +890,8 @@ class TestToolRecallMemory:
 
         payload = {"error": "search unavailable"}
         mc = _make_http_mock(get_resp=_resp(200, payload))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc), \
-             patch("a2a_tools._check_memory_read_permission", return_value=True):
+        with patch("a2a_tools_memory.httpx.AsyncClient", return_value=mc), \
+             patch("a2a_tools_memory._check_memory_read_permission", return_value=True):
             result = await a2a_tools.tool_recall_memory()
 
         parsed = json.loads(result)
@@ -901,8 +901,8 @@ class TestToolRecallMemory:
         import a2a_tools
 
         mc = _make_http_mock(get_exc=RuntimeError("search service down"))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc), \
-             patch("a2a_tools._check_memory_read_permission", return_value=True):
+        with patch("a2a_tools_memory.httpx.AsyncClient", return_value=mc), \
+             patch("a2a_tools_memory._check_memory_read_permission", return_value=True):
             result = await a2a_tools.tool_recall_memory(query="test")
 
         assert "Error recalling memory" in result
@@ -913,8 +913,8 @@ class TestToolRecallMemory:
         import a2a_tools
 
         mc = _make_http_mock(get_resp=_resp(200, []))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc), \
-             patch("a2a_tools._check_memory_read_permission", return_value=True):
+        with patch("a2a_tools_memory.httpx.AsyncClient", return_value=mc), \
+             patch("a2a_tools_memory._check_memory_read_permission", return_value=True):
             await a2a_tools.tool_recall_memory(query="paris", scope="local")
 
         call_kwargs = mc.get.call_args.kwargs
@@ -928,8 +928,8 @@ class TestToolRecallMemory:
         import a2a_tools
 
         mc = _make_http_mock(get_resp=_resp(200, []))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc), \
-             patch("a2a_tools._check_memory_read_permission", return_value=True):
+        with patch("a2a_tools_memory.httpx.AsyncClient", return_value=mc), \
+             patch("a2a_tools_memory._check_memory_read_permission", return_value=True):
             await a2a_tools.tool_recall_memory()
 
         call_kwargs = mc.get.call_args.kwargs
@@ -942,8 +942,8 @@ class TestToolRecallMemory:
         import a2a_tools
 
         mc = _make_http_mock(get_resp=_resp(200, []))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc), \
-             patch("a2a_tools._check_memory_read_permission", return_value=True):
+        with patch("a2a_tools_memory.httpx.AsyncClient", return_value=mc), \
+             patch("a2a_tools_memory._check_memory_read_permission", return_value=True):
             await a2a_tools.tool_recall_memory(scope="team")
 
         call_kwargs = mc.get.call_args.kwargs
@@ -960,8 +960,8 @@ class TestToolRecallMemory:
         import a2a_tools
 
         mc = _make_http_mock(get_resp=_resp(200, [{"scope": "GLOBAL", "content": "secret"}]))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc), \
-             patch("a2a_tools._check_memory_read_permission", return_value=False):
+        with patch("a2a_tools_memory.httpx.AsyncClient", return_value=mc), \
+             patch("a2a_tools_memory._check_memory_read_permission", return_value=False):
             result = await a2a_tools.tool_recall_memory(query="secret")
 
         mc.get.assert_not_called()
