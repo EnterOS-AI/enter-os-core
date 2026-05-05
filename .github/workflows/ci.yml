@@ -387,6 +387,7 @@ jobs:
             "a2a_mcp_server.py"
             "mcp_cli.py"
             "a2a_tools.py"
+            "a2a_tools_inbox.py"
             "inbox.py"
             "platform_auth.py"
           )
