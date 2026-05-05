@@ -69,6 +69,7 @@ TOP_LEVEL_MODULES = {
     "executor_helpers",
     "heartbeat",
     "inbox",
+    "inbox_uploads",
     "initial_prompt",
     "internal_chat_uploads",
     "internal_file_read",
