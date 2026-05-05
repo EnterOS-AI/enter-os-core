@@ -73,6 +73,13 @@ func (s *inMemStorage) Get(context.Context, uuid.UUID) (pendinguploads.Record, e
 func (s *inMemStorage) MarkFetched(context.Context, uuid.UUID) error { return nil }
 func (s *inMemStorage) Ack(context.Context, uuid.UUID) error         { return nil }
 
+// Sweep is required by the Storage interface (Phase 3 GC). Not
+// exercised by upload-branch tests — the dedicated sweeper_test.go +
+// storage_sweep_test.go cover it.
+func (s *inMemStorage) Sweep(context.Context, time.Duration) (pendinguploads.SweepResult, error) {
+	return pendinguploads.SweepResult{}, nil
+}
+
 // expectPollDeliveryMode stubs the SELECT delivery_mode lookup that
 // uploadPollMode does (separate from the one resolveWorkspaceForwardCreds
 // does — this is the new helper introduced for the poll branch).

@@ -72,6 +72,19 @@ type Record struct {
 	ExpiresAt   time.Time
 }
 
+// SweepResult is the per-cycle accounting from Sweep. Both counts are
+// non-negative; Total is just Acked + Expired for log/metrics
+// convenience. Phase 3 metrics expose these as separate counters so
+// dashboards can spot a stuck-ack pattern (high Expired, low Acked) vs.
+// healthy churn (Acked dominates).
+type SweepResult struct {
+	Acked   int // rows deleted because acked_at + retention elapsed
+	Expired int // rows deleted because expires_at < now AND never acked
+}
+
+// Total returns the sum of Acked + Expired — convenient for log lines.
+func (r SweepResult) Total() int { return r.Acked + r.Expired }
+
 // Storage is the platform-side persistence boundary for poll-mode chat
 // uploads. The Postgres implementation backs all callers today; an S3-
 // backed implementation can drop in once RFC #2789 lands by making
@@ -103,6 +116,18 @@ type Storage interface {
 	// absent or already expired; on already-acked, returns nil so
 	// the workspace's at-least-once retry succeeds without an error.
 	Ack(ctx context.Context, fileID uuid.UUID) error
+
+	// Sweep deletes rows past their retention window:
+	//   - acked rows older than ackRetention (give the workspace a
+	//     window to re-fetch in case it processed but failed to write
+	//     the file before crashing — at-least-once behavior).
+	//   - unacked rows past expires_at (the platform's hard TTL — 24h
+	//     by default; a workspace that hasn't fetched by then is
+	//     considered dead from the upload's perspective).
+	// Returns the per-category deletion counts for observability.
+	// Errors are surfaced to the caller; a transient DB error must NOT
+	// crash the sweeper loop (it just retries on the next tick).
+	Sweep(ctx context.Context, ackRetention time.Duration) (SweepResult, error)
 }
 
 // PostgresStorage is the production Storage implementation backed by
@@ -250,4 +275,42 @@ func (p *PostgresStorage) Ack(ctx context.Context, fileID uuid.UUID) error {
 	// raced with the ACK). Treat as success — the row is gone, but
 	// the workspace's intent ("I'm done with this file") was honored.
 	return nil
+}
+
+// Sweep deletes acked rows past their retention window plus any
+// unacked rows whose hard TTL has elapsed. Single round-trip: a CTE
+// captures the deletion in one DELETE … RETURNING and the outer
+// SELECT sums by category. Cheaper and tighter than two round trips,
+// and atomic w.r.t. concurrent writes (the WHERE predicate sees a
+// consistent snapshot via Postgres MVCC).
+//
+// ackRetention=0 deletes all acked rows immediately; values <0 are
+// clamped to 0 for safety. Caller defaults are documented at
+// StartSweeper's DefaultAckRetention.
+func (p *PostgresStorage) Sweep(ctx context.Context, ackRetention time.Duration) (SweepResult, error) {
+	if ackRetention < 0 {
+		ackRetention = 0
+	}
+	// make_interval expects integer seconds — Postgres accepts a
+	// floating point but we deliberately round to the nearest second
+	// so test fixtures pin a deterministic value across PG versions.
+	retentionSecs := int64(ackRetention.Seconds())
+
+	var acked, expired int
+	err := p.db.QueryRowContext(ctx, `
+		WITH deleted AS (
+			DELETE FROM pending_uploads
+			WHERE (acked_at IS NOT NULL AND acked_at < now() - make_interval(secs => $1))
+			   OR (acked_at IS NULL     AND expires_at < now())
+			RETURNING (acked_at IS NOT NULL) AS was_acked
+		)
+		SELECT
+			COALESCE(SUM(CASE WHEN was_acked     THEN 1 ELSE 0 END), 0)::int AS acked,
+			COALESCE(SUM(CASE WHEN NOT was_acked THEN 1 ELSE 0 END), 0)::int AS expired
+		FROM deleted
+	`, retentionSecs).Scan(&acked, &expired)
+	if err != nil {
+		return SweepResult{}, fmt.Errorf("pendinguploads: sweep: %w", err)
+	}
+	return SweepResult{Acked: acked, Expired: expired}, nil
 }
