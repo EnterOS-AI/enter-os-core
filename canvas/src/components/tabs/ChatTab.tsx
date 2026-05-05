@@ -286,6 +286,14 @@ function MyChatPanel({ workspaceId, data }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [confirmRestart, setConfirmRestart] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  // First-mount scroll-to-bottom needs `behavior: "instant"` — long
+  // conversations smooth-animate for ~300ms which any concurrent
+  // re-render can interrupt, leaving the user stuck mid-conversation
+  // when the chat tab opens. Subsequent appends (new agent messages)
+  // keep `smooth` for the visual "landing" feel. Flipped the first
+  // time messages.length goes positive, so a workspace switch (which
+  // remounts ChatTab) gets a fresh instant jump too.
+  const hasInitialScrollRef = useRef(false);
   // Lazy-load older history on scroll-up.
   // - containerRef = the scrollable messages viewport
   // - topRef       = sentinel above the messages list; IO observes it
@@ -543,6 +551,15 @@ function MyChatPanel({ workspaceId, data }: Props) {
     ) {
       container.scrollTop = container.scrollHeight - anchor.savedDistanceFromBottom;
       scrollAnchorRef.current = null;
+      return;
+    }
+    // Instant on first arrival of messages — smooth-scroll on a long
+    // conversation gets interrupted by concurrent renders and leaves
+    // the user stuck in the middle. After the first jump, subsequent
+    // appends animate as before.
+    if (!hasInitialScrollRef.current && messages.length > 0) {
+      hasInitialScrollRef.current = true;
+      bottomRef.current?.scrollIntoView({ behavior: "instant" as ScrollBehavior });
       return;
     }
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
