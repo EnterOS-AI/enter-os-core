@@ -166,8 +166,6 @@ list_workspaces
 
 | MCP Tool | API Route | Method | Description |
 |----------|-----------|--------|-------------|
-| `expand_team` | `/workspaces/:id/expand` | POST | Expand team node |
-| `collapse_team` | `/workspaces/:id/collapse` | POST | Collapse team node |
 
 ### Templates & Bundles
 
