@@ -752,6 +752,62 @@ func TestRestartWorkspaceAuto_NoBackendMarksFailed(t *testing.T) {
 	}
 }
 
+// TestRestartHandler_UsesRestartWorkspaceAuto — source-level pin that
+// the Restart HTTP handler routes through the dispatcher. Phase 2 PR-A
+// of #2799 migrates Site 1+2 (the Restart goroutine) to call
+// RestartWorkspaceAutoOpts. This test pins the migration so the next
+// refactor doesn't accidentally regress to the inline if-cpProv-else
+// dispatch — that pre-fix shape had Docker-FIRST ordering, a different
+// drift class from the silent-drop bugs PRs #2811/#2824 closed.
+//
+// Allowed in workspace_restart.go: stopForRestart (Site 4), Pause
+// (Site 5). Both are tracked under #2799 Phase 2 PR-B / Phase 3.
+func TestRestartHandler_UsesRestartWorkspaceAuto(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	src, err := os.ReadFile(filepath.Join(wd, "workspace_restart.go"))
+	if err != nil {
+		t.Fatalf("read workspace_restart.go: %v", err)
+	}
+	stripped := stripGoComments(src)
+	// The Restart handler must dispatch through the SoT helper. Either
+	// signature variant satisfies the gate.
+	if !bytes.Contains(stripped, []byte("h.RestartWorkspaceAutoOpts(")) &&
+		!bytes.Contains(stripped, []byte("h.RestartWorkspaceAuto(")) {
+		t.Errorf("workspace_restart.go must call RestartWorkspaceAuto[Opts] from the Restart handler — current code does not. " +
+			"Phase 2 of #2799 migrated this site; do not regress to the inline if-cpProv-else dispatch.")
+	}
+}
+
+// TestResumeHandler_UsesProvisionWorkspaceAuto — source-level pin that
+// the Resume HTTP handler routes through the dispatcher. Phase 2 PR-A
+// of #2799 migrates Site 3 (Resume goroutine) to call
+// provisionWorkspaceAuto (Resume is provision-only — the workspace is
+// already paused/stopped, no Stop step needed).
+func TestResumeHandler_UsesProvisionWorkspaceAuto(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	src, err := os.ReadFile(filepath.Join(wd, "workspace_restart.go"))
+	if err != nil {
+		t.Fatalf("read workspace_restart.go: %v", err)
+	}
+	stripped := stripGoComments(src)
+	// The Resume handler's loop must dispatch through provisionWorkspaceAuto.
+	// Doesn't need a uniqueness check — the file already calls it from at
+	// least the Resume site (a regression that removes only the Resume call
+	// would still match this needle from another call in the file, but the
+	// stripGoComments output of workspace_restart.go is small enough that
+	// inspecting the diff catches that.)
+	if !bytes.Contains(stripped, []byte("h.provisionWorkspaceAuto(ws.id")) {
+		t.Errorf("workspace_restart.go must call provisionWorkspaceAuto from the Resume handler with `ws.id` — current code does not. " +
+			"Phase 2 of #2799 migrated this site; do not regress to the inline if-cpProv-else dispatch.")
+	}
+}
+
 // stripGoComments removes // line comments and /* */ block comments
 // from Go source. Imperfect (doesn't handle comments-inside-strings)
 // but adequate for the source-level pin tests in this file — none of

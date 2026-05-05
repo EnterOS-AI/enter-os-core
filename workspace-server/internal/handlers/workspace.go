@@ -254,18 +254,34 @@ func (h *WorkspaceHandler) StopWorkspaceAuto(ctx context.Context, workspaceID st
 // runRestartCycle does this synchronously (line ~538) before delegating
 // — match that pattern in any new caller.
 func (h *WorkspaceHandler) RestartWorkspaceAuto(ctx context.Context, workspaceID, templatePath string, configFiles map[string][]byte, payload models.CreateWorkspacePayload) bool {
+	return h.RestartWorkspaceAutoOpts(ctx, workspaceID, templatePath, configFiles, payload, false)
+}
+
+// RestartWorkspaceAutoOpts is the variant that carries Docker-only
+// per-invocation knobs that don't fit on CreateWorkspacePayload. Today
+// the only such knob is resetClaudeSession (issue #12 — clears the
+// in-container Claude session before restart so the agent comes up
+// fresh). CP doesn't have a session-reset concept (each EC2 boots from
+// a fresh image), so the flag is silently ignored on the CP path.
+//
+// Most callers should call RestartWorkspaceAuto (resetClaudeSession=
+// false). The Restart HTTP handler is the one site that exposes the
+// flag to operators — it reads ?reset_session=true from the query
+// string when an operator wants to force a fresh session.
+func (h *WorkspaceHandler) RestartWorkspaceAutoOpts(ctx context.Context, workspaceID, templatePath string, configFiles map[string][]byte, payload models.CreateWorkspacePayload, resetClaudeSession bool) bool {
 	// Stop leg first. CP-first ordering matches the other dispatchers
 	// (provisionWorkspaceAuto, StopWorkspaceAuto) and the convention
 	// documented in docs/architecture/backends.md.
 	if h.cpProv != nil {
 		h.cpStopWithRetry(ctx, workspaceID, "RestartWorkspaceAuto")
+		// resetClaudeSession is Docker-only — CP has no session state to clear.
 		go h.provisionWorkspaceCP(workspaceID, templatePath, configFiles, payload)
 		return true
 	}
 	if h.provisioner != nil {
 		// Docker.Stop has no retry — see docstring rationale.
 		h.provisioner.Stop(ctx, workspaceID)
-		go h.provisionWorkspace(workspaceID, templatePath, configFiles, payload)
+		go h.provisionWorkspaceOpts(workspaceID, templatePath, configFiles, payload, resetClaudeSession)
 		return true
 	}
 	// No backend wired — same shape as provisionWorkspaceAuto's no-backend

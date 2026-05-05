@@ -199,33 +199,31 @@ func (h *WorkspaceHandler) Restart(c *gin.Context) {
 	// last_heartbeat_at with the new session. Issue #19 Layer 1.
 	restartData := loadRestartContextData(ctx, id)
 
-	// Dispatch to the correct provisioner. provisionWorkspaceOpts is the
-	// Docker path; provisionWorkspaceCP is the SaaS path. The Create
-	// handler already branches this way; Restart now mirrors it.
+	// Dispatch through the SoT restart dispatcher. RestartWorkspaceAutoOpts
+	// owns "which backend for stop" + "which backend for provision" and
+	// keeps the two halves in sync. resetClaudeSession is the one
+	// Docker-only per-invocation knob the dispatcher carries through.
 	//
-	// Stop runs inside this goroutine — NOT before the response — because
-	// CPProvisioner.Stop is synchronous DELETE /cp/workspaces/:id →
-	// CP → AWS EC2 terminate, which can exceed the canvas's 15s default
+	// Stop runs inside the dispatcher's stop leg (synchronous), then the
+	// provision leg fires in a goroutine — NOT before the response —
+	// because CPProvisioner.Stop is synchronous DELETE /cp/workspaces/:id
+	// → CP → AWS EC2 terminate, which can exceed the canvas's 15s default
 	// HTTP timeout when the platform has just redeployed (every tenant's
-	// CP request queues at once). Pre-fix the user saw a misleading
-	// "signal timed out" error on the canvas even though the restart
-	// actually succeeded — caught 2026-04-30 on hongmingwang hermes
+	// CP request queues at once). Pre-fix (2026-04-30) the user saw a
+	// misleading "signal timed out" on the canvas even though the
+	// restart actually succeeded — caught on hongmingwang hermes
 	// workspace 32993ee7-…cb9d75d112a5 right after the heartbeat-fix
-	// platform redeploy. Use context.Background() to detach from the
-	// request lifecycle so an aborted client connection doesn't cancel
-	// the in-flight Stop/provision pair.
+	// platform redeploy. context.Background() detaches the dispatch
+	// from the request lifecycle so an aborted client connection
+	// doesn't cancel the in-flight Stop/provision pair.
+	//
+	// Pre-2026-05-05 this site inlined the manual if-cpProv-else
+	// dispatch with Docker-FIRST ordering (a different drift class from
+	// the silent-drop bugs PRs #2811/#2824 closed). RestartWorkspaceAuto
+	// enforces CP-FIRST ordering matching the other dispatchers — see
+	// docs/architecture/backends.md.
 	go func() {
-		bgCtx := context.Background()
-		if h.provisioner != nil {
-			h.provisioner.Stop(bgCtx, id)
-		} else if h.cpProv != nil {
-			h.cpStopWithRetry(bgCtx, id, "Restart")
-		}
-		if h.cpProv != nil {
-			h.provisionWorkspaceCP(id, templatePath, configFiles, payload)
-		} else {
-			h.provisionWorkspaceOpts(id, templatePath, configFiles, payload, resetClaudeSession)
-		}
+		h.RestartWorkspaceAutoOpts(context.Background(), id, templatePath, configFiles, payload, resetClaudeSession)
 	}()
 	go h.sendRestartContext(id, restartData)
 
@@ -698,14 +696,12 @@ func (h *WorkspaceHandler) Resume(c *gin.Context) {
 			"name": ws.name, "tier": ws.tier, "runtime": ws.runtime,
 		})
 		payload := models.CreateWorkspacePayload{Name: ws.name, Tier: ws.tier, Runtime: ws.runtime}
-		// Dispatch to the matching provisioner (mirrors the Create +
-		// Restart branching). SaaS tenants use cpProv; self-hosted Docker
-		// uses provisioner via provisionWorkspaceOpts.
-		if h.cpProv != nil {
-			go h.provisionWorkspaceCP(ws.id, "", nil, payload)
-		} else {
-			go h.provisionWorkspace(ws.id, "", nil, payload)
-		}
+		// Resume is provision-only (workspace is paused, no live container
+		// to stop). provisionWorkspaceAuto handles backend routing and the
+		// no-backend mark-failed fallback identically to Create. Pre-
+		// 2026-05-05 this site inlined the if-cpProv-else dispatch; the
+		// dispatcher is the SoT now.
+		h.provisionWorkspaceAuto(ws.id, "", nil, payload)
 	}
 
 	log.Printf("Resuming workspace %s (%s) + %d children", wsName, id, len(toResume)-1)
