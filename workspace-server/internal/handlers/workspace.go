@@ -617,8 +617,8 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 			if tokErr != nil {
 				log.Printf("External workspace %s: token issuance failed: %v", id, tokErr)
 				// Non-fatal — the workspace row still exists; the
-				// operator can call POST /workspaces/:id/tokens later
-				// to mint one. Return a 201 with a hint instead of
+				// operator can call POST /workspaces/:id/external/rotate
+				// later to recover. Return a 201 with a hint instead of
 				// 500'ing a partial-success write.
 			} else {
 				connectionToken = tok
