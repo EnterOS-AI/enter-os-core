@@ -2,7 +2,7 @@
 
 **Status:** living document — update when you ship a feature that touches one backend.
 **Owner:** workspace-server + controlplane teams.
-**Last audit:** 2026-05-02 (Claude agent, PR #TBD).
+**Last audit:** 2026-05-05 (Claude agent — `provisionWorkspaceAuto` / `StopWorkspaceAuto` / `HasProvisioner` SoT pattern landed in PRs #2811 + #2824).
 
 ## Why this exists
 
@@ -15,16 +15,39 @@ Every user-visible workspace feature should work on both backends unless it is f
 
 This document is the canonical matrix. If you are landing a workspace-facing feature, update the row before you merge.
 
+## How to dispatch (the SoT pattern)
+
+When a handler needs to start, stop, or check whether-something-can-run a workspace, it MUST go through the centralized dispatcher on `WorkspaceHandler`:
+
+| Need | Use | Source |
+|---|---|---|
+| Start a workspace | `provisionWorkspaceAuto(ctx, ...)` | `workspace.go:130` |
+| Stop a workspace | `StopWorkspaceAuto(ctx, wsID)` | `workspace.go:172` |
+| Gate "do we have any backend wired?" | `HasProvisioner()` | `workspace.go:115` |
+
+Each dispatcher routes to `cpProv.X()` when the SaaS backend is wired, then `provisioner.X()` when the Docker backend is wired, then a defined fallback (`provisionWorkspaceAuto` self-marks-failed; `StopWorkspaceAuto` no-ops; `HasProvisioner` returns false).
+
+**Rule: do not call `h.cpProv.Stop`, `h.provisioner.Stop`, `h.cpProv.Start`, or `h.provisioner.Start` directly from a handler.** Source-level pins (`TestNoCallSiteCallsDirectProvisionerExceptAuto`, `TestNoCallSiteCallsBareStop`) gate this at CI; they exist because the same drift class shipped twice — TeamHandler.Expand (#2367) bypassed routing on Start, then `team.go:208` + `workspace_crud.go:432` bypassed it on Stop (#2813, #2814) for ~6 months.
+
+Allowed exceptions (in the source-pin allowlists):
+- `workspace.go` and `workspace_provision.go` — define the per-backend bodies the dispatcher routes between.
+- `workspace_restart.go` — pre-dates the dispatchers and uses manual if-cpProv-else dispatch with retry semantics tuned for the restart hot path. Consolidation tracked in #2799.
+- `container_files.go` — drives the Docker daemon directly for short-lived file-copy containers; no workspace-level Stop semantics involved.
+
+For "do we have any backend?", use `HasProvisioner()`, never bare `h.provisioner == nil && h.cpProv == nil`. Source-level pin `TestNoBareBothNilCheck` enforces this — added 2026-05-05 after the hongming org-import incident showed the bare check shape was a recurring drift target.
+
 ## The matrix
 
 | Feature | File(s) | Docker | EC2 | Verdict |
 |---|---|---|---|---|
 | **Lifecycle** | | | | |
-| Create | `workspace_provision.go:19-214` | `provisionWorkspace()` → `provisioner.Start()` | `provisionWorkspaceCP()` → `cpProv.Start()` | ✅ parity |
+| Create | `workspace.go:130` `provisionWorkspaceAuto` → `provisionWorkspace()` (Docker) / `provisionWorkspaceCP()` (CP) | dispatched | dispatched | ✅ parity (single source of truth, PR #2811) |
 | Start | `provisioner.go:140-325` | container create + image pull | EC2 `RunInstance` via CP | ✅ parity |
-| Stop | `provisioner.go:772-785` | `ContainerRemove(force=true)` + optional volume rm | `DELETE /cp/workspaces/:id` | ✅ parity |
+| Stop | `workspace.go:172` `StopWorkspaceAuto` → `provisioner.Stop()` (Docker) / `cpProv.Stop()` (CP) | dispatched | dispatched | ✅ parity (single source of truth, PR #2824) |
 | Restart | `workspace_restart.go:45-210` | reads runtime from live container before stop | reads runtime from DB only | ⚠️ divergent — config-change + crash window can boot old runtime on EC2 |
-| Delete | `workspace_crud.go` | stop + volume rm | stop only (stateless) | ✅ parity (expected divergence on volume cleanup) |
+| Delete | `workspace_crud.go` `stopAndRemove` → `StopWorkspaceAuto` + Docker-only `RemoveVolume` | stop + volume rm | stop only (stateless — CP has no volumes) | ✅ parity (PR #2824 closed the SaaS-leak gap) |
+| Org-import (bulk Create) | `org_import.go:178` gates on `h.workspace.HasProvisioner()`; routes through `provisionWorkspaceAuto` per workspace | dispatched | dispatched | ✅ parity (PR #2811 closed the SaaS-skip gate) |
+| Team-collapse (bulk Stop) | `team.go:206` calls `StopWorkspaceAuto` for each child | dispatched | dispatched | ✅ parity (PR #2824 closed the SaaS-leak gap) |
 | **Secrets** | | | | |
 | Create / update | `secrets.go` | DB insert, injected at container start | DB insert, injected via user-data at boot | ✅ parity |
 | Redaction | `workspace_provision.go:251` | applied at memory-seed time | applied at agent runtime | ⚠️ divergent — timing differs |
@@ -76,7 +99,23 @@ This document is the canonical matrix. If you are landing a workspace-facing fea
 
 - **`tools/check-template-parity.sh`** (this repo) — ensures `install.sh` and `start.sh` in a template repo forward identical sets of provider keys. Wire into each template repo's CI as `bash $MONOREPO/tools/check-template-parity.sh install.sh start.sh`.
 - **Contract tests** (stub) — `workspace-server/internal/provisioner/backend_contract_test.go` defines the behaviors every `provisioner.Provisioner` implementation must satisfy. Fails compile when a method drifts between `Docker` and `CPProvisioner`. Scenario-level runs are `t.Skip`'d today pending drift risk #6 (see above) — compile-time assertions still catch method drift.
+- **Source-level dispatcher pins** — `workspace_provision_auto_test.go` enforces the SoT pattern documented above:
+  - `TestNoCallSiteCallsDirectProvisionerExceptAuto` — no handler calls `.provisionWorkspace(` or `.provisionWorkspaceCP(` directly outside the dispatcher's allowlist.
+  - `TestNoCallSiteCallsBareStop` — no handler calls `.provisioner.Stop(` or `.cpProv.Stop(` directly outside the dispatcher's allowlist (strips Go comments before substring match so archaeology in code comments doesn't trip the gate).
+  - `TestNoBareBothNilCheck` — no production code uses `h.provisioner == nil && h.cpProv == nil`; must use `!h.HasProvisioner()`.
+  - `TestOrgImportGate_UsesHasProvisionerNotBareField` — pins the org-import provisioning gate against the bare-Docker-check shape that caused the 2026-05-05 hongming incident.
 
 ## How to update this doc
 
 When you land a feature that touches a handler dispatch on `h.cpProv != nil`, add or update the matching row. If you can't implement both backends in the same PR, mark the row `docker-only` or `ec2-only` and file an issue tracking the gap.
+
+### When you add a NEW dispatch site
+
+If you find yourself writing `if h.cpProv != nil { ... } else if h.provisioner != nil { ... }` for a new operation (Pause, Hibernate, Snapshot, etc.):
+
+1. Add a `<Op>WorkspaceAuto` method on `WorkspaceHandler` next to the existing dispatchers. Mirror the docstring shape: routing, no-backend fallback, ordering rationale.
+2. Add a source-level pin in `workspace_provision_auto_test.go` — the bare-call shape your dispatcher replaces, fail when a handler reintroduces it.
+3. Add a row to the matrix above with the dispatcher reference.
+4. If your operation has retry semantics specific to a hot path, leave them in the original location for now and file a follow-up under #2799 — don't bake retry into the generic dispatcher unless every caller benefits.
+
+The pattern is "one dispatcher per verb." Don't fold every operation into `provisionWorkspaceAuto` — different verbs have different no-backend fallbacks (mark-failed for Start, no-op for Stop, false for Has).
