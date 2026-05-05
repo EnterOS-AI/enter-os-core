@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provlog"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/scheduler"
 	"github.com/google/uuid"
 )
@@ -61,10 +63,33 @@ func (h *OrgHandler) createWorkspaceTree(ws OrgWorkspace, parentID *string, absX
 		tier = defaults.Tier
 	}
 	if tier == 0 {
-		tier = 2
+		// Resolved via the same DefaultTier helper Create + Templates
+		// use (#2910 PR-E). SaaS → T4 (one container per sibling EC2,
+		// no neighbour to protect from), self-hosted → T3. Pre-#2910
+		// this path returned T2 on self-hosted, asymmetric with
+		// workspace.go's T3 — undocumented drift. Lifting to
+		// DefaultTier collapses both call sites onto one source of
+		// truth so a future tier-default change sweeps every entry
+		// point at once. Templates that want a different floor still
+		// declare `tier:` in config.yaml or `defaults.tier` in
+		// org.yaml.
+		if h.workspace != nil {
+			tier = h.workspace.DefaultTier()
+		} else {
+			tier = 3
+		}
 	}
 
-	ctxLookup := context.Background()
+	// 5s timeout bounds the lookup independently of any HTTP request
+	// context. createWorkspaceTree runs in goroutines spawned from the
+	// /org/import handler, so plumbing the request context here would
+	// cascade-cancel into provisionWorkspaceAuto and abort in-flight
+	// EC2 provisioning if the client disconnected mid-import — that's
+	// the wrong behaviour. A short bounded timeout protects the
+	// per-row SELECT against a wedged DB without taking the
+	// drop-everything-on-disconnect tradeoff.
+	ctxLookup, cancelLookup := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelLookup()
 	// Idempotency: if a workspace with the same (parent_id, name) already
 	// exists, skip the INSERT + canvas_layouts + broadcast + provisioning.
 	// This is what makes /org/import safe to call multiple times — the
@@ -76,12 +101,31 @@ func (h *OrgHandler) createWorkspaceTree(ws OrgWorkspace, parentID *string, absX
 	// (parent exists, some children missing) backfill the missing children
 	// instead of either no-op'ing the whole subtree or duplicating the
 	// existing children.
+	//
+	// /org/import is ADDITIVE-ONLY, never destructive. Children present
+	// in the existing tree but absent from the new template are
+	// preserved (no DELETE on diff). Skip-path also does NOT propagate
+	// updates to existing nodes — a re-import that adds an
+	// initial_memory or schedule to an existing workspace is silently
+	// dropped (the function bypasses seedInitialMemories, schedule SQL,
+	// channel config for skipped rows). To force-update an existing
+	// tree, delete and re-import or use a future /org/sync route.
 	existingID, existing, lookupErr := h.lookupExistingChild(ctxLookup, ws.Name, parentID)
 	if lookupErr != nil {
 		return fmt.Errorf("idempotency check for %s: %w", ws.Name, lookupErr)
 	}
 	if existing {
 		log.Printf("Org import: %q already exists (id=%s) — skipping create+provision, recursing into children for partial-match", ws.Name, existingID)
+		parentRef := ""
+		if parentID != nil {
+			parentRef = *parentID
+		}
+		provlog.Event("provision.skip_existing", map[string]any{
+			"name":        ws.Name,
+			"existing_id": existingID,
+			"parent_id":   parentRef,
+			"tier":        tier,
+		})
 		*results = append(*results, map[string]interface{}{
 			"id":      existingID,
 			"name":    ws.Name,
@@ -580,6 +624,12 @@ func (h *OrgHandler) createWorkspaceTree(ws OrgWorkspace, parentID *string, absX
 //
 // On sql.ErrNoRows: returns ("", false, nil) — caller should INSERT.
 // On a real DB error: returns ("", false, err) — caller propagates.
+//
+// errors.Is is wrap-safe — a future caller wrapping the error
+// (database/sql can wrap driver errors with %w in some setups) would
+// silently break a `err == sql.ErrNoRows` equality check, causing the
+// no-rows path to fall through to the "real DB error" branch and
+// abort the import. errors.Is unwraps.
 func (h *OrgHandler) lookupExistingChild(ctx context.Context, name string, parentID *string) (string, bool, error) {
 	var existingID string
 	err := db.DB.QueryRowContext(ctx, `
@@ -589,7 +639,7 @@ func (h *OrgHandler) lookupExistingChild(ctx context.Context, name string, paren
 		  AND status != 'removed'
 		LIMIT 1
 	`, name, parentID).Scan(&existingID)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
 	if err != nil {

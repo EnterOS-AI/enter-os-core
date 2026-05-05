@@ -41,8 +41,6 @@ Full contract: `docs/runbooks/admin-auth.md`.
 | GET | /admin/workspaces/:id/test-token | admin_test_token.go — mint a fresh bearer token for E2E scripts; returns 404 unless `MOLECULE_ENV != production` or `MOLECULE_ENABLE_TEST_TOKENS=1` |
 | GET/POST/DELETE | /admin/secrets[/:key] | secrets.go — legacy aliases for /settings/secrets |
 | WS | /workspaces/:id/terminal | terminal.go |
-| POST | /workspaces/:id/expand | team.go |
-| POST | /workspaces/:id/collapse | team.go |
 | POST/GET | /workspaces/:id/approvals | approvals.go |
 | POST | /workspaces/:id/approvals/:id/decide | approvals.go |
 | GET | /approvals/pending | approvals.go |

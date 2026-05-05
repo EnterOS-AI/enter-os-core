@@ -186,4 +186,3 @@ So the UI now exposes more operational failure state directly instead of silentl
 - [Quickstart](../quickstart.md)
 - [Platform API](../api-protocol/platform-api.md)
 - [Workspace Runtime](../agent-runtime/workspace-runtime.md)
-- [Team Expansion](../agent-runtime/team-expansion.md)

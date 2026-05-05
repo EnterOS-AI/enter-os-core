@@ -336,8 +336,6 @@ This same logic governs: A2A delegation, memory scope enforcement, activity visi
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| `POST` | `/workspaces/:id/expand` | Expand workspace into team (become coordinator) |
-| `POST` | `/workspaces/:id/collapse` | Collapse team back to single workspace |
 
 ### Files, Terminal, Templates, Bundles (8 endpoints)
 

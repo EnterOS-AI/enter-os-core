@@ -357,7 +357,7 @@ class TestA2AToolCommitMemoryRedactsSecrets:
 
         fake_client.post = _capture
 
-        with patch("a2a_tools.httpx.AsyncClient", return_value=fake_client):
+        with patch("a2a_tools_memory.httpx.AsyncClient", return_value=fake_client):
             await a2a_tools.tool_commit_memory(content_with_secret)
 
         stored = captured.get("content", "")
@@ -385,7 +385,7 @@ class TestA2AToolCommitMemoryRedactsSecrets:
 
         fake_client.post = _capture
 
-        with patch("a2a_tools.httpx.AsyncClient", return_value=fake_client):
+        with patch("a2a_tools_memory.httpx.AsyncClient", return_value=fake_client):
             await a2a_tools.tool_commit_memory(f"key={key}")
 
         stored = captured.get("content", "")

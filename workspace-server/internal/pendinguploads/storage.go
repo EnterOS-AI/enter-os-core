@@ -72,6 +72,28 @@ type Record struct {
 	ExpiresAt   time.Time
 }
 
+// SweepResult is the per-cycle accounting from Sweep. Both counts are
+// non-negative; Total is just Acked + Expired for log/metrics
+// convenience. Phase 3 metrics expose these as separate counters so
+// dashboards can spot a stuck-ack pattern (high Expired, low Acked) vs.
+// healthy churn (Acked dominates).
+type SweepResult struct {
+	Acked   int // rows deleted because acked_at + retention elapsed
+	Expired int // rows deleted because expires_at < now AND never acked
+}
+
+// Total returns the sum of Acked + Expired — convenient for log lines.
+func (r SweepResult) Total() int { return r.Acked + r.Expired }
+
+// PutItem is one file in a PutBatch call. Same per-field rules as Put —
+// empty content, missing filename, or content > MaxFileBytes is rejected
+// up-front so a bad item in the batch doesn't poison the transaction.
+type PutItem struct {
+	Content  []byte
+	Filename string
+	Mimetype string
+}
+
 // Storage is the platform-side persistence boundary for poll-mode chat
 // uploads. The Postgres implementation backs all callers today; an S3-
 // backed implementation can drop in once RFC #2789 lands by making
@@ -85,6 +107,17 @@ type Storage interface {
 	// internal_chat_uploads.py:sanitize_filename). Empty filename and
 	// content > MaxFileBytes return errors before any DB write.
 	Put(ctx context.Context, workspaceID uuid.UUID, content []byte, filename, mimetype string) (uuid.UUID, error)
+
+	// PutBatch inserts N uploads atomically — either all rows commit or
+	// none do. Returns assigned file_ids in input order on success;
+	// returns an error and does NOT insert any row on failure.
+	//
+	// Use this from multi-file upload handlers so a per-row failure on
+	// row K doesn't leave rows 1..K-1 orphaned in the table (a client
+	// retry would then double-insert them on success). All-or-nothing
+	// semantics match the multipart request the canvas sends — either
+	// the whole batch succeeds or the user re-uploads.
+	PutBatch(ctx context.Context, workspaceID uuid.UUID, items []PutItem) ([]uuid.UUID, error)
 
 	// Get returns the full row including content. Returns ErrNotFound
 	// when the row is absent, acked, or past expires_at. Caller should
@@ -103,6 +136,18 @@ type Storage interface {
 	// absent or already expired; on already-acked, returns nil so
 	// the workspace's at-least-once retry succeeds without an error.
 	Ack(ctx context.Context, fileID uuid.UUID) error
+
+	// Sweep deletes rows past their retention window:
+	//   - acked rows older than ackRetention (give the workspace a
+	//     window to re-fetch in case it processed but failed to write
+	//     the file before crashing — at-least-once behavior).
+	//   - unacked rows past expires_at (the platform's hard TTL — 24h
+	//     by default; a workspace that hasn't fetched by then is
+	//     considered dead from the upload's perspective).
+	// Returns the per-category deletion counts for observability.
+	// Errors are surfaced to the caller; a transient DB error must NOT
+	// crash the sweeper loop (it just retries on the next tick).
+	Sweep(ctx context.Context, ackRetention time.Duration) (SweepResult, error)
 }
 
 // PostgresStorage is the production Storage implementation backed by
@@ -147,6 +192,64 @@ func (p *PostgresStorage) Put(ctx context.Context, workspaceID uuid.UUID, conten
 		return uuid.Nil, fmt.Errorf("pendinguploads: insert: %w", err)
 	}
 	return fileID, nil
+}
+
+// PutBatch inserts every item atomically inside a single Tx. On any
+// per-item validation or per-row INSERT error the Tx is rolled back and
+// the caller sees the error without any rows committed — no partial
+// orphans for a multi-file upload that fails mid-batch.
+//
+// Validation runs BEFORE BEGIN so a bad input shape (empty content,
+// over-cap size) doesn't even open a Tx. Once we're in the Tx, the only
+// failures expected are DB-side (broken connection, statement timeout)
+// — those abort cleanly via Rollback.
+func (p *PostgresStorage) PutBatch(ctx context.Context, workspaceID uuid.UUID, items []PutItem) ([]uuid.UUID, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+	for i, it := range items {
+		if len(it.Content) == 0 {
+			return nil, fmt.Errorf("pendinguploads: item %d: empty content", i)
+		}
+		if len(it.Content) > MaxFileBytes {
+			return nil, ErrTooLarge
+		}
+		if it.Filename == "" {
+			return nil, fmt.Errorf("pendinguploads: item %d: empty filename", i)
+		}
+		if len(it.Filename) > 100 {
+			return nil, fmt.Errorf("pendinguploads: item %d: filename exceeds 100 chars", i)
+		}
+	}
+
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("pendinguploads: begin tx: %w", err)
+	}
+	// Defer-rollback is safe even after a successful Commit — the second
+	// Rollback is a no-op (database/sql tracks tx state).
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	out := make([]uuid.UUID, 0, len(items))
+	for i, it := range items {
+		var fid uuid.UUID
+		err := tx.QueryRowContext(ctx, `
+			INSERT INTO pending_uploads (workspace_id, content, size_bytes, filename, mimetype)
+			VALUES ($1, $2, $3, $4, $5)
+			RETURNING file_id
+		`, workspaceID, it.Content, int64(len(it.Content)), it.Filename, it.Mimetype).Scan(&fid)
+		if err != nil {
+			return nil, fmt.Errorf("pendinguploads: batch insert item %d: %w", i, err)
+		}
+		out = append(out, fid)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("pendinguploads: commit batch: %w", err)
+	}
+	return out, nil
 }
 
 func (p *PostgresStorage) Get(ctx context.Context, fileID uuid.UUID) (Record, error) {
@@ -250,4 +353,42 @@ func (p *PostgresStorage) Ack(ctx context.Context, fileID uuid.UUID) error {
 	// raced with the ACK). Treat as success — the row is gone, but
 	// the workspace's intent ("I'm done with this file") was honored.
 	return nil
+}
+
+// Sweep deletes acked rows past their retention window plus any
+// unacked rows whose hard TTL has elapsed. Single round-trip: a CTE
+// captures the deletion in one DELETE … RETURNING and the outer
+// SELECT sums by category. Cheaper and tighter than two round trips,
+// and atomic w.r.t. concurrent writes (the WHERE predicate sees a
+// consistent snapshot via Postgres MVCC).
+//
+// ackRetention=0 deletes all acked rows immediately; values <0 are
+// clamped to 0 for safety. Caller defaults are documented at
+// StartSweeper's DefaultAckRetention.
+func (p *PostgresStorage) Sweep(ctx context.Context, ackRetention time.Duration) (SweepResult, error) {
+	if ackRetention < 0 {
+		ackRetention = 0
+	}
+	// make_interval expects integer seconds — Postgres accepts a
+	// floating point but we deliberately round to the nearest second
+	// so test fixtures pin a deterministic value across PG versions.
+	retentionSecs := int64(ackRetention.Seconds())
+
+	var acked, expired int
+	err := p.db.QueryRowContext(ctx, `
+		WITH deleted AS (
+			DELETE FROM pending_uploads
+			WHERE (acked_at IS NOT NULL AND acked_at < now() - make_interval(secs => $1))
+			   OR (acked_at IS NULL     AND expires_at < now())
+			RETURNING (acked_at IS NOT NULL) AS was_acked
+		)
+		SELECT
+			COALESCE(SUM(CASE WHEN was_acked     THEN 1 ELSE 0 END), 0)::int AS acked,
+			COALESCE(SUM(CASE WHEN NOT was_acked THEN 1 ELSE 0 END), 0)::int AS expired
+		FROM deleted
+	`, retentionSecs).Scan(&acked, &expired)
+	if err != nil {
+		return SweepResult{}, fmt.Errorf("pendinguploads: sweep: %w", err)
+	}
+	return SweepResult{Acked: acked, Expired: expired}, nil
 }

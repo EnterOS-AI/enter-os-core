@@ -19,6 +19,7 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/handlers"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/imagewatch"
 	memwiring "github.com/Molecule-AI/molecule-monorepo/platform/internal/memory/wiring"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/pendinguploads"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/registry"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/router"
@@ -264,6 +265,14 @@ func main() {
 			registry.StartOrphanSweeper(c, prov)
 		})
 	}
+
+	// Pending-uploads GC sweep — deletes acked rows past their retention
+	// window plus unacked rows past expires_at. Without this the
+	// pending_uploads table grows unbounded; even with the 24h hard TTL,
+	// nothing actually deletes a row, just makes it un-fetchable.
+	go supervised.RunWithRecover(ctx, "pending-uploads-sweeper", func(c context.Context) {
+		pendinguploads.StartSweeper(c, pendinguploads.NewPostgres(db.DB), 0)
+	})
 
 	// Provision-timeout sweep — flips workspaces that have been stuck in
 	// status='provisioning' past the timeout window to 'failed' and emits

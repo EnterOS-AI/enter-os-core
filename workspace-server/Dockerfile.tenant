@@ -34,6 +34,13 @@ ARG GIT_SHA=dev
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags "-X github.com/Molecule-AI/molecule-monorepo/platform/internal/buildinfo.GitSHA=${GIT_SHA}" \
     -o /platform ./cmd/server
+# Memory v2 sidecar binary (Memory v2 #2728). Bundled so an operator
+# can activate cutover by flipping MEMORY_V2_CUTOVER=true without
+# provisioning a separate service. See entrypoint-tenant.sh for the
+# launch logic.
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags "-X github.com/Molecule-AI/molecule-monorepo/platform/internal/buildinfo.GitSHA=${GIT_SHA}" \
+    -o /memory-plugin ./cmd/memory-plugin-postgres
 
 # ── Stage 2: Canvas Next.js standalone ────────────────────────────────
 FROM node:20-alpine AS canvas-builder
@@ -74,8 +81,9 @@ RUN deluser --remove-home node 2>/dev/null || true; \
     delgroup node 2>/dev/null || true; \
     addgroup -g 1000 canvas && adduser -u 1000 -G canvas -s /bin/sh -D canvas
 
-# Go platform binary
+# Go platform binary + Memory v2 sidecar
 COPY --from=go-builder /platform /platform
+COPY --from=go-builder /memory-plugin /memory-plugin
 COPY workspace-server/migrations /migrations
 
 # Templates + plugins (cloned from GitHub in stage 3)
@@ -91,7 +99,7 @@ COPY --from=canvas-builder /canvas/public ./public
 
 COPY workspace-server/entrypoint-tenant.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh && \
-    chown -R canvas:canvas /canvas /platform /migrations
+    chown -R canvas:canvas /canvas /platform /memory-plugin /migrations
 
 EXPOSE 8080
 # entrypoint.sh starts as root to fix volume perms, then drops to

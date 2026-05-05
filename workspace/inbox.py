@@ -432,7 +432,17 @@ def _is_self_notify_row(row: dict[str, Any]) -> bool:
 
 
 def message_from_activity(row: dict[str, Any]) -> InboxMessage:
-    """Convert one /activity row into an InboxMessage."""
+    """Convert one /activity row into an InboxMessage.
+
+    Mutates ``row['request_body']`` in-place to swap any
+    ``platform-pending:`` URIs to the locally-staged ``workspace:`` URIs
+    (see ``inbox_uploads.rewrite_request_body``) — by the time the
+    upstream chat message arrives via this path, the upload-receive row
+    that staged the bytes has already populated the URI cache (lower
+    activity_logs.id, processed earlier in the same poll batch). A
+    cache miss leaves the URI untouched; the agent surfaces an
+    unresolvable URI rather than the inbox silently dropping the part.
+    """
     request_body = row.get("request_body")
     if isinstance(request_body, str):
         # The Go handler returns request_body as json.RawMessage; httpx
@@ -442,6 +452,14 @@ def message_from_activity(row: dict[str, Any]) -> InboxMessage:
             request_body = json.loads(request_body)
         except (TypeError, ValueError):
             request_body = None
+
+    # Rewrite platform-pending: URIs → workspace: URIs in-place. Imported
+    # at call time to keep the import graph clean for the in-container
+    # path that doesn't use this module (also avoids a circular: the
+    # uploads module is small enough that re-importing per call is
+    # cheap, and the Python import cache makes it free after the first).
+    from inbox_uploads import rewrite_request_body
+    rewrite_request_body(request_body)
 
     return InboxMessage(
         activity_id=str(row.get("id", "")),
@@ -532,11 +550,57 @@ def _poll_once(
     if cursor is None:
         rows = list(reversed(rows))
 
+    # Imported lazily at use-site so a runtime that never sees an
+    # upload-receive row never imports the module. Cheap on the hot
+    # path because Python caches the import.
+    from inbox_uploads import is_chat_upload_row, BatchFetcher
+
     new_count = 0
     last_id: str | None = None
+    # ``batch_fetcher`` is lazy: a poll batch with no upload rows pays
+    # zero overhead. Once the first upload row appears we open one
+    # BatchFetcher and submit every subsequent upload row to its thread
+    # pool; before processing the FIRST non-upload row we drain the
+    # pool (wait_all) so the URI cache is hot when message rewriting
+    # runs. Without the barrier, the chat message that references the
+    # upload would arrive at the agent with the un-rewritten
+    # platform-pending: URI.
+    batch_fetcher: BatchFetcher | None = None
+
+    def _drain_uploads(bf: BatchFetcher | None) -> None:
+        if bf is None:
+            return
+        bf.wait_all()
+        bf.close()
+
     for row in rows:
         if not isinstance(row, dict):
             continue
+        if is_chat_upload_row(row):
+            # Side-effect row from the platform's poll-mode chat-upload
+            # handler — fetch the bytes, stage to /workspace/.molecule/
+            # chat-uploads, ack. NOT enqueued as an InboxMessage; the
+            # agent will see the chat message that REFERENCES this
+            # upload via a separate (later) activity row, with the
+            # pending: URI rewritten to a workspace: URI by
+            # message_from_activity. We DO advance the cursor past
+            # this row so a permanent network outage on /content
+            # doesn't stall the cursor and block real chat traffic.
+            if batch_fetcher is None:
+                batch_fetcher = BatchFetcher(
+                    platform_url=platform_url,
+                    workspace_id=workspace_id,
+                    headers=headers,
+                )
+            batch_fetcher.submit(row)
+            last_id = str(row.get("id", "")) or last_id
+            continue
+        # Non-upload row: drain any pending uploads first so the URI
+        # cache is populated before we run rewrite_request_body /
+        # message_from_activity on a row that may reference one.
+        if batch_fetcher is not None:
+            _drain_uploads(batch_fetcher)
+            batch_fetcher = None
         if _is_self_notify_row(row):
             # The workspace-server's `/notify` handler writes the agent's
             # own send_message_to_user POSTs to activity_logs with
@@ -570,6 +634,13 @@ def _poll_once(
         state.record(message)
         last_id = message.activity_id
         new_count += 1
+
+    # Drain any uploads still in flight if the batch ended with upload
+    # rows (no chat-message row to trigger the inline drain). Without
+    # this, a future poll that picks up the chat-message row first
+    # would race with the still-running fetches.
+    if batch_fetcher is not None:
+        _drain_uploads(batch_fetcher)
 
     if last_id is not None:
         state.save_cursor(last_id, cursor_key)
@@ -613,6 +684,7 @@ def start_poller_thread(
     platform_url: str,
     workspace_id: str,
     interval: float = POLL_INTERVAL_SECONDS,
+    stop_event: threading.Event | None = None,
 ) -> threading.Thread:
     """Spawn the poller as a daemon thread. Returns the Thread handle.
 
@@ -624,13 +696,18 @@ def start_poller_thread(
     operator running ``ps -eL`` or eyeballing ``threading.enumerate()``
     can tell which thread is which without reverse-engineering it from
     crash tracebacks.
+
+    Pass ``stop_event`` to enable graceful shutdown — used by tests so
+    the daemon thread doesn't outlive the test that started it and race
+    with later tests' httpx patches. Production code passes None and
+    relies on the daemon flag for process-exit cleanup.
     """
     name = "molecule-mcp-inbox-poller"
     if workspace_id:
         name = f"{name}-{workspace_id[:8]}"
     t = threading.Thread(
         target=_poll_loop,
-        args=(state, platform_url, workspace_id, interval),
+        args=(state, platform_url, workspace_id, interval, stop_event),
         name=name,
         daemon=True,
     )

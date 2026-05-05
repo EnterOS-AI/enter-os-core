@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provlog"
 )
 
 // HasProvisioner reports whether either backend (CP or local Docker) is
@@ -47,6 +48,32 @@ import (
 // deployments where no backend is available.
 func (h *WorkspaceHandler) HasProvisioner() bool {
 	return h.cpProv != nil || h.provisioner != nil
+}
+
+// IsSaaS reports whether the CP (EC2) provisioner is wired. Each SaaS
+// workspace runs on its own sibling EC2, so the per-workspace tier
+// boundary is a Docker resource limit applied to the only container
+// on that EC2 — there's no neighbour to protect from. Self-hosted
+// runs many workspaces in one Docker daemon on a single host, so
+// the tier-2-by-default safe-neighbour-share posture stays.
+//
+// Tier defaults across Create / OrgImport / canvas EmptyState branch
+// on IsSaaS so SaaS users get T4 (full host access) by default and
+// self-hosted users keep the lower-trust caps.
+func (h *WorkspaceHandler) IsSaaS() bool {
+	return h.cpProv != nil
+}
+
+// DefaultTier is the SaaS-aware default tier. T4 on SaaS (single
+// container per EC2 — full host access matches the boundary), T3 on
+// self-hosted (read-write workspace mount + Docker daemon access,
+// most templates' baseline). Callers default to this when the user
+// hasn't explicitly picked a tier.
+func (h *WorkspaceHandler) DefaultTier() int {
+	if h.IsSaaS() {
+		return 4
+	}
+	return 3
 }
 
 // provisionWorkspaceAuto picks the backend (CP for SaaS, local Docker
@@ -75,6 +102,14 @@ func (h *WorkspaceHandler) HasProvisioner() bool {
 // lives in prepareProvisionContext (shared by both per-backend
 // goroutines).
 func (h *WorkspaceHandler) provisionWorkspaceAuto(workspaceID, templatePath string, configFiles map[string][]byte, payload models.CreateWorkspacePayload) bool {
+	provlog.Event("provision.start", map[string]any{
+		"workspace_id": workspaceID,
+		"name":         payload.Name,
+		"tier":         payload.Tier,
+		"runtime":      payload.Runtime,
+		"template":     payload.Template,
+		"sync":         false,
+	})
 	if h.cpProv != nil {
 		go h.provisionWorkspaceCP(workspaceID, templatePath, configFiles, payload)
 		return true
@@ -110,6 +145,14 @@ func (h *WorkspaceHandler) provisionWorkspaceAuto(workspaceID, templatePath stri
 // Keep these two helpers in sync — when one grows a new arm (third
 // backend, retry semantics), the other should too.
 func (h *WorkspaceHandler) provisionWorkspaceAutoSync(workspaceID, templatePath string, configFiles map[string][]byte, payload models.CreateWorkspacePayload) bool {
+	provlog.Event("provision.start", map[string]any{
+		"workspace_id": workspaceID,
+		"name":         payload.Name,
+		"tier":         payload.Tier,
+		"runtime":      payload.Runtime,
+		"template":     payload.Template,
+		"sync":         true,
+	})
 	if h.cpProv != nil {
 		h.provisionWorkspaceCP(workspaceID, templatePath, configFiles, payload)
 		return true

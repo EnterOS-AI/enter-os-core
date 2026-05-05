@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"embed"
 	"errors"
 	"fmt"
 	"log"
@@ -17,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -26,12 +28,28 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/memory/pgplugin"
 )
 
+// migrationsFS bundles the .up.sql files into the binary at build time
+// so the prebuilt image doesn't need the source tree at runtime. The
+// prior `os.ReadDir("cmd/memory-plugin-postgres/migrations")` path
+// only resolved during `go test` from the repo root — in the published
+// image the path didn't exist and boot failed after the 30s health gate
+// (caught on staging redeploy 2026-05-05 after PR #2906).
+//
+//go:embed migrations/*.up.sql
+var migrationsFS embed.FS
+
 const (
 	envDatabaseURL = "MEMORY_PLUGIN_DATABASE_URL"
 	envListenAddr  = "MEMORY_PLUGIN_LISTEN_ADDR"
 	envSkipMigrate = "MEMORY_PLUGIN_SKIP_MIGRATE"
 
-	defaultListenAddr = ":9100"
+	// Loopback-only by default (defense in depth). The platform talks to
+	// the plugin over `http://localhost:9100` from the same container, so
+	// binding to all interfaces would only widen the reachable surface
+	// without enabling any in-design caller. Operators running the plugin
+	// on a separate host override via MEMORY_PLUGIN_LISTEN_ADDR=:9100 (or
+	// some other interface).
+	defaultListenAddr = "127.0.0.1:9100"
 )
 
 func main() {
@@ -143,32 +161,71 @@ func openDB(databaseURL string) (*sql.DB, error) {
 	return db, nil
 }
 
-// runMigrations applies the schema migrations bundled at
-// cmd/memory-plugin-postgres/migrations/. Idempotent on repeat boot.
+// runMigrations applies the schema migrations bundled into the binary
+// via go:embed (see migrationsFS at the top of this file). Idempotent
+// on repeat boot — every migration file uses CREATE … IF NOT EXISTS.
 //
-// Implementation note: rather than embedding the full migrate engine,
-// we read the migration files at boot from a known relative path. The
-// down migrations are deliberately NOT applied here — that's a manual
-// operator action. This keeps the binary tiny and avoids dragging in
-// golang-migrate's drivers.
+// The down migrations are deliberately NOT applied here — that's a
+// manual operator action. This keeps the binary tiny and avoids
+// dragging in golang-migrate's drivers.
+//
+// MEMORY_PLUGIN_MIGRATIONS_DIR (filesystem path) is honored as an
+// override for operators who need to ship custom migrations alongside
+// the binary without rebuilding. When unset (the common case) we read
+// from the embedded FS.
 func runMigrations(db *sql.DB) error {
-	// Find the migrations directory. In `go run` mode it's relative
-	// to the cmd dir; in the prebuilt binary case it's expected next
-	// to the binary OR via env var override.
-	dir := os.Getenv("MEMORY_PLUGIN_MIGRATIONS_DIR")
-	if dir == "" {
-		// Best-effort: try the cwd-relative path that works for `go test`.
-		dir = "cmd/memory-plugin-postgres/migrations"
+	if dir := strings.TrimSpace(os.Getenv("MEMORY_PLUGIN_MIGRATIONS_DIR")); dir != "" {
+		return runMigrationsFromDisk(db, dir)
 	}
-	entries, err := os.ReadDir(dir)
+	return runMigrationsFromEmbed(db)
+}
+
+// runMigrationsFromEmbed applies the *.up.sql files bundled into the
+// binary at build time. Order is alphabetical (matches the on-disk
+// behavior of os.ReadDir on Linux for the same set of names).
+func runMigrationsFromEmbed(db *sql.DB) error {
+	entries, err := migrationsFS.ReadDir("migrations")
 	if err != nil {
-		return fmt.Errorf("read migrations dir %q: %w", dir, err)
+		return fmt.Errorf("read embedded migrations: %w", err)
 	}
+	names := make([]string, 0, len(entries))
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".up.sql") {
 			continue
 		}
-		path := dir + "/" + e.Name()
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		data, err := migrationsFS.ReadFile("migrations/" + name)
+		if err != nil {
+			return fmt.Errorf("read embedded %q: %w", name, err)
+		}
+		if _, err := db.Exec(string(data)); err != nil {
+			return fmt.Errorf("apply %q: %w", name, err)
+		}
+		log.Printf("applied embedded migration %s", name)
+	}
+	return nil
+}
+
+// runMigrationsFromDisk preserves the legacy filesystem-path mode for
+// operator-supplied custom migrations.
+func runMigrationsFromDisk(db *sql.DB, dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("read migrations dir %q: %w", dir, err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".up.sql") {
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		path := dir + "/" + name
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("read %q: %w", path, err)
@@ -176,7 +233,7 @@ func runMigrations(db *sql.DB) error {
 		if _, err := db.Exec(string(data)); err != nil {
 			return fmt.Errorf("apply %q: %w", path, err)
 		}
-		log.Printf("applied migration %s", e.Name())
+		log.Printf("applied disk migration %s (from %s)", name, dir)
 	}
 	return nil
 }

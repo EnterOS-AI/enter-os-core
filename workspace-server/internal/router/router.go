@@ -243,13 +243,15 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		// entire platform. Gated behind AdminAuth (issue #180).
 		r.GET("/approvals/pending", middleware.AdminAuth(db.DB), apph.ListAll)
 
-		// Team handlers — Collapse only. The bulk-Expand path is gone:
-		// every workspace can have children via the regular CreateWorkspace
-		// flow with parent_id set, so a separate handler that bulk-creates
-		// from sub_workspaces (and was non-idempotent — calling it twice
-		// duplicated the team) earned its way out.
-		teamh := handlers.NewTeamHandler(broadcaster, wh, platformURL, configsDir)
-		wsAuth.POST("/collapse", teamh.Collapse)
+		// (TeamHandler is gone — #2864.) The visual canvas Collapse
+		// button calls PATCH /workspaces/:id { collapsed: true/false }
+		// (presentational toggle on canvas_layouts), NOT the destructive
+		// POST /collapse that stopped + removed children. The
+		// destructive route had zero UI callers (verified via grep
+		// across canvas/, scripts/, and the MCP tool registry — only
+		// docs referenced it). team.go + team_test.go + the route
+		// + helpers (findTemplateDirByName, NewTeamHandler) are
+		// deleted; visual collapse is unaffected.
 
 		// Agents
 		ah := handlers.NewAgentHandler(broadcaster)
@@ -519,8 +521,9 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 	r.GET("/canvas/viewport", vh.Get)
 	r.PUT("/canvas/viewport", middleware.CanvasOrBearer(db.DB), vh.Save)
 
-	// Templates
-	tmplh := handlers.NewTemplatesHandler(configsDir, dockerCli)
+	// Templates — wh threaded so generateDefaultConfig picks the
+	// SaaS-aware default tier in Import + ReplaceFiles (#2910 PR-B).
+	tmplh := handlers.NewTemplatesHandler(configsDir, dockerCli, wh)
 	// #686: GET /templates lists all template names+metadata from configsDir.
 	// Open access lets unauthenticated callers enumerate org configurations and
 	// installed plugins. AdminAuth-gate it alongside POST /templates/import.

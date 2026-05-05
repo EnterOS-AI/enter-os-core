@@ -55,7 +55,7 @@ func TestGenerateDefaultConfig_WithFiles(t *testing.T) {
 		"skills/review/templates.md": "Templates",
 	}
 
-	cfg := generateDefaultConfig("Test Agent", files)
+	cfg := generateDefaultConfig("Test Agent", files, 3)
 
 	// Name is emitted as a double-quoted scalar (#221 sanitizer).
 	if !strings.Contains(cfg, `name: "Test Agent"`) {
@@ -85,7 +85,7 @@ func TestGenerateDefaultConfig_Empty(t *testing.T) {
 		"data/something.json": `{"key": "value"}`,
 	}
 
-	cfg := generateDefaultConfig("Empty Agent", files)
+	cfg := generateDefaultConfig("Empty Agent", files, 3)
 
 	if !strings.Contains(cfg, `name: "Empty Agent"`) {
 		t.Errorf("config should contain quoted agent name, got:\n%s", cfg)
@@ -134,7 +134,7 @@ func TestGenerateDefaultConfig_YAMLInjection(t *testing.T) {
 
 	for _, tc := range adversarialCases {
 		t.Run(tc.desc, func(t *testing.T) {
-			cfg := generateDefaultConfig(tc.name, map[string]string{})
+			cfg := generateDefaultConfig(tc.name, map[string]string{}, 3)
 			var parsed map[string]interface{}
 			if err := yaml.Unmarshal([]byte(cfg), &parsed); err != nil {
 				t.Fatalf("sanitized config does not parse as YAML: %v\n--- config ---\n%s", err, cfg)
@@ -205,7 +205,7 @@ func TestImport_Success(t *testing.T) {
 	setupTestRedis(t)
 
 	tmpDir := t.TempDir()
-	handler := NewTemplatesHandler(tmpDir, nil)
+	handler := NewTemplatesHandler(tmpDir, nil, nil)
 
 	body := `{
 		"name": "New Agent",
@@ -245,7 +245,7 @@ func TestImport_MissingName(t *testing.T) {
 	setupTestDB(t)
 	setupTestRedis(t)
 
-	handler := NewTemplatesHandler(t.TempDir(), nil)
+	handler := NewTemplatesHandler(t.TempDir(), nil, nil)
 
 	body := `{"files": {"test.md": "content"}}`
 
@@ -265,7 +265,7 @@ func TestImport_TooManyFiles(t *testing.T) {
 	setupTestDB(t)
 	setupTestRedis(t)
 
-	handler := NewTemplatesHandler(t.TempDir(), nil)
+	handler := NewTemplatesHandler(t.TempDir(), nil, nil)
 
 	files := make(map[string]string)
 	for i := 0; i <= maxUploadFiles; i++ {
@@ -296,7 +296,7 @@ func TestImport_AlreadyExists(t *testing.T) {
 	tmpDir := t.TempDir()
 	os.MkdirAll(filepath.Join(tmpDir, "existing-agent"), 0755)
 
-	handler := NewTemplatesHandler(tmpDir, nil)
+	handler := NewTemplatesHandler(tmpDir, nil, nil)
 
 	body := `{"name": "Existing Agent", "files": {"test.md": "content"}}`
 
@@ -317,7 +317,7 @@ func TestImport_WithConfigYaml(t *testing.T) {
 	setupTestRedis(t)
 
 	tmpDir := t.TempDir()
-	handler := NewTemplatesHandler(tmpDir, nil)
+	handler := NewTemplatesHandler(tmpDir, nil, nil)
 
 	body := `{
 		"name": "Custom Agent",
@@ -354,7 +354,7 @@ func TestReplaceFiles_MissingBody(t *testing.T) {
 	setupTestDB(t)
 	setupTestRedis(t)
 
-	handler := NewTemplatesHandler(t.TempDir(), nil)
+	handler := NewTemplatesHandler(t.TempDir(), nil, nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -373,7 +373,7 @@ func TestReplaceFiles_TooManyFiles(t *testing.T) {
 	setupTestDB(t)
 	setupTestRedis(t)
 
-	handler := NewTemplatesHandler(t.TempDir(), nil)
+	handler := NewTemplatesHandler(t.TempDir(), nil, nil)
 
 	files := make(map[string]string)
 	for i := 0; i <= maxUploadFiles; i++ {
@@ -398,7 +398,7 @@ func TestReplaceFiles_WorkspaceNotFound(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)
 
-	handler := NewTemplatesHandler(t.TempDir(), nil)
+	handler := NewTemplatesHandler(t.TempDir(), nil, nil)
 
 	// ReplaceFiles now selects (name, instance_id, runtime) for the
 	// restart-cascade. Match the full column list rather than just the
@@ -429,7 +429,7 @@ func TestReplaceFiles_PathTraversal(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)
 
-	handler := NewTemplatesHandler(t.TempDir(), nil)
+	handler := NewTemplatesHandler(t.TempDir(), nil, nil)
 
 	mock.ExpectQuery(`SELECT name, COALESCE\(instance_id, ''\), COALESCE\(runtime, ''\) FROM workspaces WHERE id =`).
 		WithArgs("ws-rf-pt").

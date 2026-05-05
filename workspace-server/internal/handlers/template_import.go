@@ -36,8 +36,14 @@ func normalizeName(name string) string {
 	return result
 }
 
-// generateDefaultConfig creates a config.yaml from detected prompt files and skills.
-func generateDefaultConfig(name string, files map[string]string) string {
+// generateDefaultConfig creates a config.yaml from detected prompt files
+// and skills. tier is the deployment-aware default (caller passes
+// h.wh.DefaultTier() — T4 on SaaS, T3 on self-hosted) so the generated
+// file matches what POST /workspaces would default to. Pre-#2910 this
+// was hardcoded to 3, which split-brained with the create-handler
+// default on SaaS (T4) and pinned newly-imported templates at T3 even
+// when downstream Create paths picked T4.
+func generateDefaultConfig(name string, files map[string]string, tier int) string {
 	promptFiles := []string{}
 	skillSet := map[string]bool{}
 
@@ -74,9 +80,15 @@ func generateDefaultConfig(name string, files map[string]string) string {
 	var cfg strings.Builder
 	cfg.WriteString(`name: "` + escaped + `"` + "\n")
 	cfg.WriteString("description: Imported agent\n")
-	// Default to tier 3 ("Privileged") — matches the workspace.go
-	// create handler default. See its comment for rationale.
-	cfg.WriteString("version: 1.0.0\ntier: 3\n")
+	// Tier is SaaS-aware via the caller's DefaultTier (#2910 PR-B).
+	// Bounds-checked: invalid input falls back to T3 (the historical
+	// default + the safer-of-the-two when the deployment mode can't
+	// be resolved).
+	if tier < 1 || tier > 4 {
+		tier = 3
+	}
+	cfg.WriteString("version: 1.0.0\n")
+	cfg.WriteString(fmt.Sprintf("tier: %d\n", tier))
 	cfg.WriteString("model: anthropic:claude-haiku-4-5-20251001\n")
 	cfg.WriteString("\nprompt_files:\n")
 	if len(promptFiles) > 0 {
@@ -148,7 +160,11 @@ func (h *TemplatesHandler) Import(c *gin.Context) {
 
 	// Auto-generate config.yaml if not provided
 	if _, exists := body.Files["config.yaml"]; !exists {
-		cfg := generateDefaultConfig(body.Name, body.Files)
+		tier := 3
+		if h.wh != nil {
+			tier = h.wh.DefaultTier()
+		}
+		cfg := generateDefaultConfig(body.Name, body.Files, tier)
 		if err := os.WriteFile(filepath.Join(destDir, "config.yaml"), []byte(cfg), 0600); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to write config.yaml"})
 			return
@@ -227,7 +243,11 @@ func (h *TemplatesHandler) ReplaceFiles(c *gin.Context) {
 		if _, exists := body.Files["config.yaml"]; !exists {
 			// Check if config.yaml exists in container
 			if _, err := h.execInContainer(ctx, containerName, []string{"test", "-f", "/configs/config.yaml"}); err != nil {
-				cfg := generateDefaultConfig(wsName, body.Files)
+				tier := 3
+				if h.wh != nil {
+					tier = h.wh.DefaultTier()
+				}
+				cfg := generateDefaultConfig(wsName, body.Files, tier)
 				singleFile := map[string]string{"config.yaml": cfg}
 				h.copyFilesToContainer(ctx, containerName, "/configs", singleFile)
 			}

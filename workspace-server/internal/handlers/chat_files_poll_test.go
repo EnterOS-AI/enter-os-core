@@ -67,11 +67,58 @@ func (s *inMemStorage) Put(_ context.Context, ws uuid.UUID, content []byte, file
 	return id, nil
 }
 
+// PutBatch mirrors the production atomic-batch contract: any per-item
+// failure leaves the in-memory state unchanged, simulating Tx rollback.
+// Pre-validation matches PostgresStorage.PutBatch; oversized items
+// return ErrTooLarge before any row is added.
+func (s *inMemStorage) PutBatch(_ context.Context, ws uuid.UUID, items []pendinguploads.PutItem) ([]uuid.UUID, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.putErr != nil {
+		return nil, s.putErr
+	}
+	// Pre-validate so an oversized item rejects the whole batch before
+	// any state mutation — matches the Tx-rollback semantics.
+	for _, it := range items {
+		if len(it.Content) > pendinguploads.MaxFileBytes {
+			return nil, pendinguploads.ErrTooLarge
+		}
+	}
+	ids := make([]uuid.UUID, 0, len(items))
+	stagedRows := make(map[uuid.UUID]pendinguploads.Record, len(items))
+	stagedPuts := make([]putCall, 0, len(items))
+	for _, it := range items {
+		id := uuid.New()
+		stagedRows[id] = pendinguploads.Record{
+			FileID: id, WorkspaceID: ws, Content: it.Content,
+			Filename: it.Filename, Mimetype: it.Mimetype,
+			SizeBytes: int64(len(it.Content)), CreatedAt: time.Now(),
+			ExpiresAt: time.Now().Add(24 * time.Hour),
+		}
+		stagedPuts = append(stagedPuts, putCall{
+			WorkspaceID: ws, Filename: it.Filename, Mimetype: it.Mimetype, Size: len(it.Content),
+		})
+		ids = append(ids, id)
+	}
+	for id, r := range stagedRows {
+		s.rows[id] = r
+	}
+	s.puts = append(s.puts, stagedPuts...)
+	return ids, nil
+}
+
 func (s *inMemStorage) Get(context.Context, uuid.UUID) (pendinguploads.Record, error) {
 	return pendinguploads.Record{}, pendinguploads.ErrNotFound
 }
 func (s *inMemStorage) MarkFetched(context.Context, uuid.UUID) error { return nil }
 func (s *inMemStorage) Ack(context.Context, uuid.UUID) error         { return nil }
+
+// Sweep is required by the Storage interface (Phase 3 GC). Not
+// exercised by upload-branch tests — the dedicated sweeper_test.go +
+// storage_sweep_test.go cover it.
+func (s *inMemStorage) Sweep(context.Context, time.Duration) (pendinguploads.SweepResult, error) {
+	return pendinguploads.SweepResult{}, nil
+}
 
 // expectPollDeliveryMode stubs the SELECT delivery_mode lookup that
 // uploadPollMode does (separate from the one resolveWorkspaceForwardCreds
@@ -154,7 +201,7 @@ func TestPollUpload_HappyPath_OneFile_StagesAndLogs(t *testing.T) {
 	expectActivityInsert(mock)
 
 	store := newInMemStorage()
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	body, ct := pollUploadFixture(t, map[string][]byte{"report.pdf": []byte("PDF-bytes")})
@@ -212,7 +259,7 @@ func TestPollUpload_MultipleFiles_AllStagedAndLogged(t *testing.T) {
 	expectActivityInsert(mock)
 
 	store := newInMemStorage()
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	body, ct := pollUploadFixture(t, map[string][]byte{
@@ -250,7 +297,7 @@ func TestPollUpload_PushModeFallsThroughToForward(t *testing.T) {
 	// URL empty + mode=push → 503 (no inbound secret check needed).
 
 	store := newInMemStorage()
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	body, ct := pollUploadFixture(t, map[string][]byte{"x": []byte("data")})
@@ -274,7 +321,7 @@ func TestPollUpload_NotConfigured_FallsThrough(t *testing.T) {
 	wsID := "33333333-2222-3333-4444-555555555555"
 	expectURLAndMode(mock, wsID, "", "poll") // resolveWorkspaceForwardCreds emits 422
 
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil))
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil))
 	// No WithPendingUploads — pendingUploads is nil.
 
 	body, ct := pollUploadFixture(t, map[string][]byte{"x": []byte("data")})
@@ -295,7 +342,7 @@ func TestPollUpload_WorkspaceMissing_404(t *testing.T) {
 	wsID := "44444444-2222-3333-4444-555555555555"
 	expectPollDeliveryModeMissing(mock, wsID)
 
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(newInMemStorage(), nil)
 
 	body, ct := pollUploadFixture(t, map[string][]byte{"x": []byte("d")})
@@ -315,7 +362,7 @@ func TestPollUpload_DeliveryModeLookupDBError_500(t *testing.T) {
 	mock.ExpectQuery(`SELECT delivery_mode FROM workspaces WHERE id = \$1`).
 		WithArgs(wsID).WillReturnError(errors.New("connection lost"))
 
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(newInMemStorage(), nil)
 
 	body, ct := pollUploadFixture(t, map[string][]byte{"x": []byte("d")})
@@ -335,7 +382,7 @@ func TestPollUpload_NoFilesField_400(t *testing.T) {
 	expectPollDeliveryMode(mock, wsID, "poll")
 
 	store := newInMemStorage()
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	// Multipart with a non-files field — no actual files.
@@ -360,7 +407,7 @@ func TestPollUpload_MalformedMultipart_400(t *testing.T) {
 	expectPollDeliveryMode(mock, wsID, "poll")
 
 	store := newInMemStorage()
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	// Body that doesn't match the boundary in Content-Type.
@@ -381,7 +428,7 @@ func TestPollUpload_StorageError_500(t *testing.T) {
 
 	store := newInMemStorage()
 	store.putErr = errors.New("disk full")
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	body, ct := pollUploadFixture(t, map[string][]byte{"x.bin": []byte("data")})
@@ -402,7 +449,7 @@ func TestPollUpload_StorageTooLarge_413(t *testing.T) {
 
 	store := newInMemStorage()
 	store.putErr = pendinguploads.ErrTooLarge
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	body, ct := pollUploadFixture(t, map[string][]byte{"x.bin": []byte("data")})
@@ -422,7 +469,7 @@ func TestPollUpload_TooManyFiles_400(t *testing.T) {
 	expectPollDeliveryMode(mock, wsID, "poll")
 
 	store := newInMemStorage()
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	// 65 files — over the per-batch cap.
@@ -457,7 +504,7 @@ func TestPollUpload_NullDeliveryMode_TreatedAsPush(t *testing.T) {
 	expectURLAndMode(mock, wsID, "", "")
 
 	store := newInMemStorage()
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	body, ct := pollUploadFixture(t, map[string][]byte{"x.bin": []byte("data")})
@@ -490,7 +537,7 @@ func TestPollUpload_PerFileCapPreStorage_413(t *testing.T) {
 	expectPollDeliveryMode(mock, wsID, "poll")
 
 	store := newInMemStorage()
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	// 25 MB + 1 byte. Single file, large enough to trip the early
@@ -525,7 +572,7 @@ func TestPollUpload_SanitizesFilenameInResponse(t *testing.T) {
 	expectActivityInsert(mock)
 
 	store := newInMemStorage()
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	body, ct := pollUploadFixture(t, map[string][]byte{"hello world!.pdf": []byte("data")})
@@ -547,6 +594,120 @@ func TestPollUpload_SanitizesFilenameInResponse(t *testing.T) {
 	}
 	if len(store.puts) == 0 || store.puts[0].Filename != "hello_world_.pdf" {
 		t.Errorf("storage Put didn't receive sanitized filename: %+v", store.puts)
+	}
+}
+
+// TestPollUpload_AtomicRollbackOnSecondFileTooLarge pins the
+// transactional contract introduced in phase 5: when one file in a
+// multi-file batch fails pre-validation (oversize), NONE of the files
+// in the batch land in storage. Previously a per-file Put loop would
+// stage rows 1..K-1 before failing on row K, leaving orphan
+// pending_uploads + activity rows the client would re-create on retry.
+//
+// Pinned via inMemStorage's PutBatch (which mirrors PostgresStorage's
+// Tx-rollback behavior on a per-item validation failure) — but the
+// real atomicity guarantee is the integration test in
+// pending_uploads_integration_test.go.
+func TestPollUpload_AtomicRollbackOnSecondFileTooLarge(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	wsID := "aaaaaaaa-3333-3333-4444-555555555555"
+	expectPollDeliveryMode(mock, wsID, "poll")
+
+	store := newInMemStorage()
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
+		WithPendingUploads(store, nil)
+
+	// Two files: first OK, second over the per-file cap. Pre-validation
+	// in uploadPollMode catches it BEFORE any Put — store.puts must
+	// stay empty. (If the test ever sees len=1, the regression is
+	// "first file slipped through into storage on a partial-failure
+	// batch.")
+	tooBig := bytes.Repeat([]byte{0x42}, pendinguploads.MaxFileBytes+1)
+	body, ct := pollUploadFixture(t, map[string][]byte{
+		"ok.txt":   []byte("small"),
+		"huge.bin": tooBig,
+	})
+	c, w := makeUploadRequest(t, wsID, body, ct)
+	h.Upload(c)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status=%d body=%s, want 413", w.Code, w.Body.String())
+	}
+	if len(store.puts) != 0 {
+		t.Errorf("expected zero Puts on rollback, got %d: %+v", len(store.puts), store.puts)
+	}
+}
+
+// TestPollUpload_AtomicRollbackOnPutBatchError validates that an in-
+// flight PutBatch failure (e.g. simulated DB error) leaves zero rows
+// — same guarantee as the pre-validation path, but exercises the
+// "Tx-Rollback after BEGIN" branch via the fake.
+func TestPollUpload_AtomicRollbackOnPutBatchError(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	wsID := "bbbbbbbb-3333-3333-4444-555555555555"
+	expectPollDeliveryMode(mock, wsID, "poll")
+
+	store := newInMemStorage()
+	store.putErr = errors.New("db down mid-batch")
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
+		WithPendingUploads(store, nil)
+
+	body, ct := pollUploadFixture(t, map[string][]byte{
+		"a.txt": []byte("aaa"),
+		"b.txt": []byte("bbb"),
+		"c.txt": []byte("ccc"),
+	})
+	c, w := makeUploadRequest(t, wsID, body, ct)
+	h.Upload(c)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status=%d, want 500", w.Code)
+	}
+	if len(store.puts) != 0 {
+		t.Errorf("expected zero Puts after PutBatch error, got %d", len(store.puts))
+	}
+}
+
+// TestPollUpload_MimetypeWithCRLFInjectionStripped pins the safeMimetype
+// hardening: a multipart-supplied Content-Type header with CR/LF is
+// rewritten to application/octet-stream so the eventual /content
+// response can't be header-split on the wire.
+func TestPollUpload_MimetypeWithCRLFInjectionStripped(t *testing.T) {
+	got := safeMimetype("text/html\r\nX-Injected: pwn")
+	if got != "application/octet-stream" {
+		t.Errorf("CRLF mimetype not stripped, got %q", got)
+	}
+	got = safeMimetype("image/png\x00")
+	if got != "application/octet-stream" {
+		t.Errorf("NUL byte mimetype not stripped, got %q", got)
+	}
+	got = safeMimetype("text/plain; charset=utf-8")
+	if got != "text/plain" {
+		t.Errorf("parameter not stripped, got %q", got)
+	}
+	got = safeMimetype("application/pdf")
+	if got != "application/pdf" {
+		t.Errorf("clean mime modified, got %q", got)
+	}
+	got = safeMimetype("")
+	if got != "" {
+		t.Errorf("empty input should pass through, got %q", got)
+	}
+	got = safeMimetype("notamime")
+	if got != "application/octet-stream" {
+		t.Errorf("non-type/subtype not coerced, got %q", got)
+	}
+	got = safeMimetype("/empty-type")
+	if got != "application/octet-stream" {
+		t.Errorf("missing type half not coerced, got %q", got)
+	}
+	got = safeMimetype("type/")
+	if got != "application/octet-stream" {
+		t.Errorf("missing subtype half not coerced, got %q", got)
 	}
 }
 
@@ -573,7 +734,7 @@ func TestPollUpload_ActivityRowDiscriminator(t *testing.T) {
 	expectActivityInsertWithTypeAndMethod(mock, wsID, "a2a_receive", "chat_upload_receive")
 
 	store := newInMemStorage()
-	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil)).
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
 		WithPendingUploads(store, nil)
 
 	body, ct := pollUploadFixture(t, map[string][]byte{"x.pdf": []byte("xx")})

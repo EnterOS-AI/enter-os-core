@@ -53,7 +53,7 @@ func TestTemplatesList_EmptyDir(t *testing.T) {
 	setupTestRedis(t)
 
 	tmpDir := t.TempDir()
-	handler := NewTemplatesHandler(tmpDir, nil)
+	handler := NewTemplatesHandler(tmpDir, nil, nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -99,7 +99,7 @@ skills:
 	// Create a directory without config.yaml (should be skipped)
 	os.MkdirAll(filepath.Join(tmpDir, "no-config"), 0755)
 
-	handler := NewTemplatesHandler(tmpDir, nil)
+	handler := NewTemplatesHandler(tmpDir, nil, nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -160,7 +160,7 @@ skills: []
 		t.Fatalf("write: %v", err)
 	}
 
-	handler := NewTemplatesHandler(tmpDir, nil)
+	handler := NewTemplatesHandler(tmpDir, nil, nil)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/templates", nil)
@@ -237,7 +237,7 @@ skills: []
 		t.Fatalf("write: %v", err)
 	}
 
-	handler := NewTemplatesHandler(tmpDir, nil)
+	handler := NewTemplatesHandler(tmpDir, nil, nil)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/templates", nil)
@@ -315,7 +315,7 @@ skills: []
 		t.Fatalf("write: %v", err)
 	}
 
-	handler := NewTemplatesHandler(tmpDir, nil)
+	handler := NewTemplatesHandler(tmpDir, nil, nil)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/templates", nil)
@@ -434,7 +434,7 @@ skills: []
 		t.Fatalf("write: %v", err)
 	}
 
-	handler := NewTemplatesHandler(tmpDir, nil)
+	handler := NewTemplatesHandler(tmpDir, nil, nil)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/templates", nil)
@@ -512,7 +512,7 @@ skills: []
 		t.Fatalf("write: %v", err)
 	}
 
-	handler := NewTemplatesHandler(tmpDir, nil)
+	handler := NewTemplatesHandler(tmpDir, nil, nil)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/templates", nil)
@@ -555,7 +555,7 @@ skills: []
 		t.Fatalf("write: %v", err)
 	}
 
-	handler := NewTemplatesHandler(tmpDir, nil)
+	handler := NewTemplatesHandler(tmpDir, nil, nil)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/templates", nil)
@@ -589,7 +589,7 @@ skills: []
 		t.Fatalf("write: %v", err)
 	}
 
-	handler := NewTemplatesHandler(tmpDir, nil)
+	handler := NewTemplatesHandler(tmpDir, nil, nil)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/templates", nil)
@@ -661,7 +661,7 @@ skills: []
 	log.SetOutput(&logBuf)
 	defer log.SetOutput(prevOutput)
 
-	handler := NewTemplatesHandler(tmpDir, nil)
+	handler := NewTemplatesHandler(tmpDir, nil, nil)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/templates", nil)
@@ -698,7 +698,7 @@ func TestTemplatesList_NonexistentDir(t *testing.T) {
 	setupTestDB(t)
 	setupTestRedis(t)
 
-	handler := NewTemplatesHandler("/nonexistent/path/to/templates", nil)
+	handler := NewTemplatesHandler("/nonexistent/path/to/templates", nil, nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -723,7 +723,7 @@ func TestListFiles_InvalidRoot(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)
 
-	handler := NewTemplatesHandler(t.TempDir(), nil)
+	handler := NewTemplatesHandler(t.TempDir(), nil, nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -748,7 +748,7 @@ func TestListFiles_WorkspaceNotFound(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)
 
-	handler := NewTemplatesHandler(t.TempDir(), nil)
+	handler := NewTemplatesHandler(t.TempDir(), nil, nil)
 
 	mock.ExpectQuery("SELECT name FROM workspaces WHERE id =").
 		WithArgs("ws-nonexist").
@@ -775,7 +775,7 @@ func TestListFiles_FallbackToHost_NoTemplate(t *testing.T) {
 	setupTestRedis(t)
 
 	tmpDir := t.TempDir()
-	handler := NewTemplatesHandler(tmpDir, nil) // nil docker = no container
+	handler := NewTemplatesHandler(tmpDir, nil, nil) // nil docker = no container
 
 	mock.ExpectQuery("SELECT name FROM workspaces WHERE id =").
 		WithArgs("ws-fallback").
@@ -815,7 +815,7 @@ func TestListFiles_FallbackToHost_WithTemplate(t *testing.T) {
 	os.WriteFile(filepath.Join(tmplDir, "config.yaml"), []byte("name: Test Agent\n"), 0644)
 	os.WriteFile(filepath.Join(tmplDir, "system-prompt.md"), []byte("# prompt"), 0644)
 
-	handler := NewTemplatesHandler(tmpDir, nil)
+	handler := NewTemplatesHandler(tmpDir, nil, nil)
 
 	mock.ExpectQuery("SELECT name FROM workspaces WHERE id =").
 		WithArgs("ws-tmpl").
@@ -849,7 +849,7 @@ func TestReadFile_PathTraversal(t *testing.T) {
 	setupTestDB(t)
 	setupTestRedis(t)
 
-	handler := NewTemplatesHandler(t.TempDir(), nil)
+	handler := NewTemplatesHandler(t.TempDir(), nil, nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -870,7 +870,7 @@ func TestReadFile_InvalidRoot(t *testing.T) {
 	setupTestDB(t)
 	setupTestRedis(t)
 
-	handler := NewTemplatesHandler(t.TempDir(), nil)
+	handler := NewTemplatesHandler(t.TempDir(), nil, nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -892,7 +892,7 @@ func TestReadFile_WorkspaceNotFound(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)
 
-	handler := NewTemplatesHandler(t.TempDir(), nil)
+	handler := NewTemplatesHandler(t.TempDir(), nil, nil)
 
 	mock.ExpectQuery(`SELECT name, COALESCE\(instance_id, ''\), COALESCE\(runtime, ''\) FROM workspaces WHERE id =`).
 		WithArgs("ws-nf").
@@ -926,7 +926,7 @@ func TestReadFile_FallbackToHost_Success(t *testing.T) {
 	os.MkdirAll(tmplDir, 0755)
 	os.WriteFile(filepath.Join(tmplDir, "config.yaml"), []byte("name: Reader Agent\ntier: 1\n"), 0644)
 
-	handler := NewTemplatesHandler(tmpDir, nil)
+	handler := NewTemplatesHandler(tmpDir, nil, nil)
 
 	// instance_id="" → SaaS branch skipped → falls through to local
 	// Docker / template-dir host fallback (the only path the test
@@ -967,7 +967,7 @@ func TestReadFile_FallbackToHost_NotFound(t *testing.T) {
 	setupTestRedis(t)
 
 	tmpDir := t.TempDir()
-	handler := NewTemplatesHandler(tmpDir, nil)
+	handler := NewTemplatesHandler(tmpDir, nil, nil)
 
 	mock.ExpectQuery(`SELECT name, COALESCE\(instance_id, ''\), COALESCE\(runtime, ''\) FROM workspaces WHERE id =`).
 		WithArgs("ws-nofile").
@@ -999,7 +999,7 @@ func TestWriteFile_PathTraversal(t *testing.T) {
 	setupTestDB(t)
 	setupTestRedis(t)
 
-	handler := NewTemplatesHandler(t.TempDir(), nil)
+	handler := NewTemplatesHandler(t.TempDir(), nil, nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -1023,7 +1023,7 @@ func TestWriteFile_InvalidBody(t *testing.T) {
 	setupTestDB(t)
 	setupTestRedis(t)
 
-	handler := NewTemplatesHandler(t.TempDir(), nil)
+	handler := NewTemplatesHandler(t.TempDir(), nil, nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -1046,7 +1046,7 @@ func TestWriteFile_WorkspaceNotFound(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)
 
-	handler := NewTemplatesHandler(t.TempDir(), nil)
+	handler := NewTemplatesHandler(t.TempDir(), nil, nil)
 
 	mock.ExpectQuery(`SELECT name, COALESCE\(instance_id, ''\), COALESCE\(runtime, ''\) FROM workspaces WHERE id =`).
 		WithArgs("ws-wf-nf").
@@ -1080,7 +1080,7 @@ func TestDeleteFile_PathTraversal(t *testing.T) {
 	setupTestDB(t)
 	setupTestRedis(t)
 
-	handler := NewTemplatesHandler(t.TempDir(), nil)
+	handler := NewTemplatesHandler(t.TempDir(), nil, nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -1101,7 +1101,7 @@ func TestDeleteFile_WorkspaceNotFound(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)
 
-	handler := NewTemplatesHandler(t.TempDir(), nil)
+	handler := NewTemplatesHandler(t.TempDir(), nil, nil)
 
 	mock.ExpectQuery("SELECT name FROM workspaces WHERE id =").
 		WithArgs("ws-del-nf").
@@ -1133,7 +1133,7 @@ func TestResolveTemplateDir_ByNormalizedName(t *testing.T) {
 	tmplDir := filepath.Join(tmpDir, "my-agent")
 	os.MkdirAll(tmplDir, 0755)
 
-	handler := NewTemplatesHandler(tmpDir, nil)
+	handler := NewTemplatesHandler(tmpDir, nil, nil)
 	result := handler.resolveTemplateDir("My Agent")
 
 	if result != tmplDir {
@@ -1143,7 +1143,7 @@ func TestResolveTemplateDir_ByNormalizedName(t *testing.T) {
 
 func TestResolveTemplateDir_NotFound(t *testing.T) {
 	tmpDir := t.TempDir()
-	handler := NewTemplatesHandler(tmpDir, nil)
+	handler := NewTemplatesHandler(tmpDir, nil, nil)
 	result := handler.resolveTemplateDir("Nonexistent Agent")
 
 	if result != "" {
@@ -1177,7 +1177,7 @@ func TestCWE78_DeleteFile_TraversalVariants(t *testing.T) {
 			setupTestDB(t)
 			setupTestRedis(t)
 
-			handler := NewTemplatesHandler(t.TempDir(), nil)
+			handler := NewTemplatesHandler(t.TempDir(), nil, nil)
 
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)

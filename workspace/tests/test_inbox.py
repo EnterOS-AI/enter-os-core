@@ -555,16 +555,34 @@ def test_poll_once_self_notify_does_not_fire_notification(state: inbox.InboxStat
 def test_start_poller_thread_is_daemon(state: inbox.InboxState):
     """Daemon flag is required so the poller dies with the parent
     process; a non-daemon poller would leak across `claude` restarts
-    and write to a stale workspace."""
+    and write to a stale workspace.
+
+    Stop_event is plumbed so the thread cleans up at the end of the
+    test instead of leaking into later tests. Without cleanup, the
+    daemon's ~10ms tick races with later tests that patch httpx.Client
+    — the leaked thread sees their patched response and runs an
+    unwanted iteration of _poll_once that double-counts mocked calls
+    (caught when test_batch_fetcher_owns_client_when_not_supplied
+    surfaced this on Python 3.11 CI but not 3.13 local).
+    """
     resp = _make_response(200, [])
     p, _ = _patch_httpx(resp)
+    stop_event = threading.Event()
     with p, patch("platform_auth.auth_headers", return_value={}):
         # Use a very short interval so the loop body runs at least once
         # before we exit the test.
-        t = inbox.start_poller_thread(state, "http://platform", "ws-1", interval=0.01)
+        t = inbox.start_poller_thread(
+            state, "http://platform", "ws-1", interval=0.01, stop_event=stop_event
+        )
         time.sleep(0.05)
-    assert t.daemon is True
-    assert t.is_alive()
+        assert t.daemon is True
+        assert t.is_alive()
+        # Signal shutdown + wait for the thread to actually exit before
+        # we leave the test scope. Without this join, the leaked thread
+        # races with later tests' httpx patches.
+        stop_event.set()
+        t.join(timeout=2.0)
+    assert not t.is_alive(), "poller thread did not exit on stop_event"
 
 
 # ---------------------------------------------------------------------------
@@ -575,6 +593,219 @@ def test_start_poller_thread_is_daemon(state: inbox.InboxState):
 def test_default_cursor_path_uses_configs_dir(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("CONFIGS_DIR", str(tmp_path))
     assert inbox.default_cursor_path() == tmp_path / ".mcp_inbox_cursor"
+
+
+# ---------------------------------------------------------------------------
+# Phase 5b — BatchFetcher integration with the poll loop
+# ---------------------------------------------------------------------------
+#
+# These tests pin the cross-module contract between inbox._poll_once and
+# inbox_uploads.BatchFetcher: chat_upload_receive rows must be submitted
+# to a single BatchFetcher AND drained (URI cache populated) before any
+# subsequent message row is processed. Without the drain, the
+# rewrite_request_body path inside message_from_activity surfaces the
+# un-rewritten ``platform-pending:`` URI to the agent.
+
+
+def _upload_row(act_id: str, file_id: str) -> dict:
+    return {
+        "id": act_id,
+        "source_id": None,
+        "method": "chat_upload_receive",
+        "summary": f"chat_upload_receive: {file_id}.pdf",
+        "request_body": {
+            "file_id": file_id,
+            "name": f"{file_id}.pdf",
+            "uri": f"platform-pending:ws-1/{file_id}",
+            "mimeType": "application/pdf",
+            "size": 3,
+        },
+        "created_at": "2026-05-04T10:00:00Z",
+    }
+
+
+def _message_row_referencing(act_id: str, file_id: str) -> dict:
+    return {
+        "id": act_id,
+        "source_id": None,
+        "method": "message/send",
+        "summary": None,
+        "request_body": {
+            "params": {
+                "message": {
+                    "parts": [
+                        {"kind": "text", "text": "have a look"},
+                        {
+                            "kind": "file",
+                            "file": {
+                                "uri": f"platform-pending:ws-1/{file_id}",
+                                "name": f"{file_id}.pdf",
+                            },
+                        },
+                    ]
+                }
+            }
+        },
+        "created_at": "2026-05-04T10:00:01Z",
+    }
+
+
+def _patch_httpx_routing(activity_rows: list[dict], upload_bytes: bytes = b"PDF"):
+    """Replace ``httpx.Client`` so:
+
+      - GET /activity returns ``activity_rows``
+      - GET /workspaces/.../content returns ``upload_bytes`` with content-type
+      - POST /ack returns 200
+
+    Returns the patch context manager; tests use ``with p:``. Each new
+    Client(...) gets a fresh MagicMock so the test can verify
+    constructor-count expectations without pinning singletons.
+    """
+    def _client_factory(*args, **kwargs):
+        c = MagicMock()
+        c.__enter__ = MagicMock(return_value=c)
+        c.__exit__ = MagicMock(return_value=False)
+
+        def _get(url, params=None, headers=None):
+            if "/activity" in url:
+                resp = MagicMock()
+                resp.status_code = 200
+                resp.json.return_value = activity_rows
+                resp.text = ""
+                return resp
+            if "/pending-uploads/" in url and "/content" in url:
+                resp = MagicMock()
+                resp.status_code = 200
+                resp.content = upload_bytes
+                resp.headers = {"content-type": "application/pdf"}
+                resp.text = ""
+                return resp
+            resp = MagicMock()
+            resp.status_code = 404
+            resp.text = ""
+            return resp
+
+        def _post(url, headers=None):
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.text = ""
+            return resp
+
+        c.get = MagicMock(side_effect=_get)
+        c.post = MagicMock(side_effect=_post)
+        c.close = MagicMock()
+        return c
+
+    return patch("httpx.Client", side_effect=_client_factory)
+
+
+def test_poll_once_drains_uploads_before_processing_message_row(state: inbox.InboxState, tmp_path):
+    """The chat-message row's file.uri MUST be rewritten to the local
+    workspace: URI by the time it lands in the InboxState queue. This
+    requires BatchFetcher.wait_all() to run before message_from_activity
+    on the second row.
+    """
+    import inbox_uploads
+    inbox_uploads.get_cache().clear()
+    # Sandbox the on-disk staging dir so the test can't pollute the
+    # workspace's real chat-uploads.
+    real_dir = inbox_uploads.CHAT_UPLOAD_DIR
+    inbox_uploads.CHAT_UPLOAD_DIR = str(tmp_path / "chat-uploads")
+    try:
+        rows = [
+            _upload_row("act-1", "file-A"),
+            _message_row_referencing("act-2", "file-A"),
+        ]
+        state.save_cursor("act-old")
+        with _patch_httpx_routing(rows, upload_bytes=b"PDF-bytes"):
+            n = inbox._poll_once(state, "http://platform", "ws-1", {})
+    finally:
+        inbox_uploads.CHAT_UPLOAD_DIR = real_dir
+        inbox_uploads.get_cache().clear()
+
+    assert n == 1, "exactly one message row should be enqueued (the upload row is a side-effect, not a message)"
+    queued = state.peek(10)
+    assert len(queued) == 1
+    # The contract this test exists to pin: the platform-pending: URI
+    # was rewritten to workspace: BEFORE the message landed in the
+    # state queue. message_from_activity mutates row['request_body']
+    # in-place, so the rewritten URI is observable on the row dict
+    # we passed in.
+    rewritten_part = rows[1]["request_body"]["params"]["message"]["parts"][1]
+    assert rewritten_part["file"]["uri"].startswith("workspace:"), (
+        f"upload barrier broken: file.uri = {rewritten_part['file']['uri']!r}; "
+        "rewrite_request_body ran before BatchFetcher.wait_all populated the cache"
+    )
+    # Cursor advanced past BOTH rows — upload-receive (act-1) is
+    # acknowledged via the inbox cursor regardless of fetch outcome.
+    assert state.load_cursor() == "act-2"
+
+
+def test_poll_once_with_only_upload_rows_drains_at_loop_end(state: inbox.InboxState, tmp_path):
+    """End-of-batch drain: a poll that contains ONLY upload rows (no
+    chat-message row to trigger the inline drain) must still drain the
+    BatchFetcher before _poll_once returns. Otherwise a future poll
+    that picks up the corresponding chat-message row would race with
+    in-flight fetches from the previous batch.
+    """
+    import inbox_uploads
+    inbox_uploads.get_cache().clear()
+    real_dir = inbox_uploads.CHAT_UPLOAD_DIR
+    inbox_uploads.CHAT_UPLOAD_DIR = str(tmp_path / "chat-uploads")
+    try:
+        rows = [_upload_row("act-1", "file-A"), _upload_row("act-2", "file-B")]
+        state.save_cursor("act-old")
+        with _patch_httpx_routing(rows, upload_bytes=b"PDF"):
+            n = inbox._poll_once(state, "http://platform", "ws-1", {})
+        # By the time _poll_once returned, the URI cache must be hot
+        # for both file_ids — proves the end-of-loop drain ran.
+        assert inbox_uploads.get_cache().get("platform-pending:ws-1/file-A") is not None
+        assert inbox_uploads.get_cache().get("platform-pending:ws-1/file-B") is not None
+    finally:
+        inbox_uploads.CHAT_UPLOAD_DIR = real_dir
+        inbox_uploads.get_cache().clear()
+    # Upload rows are NOT message rows; queue stays empty.
+    assert n == 0
+    # Cursor advances past both upload rows.
+    assert state.load_cursor() == "act-2"
+
+
+def test_poll_once_no_uploads_does_not_construct_batch_fetcher(state: inbox.InboxState):
+    """A batch with no upload-receive rows must not pay the BatchFetcher
+    construction cost — the executor + httpx client allocation is
+    deferred until the first upload row appears.
+    """
+    import inbox_uploads
+
+    constructed: list[Any] = []
+
+    def _patched_init(self, **kwargs):
+        constructed.append(kwargs)
+        # Don't actually run __init__; we never hit submit/wait_all.
+        self._closed = False
+        self._futures = []
+        self._executor = MagicMock()
+        self._client = MagicMock()
+        self._own_client = False
+
+    rows = [
+        {
+            "id": "act-1",
+            "source_id": None,
+            "method": "message/send",
+            "summary": None,
+            "request_body": {"parts": [{"type": "text", "text": "hi"}]},
+            "created_at": "2026-04-30T22:00:00Z",
+        },
+    ]
+    state.save_cursor("act-old")
+    resp = _make_response(200, rows)
+    p, _ = _patch_httpx(resp)
+    with patch.object(inbox_uploads.BatchFetcher, "__init__", _patched_init), p:
+        n = inbox._poll_once(state, "http://platform", "ws-1", {})
+
+    assert n == 1
+    assert constructed == [], "BatchFetcher must not be constructed when no upload rows are present"
 
 
 def test_default_cursor_path_falls_back_to_default(tmp_path, monkeypatch):
@@ -701,3 +932,165 @@ def test_set_notification_callback_none_clears(state: inbox.InboxState):
     state.record(_msg("act-1"))
 
     assert received == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — chat_upload_receive rows route to inbox_uploads.fetch_and_stage
+# ---------------------------------------------------------------------------
+
+
+def test_poll_once_skips_chat_upload_row_from_queue(state: inbox.InboxState, monkeypatch, tmp_path):
+    """A row with method='chat_upload_receive' must NOT enqueue as a
+    chat message — it's a side-effect telling the workspace to fetch
+    bytes. Pin the contract so a refactor that flattens the row loop
+    can't silently re-enqueue these as 'empty A2A message' rows."""
+    import inbox_uploads
+    monkeypatch.setattr(inbox_uploads, "CHAT_UPLOAD_DIR", str(tmp_path / "chat-uploads"))
+    inbox_uploads.get_cache().clear()
+
+    rows = [
+        {
+            "id": "act-1",
+            "source_id": None,
+            "method": "chat_upload_receive",
+            "summary": "chat_upload_receive: foo.pdf",
+            "request_body": {
+                "file_id": "abc123",
+                "name": "foo.pdf",
+                "mimeType": "application/pdf",
+                "size": 4,
+                "uri": "platform-pending:ws-1/abc123",
+            },
+            "created_at": "2026-05-04T10:00:00Z",
+        },
+    ]
+    resp = _make_response(200, rows)
+    p, _ = _patch_httpx(resp)
+    fetch_called = []
+
+    def fake_fetch(row, **kwargs):
+        fetch_called.append((row.get("id"), kwargs["workspace_id"]))
+        return "workspace:/local/foo.pdf"
+
+    with p, patch.object(inbox_uploads, "fetch_and_stage", fake_fetch):
+        n = inbox._poll_once(state, "http://platform", "ws-1", {})
+
+    # Not enqueued + cursor advanced.
+    assert n == 0
+    assert state.peek(10) == []
+    assert state.load_cursor() == "act-1"
+    # fetch_and_stage was invoked with the row and workspace_id.
+    assert fetch_called == [("act-1", "ws-1")]
+
+
+def test_poll_once_chat_upload_row_then_chat_message_rewrites_uri(state: inbox.InboxState, monkeypatch, tmp_path):
+    """The classic ordering: upload-receive row first (lower id), chat
+    message referencing platform-pending: URI second. The chat message
+    that lands in the inbox must have its URI rewritten to the local
+    workspace: URI before the agent sees it.
+    """
+    import inbox_uploads
+    monkeypatch.setattr(inbox_uploads, "CHAT_UPLOAD_DIR", str(tmp_path / "chat-uploads"))
+    cache = inbox_uploads.get_cache()
+    cache.clear()
+
+    # Pretend the fetch already populated the cache. (The real flow
+    # populates it inside fetch_and_stage; we patch that to keep the
+    # test focused on the rewrite contract.)
+    cache.set("platform-pending:ws-1/abc123", "workspace:/workspace/.molecule/chat-uploads/xx-foo.pdf")
+
+    rows = [
+        {
+            "id": "act-1",
+            "source_id": None,
+            "method": "chat_upload_receive",
+            "summary": "chat_upload_receive: foo.pdf",
+            "request_body": {
+                "file_id": "abc123",
+                "name": "foo.pdf",
+                "mimeType": "application/pdf",
+                "size": 4,
+                "uri": "platform-pending:ws-1/abc123",
+            },
+            "created_at": "2026-05-04T10:00:00Z",
+        },
+        {
+            "id": "act-2",
+            "source_id": None,
+            "method": "message/send",
+            "summary": None,
+            "request_body": {
+                "params": {
+                    "message": {
+                        "parts": [
+                            {"kind": "text", "text": "look at this"},
+                            {
+                                "kind": "file",
+                                "file": {
+                                    "uri": "platform-pending:ws-1/abc123",
+                                    "name": "foo.pdf",
+                                },
+                            },
+                        ]
+                    }
+                }
+            },
+            "created_at": "2026-05-04T10:00:01Z",
+        },
+    ]
+    resp = _make_response(200, rows)
+    p, _ = _patch_httpx(resp)
+
+    def fake_fetch(row, **kwargs):
+        return "workspace:/workspace/.molecule/chat-uploads/xx-foo.pdf"
+
+    with p, patch.object(inbox_uploads, "fetch_and_stage", fake_fetch):
+        n = inbox._poll_once(state, "http://platform", "ws-1", {})
+
+    # Only the chat message is enqueued.
+    assert n == 1
+    queue = state.peek(10)
+    assert len(queue) == 1
+    msg = queue[0]
+    assert msg.activity_id == "act-2"
+    # The URI in the row's request_body was mutated by message_from_activity
+    # → rewrite_request_body. Re-extracting reveals the rewritten value.
+    rewritten = rows[1]["request_body"]["params"]["message"]["parts"][1]["file"]["uri"]
+    assert rewritten == "workspace:/workspace/.molecule/chat-uploads/xx-foo.pdf"
+
+
+def test_poll_once_chat_upload_row_advances_cursor_even_on_fetch_failure(
+    state: inbox.InboxState, monkeypatch, tmp_path
+):
+    """A permanent network failure on /content must NOT stall the cursor
+    — otherwise one bad upload blocks all real chat traffic for the
+    workspace. fetch_and_stage returns None on failure, but the row is
+    still considered handled from the cursor's perspective."""
+    import inbox_uploads
+    monkeypatch.setattr(inbox_uploads, "CHAT_UPLOAD_DIR", str(tmp_path / "chat-uploads"))
+
+    rows = [
+        {
+            "id": "act-broken",
+            "source_id": None,
+            "method": "chat_upload_receive",
+            "summary": "chat_upload_receive: doomed.pdf",
+            "request_body": {
+                "file_id": "doom",
+                "name": "doomed.pdf",
+                "uri": "platform-pending:ws-1/doom",
+            },
+            "created_at": "2026-05-04T10:00:00Z",
+        },
+    ]
+    resp = _make_response(200, rows)
+    p, _ = _patch_httpx(resp)
+
+    def fake_fetch(row, **kwargs):
+        return None  # network failure
+
+    with p, patch.object(inbox_uploads, "fetch_and_stage", fake_fetch):
+        inbox._poll_once(state, "http://platform", "ws-1", {})
+
+    assert state.peek(10) == []
+    assert state.load_cursor() == "act-broken"

@@ -600,14 +600,21 @@ func (h *ChatFilesHandler) uploadPollMode(c *gin.Context, ctx context.Context, w
 		return
 	}
 
-	out := make([]uploadedFile, 0, len(headers))
+	// Phase 1: pre-validate + read every part BEFORE any DB write.
+	// A multi-file upload must commit all-or-nothing; a per-file
+	// failure halfway through used to leave rows 1..K-1 in the table
+	// while the client got a 500 and retried the whole batch — duplicate
+	// rows, orphan activity rows. Validating up-front + atomic PutBatch
+	// closes that gap.
+	type prepped struct {
+		Sanitized string
+		Mimetype  string
+		Content   []byte
+		Original  string // original (unsanitized) filename for error messages
+	}
+	prepReady := make([]prepped, 0, len(headers))
+	items := make([]pendinguploads.PutItem, 0, len(headers))
 	for _, fh := range headers {
-		// Read full content. Per-file cap enforced post-read so an
-		// oversized file fails with a clean 413 rather than a torn
-		// stream. The +1 byte ReadAll trick that the Python side
-		// uses isn't easy through multipart.FileHeader; instead we
-		// rely on the multipart layer's ContentLength header and
-		// short-circuit before opening the part.
 		if fh.Size > pendinguploads.MaxFileBytes {
 			log.Printf("chat_files uploadPollMode: per-file cap exceeded for %s: %s (%d bytes)",
 				workspaceID, fh.Filename, fh.Size)
@@ -621,45 +628,67 @@ func (h *ChatFilesHandler) uploadPollMode(c *gin.Context, ctx context.Context, w
 		}
 		content, err := readMultipartFile(fh)
 		if err != nil {
-			log.Printf("chat_files uploadPollMode: read part failed for %s/%s: %v", workspaceID, fh.Filename, err)
+			log.Printf("chat_files uploadPollMode: read part failed for %s/%s: %v",
+				workspaceID, fh.Filename, err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "could not read file part"})
 			return
 		}
-
-		sanitized := SanitizeFilename(fh.Filename)
-		mimetype := fh.Header.Get("Content-Type")
-
-		fileID, err := h.pendingUploads.Put(ctx, wsUUID, content, sanitized, mimetype)
-		if err != nil {
-			if errors.Is(err, pendinguploads.ErrTooLarge) {
-				// Belt + suspenders: the size check above already
-				// caught this, but Storage.Put re-validates so a
-				// malformed FileHeader can't slip through. 413 with
-				// the same shape so the client sees one error class.
-				c.JSON(http.StatusRequestEntityTooLarge, gin.H{
-					"error":    "file exceeds per-file cap",
-					"filename": fh.Filename,
-					"size":     len(content),
-					"max":      pendinguploads.MaxFileBytes,
-				})
-				return
-			}
-			log.Printf("chat_files uploadPollMode: storage.Put failed for %s/%s: %v",
-				workspaceID, sanitized, err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not stage file"})
+		// Belt-and-braces post-read cap (multipart.FileHeader.Size can lie
+		// on some clients that don't set Content-Length per part).
+		if len(content) > pendinguploads.MaxFileBytes {
+			log.Printf("chat_files uploadPollMode: per-file cap exceeded post-read for %s: %s (%d bytes)",
+				workspaceID, fh.Filename, len(content))
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{
+				"error":    "file exceeds per-file cap",
+				"filename": fh.Filename,
+				"size":     len(content),
+				"max":      pendinguploads.MaxFileBytes,
+			})
 			return
 		}
+		sanitized := SanitizeFilename(fh.Filename)
+		mimetype := safeMimetype(fh.Header.Get("Content-Type"))
+		prepReady = append(prepReady, prepped{
+			Sanitized: sanitized, Mimetype: mimetype, Content: content, Original: fh.Filename,
+		})
+		items = append(items, pendinguploads.PutItem{
+			Content: content, Filename: sanitized, Mimetype: mimetype,
+		})
+	}
 
-		// Activity row so the workspace's inbox poller picks this up
-		// on its next cycle. activity_type=a2a_receive (NOT a new
-		// type) so the existing poll filter
-		// `?type=a2a_receive` catches it without poll-side changes;
-		// method=chat_upload_receive is the discriminator the
-		// workspace's adapter (Phase 2) uses to route to the upload
-		// fetcher instead of the agent's message handler. Same
-		// shape as A2A's tasks/send vs message/send method split.
+	// Phase 2: atomic batch insert. On failure no rows commit.
+	fileIDs, err := h.pendingUploads.PutBatch(ctx, wsUUID, items)
+	if err != nil {
+		if errors.Is(err, pendinguploads.ErrTooLarge) {
+			// Belt + suspenders: pre-validation above already caught
+			// this; surface a clean 413 if a malformed FileHeader
+			// somehow slipped through.
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{
+				"error": "one or more files exceed per-file cap",
+				"max":   pendinguploads.MaxFileBytes,
+			})
+			return
+		}
+		log.Printf("chat_files uploadPollMode: storage.PutBatch failed for %s: %v",
+			workspaceID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not stage files"})
+		return
+	}
+
+	// Phase 3: write per-file activity rows and build the response. Activity
+	// rows are written individually (not part of the same Tx as PutBatch)
+	// because LogActivity is shared across many handlers and threading the
+	// Tx through would be a bigger refactor. The trade-off: if an activity
+	// write fails after the PutBatch commits, the pending_uploads rows
+	// orphan until the 24h TTL — significantly better than the previous
+	// "every multi-file upload could orphan" behavior, and the workspace's
+	// fetcher handles soft-404 cleanly when activity rows reference a row
+	// the platform later expired.
+	out := make([]uploadedFile, 0, len(prepReady))
+	for i, p := range prepReady {
+		fileID := fileIDs[i]
 		uri := fmt.Sprintf("platform-pending:%s/%s", workspaceID, fileID)
-		summary := "chat_upload_receive: " + sanitized
+		summary := "chat_upload_receive: " + p.Sanitized
 		method := "chat_upload_receive"
 		LogActivity(ctx, h.broadcaster, ActivityParams{
 			WorkspaceID:  workspaceID,
@@ -669,26 +698,63 @@ func (h *ChatFilesHandler) uploadPollMode(c *gin.Context, ctx context.Context, w
 			Summary:      &summary,
 			RequestBody: map[string]interface{}{
 				"file_id":  fileID.String(),
-				"name":     sanitized,
-				"mimeType": mimetype,
-				"size":     len(content),
+				"name":     p.Sanitized,
+				"mimeType": p.Mimetype,
+				"size":     len(p.Content),
 				"uri":      uri,
 			},
 			Status: "ok",
 		})
 
 		log.Printf("chat_files uploadPollMode: staged %s/%s (file_id=%s size=%d mimetype=%q)",
-			workspaceID, sanitized, fileID, len(content), mimetype)
+			workspaceID, p.Sanitized, fileID, len(p.Content), p.Mimetype)
 
 		out = append(out, uploadedFile{
 			URI:      uri,
-			Name:     sanitized,
-			Mimetype: mimetype,
-			Size:     int64(len(content)),
+			Name:     p.Sanitized,
+			Mimetype: p.Mimetype,
+			Size:     int64(len(p.Content)),
 		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{"files": out})
+}
+
+// safeMimetype validates a multipart-supplied Content-Type header and
+// returns a sanitized value safe to store + serve back unmodified.
+//
+// The platform's GET /content handler reflects the stored mimetype as
+// the response Content-Type. An attacker-controlled header that
+// embedded CR/LF could split the response (header injection); a value
+// containing semicolons could carry an unexpected charset parameter
+// that confuses a downstream renderer. Strip CR/LF/control chars +
+// keep only the type/subtype prefix; reject anything that doesn't
+// match a basic `type/subtype` regex by falling back to the safe
+// default (application/octet-stream — the workspace-side handler does
+// the same fallback).
+func safeMimetype(raw string) string {
+	const fallback = "application/octet-stream"
+	// Trim parameters (`text/html; charset=utf-8` → `text/html`).
+	if i := strings.IndexByte(raw, ';'); i >= 0 {
+		raw = raw[:i]
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	// Reject if any control char or whitespace is present (header
+	// injection defense). RFC 7231 mimetype grammar forbids whitespace.
+	for _, r := range raw {
+		if r < 0x21 || r > 0x7e {
+			return fallback
+		}
+	}
+	// Require exactly one slash separating type and subtype.
+	parts := strings.Split(raw, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return fallback
+	}
+	return raw
 }
 
 // readMultipartFile reads a multipart part fully into memory. Wraps
