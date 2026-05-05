@@ -27,9 +27,14 @@ Six checks, in operator-encounter order:
                             Catches DNS/firewall/wrong-scheme issues
                             before the operator hits the real
                             register call.
-    6. Registry register — POST ${PLATFORM_URL}/registry/register
+    6. Token auth         — POST ${PLATFORM_URL}/registry/heartbeat
                             with the resolved workspace_id+token
                             returns 2xx. End-to-end auth verification.
+                            Uses heartbeat (idempotent timestamp
+                            update) instead of register (UPSERT —
+                            would clobber agent_card metadata) so
+                            the doctor is safe to run against a
+                            live workspace.
 
 Each check prints one of:
     [OK]   <one-line status>
@@ -170,18 +175,31 @@ def check_path_for_binary() -> Verdict:
     return "fail"
 
 
-def _resolve_token_summary() -> Optional[str]:
-    """Return a short non-secret description of how the token was
-    sourced (e.g. "env MOLECULE_WORKSPACE_TOKEN", "file .auth_token"),
-    or None if no token is reachable.
+def _resolve_token() -> tuple[Optional[str], Optional[str]]:
+    """Return ``(token_value, source_label)`` if the operator's
+    environment exposes a token, else ``(None, None)``.
+
+    Single source of truth used by both ``check_env_vars()`` (which
+    only needs the source label) and ``check_register()`` (which
+    needs the actual value to send a Bearer header). Keeping these
+    in one place means a future env-var addition only updates the
+    resolver — not two parallel readers that can drift.
     """
-    if os.environ.get("MOLECULE_WORKSPACE_TOKEN", "").strip():
-        return "env MOLECULE_WORKSPACE_TOKEN"
+    val = os.environ.get("MOLECULE_WORKSPACE_TOKEN", "").strip()
+    if val:
+        return val, "env MOLECULE_WORKSPACE_TOKEN"
     file_var = os.environ.get("MOLECULE_WORKSPACE_TOKEN_FILE", "").strip()
     if file_var:
         if os.path.isfile(file_var):
-            return f"file {file_var} (via MOLECULE_WORKSPACE_TOKEN_FILE)"
-        return None
+            try:
+                from pathlib import Path as _Path
+                return (
+                    _Path(file_var).read_text().strip(),
+                    f"file {file_var} (via MOLECULE_WORKSPACE_TOKEN_FILE)",
+                )
+            except OSError:
+                return None, None
+        return None, None
     # Per-runtime container path used by the in-platform path; rarely
     # set on external setups but check anyway so the message is
     # accurate for both shapes.
@@ -189,10 +207,22 @@ def _resolve_token_summary() -> Optional[str]:
         import configs_dir
         candidate = configs_dir.resolve() / ".auth_token"
         if candidate.is_file():
-            return f"file {candidate}"
+            try:
+                return candidate.read_text().strip(), f"file {candidate}"
+            except OSError:
+                return None, None
     except Exception:
         pass
-    return None
+    return None, None
+
+
+def _resolve_token_summary() -> Optional[str]:
+    """Return just the source label (no secret value). Convenience
+    wrapper around :func:`_resolve_token` for callers that don't
+    need the value itself.
+    """
+    _, label = _resolve_token()
+    return label
 
 
 def check_env_vars() -> Verdict:
@@ -281,42 +311,35 @@ def check_platform_health() -> Verdict:
     return "ok"
 
 
-def check_register() -> Verdict:
-    """Light end-to-end auth check via POST /registry/register.
+def check_token_auth() -> Verdict:
+    """Light auth check via POST /registry/heartbeat.
 
-    Doesn't write a heartbeat or change platform state beyond what
-    a normal molecule-mcp boot would do — the register endpoint is
-    idempotent. Skipped when env vars failed earlier so the operator
-    isn't shown a redundant 401.
+    Why heartbeat and not register: register is an UPSERT — sending
+    it from doctor would clobber the workspace's actual agent_card
+    (name, description, version) until the real agent next calls
+    register. That's an invisible production-disruption: someone
+    runs ``molecule-mcp doctor`` against a live workspace and the
+    canvas briefly displays "doctor-probe" as the agent name.
+
+    Heartbeat only updates last_heartbeat_at (and clears
+    awaiting_agent if needed) — that's exactly what a normal
+    molecule-mcp boot does every 20s, so an extra heartbeat from
+    the doctor is indistinguishable from background traffic.
+
+    Skipped when env vars failed earlier so the operator isn't shown
+    a redundant 401.
     """
-    label = "Registry register"
+    label = "Token auth"
     base = os.environ.get("PLATFORM_URL", "").strip().rstrip("/")
     workspace_id = os.environ.get("WORKSPACE_ID", "").strip()
-    token_summary = _resolve_token_summary()
-    if not (base and workspace_id and token_summary):
+    token, source_label = _resolve_token()
+    if not (base and workspace_id and token):
         _warn(label, "skipped (Env vars must pass first)", "fix Env vars, re-run")
         return "warn"
-    # Get the token value matching the resolver's source preference.
-    token = os.environ.get("MOLECULE_WORKSPACE_TOKEN", "").strip()
-    if not token:
-        file_var = os.environ.get("MOLECULE_WORKSPACE_TOKEN_FILE", "").strip()
-        if file_var and os.path.isfile(file_var):
-            try:
-                token = open(file_var).read().strip()
-            except Exception as e:
-                _fail(label, f"could not read token file: {e}", "fix the file permissions or path")
-                return "fail"
-    if not token:
-        _warn(label, "skipped (no token resolvable)", "set MOLECULE_WORKSPACE_TOKEN or MOLECULE_WORKSPACE_TOKEN_FILE")
-        return "warn"
     import json
-    body = json.dumps({
-        "id": workspace_id,
-        "url": "",  # external URL is unknown to doctor; register accepts empty
-        "agent_card": {"name": "doctor-probe", "version": "0.0.0"},
-    }).encode()
+    body = json.dumps({"id": workspace_id}).encode()
     req = urllib_request.Request(
-        f"{base}/registry/register",
+        f"{base}/registry/heartbeat",
         data=body,
         method="POST",
         headers={
@@ -333,10 +356,10 @@ def check_register() -> Verdict:
         status = getattr(e, "code", None)
         err = str(e.reason if hasattr(e, "reason") else e)
         if status is None:
-            _fail(label, f"POST {base}/registry/register failed: {err}", "check network")
+            _fail(label, f"POST {base}/registry/heartbeat failed: {err}", "check network")
             return "fail"
     except Exception as e:
-        _fail(label, f"POST register failed: {e}", "check network")
+        _fail(label, f"POST heartbeat failed: {e}", "check network")
         return "fail"
     if status == 401:
         _fail(
@@ -355,10 +378,17 @@ def check_register() -> Verdict:
         )
         return "fail"
     if not (200 <= status < 300):
-        _fail(label, f"POST register returned HTTP {status}", "see platform logs")
+        _fail(label, f"POST heartbeat returned HTTP {status}", "see platform logs")
         return "fail"
-    _ok(label, f"POST {base}/registry/register → {status}")
+    _ok(label, f"POST {base}/registry/heartbeat → {status} (token from {source_label})")
     return "ok"
+
+
+# Back-compat alias: the previous name was check_register, but the
+# implementation switched to a non-mutating heartbeat probe (see
+# check_token_auth's docstring). Kept so external test suites or
+# pinned-import scripts don't break on the rename.
+check_register = check_token_auth
 
 
 CHECKS = [
@@ -367,7 +397,7 @@ CHECKS = [
     check_path_for_binary,
     check_env_vars,
     check_platform_health,
-    check_register,
+    check_token_auth,
 ]
 
 

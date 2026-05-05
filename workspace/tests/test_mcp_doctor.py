@@ -105,6 +105,75 @@ def test_check_register_skipped_without_env(monkeypatch):
     assert mcp_doctor.check_register() == "warn"
 
 
+def test_check_token_auth_uses_heartbeat_endpoint(monkeypatch):
+    """Pin: doctor MUST hit /registry/heartbeat, not /registry/register.
+
+    register is an UPSERT — using it from doctor would clobber the
+    workspace's actual agent_card metadata until the real agent next
+    calls register. heartbeat only updates last_heartbeat_at, which
+    a normal molecule-mcp boot does every 20s anyway, so the doctor's
+    extra heartbeat is indistinguishable from background traffic.
+
+    This test pins the URL via a urllib mock so a future refactor
+    that accidentally re-routes through /registry/register fails
+    here at PR-review time, not after operators report
+    "doctor-probe" briefly appearing as their agent name in canvas.
+    """
+    monkeypatch.setenv("PLATFORM_URL", "https://x.moleculesai.app")
+    monkeypatch.setenv("WORKSPACE_ID", "ws-test")
+    monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN", "tok-abc")
+    monkeypatch.delenv("MOLECULE_WORKSPACE_TOKEN_FILE", raising=False)
+
+    captured: dict[str, object] = {}
+
+    class _FakeResp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+    def fake_urlopen(req, timeout=None):
+        captured["full_url"] = req.full_url
+        captured["method"] = req.get_method()
+        return _FakeResp()
+
+    monkeypatch.setattr(mcp_doctor.urllib_request, "urlopen", fake_urlopen)
+    verdict = mcp_doctor.check_token_auth()
+    assert verdict == "ok"
+    assert captured["method"] == "POST"
+    # The load-bearing assertion — must use heartbeat, never register.
+    assert captured["full_url"].endswith("/registry/heartbeat"), (
+        f"doctor must use /registry/heartbeat (idempotent), not register "
+        f"(UPSERT — clobbers agent_card). Got: {captured['full_url']}"
+    )
+    assert "/registry/register" not in str(captured["full_url"]), (
+        "doctor must NEVER POST to /registry/register — that's a UPSERT "
+        "that overwrites agent_card metadata until the real agent next "
+        "calls register."
+    )
+
+
+def test_resolve_token_returns_value_and_label_for_env(monkeypatch):
+    """The single resolver returns both the value (for Bearer header)
+    and a non-secret label (for the env-vars summary). Drift between
+    label and value is the previous bug shape."""
+    monkeypatch.setenv("PLATFORM_URL", "https://x.moleculesai.app")
+    monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN", "secret-tok-abc")
+    monkeypatch.delenv("MOLECULE_WORKSPACE_TOKEN_FILE", raising=False)
+    val, label = mcp_doctor._resolve_token()
+    assert val == "secret-tok-abc"
+    assert label == "env MOLECULE_WORKSPACE_TOKEN"
+    # Summary helper must agree with the resolver's source.
+    assert mcp_doctor._resolve_token_summary() == label
+
+
+def test_resolve_token_returns_none_when_missing(monkeypatch):
+    monkeypatch.delenv("MOLECULE_WORKSPACE_TOKEN", raising=False)
+    monkeypatch.delenv("MOLECULE_WORKSPACE_TOKEN_FILE", raising=False)
+    val, label = mcp_doctor._resolve_token()
+    assert val is None
+    assert label is None
+
+
 def test_run_returns_1_when_any_fail(monkeypatch, capsys):
     """End-to-end: stripped environment → at least one FAIL →
     exit 1. Pin the exit-code contract so this is scriptable from
