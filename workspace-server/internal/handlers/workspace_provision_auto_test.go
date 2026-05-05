@@ -894,6 +894,32 @@ func TestRunRestartCycle_UsesProvisionWorkspaceAutoSync(t *testing.T) {
 	}
 }
 
+// TestPauseHandler_UsesStopWorkspaceAuto — Phase 3 of #2799 source-level
+// pin. Pause's per-workspace stop call must route through
+// StopWorkspaceAuto so SaaS tenants terminate the EC2 instead of leaking
+// it (same drift class as the team-collapse leak #2813 and the
+// workspace-delete leak #2814 closed by PR #2824).
+//
+// Pause-specific bookkeeping (mark paused, clear keys, broadcast)
+// stays in the Pause handler — only the "stop the running workload"
+// step delegates to the dispatcher. This pin asserts the dispatcher
+// is called from the Pause loop with `ws.id`.
+func TestPauseHandler_UsesStopWorkspaceAuto(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	src, err := os.ReadFile(filepath.Join(wd, "workspace_restart.go"))
+	if err != nil {
+		t.Fatalf("read workspace_restart.go: %v", err)
+	}
+	stripped := stripGoComments(src)
+	if !bytes.Contains(stripped, []byte("h.StopWorkspaceAuto(ctx, ws.id)")) {
+		t.Errorf("workspace_restart.go must call StopWorkspaceAuto from the Pause loop with `ws.id` — current code does not. " +
+			"Phase 3 of #2799 migrated this site; do not regress to the inline `if h.provisioner != nil { Stop }` dispatch.")
+	}
+}
+
 // stripGoComments removes // line comments and /* */ block comments
 // from Go source. Imperfect (doesn't handle comments-inside-strings)
 // but adequate for the source-level pin tests in this file — none of
