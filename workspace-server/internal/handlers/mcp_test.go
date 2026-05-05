@@ -11,18 +11,21 @@ import (
 	"os"
 	"testing"
 
+	"errors"
+
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
-	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/gin-gonic/gin"
 )
 
 // newMCPHandler is a test helper that constructs an MCPHandler backed by the
-// sqlmock DB set up by setupTestDB.
+// sqlmock DB set up by setupTestDB. Uses newTestBroadcaster so handlers
+// that BroadcastOnly (send_message_to_user, etc.) don't nil-panic on the
+// hub — events.NewBroadcaster(nil) crashes inside hub.Broadcast.
 func newMCPHandler(t *testing.T) (*MCPHandler, sqlmock.Sqlmock) {
 	t.Helper()
 	mock := setupTestDB(t)
-	h := NewMCPHandler(db.DB, events.NewBroadcaster(nil))
+	h := NewMCPHandler(db.DB, newTestBroadcaster())
 	return h, mock
 }
 
@@ -625,6 +628,170 @@ func TestMCPHandler_SendMessageToUser_Blocked_WhenEnvNotSet(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unexpected DB calls: %v", err)
+	}
+}
+
+// TestMCPHandler_SendMessageToUser_DBErrorLogsAndStill200s pins the
+// "best-effort persistence" contract: when the activity_log INSERT
+// fails (DB hiccup, constraint violation, transient connection drop),
+// the tool MUST still return success to the agent because the WS
+// broadcast already succeeded — the user has seen the message.
+//
+// This matches /notify (activity.go) behavior. Returning an error
+// here would cause the agent to retry and re-broadcast, double-
+// rendering the message in the user's live chat panel for every
+// retry until the DB recovers.
+func TestMCPHandler_SendMessageToUser_DBErrorLogsAndStill200s(t *testing.T) {
+	t.Setenv("MOLECULE_MCP_ALLOW_SEND_MESSAGE", "true")
+	h, mock := newMCPHandler(t)
+
+	mock.ExpectQuery("SELECT name FROM workspaces").
+		WithArgs("ws-err").
+		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("CEO Ryan PC"))
+
+	// INSERT fails — must NOT abort the tool response.
+	mock.ExpectExec(`INSERT INTO activity_logs.*'a2a_receive'.*'notify'`).
+		WillReturnError(errors.New("transient db error"))
+
+	w := mcpPost(t, h, "ws-err", map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      100,
+		"method":  "tools/call",
+		"params": map[string]interface{}{
+			"name": "send_message_to_user",
+			"arguments": map[string]interface{}{
+				"message": "should not be lost from the live chat",
+			},
+		},
+	})
+
+	var resp mcpResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response was not valid JSON-RPC: %v", err)
+	}
+	// Tool response is success — INSERT failure logged, broadcast
+	// already succeeded.
+	if resp.Error != nil {
+		t.Errorf("tool response should be success on DB error (broadcast won), got JSON-RPC error: %+v", resp.Error)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expected DB calls in order: %v", err)
+	}
+}
+
+// TestMCPHandler_SendMessageToUser_ResponseBodyShape pins the
+// response_body JSON shape stored in activity_logs. This shape MUST
+// match what the canvas hydrater (extractResponseText in
+// historyHydration.ts) reads — specifically `{"result": "<text>"}`.
+// Any drift in the JSON shape silently breaks chat history without
+// failing the INSERT.
+//
+// Caught the same drift class flagged in
+// feedback_assert_exact_not_substring.md: a substring match on
+// "result" would pass even if the field were renamed; we assert the
+// exact JSON shape.
+func TestMCPHandler_SendMessageToUser_ResponseBodyShape(t *testing.T) {
+	t.Setenv("MOLECULE_MCP_ALLOW_SEND_MESSAGE", "true")
+	h, mock := newMCPHandler(t)
+
+	const userMessage = "Hi there from the agent"
+
+	mock.ExpectQuery("SELECT name FROM workspaces").
+		WithArgs("ws-shape").
+		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("CEO Ryan PC"))
+
+	// Capture the response_body argument and assert its exact shape.
+	mock.ExpectExec(`INSERT INTO activity_logs.*'a2a_receive'.*'notify'`).
+		WithArgs(
+			"ws-shape",
+			sqlmock.AnyArg(), // summary
+			// The response_body MUST be JSON `{"result": "<message>"}`.
+			// Any other shape (e.g., wrapping in a Task object) breaks
+			// the canvas hydrater's `body.result` extractor.
+			`{"result":"`+userMessage+`"}`,
+		).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := mcpPost(t, h, "ws-shape", map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      101,
+		"method":  "tools/call",
+		"params": map[string]interface{}{
+			"name": "send_message_to_user",
+			"arguments": map[string]interface{}{
+				"message": userMessage,
+			},
+		},
+	})
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("response_body shape drift — would silently break canvas chat history: %v", err)
+	}
+}
+
+// TestMCPHandler_SendMessageToUser_PersistsToActivityLog pins the fix
+// for the reno-stars / CEO Ryan PC chat-history data-loss bug:
+// external claude-code agents using molecule-mcp's send_message_to_user
+// tool route through THIS handler (not the HTTP /notify endpoint),
+// and the handler used to broadcast WS only — visible live, gone on
+// reload because nothing wrote to activity_logs.
+//
+// Pins:
+//   - INSERT happens on the success path (broadcast + DB write).
+//   - INSERT shape mirrors the HTTP /notify handler exactly:
+//     activity_type='a2a_receive', method='notify', request_body NULL,
+//     response_body={"result": message}, status='ok'. The canvas
+//     hydration query (`type=a2a_receive&source=canvas`) treats
+//     both writers as the same shape — drift here means the bug
+//     re-surfaces silently.
+func TestMCPHandler_SendMessageToUser_PersistsToActivityLog(t *testing.T) {
+	t.Setenv("MOLECULE_MCP_ALLOW_SEND_MESSAGE", "true")
+	h, mock := newMCPHandler(t)
+
+	// Workspace lookup — the handler verifies the workspace exists
+	// before it does anything else. Returning a name lets the
+	// broadcast payload populate; the test doesn't assert on the
+	// broadcast (no observable WS in this fake), only on the DB.
+	mock.ExpectQuery("SELECT name FROM workspaces").
+		WithArgs("ws-msg").
+		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("CEO Ryan PC"))
+
+	// The persistence INSERT — pin the exact shape so a future
+	// refactor that switches columns or drops `method='notify'`
+	// breaks the test loud, not silently. Match by regex on the
+	// table + activity_type + method literals.
+	mock.ExpectExec(`INSERT INTO activity_logs.*'a2a_receive'.*'notify'`).
+		WithArgs(
+			"ws-msg",
+			sqlmock.AnyArg(), // summary "Agent message: ..."
+			sqlmock.AnyArg(), // response_body JSON
+		).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := mcpPost(t, h, "ws-msg", map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      99,
+		"method":  "tools/call",
+		"params": map[string]interface{}{
+			"name": "send_message_to_user",
+			"arguments": map[string]interface{}{
+				"message": "Hello, this should persist!",
+			},
+		},
+	})
+
+	var resp mcpResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response was not valid JSON-RPC: %v\nbody=%s", err, w.Body.String())
+	}
+	if resp.Error != nil {
+		t.Errorf("unexpected JSON-RPC error: %+v", resp.Error)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("DB expectations not met (INSERT missing → reno-stars data-loss regression): %v", err)
 	}
 }
 
