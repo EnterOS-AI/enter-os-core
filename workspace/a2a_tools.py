@@ -28,96 +28,20 @@ from platform_auth import list_registered_workspaces
 
 
 # ---------------------------------------------------------------------------
-# RBAC helpers (mirror builtin_tools/audit.py for a2a_tools isolation)
+# RBAC + auth helpers — extracted to a2a_tools_rbac (RFC #2873 iter 4a).
+# Re-exported here under the legacy underscore names so existing tests'
+# patch("a2a_tools._check_memory_write_permission", …) and call sites
+# inside this module that resolve bare names against the module-level
+# namespace continue to work unchanged.
 # ---------------------------------------------------------------------------
-
-_ROLE_PERMISSIONS = {
-    "admin": {"delegate", "approve", "memory.read", "memory.write"},
-    "operator": {"delegate", "approve", "memory.read", "memory.write"},
-    "read-only": {"memory.read"},
-    "no-delegation": {"approve", "memory.read", "memory.write"},
-    "no-approval": {"delegate", "memory.read", "memory.write"},
-    "memory-readonly": {"memory.read"},
-}
-
-
-def _get_workspace_tier() -> int:
-    """Return the workspace tier from config (0 = root, 1+ = tenant)."""
-    try:
-        from config import load_config
-
-        cfg = load_config()
-        return getattr(cfg, "tier", 1)
-    except Exception:
-        return int(os.environ.get("WORKSPACE_TIER", 1))
-
-
-def _check_memory_write_permission() -> bool:
-    """Return True if this workspace's RBAC roles grant memory.write."""
-    try:
-        from config import load_config
-
-        cfg = load_config()
-        roles = list(getattr(cfg, "rbac", None).roles or ["operator"])
-        allowed = dict(getattr(cfg, "rbac", None).allowed_actions or {})
-    except Exception:
-        # Fail closed: deny when config is unavailable
-        roles = ["operator"]
-        allowed = {}
-
-    for role in roles:
-        if role == "admin":
-            return True
-        if role in allowed:
-            if "memory.write" in allowed[role]:
-                return True
-        elif role in _ROLE_PERMISSIONS and "memory.write" in _ROLE_PERMISSIONS[role]:
-            return True
-    return False
-
-
-def _check_memory_read_permission() -> bool:
-    """Return True if this workspace's RBAC roles grant memory.read."""
-    try:
-        from config import load_config
-
-        cfg = load_config()
-        roles = list(getattr(cfg, "rbac", None).roles or ["operator"])
-        allowed = dict(getattr(cfg, "rbac", None).allowed_actions or {})
-    except Exception:
-        roles = ["operator"]
-        allowed = {}
-
-    for role in roles:
-        if role == "admin":
-            return True
-        if role in allowed:
-            if "memory.read" in allowed[role]:
-                return True
-        elif role in _ROLE_PERMISSIONS and "memory.read" in _ROLE_PERMISSIONS[role]:
-            return True
-    return False
-
-
-def _is_root_workspace() -> bool:
-    """Return True if this workspace is tier 0 (root/root-org)."""
-    return _get_workspace_tier() == 0
-
-
-def _auth_headers_for_heartbeat(workspace_id: str | None = None) -> dict[str, str]:
-    """Return Phase 30.1 auth headers; tolerate platform_auth being absent
-    in older installs (e.g. during rolling upgrade).
-
-    ``workspace_id`` selects the per-workspace token from the multi-
-    workspace registry when set (PR-1: external agent registered in
-    multiple workspaces). With no arg the legacy single-token path is
-    unchanged.
-    """
-    try:
-        from platform_auth import auth_headers
-        return auth_headers(workspace_id) if workspace_id else auth_headers()
-    except Exception:
-        return {}
+from a2a_tools_rbac import (  # noqa: E402  (import after the from-a2a_client block)
+    _auth_headers_for_heartbeat,
+    _check_memory_read_permission,
+    _check_memory_write_permission,
+    _get_workspace_tier,
+    _is_root_workspace,
+    _ROLE_PERMISSIONS,
+)
 
 
 # Per-field caps on the heartbeat / activity payload. Borrowed from

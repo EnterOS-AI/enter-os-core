@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 import mcp_cli
+import mcp_heartbeat
 
 
 @pytest.fixture(autouse=True)
@@ -739,8 +740,13 @@ def test_heartbeat_loop_calls_persist_on_success(monkeypatch):
     def fake_persist(resp):
         saw.append(resp)
 
+    # Patch on mcp_heartbeat — that's where heartbeat_loop's internal
+    # name resolution looks up persist_inbound_secret_from_heartbeat
+    # after the RFC #2873 iter 3 split. The mcp_cli._persist_…_from_heartbeat
+    # back-compat re-export still exists, but patching it here would not
+    # affect the loop body.
     monkeypatch.setattr(
-        mcp_cli, "_persist_inbound_secret_from_heartbeat", fake_persist
+        mcp_heartbeat, "persist_inbound_secret_from_heartbeat", fake_persist
     )
 
     class FakeResp:
@@ -786,8 +792,8 @@ def test_heartbeat_loop_skips_persist_on_4xx(monkeypatch):
     """Heartbeat 4xx error path must NOT invoke persist (no body to trust)."""
     saw: list[object] = []
     monkeypatch.setattr(
-        mcp_cli,
-        "_persist_inbound_secret_from_heartbeat",
+        mcp_heartbeat,
+        "persist_inbound_secret_from_heartbeat",
         lambda r: saw.append(r),
     )
 
@@ -899,7 +905,7 @@ def test_heartbeat_single_401_logs_warning_not_error(monkeypatch, caplog):
     transient platform blip. Log at WARNING; don't shout."""
     import logging
 
-    caplog.set_level(logging.WARNING, logger="mcp_cli")
+    caplog.set_level(logging.WARNING, logger="mcp_heartbeat")
 
     _multi_iter_runner(monkeypatch, [401])
 
@@ -923,7 +929,7 @@ def test_heartbeat_three_consecutive_401s_escalates_to_error(monkeypatch, caplog
     LOUD ERROR with re-onboard guidance — not buried at WARNING."""
     import logging
 
-    caplog.set_level(logging.WARNING, logger="mcp_cli")
+    caplog.set_level(logging.WARNING, logger="mcp_heartbeat")
 
     _multi_iter_runner(monkeypatch, [401, 401, 401])
 
@@ -949,7 +955,7 @@ def test_heartbeat_403_treated_same_as_401(monkeypatch, caplog):
     not authorized for this workspace). Same escalation path."""
     import logging
 
-    caplog.set_level(logging.WARNING, logger="mcp_cli")
+    caplog.set_level(logging.WARNING, logger="mcp_heartbeat")
 
     _multi_iter_runner(monkeypatch, [403, 403, 403])
 
@@ -963,7 +969,7 @@ def test_heartbeat_recovery_resets_consecutive_counter(monkeypatch, caplog):
     later should NOT immediately escalate."""
     import logging
 
-    caplog.set_level(logging.WARNING, logger="mcp_cli")
+    caplog.set_level(logging.WARNING, logger="mcp_heartbeat")
 
     # Two 401s, then 200, then one 401. If counter resets correctly,
     # the final 401 is "1 consecutive" and should NOT escalate.
@@ -982,7 +988,7 @@ def test_heartbeat_500_does_not_increment_auth_counter(monkeypatch, caplog):
     misleading the operator."""
     import logging
 
-    caplog.set_level(logging.WARNING, logger="mcp_cli")
+    caplog.set_level(logging.WARNING, logger="mcp_heartbeat")
 
     _multi_iter_runner(monkeypatch, [500, 500, 500])
 
