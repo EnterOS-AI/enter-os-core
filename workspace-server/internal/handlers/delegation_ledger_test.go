@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
@@ -118,6 +119,63 @@ func TestTruncatePreview_ExactlyAtCap(t *testing.T) {
 	got := truncatePreview(in)
 	if got != in {
 		t.Errorf("at-cap should passthrough unchanged")
+	}
+}
+
+// TestTruncatePreview_NeverProducesInvalidUTF8 — pins #2962. The old
+// byte-slice implementation (s[:previewCap]) split on a byte boundary,
+// so a multi-byte codepoint straddling byte 4096 produced invalid
+// UTF-8 → Postgres JSONB rejects → ledger row not inserted → audit
+// gap. Test feeds a CJK / emoji-padded string longer than previewCap
+// and asserts utf8.ValidString on the result.
+func TestTruncatePreview_NeverProducesInvalidUTF8(t *testing.T) {
+	// Build a string of '世' (3 bytes per rune in UTF-8) that's just
+	// past the cap. With the old implementation, the slice at byte
+	// previewCap would land mid-rune and ValidString would fail.
+	// With the rune-aware implementation, the result is always valid
+	// UTF-8 even if the byte length is < previewCap.
+	rune3 := "世" // U+4E16, 3 bytes
+	// Need at least previewCap/3 + 1 runes so we cross the cap with
+	// margin to spare.
+	in := strings.Repeat(rune3, (previewCap/3)+10)
+	if len(in) <= previewCap {
+		t.Fatalf("test setup: input too short (%d bytes) — must exceed previewCap=%d", len(in), previewCap)
+	}
+	got := truncatePreview(in)
+	if !utf8.ValidString(got) {
+		t.Errorf("truncatePreview produced invalid UTF-8 — JSONB will reject this row. len(got)=%d", len(got))
+	}
+	if len(got) > previewCap {
+		t.Errorf("truncatePreview exceeded cap: len(got)=%d > previewCap=%d", len(got), previewCap)
+	}
+	// Defense-in-depth: the result should also be a clean rune
+	// prefix of the input — not some garbled sequence.
+	if !strings.HasPrefix(in, got) {
+		t.Errorf("truncatePreview should return a prefix of the input")
+	}
+}
+
+// TestTruncatePreview_MultiByteAtBoundary — most-targeted regression.
+// Feeds an input where the cap byte falls EXACTLY in the middle of a
+// 3-byte codepoint. Pre-fix, this is the case that produces invalid
+// UTF-8; post-fix, the truncate stops at the previous rune boundary.
+func TestTruncatePreview_MultiByteAtBoundary(t *testing.T) {
+	// Build a string that's `previewCap-1` ASCII bytes followed by
+	// '世' (3 bytes). Total = previewCap + 2. The old impl would
+	// slice at byte previewCap, landing inside the '世' codepoint.
+	prefix := strings.Repeat("a", previewCap-1)
+	in := prefix + "世"
+	if len(in) != previewCap+2 {
+		t.Fatalf("test setup: expected len %d, got %d", previewCap+2, len(in))
+	}
+	got := truncatePreview(in)
+	if !utf8.ValidString(got) {
+		t.Errorf("truncatePreview produced invalid UTF-8 at the multi-byte boundary case")
+	}
+	// Result should be exactly the ASCII prefix — '世' was past
+	// the cap so it must be dropped entirely.
+	if got != prefix {
+		t.Errorf("expected exact ASCII prefix, got %q (len=%d)", got[len(got)-10:], len(got))
 	}
 }
 

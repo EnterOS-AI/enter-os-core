@@ -53,13 +53,35 @@ func NewDelegationLedger(handle *sql.DB) *DelegationLedger {
 // truncatePreview caps stored preview at 4KB. The full prompt/response is
 // already in activity_logs.{request,response}_body — this is the at-a-glance
 // view for the dashboard, not a forensic record.
+//
+// Rune-safe: previous byte-slice form (s[:previewCap]) split on a byte
+// boundary, which on a multi-byte codepoint at byte 4096 produced
+// invalid UTF-8 — Postgres JSONB rejects → ledger row not inserted →
+// audit gap. Issue #2962. Walks the string by rune, stops at the last
+// rune-boundary index that fits inside the cap. ASCII-only strings hit
+// the cap exactly; CJK/emoji strings stop slightly under the cap,
+// never over.
+//
+// Mirrors the truncatePreviewRunes fix from agent_message_writer.go
+// (#2959). Both call sites should consume a shared helper after both
+// fixes have landed — followup deduplication tracked in #2962's body.
 const previewCap = 4096
 
 func truncatePreview(s string) string {
 	if len(s) <= previewCap {
 		return s
 	}
-	return s[:previewCap]
+	// Range over a string yields rune-boundary byte indices. Walk
+	// until the next index would exceed previewCap; the previous
+	// index is the safe truncation point.
+	end := 0
+	for i := range s {
+		if i > previewCap {
+			break
+		}
+		end = i
+	}
+	return s[:end]
 }
 
 // InsertOpts is the agent's record-of-intent. Caller, callee, task preview,
