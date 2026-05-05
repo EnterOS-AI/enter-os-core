@@ -1,0 +1,42 @@
+name: branch-protection drift check
+
+# Catches out-of-band edits to branch protection (UI clicks, manual gh
+# api PATCH from a one-off ops session) by comparing live state against
+# tools/branch-protection/apply.sh's desired state every day. Fails the
+# workflow when they drift; the failure is the signal.
+#
+# When it fails: re-run apply.sh to put the live state back to the
+# script's intent, OR update apply.sh to encode the new intent and
+# commit. Either way the script is the source of truth.
+
+on:
+  schedule:
+    # 14:00 UTC daily. Off-hours for most teams; gives a fresh signal
+    # at the start of every working day.
+    - cron: '0 14 * * *'
+  workflow_dispatch:
+  pull_request:
+    branches: [staging, main]
+    paths:
+      - 'tools/branch-protection/**'
+      - '.github/workflows/branch-protection-drift.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    name: Branch protection drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Run drift check
+        env:
+          # GH_TOKEN_FOR_ADMIN_API — repo-admin scope, needed for the
+          # /branches/:b/protection endpoint. Falls back to GITHUB_TOKEN
+          # for read-only mode (gh api on the protection endpoint
+          # returns 200 to maintainers, 404 to read-only). Configure at
+          # Settings → Secrets and variables → Actions.
+          GH_TOKEN: ${{ secrets.GH_TOKEN_FOR_ADMIN_API || secrets.GITHUB_TOKEN }}
+        run: bash tools/branch-protection/drift_check.sh
