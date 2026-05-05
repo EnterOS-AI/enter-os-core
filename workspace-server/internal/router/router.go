@@ -217,6 +217,7 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		wsAuth.POST("/memories", memsh.Commit)
 		wsAuth.GET("/memories", memsh.Search)
 		wsAuth.DELETE("/memories/:memoryId", memsh.Delete)
+		wsAuth.PATCH("/memories/:memoryId", memsh.Update)
 
 		// Approvals
 		apph := handlers.NewApprovalsHandler(broadcaster)
