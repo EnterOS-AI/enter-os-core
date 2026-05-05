@@ -66,13 +66,13 @@ const sweepDeadline = 30 * time.Second
 // to exercise the ticker-driven sweep path without burning real wall-
 // clock time.
 func StartSweeper(ctx context.Context, storage Storage, ackRetention time.Duration) {
-	StartSweeperWithInterval(ctx, storage, ackRetention, SweepInterval)
+	startSweeperWithInterval(ctx, storage, ackRetention, SweepInterval)
 }
 
-// StartSweeperWithInterval is the test-friendly variant of StartSweeper
+// startSweeperWithInterval is the test-friendly variant of StartSweeper
 // — same loop, but the cadence is caller-specified. Production code
 // should use StartSweeper to keep the SweepInterval constant pinned.
-func StartSweeperWithInterval(ctx context.Context, storage Storage, ackRetention, interval time.Duration) {
+func startSweeperWithInterval(ctx context.Context, storage Storage, ackRetention, interval time.Duration) {
 	if storage == nil {
 		log.Println("pendinguploads sweeper: storage is nil — sweeper disabled")
 		return

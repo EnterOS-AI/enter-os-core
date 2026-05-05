@@ -44,6 +44,9 @@ func (f *fakeSweepStorage) MarkFetched(_ context.Context, _ uuid.UUID) error {
 func (f *fakeSweepStorage) Ack(_ context.Context, _ uuid.UUID) error {
 	return errors.New("not used")
 }
+func (f *fakeSweepStorage) PutBatch(_ context.Context, _ uuid.UUID, _ []pendinguploads.PutItem) ([]uuid.UUID, error) {
+	return nil, errors.New("not used")
+}
 func (f *fakeSweepStorage) Sweep(_ context.Context, ackRetention time.Duration) (pendinguploads.SweepResult, error) {
 	idx := int(f.calls.Load())
 	f.calls.Add(1)
@@ -180,7 +183,7 @@ func TestStartSweeperWithInterval_TickerFiresAdditionalCycles(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go pendinguploads.StartSweeperWithInterval(ctx, store, time.Hour, 30*time.Millisecond)
+	go pendinguploads.StartSweeperWithIntervalForTest(ctx, store, time.Hour, 30*time.Millisecond)
 
 	// Immediate cycle + at least one tick-driven cycle.
 	store.waitForCycle(t, 2, 2*time.Second)

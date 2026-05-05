@@ -44,6 +44,7 @@ import (
 	"context"
 	"database/sql"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -270,6 +271,183 @@ func TestIntegration_PendingUploads_PutEnforcesSizeCap(t *testing.T) {
 	tooBig := make([]byte, pendinguploads.MaxFileBytes+1)
 	if _, err := store.Put(ctx, wsID, tooBig, "big.bin", "application/octet-stream"); err != pendinguploads.ErrTooLarge {
 		t.Errorf("expected ErrTooLarge, got %v", err)
+	}
+}
+
+// TestIntegration_PendingUploads_PutBatch_HappyPath_AllRowsCommit pins the
+// "all rows commit" leg of the PutBatch atomicity contract against a real
+// Postgres. sqlmock can't catch a regression where the Go-side Tx machinery
+// silently no-ops the inserts (e.g., wrong driver options on BeginTx); only
+// COUNT(*) on the real table can.
+func TestIntegration_PendingUploads_PutBatch_HappyPath_AllRowsCommit(t *testing.T) {
+	conn := integrationDB_PendingUploads(t)
+	store := pendinguploads.NewPostgres(conn)
+	ctx := context.Background()
+
+	wsID := uuid.New()
+
+	// Pre-existing row so the COUNT(*) baseline is non-zero — proves
+	// PutBatch adds rows incrementally rather than overwriting.
+	if _, err := store.Put(ctx, wsID, []byte("seed"), "seed.txt", "text/plain"); err != nil {
+		t.Fatalf("seed Put: %v", err)
+	}
+
+	items := []pendinguploads.PutItem{
+		{Content: []byte("alpha"), Filename: "alpha.txt", Mimetype: "text/plain"},
+		{Content: []byte("beta"), Filename: "beta.bin", Mimetype: "application/octet-stream"},
+		{Content: []byte("gamma"), Filename: "gamma.pdf", Mimetype: "application/pdf"},
+	}
+	ids, err := store.PutBatch(ctx, wsID, items)
+	if err != nil {
+		t.Fatalf("PutBatch: %v", err)
+	}
+	if len(ids) != len(items) {
+		t.Fatalf("ids length %d, want %d", len(ids), len(items))
+	}
+
+	// Each returned id round-trips through Get with the right content.
+	for i, id := range ids {
+		rec, err := store.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get item %d (%s): %v", i, id, err)
+		}
+		if string(rec.Content) != string(items[i].Content) {
+			t.Errorf("item %d content = %q, want %q", i, rec.Content, items[i].Content)
+		}
+		if rec.Filename != items[i].Filename {
+			t.Errorf("item %d filename = %q, want %q", i, rec.Filename, items[i].Filename)
+		}
+	}
+
+	var n int
+	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pending_uploads WHERE workspace_id = $1`, wsID).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 4 {
+		t.Errorf("workspace row count = %d, want 4 (1 seed + 3 batch)", n)
+	}
+}
+
+// TestIntegration_PendingUploads_PutBatch_AtomicRollback_NoLeakOnFailure
+// proves the all-or-nothing contract end-to-end against real Postgres MVCC.
+//
+// Strategy: build a 3-item batch where item index 1 carries a filename with
+// an embedded NUL byte. lib/pq rejects NULs in TEXT columns at the protocol
+// layer (`pq: invalid byte sequence for encoding "UTF8": 0x00`), which
+// triggers the per-row INSERT error path in PutBatch. The first item's
+// INSERT…RETURNING already wrote a row to the Tx's snapshot, so a buggy
+// rollback would leave that row visible after PutBatch returns.
+//
+// Postgrest semantics: ROLLBACK is the only way a real DB can guarantee the
+// "no leak" contract; a unit test with sqlmock can prove the Go function
+// CALLED Rollback, but only this integration test proves Postgres actually
+// HONORED it.
+func TestIntegration_PendingUploads_PutBatch_AtomicRollback_NoLeakOnFailure(t *testing.T) {
+	conn := integrationDB_PendingUploads(t)
+	store := pendinguploads.NewPostgres(conn)
+	ctx := context.Background()
+
+	wsID := uuid.New()
+
+	// Baseline COUNT(*) for this workspace — must remain 0 after a failed batch.
+	var before int
+	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pending_uploads WHERE workspace_id = $1`, wsID).Scan(&before); err != nil {
+		t.Fatalf("baseline count: %v", err)
+	}
+	if before != 0 {
+		t.Fatalf("workspace not isolated: baseline = %d, want 0", before)
+	}
+
+	// Item 1 has a NUL byte in the filename — Go-side pre-validation
+	// (which only checks empty/length) lets it through, so the INSERT
+	// reaches lib/pq, which rejects it at the protocol level. That's the
+	// canonical "DB-side error mid-batch" we want to exercise.
+	items := []pendinguploads.PutItem{
+		{Content: []byte("ok"), Filename: "ok.txt", Mimetype: "text/plain"},
+		{Content: []byte("bad"), Filename: "bad\x00name.txt", Mimetype: "text/plain"},
+		{Content: []byte("never"), Filename: "never.txt", Mimetype: "text/plain"},
+	}
+	_, err := store.PutBatch(ctx, wsID, items)
+	if err == nil {
+		t.Fatalf("expected error from NUL-byte filename, got nil")
+	}
+
+	// THE assertion this whole test exists for: even though item 0's
+	// INSERT…RETURNING succeeded inside the Tx, the rollback unwound
+	// it — zero rows for this workspace, not one (let alone three).
+	var after int
+	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pending_uploads WHERE workspace_id = $1`, wsID).Scan(&after); err != nil {
+		t.Fatalf("post-failure count: %v", err)
+	}
+	if after != 0 {
+		t.Errorf("Tx rollback leaked rows: workspace count = %d, want 0", after)
+	}
+}
+
+// TestIntegration_PendingUploads_PutBatch_Oversize_NoTxOpened verifies the
+// pre-validation short-circuit: an oversized item rejects with ErrTooLarge
+// BEFORE any Tx opens, so the table is untouched. The unit test (sqlmock
+// with zero expectations) catches the Go-side path; this test sanity-checks
+// no real DB I/O happens by confirming COUNT(*) doesn't move.
+func TestIntegration_PendingUploads_PutBatch_Oversize_NoTxOpened(t *testing.T) {
+	conn := integrationDB_PendingUploads(t)
+	store := pendinguploads.NewPostgres(conn)
+	ctx := context.Background()
+
+	wsID := uuid.New()
+	tooBig := make([]byte, pendinguploads.MaxFileBytes+1)
+	_, err := store.PutBatch(ctx, wsID, []pendinguploads.PutItem{
+		{Content: []byte("ok"), Filename: "ok.txt"},
+		{Content: tooBig, Filename: "too-big.bin"},
+	})
+	if err != pendinguploads.ErrTooLarge {
+		t.Fatalf("expected ErrTooLarge, got %v", err)
+	}
+	var n int
+	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pending_uploads WHERE workspace_id = $1`, wsID).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("pre-validation did NOT short-circuit: count = %d, want 0", n)
+	}
+}
+
+// TestIntegration_PendingUploads_AckedIndexExists verifies the Phase 5a
+// migration (20260505200000_pending_uploads_acked_index.up.sql) actually
+// created idx_pending_uploads_acked with the right partial-index predicate.
+//
+// Why pg_indexes and not EXPLAIN: the planner prefers Seq Scan on tiny
+// tables regardless of available indexes — a plan-shape check would be
+// flaky under real test loads. The contract we care about is "the index
+// exists with the predicate we wrote in the migration"; pg_indexes is
+// the canonical source for that, robust to row count and planner version.
+func TestIntegration_PendingUploads_AckedIndexExists(t *testing.T) {
+	conn := integrationDB_PendingUploads(t)
+	ctx := context.Background()
+
+	var indexdef string
+	err := conn.QueryRowContext(ctx, `
+		SELECT indexdef FROM pg_indexes
+		WHERE schemaname = 'public'
+		  AND tablename = 'pending_uploads'
+		  AND indexname = 'idx_pending_uploads_acked'
+	`).Scan(&indexdef)
+	if err == sql.ErrNoRows {
+		t.Fatal("idx_pending_uploads_acked is missing — migration 20260505200000 not applied")
+	}
+	if err != nil {
+		t.Fatalf("pg_indexes query: %v", err)
+	}
+
+	// Pin the partial-index predicate. Without "WHERE acked_at IS NOT NULL"
+	// we'd be indexing the entire table (defeats the point — most rows are
+	// unacked), and the existing idx_pending_uploads_unacked already covers
+	// the inverse predicate.
+	if !strings.Contains(indexdef, "(acked_at)") {
+		t.Errorf("index missing acked_at column: %s", indexdef)
+	}
+	if !strings.Contains(indexdef, "WHERE (acked_at IS NOT NULL)") {
+		t.Errorf("index missing partial predicate: %s", indexdef)
 	}
 }
 

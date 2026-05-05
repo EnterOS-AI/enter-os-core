@@ -77,6 +77,14 @@ func (f *fakeStorage) Sweep(_ context.Context, _ time.Duration) (pendinguploads.
 	return pendinguploads.SweepResult{}, nil
 }
 
+// PutBatch is required by the Storage interface; the upload handler
+// tests live in chat_files_poll_test.go and use a separate fake
+// (inMemStorage). Stubbed here because the Get/Ack tests don't drive
+// PutBatch, but the interface must be satisfied.
+func (f *fakeStorage) PutBatch(_ context.Context, _ uuid.UUID, _ []pendinguploads.PutItem) ([]uuid.UUID, error) {
+	return nil, nil
+}
+
 func newRouter(handler *handlers.PendingUploadsHandler) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
