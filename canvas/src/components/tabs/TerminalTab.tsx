@@ -1,16 +1,105 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import type { WorkspaceNodeData } from "@/store/canvas";
 
 interface Props {
   workspaceId: string;
+  /** Workspace metadata from the canvas store. Optional for back-compat
+   *  with any caller that still mounts <TerminalTab workspaceId=... />
+   *  without threading data through (e.g. tests). When present, the
+   *  runtime field gates the early-return below. */
+  data?: WorkspaceNodeData;
 }
 
 import { deriveWsBaseUrl } from "@/lib/ws-url";
 
 const WS_URL = deriveWsBaseUrl();
 
-export function TerminalTab({ workspaceId }: Props) {
+/**
+ * NotAvailablePanel — full-tab placeholder with a big terminal-off icon
+ * for runtimes that don't expose a TTY (e.g. external workspaces, where
+ * the platform doesn't own the process). Pre-fix the tab tried to open
+ * a WebSocket against /ws/terminal/<id> for these workspaces, the server
+ * 404'd, and the user saw "Connection failed" — which reads as a bug,
+ * not as "this runtime intentionally has no shell". This banner makes
+ * the absence intentional.
+ */
+function NotAvailablePanel({ runtime }: { runtime: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center h-full p-8 text-center bg-surface-sunken/30">
+      {/* Big terminal-off icon — bracket "[_]" with a slash through it.
+          Custom inline SVG so we don't depend on an icon set being
+          present at canvas build-time. */}
+      <svg
+        width="72"
+        height="72"
+        viewBox="0 0 72 72"
+        fill="none"
+        aria-hidden="true"
+        className="text-ink-soft mb-4"
+      >
+        <rect
+          x="10"
+          y="14"
+          width="52"
+          height="44"
+          rx="4"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          fill="none"
+          opacity="0.6"
+        />
+        <path
+          d="M22 30 L30 36 L22 42"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          opacity="0.7"
+        />
+        <path
+          d="M34 44 L44 44"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          opacity="0.7"
+        />
+        {/* Diagonal cancel slash */}
+        <path
+          d="M14 14 L58 58"
+          stroke="currentColor"
+          strokeWidth="3"
+          strokeLinecap="round"
+        />
+      </svg>
+      <h3 className="text-sm font-medium text-ink mb-1.5">Terminal not available</h3>
+      <p className="text-[11px] text-ink-soft max-w-xs leading-relaxed">
+        This workspace runs the{" "}
+        <span className="font-mono text-ink-mid">{runtime}</span> runtime,
+        which doesn't expose a shell. Use the Chat tab to interact with the
+        agent directly.
+      </p>
+    </div>
+  );
+}
+
+/** Runtimes that don't expose a TTY. Keep narrow — only add a runtime
+ *  here when its provisioner genuinely has no shell endpoint, otherwise
+ *  the user loses access to a real debugging surface. */
+const RUNTIMES_WITHOUT_TERMINAL = new Set(["external"]);
+
+export function TerminalTab({ workspaceId, data }: Props) {
+  // Early-return for runtimes that have no shell. Skips the entire
+  // xterm + WebSocket dance below — without this, mounting the tab
+  // for an external workspace pops the WS, gets a 404 from the
+  // workspace-server (no /ws/terminal/<id> route registered for it),
+  // and shows "Connection failed" with a Reconnect button — confusing
+  // because the workspace IS healthy, just doesn't have a TTY.
+  if (data && RUNTIMES_WITHOUT_TERMINAL.has(data.runtime)) {
+    return <NotAvailablePanel runtime={data.runtime} />;
+  }
+
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<{ dispose: () => void } | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
