@@ -555,16 +555,34 @@ def test_poll_once_self_notify_does_not_fire_notification(state: inbox.InboxStat
 def test_start_poller_thread_is_daemon(state: inbox.InboxState):
     """Daemon flag is required so the poller dies with the parent
     process; a non-daemon poller would leak across `claude` restarts
-    and write to a stale workspace."""
+    and write to a stale workspace.
+
+    Stop_event is plumbed so the thread cleans up at the end of the
+    test instead of leaking into later tests. Without cleanup, the
+    daemon's ~10ms tick races with later tests that patch httpx.Client
+    — the leaked thread sees their patched response and runs an
+    unwanted iteration of _poll_once that double-counts mocked calls
+    (caught when test_batch_fetcher_owns_client_when_not_supplied
+    surfaced this on Python 3.11 CI but not 3.13 local).
+    """
     resp = _make_response(200, [])
     p, _ = _patch_httpx(resp)
+    stop_event = threading.Event()
     with p, patch("platform_auth.auth_headers", return_value={}):
         # Use a very short interval so the loop body runs at least once
         # before we exit the test.
-        t = inbox.start_poller_thread(state, "http://platform", "ws-1", interval=0.01)
+        t = inbox.start_poller_thread(
+            state, "http://platform", "ws-1", interval=0.01, stop_event=stop_event
+        )
         time.sleep(0.05)
-    assert t.daemon is True
-    assert t.is_alive()
+        assert t.daemon is True
+        assert t.is_alive()
+        # Signal shutdown + wait for the thread to actually exit before
+        # we leave the test scope. Without this join, the leaked thread
+        # races with later tests' httpx patches.
+        stop_event.set()
+        t.join(timeout=2.0)
+    assert not t.is_alive(), "poller thread did not exit on stop_event"
 
 
 # ---------------------------------------------------------------------------

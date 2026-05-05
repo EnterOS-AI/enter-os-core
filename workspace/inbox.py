@@ -685,6 +685,7 @@ def start_poller_thread(
     platform_url: str,
     workspace_id: str,
     interval: float = POLL_INTERVAL_SECONDS,
+    stop_event: threading.Event | None = None,
 ) -> threading.Thread:
     """Spawn the poller as a daemon thread. Returns the Thread handle.
 
@@ -696,13 +697,18 @@ def start_poller_thread(
     operator running ``ps -eL`` or eyeballing ``threading.enumerate()``
     can tell which thread is which without reverse-engineering it from
     crash tracebacks.
+
+    Pass ``stop_event`` to enable graceful shutdown — used by tests so
+    the daemon thread doesn't outlive the test that started it and race
+    with later tests' httpx patches. Production code passes None and
+    relies on the daemon flag for process-exit cleanup.
     """
     name = "molecule-mcp-inbox-poller"
     if workspace_id:
         name = f"{name}-{workspace_id[:8]}"
     t = threading.Thread(
         target=_poll_loop,
-        args=(state, platform_url, workspace_id, interval),
+        args=(state, platform_url, workspace_id, interval, stop_event),
         name=name,
         daemon=True,
     )
