@@ -109,6 +109,12 @@ curl -fsS -X POST "{{PLATFORM_URL}}/registry/register" \
       "version": "0.1.0"
     }
   }'
+
+# Need help?
+#   Documentation: https://doc.moleculesai.app/docs/guides/external-agent-registration
+#   Common errors:
+#     • 401 / 403 on register — WORKSPACE_AUTH_TOKEN must be the value
+#       shown at workspace create. Tokens are shown only once.
 `
 
 // externalChannelTemplate — Claude Code channel plugin install + .env. For
@@ -172,6 +178,18 @@ claude --dangerously-load-development-channels \
 # Multi-workspace: comma-separate IDs and tokens (same order). See
 # https://github.com/Molecule-AI/molecule-mcp-claude-channel for
 # pairing flow, push-mode upgrade, and v0.2 roadmap.
+
+# Need help?
+#   Documentation: https://doc.moleculesai.app/docs/guides/claude-code-channel-plugin
+#   Common errors:
+#     • "plugin not installed" — run /plugin marketplace add then
+#       /plugin install lines above; /reload-plugins or restart.
+#     • "not on the approved channels allowlist" — custom channels need
+#       --dangerously-load-development-channels; team/enterprise orgs
+#       need admin to set channelsEnabled + allowedChannelPlugins.
+#     • "Inbound messages not arriving" — stderr should show
+#       "molecule channel: connected — watching N workspace(s)";
+#       verify ~/.claude/channels/molecule/.env has PLATFORM_URL + token.
 `
 
 // externalUniversalMcpTemplate — runtime-agnostic standalone path.
@@ -224,6 +242,17 @@ claude mcp add molecule -s user -- env \
 #
 # Origin/WAF handling is built into the wheel — no manual headers
 # needed when calling tools through the MCP server.
+
+# Need help?
+#   Where to install: https://pypi.org/project/molecule-ai-workspace-runtime/
+#   Documentation: https://doc.moleculesai.app/docs/guides/mcp-server-setup
+#   Common errors:
+#     • "Tools not appearing in your agent" — run ` + "`claude mcp list`" + ` (or
+#       your runtime's equivalent) and confirm the molecule entry. If
+#       missing, re-run the ` + "`claude mcp add`" + ` line above.
+#     • "ConnectionRefused / DNS error on first call" — PLATFORM_URL must
+#       include the scheme (https://) and have NO trailing slash. Verify
+#       with: curl ${PLATFORM_URL}/healthz
 `
 
 // externalPythonTemplate uses molecule-sdk-python's RemoteAgentClient +
@@ -262,6 +291,15 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+# Need help?
+#   Where to install: https://pypi.org/project/molecule-ai-workspace-runtime/
+#   Documentation: https://doc.moleculesai.app/docs/guides/external-agent-registration
+#   Common errors:
+#     • 401 from /heartbeat — AUTH_TOKEN expired or wrong workspace_id.
+#       Tokens shown only once at create time; re-create to get a fresh one.
+#     • AGENT_URL not reachable from platform — public HTTPS URL required
+#       for inbound A2A. Use ngrok or Cloudflare Tunnel if behind NAT.
 `
 
 // externalHermesChannelTemplate — install snippet for operators whose
@@ -329,6 +367,16 @@ hermes gateway --replace
 #
 # Source + issue tracker:
 # https://github.com/Molecule-AI/hermes-channel-molecule
+
+# Need help?
+#   Documentation: https://doc.moleculesai.app/docs/guides/external-agent-registration
+#   Common errors:
+#     • Gateway start failure — tail ~/.hermes/gateway.log. YAML
+#       duplicate-key in config.yaml is the most common cause; the
+#       gateway: block must appear exactly once.
+#     • Plugin not discovered after install — pip show hermes-channel-molecule
+#       to confirm install. Some hermes builds need ` + "`hermes plugin reload`" + `
+#       before the new platform_plugins entry takes effect.
 `
 
 // externalCodexTemplate — for operators whose external agent is a
@@ -410,6 +458,18 @@ disown
 #    available to the agent, and the bridge wakes a non-interactive
 #    codex turn for any inbound canvas/peer message:
 codex
+
+# Need help?
+#   Documentation: https://doc.moleculesai.app/docs/guides/mcp-server-setup
+#   Common errors:
+#     • [mcp_servers.molecule] not loaded — codex must be ≥ 0.57.
+#       Check with ` + "`codex --version`" + `; upgrade via npm install -g @openai/codex@latest.
+#     • TOML parse error after re-running setup — TOML rejects duplicate
+#       [mcp_servers.molecule] tables. Open ~/.codex/config.toml and
+#       remove the old block before pasting the new one.
+#     • Canvas messages don't wake codex — step 3 (codex-channel-molecule
+#       bridge daemon) is required for inbound push. Check
+#       pgrep -f codex-channel-molecule and tail ~/.codex-channel-molecule/daemon.log.
 `
 
 // externalOpenClawTemplate — for operators whose external agent is an
@@ -471,4 +531,13 @@ disown
 
 # 5. Run an agent turn — molecule tools are now available:
 openclaw agent --message "list my peers"
+
+# Need help?
+#   Documentation: https://doc.moleculesai.app/docs/guides/mcp-server-setup
+#   Common errors:
+#     • Gateway not starting — tail ~/.openclaw/gateway.log. The loopback
+#       bind requires :18789 to be free; check with ` + "`lsof -iTCP:18789`" + `.
+#     • ` + "`openclaw mcp set`" + ` rejected — the heredoc generates JSON;
+#       verify with ` + "`jq < ~/.openclaw/mcp/molecule.json`" + ` and re-run
+#       ` + "`openclaw mcp set`" + ` if the file is malformed.
 `
