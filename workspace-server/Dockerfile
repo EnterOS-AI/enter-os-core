@@ -63,21 +63,30 @@ fi
 
 # Memory v2 sidecar (built-in postgres plugin). Co-located with the
 # main server so operators flipping MEMORY_V2_CUTOVER=true don't need
-# to provision a separate service. Stays inert at the protocol layer
-# until that env var is set — the workspace-server's wiring.go skips
-# building the client without MEMORY_PLUGIN_URL, so the running plugin
-# is a no-op for traffic.
+# to provision a separate service.
 #
-# Env defaults:
+# Spawn-gating: only start the sidecar when the operator has indicated
+# they want it — either MEMORY_V2_CUTOVER=true OR MEMORY_PLUGIN_URL set.
+# Without that signal, the sidecar adds zero value (the platform's
+# wiring.go skips building the client too) but pays a real cost: the
+# plugin's first migration runs `CREATE EXTENSION vector`, which fails
+# on tenant Postgres without pgvector preinstalled and aborts container
+# boot via the 30s health gate. Caught on staging redeploy 2026-05-05.
+#
+# Env defaults (when sidecar IS spawned):
 #   MEMORY_PLUGIN_DATABASE_URL = $DATABASE_URL  (share existing Postgres;
 #       plugin's `memory_namespaces` / `memory_records` tables coexist
 #       with `agent_memories` and the rest of the platform schema —
 #       no conflicts. Operator can override with a separate URL.)
-#   MEMORY_PLUGIN_LISTEN_ADDR  = :9100
+#   MEMORY_PLUGIN_LISTEN_ADDR  = 127.0.0.1:9100
 #
-# Set MEMORY_PLUGIN_DISABLE=1 to skip launching the sidecar entirely
-# (e.g. an operator running the plugin externally on a separate host).
-if [ -z "$MEMORY_PLUGIN_DISABLE" ] && [ -n "$DATABASE_URL" ]; then
+# Set MEMORY_PLUGIN_DISABLE=1 to force-skip the sidecar even with
+# cutover env set (e.g. running the plugin externally on a separate host).
+memory_plugin_wanted=""
+if [ "$MEMORY_V2_CUTOVER" = "true" ] || [ -n "$MEMORY_PLUGIN_URL" ]; then
+  memory_plugin_wanted=1
+fi
+if [ -z "$MEMORY_PLUGIN_DISABLE" ] && [ -n "$memory_plugin_wanted" ] && [ -n "$DATABASE_URL" ]; then
   : "${MEMORY_PLUGIN_DATABASE_URL:=$DATABASE_URL}"
   : "${MEMORY_PLUGIN_LISTEN_ADDR:=:9100}"
   export MEMORY_PLUGIN_DATABASE_URL MEMORY_PLUGIN_LISTEN_ADDR
