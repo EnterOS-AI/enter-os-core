@@ -57,8 +57,12 @@ export interface MemoryV2 {
   created_at: string;
   /** 0..1 plugin similarity score; only present when ?q= is set. */
   score?: number | null;
-  /** workspace_id of the peer that originated this memory if propagation is in play. */
-  source_workspace_id?: string;
+  // Note: an earlier iteration of this type carried a `source_workspace_id`
+  // field rendered as a "from peer" badge. The propagation contract that
+  // would have populated it ("Reserved for future cross-namespace
+  // propagation semantics" in memory-plugin-v1.yaml) is unimplemented —
+  // nothing in the codebase writes that key. Removed in self-review.
+  // Re-add when propagation gains a concrete shape.
 }
 
 interface MemoriesResponse {
@@ -81,6 +85,24 @@ interface Props {
 
 function sanitizeId(id: string): string {
   return id.replace(/[^a-zA-Z0-9]/g, '-');
+}
+
+/**
+ * Detect a memory-plugin-503 error from the api wrapper's stringified
+ * Error message. Matches on the literal env-var name rather than the
+ * status code, because the api shim renders status codes inside a
+ * larger formatted message and a future status-code reformat would
+ * silently break the detection.
+ *
+ * The substring `MEMORY_PLUGIN_URL` is hard-coded in the handler at
+ * `workspace-server/internal/handlers/memories_v2.go:available()`,
+ * so this is a pinned cross-layer contract — drift is caught by both
+ * the Go test (TestMemoriesV2_PluginUnwired_All503) and the canvas
+ * test (TestMemoryInspectorPanel — plugin unavailable).
+ */
+export function isPluginUnavailableError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : '';
+  return msg.includes('MEMORY_PLUGIN_URL');
 }
 
 function formatRelativeTime(iso: string): string {
@@ -169,11 +191,10 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
       setNamespaces(data);
       setPluginUnavailable(false);
     } catch (e) {
-      // 503 indicates the plugin isn't wired. Surface it specially —
-      // anything else stays as a generic load failure that the
+      // Plugin-unavailable (503) indicates MEMORY_PLUGIN_URL isn't set.
+      // Anything else stays as a generic load failure that the
       // entries-load path will also flag.
-      const msg = e instanceof Error ? e.message : '';
-      if (msg.includes('503') || msg.toLowerCase().includes('plugin is not configured')) {
+      if (isPluginUnavailableError(e)) {
         setPluginUnavailable(true);
       }
       setNamespaces({ readable: [], writable: [] });
@@ -205,12 +226,11 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
         : data.memories;
       setEntries(sorted);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Failed to load memories';
-      if (msg.includes('503') || msg.toLowerCase().includes('plugin is not configured')) {
+      if (isPluginUnavailableError(e)) {
         setPluginUnavailable(true);
         setError(null); // surfaced via banner, not row error
       } else {
-        setError(msg);
+        setError(e instanceof Error ? e.message : 'Failed to load memories');
       }
       setEntries([]);
     } finally {
@@ -578,16 +598,6 @@ function MemoryEntryRow({ entry, onDelete }: MemoryEntryRowProps) {
           </span>
         )}
 
-        {/* Source workspace badge (propagated memory) */}
-        {entry.source_workspace_id && (
-          <span
-            className="text-[9px] shrink-0 font-mono text-violet-400"
-            title={`From: ${entry.source_workspace_id}`}
-            data-testid="source-workspace-badge"
-          >
-            ⇡{entry.source_workspace_id.slice(0, 6)}
-          </span>
-        )}
 
         <span className="text-[9px] text-ink-soft shrink-0">
           {formatRelativeTime(entry.created_at)}

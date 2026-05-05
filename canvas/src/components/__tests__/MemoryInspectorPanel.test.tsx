@@ -13,7 +13,7 @@
  *   - Search results sort by score descending
  *   - Empty-state copy differs by query / plugin-state / no-data
  *   - Per-row badges render (kind / source / pin / TTL / score /
- *     source_workspace_id) and TTL countdown handles past/future/null
+ *     score) and TTL countdown handles past/future/null
  *   - Delete (Forget) flow: optimistic removal, confirmation dialog,
  *     server failure rolls back via reload
  *   - formatTTL helper covers s/m/h/d/expired/null/invalid branches
@@ -61,6 +61,7 @@ import { api } from '@/lib/api';
 import {
   MemoryInspectorPanel,
   formatTTL,
+  isPluginUnavailableError,
   type MemoryV2,
   type NamespacesResponse,
 } from '../MemoryInspectorPanel';
@@ -99,14 +100,13 @@ const MEM_PINNED: MemoryV2 = {
   created_at: '2026-04-17T12:00:00.000Z',
 };
 
-const MEM_PROPAGATED: MemoryV2 = {
-  id: 'mem-from-peer',
+const MEM_RUNTIME_CHECKPOINT: MemoryV2 = {
+  id: 'mem-checkpoint',
   namespace: 'team:t-1',
-  content: 'Cross-workspace fact',
+  content: 'Runtime checkpoint',
   kind: 'checkpoint',
   source: 'runtime',
   pin: false,
-  source_workspace_id: 'ws-peer-99',
   created_at: '2026-04-17T12:00:00.000Z',
 };
 
@@ -141,6 +141,33 @@ function stubFetch(memories: MemoryV2[], namespaces: NamespacesResponse = NS_RES
     return Promise.resolve({ memories });
   }) as typeof api.get);
 }
+
+// ── isPluginUnavailableError helper ─────────────────────────────────────────
+
+describe('isPluginUnavailableError', () => {
+  it('matches the literal env var contract from the server handler', () => {
+    expect(
+      isPluginUnavailableError(
+        new Error('API GET /workspaces/x/v2/memories: 503 {"error":"memory plugin is not configured (set MEMORY_PLUGIN_URL)"}'),
+      ),
+    ).toBe(true);
+  });
+
+  it('does not false-match on generic 503 errors that don\'t mention the env var', () => {
+    expect(isPluginUnavailableError(new Error('API GET /foo: 503 something else'))).toBe(false);
+  });
+
+  it('does not false-match on plain 4xx errors', () => {
+    expect(isPluginUnavailableError(new Error('API GET /foo: 401 unauthorized'))).toBe(false);
+  });
+
+  it('returns false for non-Error inputs', () => {
+    expect(isPluginUnavailableError(null)).toBe(false);
+    expect(isPluginUnavailableError(undefined)).toBe(false);
+    expect(isPluginUnavailableError('a string')).toBe(false);
+    expect(isPluginUnavailableError({ message: 'MEMORY_PLUGIN_URL' })).toBe(false);
+  });
+});
 
 // ── formatTTL helper ─────────────────────────────────────────────────────────
 
@@ -242,7 +269,7 @@ describe('MemoryInspectorPanel — plugin unavailable', () => {
   });
 
   it('shows the empty-state explaining plugin disabled', async () => {
-    mockGet.mockRejectedValue(new Error('HTTP 503'));
+    mockGet.mockRejectedValue(new Error('API GET /workspaces/x/v2/memories: 503 {"error":"memory plugin is not configured (set MEMORY_PLUGIN_URL)"}'));
     render(<MemoryInspectorPanel workspaceId="ws-1" />);
     await waitFor(() => screen.getByText(/Memory plugin disabled/i));
   });
@@ -346,8 +373,8 @@ describe('MemoryInspectorPanel — search', () => {
 // ── Per-row badges ───────────────────────────────────────────────────────────
 
 describe('MemoryInspectorPanel — row badges', () => {
-  it('renders kind, source, pin, TTL, source-workspace badges per shape', async () => {
-    stubFetch([MEM_PINNED, MEM_PROPAGATED]);
+  it('renders kind, source, pin, TTL badges per shape', async () => {
+    stubFetch([MEM_PINNED, MEM_RUNTIME_CHECKPOINT]);
     render(<MemoryInspectorPanel workspaceId="ws-1" />);
 
     await waitFor(() => {
@@ -357,15 +384,13 @@ describe('MemoryInspectorPanel — row badges', () => {
       expect(pinnedRow.querySelector('[data-testid="source-badge"]')?.textContent).toBe('user');
       expect(pinnedRow.querySelector('[data-testid="pin-badge"]')).toBeTruthy();
       expect(pinnedRow.querySelector('[data-testid="ttl-badge"]')?.textContent).toMatch(/^⌛\d+[hd]$/);
-      expect(pinnedRow.querySelector('[data-testid="source-workspace-badge"]')).toBeNull();
 
-      // Propagated memory: kind=checkpoint, source=runtime, no pin, no TTL, source_workspace
-      const propRow = screen.getByTestId('memory-row-mem-from-peer');
+      // Checkpoint memory: kind=checkpoint, source=runtime, no pin, no TTL
+      const propRow = screen.getByTestId('memory-row-mem-checkpoint');
       expect(propRow.querySelector('[data-testid="kind-badge"]')?.textContent).toBe('C');
       expect(propRow.querySelector('[data-testid="source-badge"]')?.textContent).toBe('runtime');
       expect(propRow.querySelector('[data-testid="pin-badge"]')).toBeNull();
       expect(propRow.querySelector('[data-testid="ttl-badge"]')).toBeNull();
-      expect(propRow.querySelector('[data-testid="source-workspace-badge"]')?.textContent).toMatch(/^⇡ws-pee/);
     });
   });
 
