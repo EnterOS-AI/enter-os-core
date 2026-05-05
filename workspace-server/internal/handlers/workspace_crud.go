@@ -420,22 +420,33 @@ func (h *WorkspaceHandler) Delete(c *gin.Context) {
 
 	var stopErrs []error
 	stopAndRemove := func(wsID string) {
-		if h.provisioner == nil {
-			return
-		}
-		// Check Stop's error before attempting RemoveVolume — the
-		// previous code discarded it and immediately tried the
-		// volume remove, which always fails with "volume in use"
-		// when Stop didn't actually kill the container. The orphan
-		// sweeper (registry/orphan_sweeper.go) catches what we
-		// skip here on the next reconcile pass.
-		if err := h.provisioner.Stop(cleanupCtx, wsID); err != nil {
-			log.Printf("Delete %s container stop failed: %v — leaving volume for orphan sweeper", wsID, err)
+		// Stop the workload first via the backend dispatcher (CP for
+		// SaaS, Docker for self-hosted). Pre-2026-05-05 this gate was
+		// `if h.provisioner == nil { return }` — early-returning on
+		// every SaaS tenant left the EC2 running with no DB row to
+		// track it (issue #2814; the comment below claimed "loud-fail
+		// instead of silent-leak" but the early-return made it the
+		// silent path on SaaS).
+		//
+		// Check Stop's error before any volume cleanup — the previous
+		// code discarded it and immediately tried RemoveVolume, which
+		// always fails with "volume in use" when Stop didn't actually
+		// kill the container. The orphan sweeper
+		// (registry/orphan_sweeper.go) catches what we skip here on
+		// the next reconcile pass.
+		if err := h.StopWorkspaceAuto(cleanupCtx, wsID); err != nil {
+			log.Printf("Delete %s stop failed: %v — leaving cleanup for orphan sweeper", wsID, err)
 			stopErrs = append(stopErrs, fmt.Errorf("stop %s: %w", wsID, err))
 			return
 		}
-		if err := h.provisioner.RemoveVolume(cleanupCtx, wsID); err != nil {
-			log.Printf("Delete %s volume removal warning: %v", wsID, err)
+		// Volume cleanup is Docker-only — CP-managed workspaces have
+		// no host-bind volumes to remove. Skip silently when no Docker
+		// provisioner is wired (the SaaS path already terminated the
+		// EC2 above; nothing left to do).
+		if h.provisioner != nil {
+			if err := h.provisioner.RemoveVolume(cleanupCtx, wsID); err != nil {
+				log.Printf("Delete %s volume removal warning: %v", wsID, err)
+			}
 		}
 	}
 

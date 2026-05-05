@@ -41,7 +41,9 @@ import (
 type trackingCPProv struct {
 	mu       sync.Mutex
 	started  []string
+	stopped  []string
 	startErr error
+	stopErr  error
 }
 
 func (r *trackingCPProv) Start(_ context.Context, cfg provisioner.WorkspaceConfig) (string, error) {
@@ -53,11 +55,24 @@ func (r *trackingCPProv) Start(_ context.Context, cfg provisioner.WorkspaceConfi
 	}
 	return "i-stub-" + cfg.WorkspaceID, nil
 }
-func (r *trackingCPProv) Stop(_ context.Context, _ string) error { return nil }
+func (r *trackingCPProv) Stop(_ context.Context, workspaceID string) error {
+	r.mu.Lock()
+	r.stopped = append(r.stopped, workspaceID)
+	r.mu.Unlock()
+	return r.stopErr
+}
 func (r *trackingCPProv) GetConsoleOutput(_ context.Context, _ string) (string, error) {
 	return "", nil
 }
 func (r *trackingCPProv) IsRunning(_ context.Context, _ string) (bool, error) { return true, nil }
+
+func (r *trackingCPProv) stoppedSnapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, len(r.stopped))
+	copy(out, r.stopped)
+	return out
+}
 
 func (r *trackingCPProv) startedSnapshot() []string {
 	r.mu.Lock()
@@ -431,4 +446,195 @@ func TestOrgImportGate_UsesHasProvisionerNotBareField(t *testing.T) {
 	if !bytes.Contains(src, []byte("h.workspace.HasProvisioner()")) {
 		t.Errorf("org_import.go must call h.workspace.HasProvisioner() in the provisioning gate — current code does not")
 	}
+}
+
+// TestStopWorkspaceAuto_RoutesToCPWhenSet — symmetric with the
+// provision dispatcher test above. SaaS tenants run with cpProv set
+// and the local Docker provisioner nil; Auto must route Stop to CP
+// (= terminate the EC2). Pre-2026-05-05 the absence of this dispatcher
+// meant team-collapse + workspace-delete called h.provisioner.Stop
+// directly, no-oping on every SaaS tenant — issue #2813 (collapse) and
+// #2814 (delete) both leak EC2s for ~6 months.
+func TestStopWorkspaceAuto_RoutesToCPWhenSet(t *testing.T) {
+	rec := &trackingCPProv{}
+	bcast := &concurrentSafeBroadcaster{}
+	h := NewWorkspaceHandler(bcast, nil, "http://localhost:8080", t.TempDir())
+	h.SetCPProvisioner(rec)
+
+	wsID := "ws-stop-routes-cp"
+	if err := h.StopWorkspaceAuto(context.Background(), wsID); err != nil {
+		t.Fatalf("StopWorkspaceAuto returned err with CP wired: %v", err)
+	}
+	got := rec.stoppedSnapshot()
+	if len(got) != 1 || got[0] != wsID {
+		t.Errorf("expected cpProv.Stop invoked once with %q, got %v", wsID, got)
+	}
+}
+
+// TestStopWorkspaceAuto_RoutesToDockerWhenOnlyDocker — self-hosted
+// operators run with the local Docker provisioner wired and cpProv nil.
+// Auto must route to Docker.
+//
+// Stub-injects a LocalProvisionerAPI via a private constructor pattern
+// so we don't need a real Docker daemon. NewWorkspaceHandler's
+// constructor takes *provisioner.Provisioner (concrete) so we set the
+// interface field directly.
+func TestStopWorkspaceAuto_RoutesToDockerWhenOnlyDocker(t *testing.T) {
+	bcast := &concurrentSafeBroadcaster{}
+	h := NewWorkspaceHandler(bcast, nil, "http://localhost:8080", t.TempDir())
+	stub := &stoppingLocalProv{}
+	h.provisioner = stub
+
+	wsID := "ws-stop-routes-docker"
+	if err := h.StopWorkspaceAuto(context.Background(), wsID); err != nil {
+		t.Fatalf("StopWorkspaceAuto returned err with Docker wired: %v", err)
+	}
+	if len(stub.stopped) != 1 || stub.stopped[0] != wsID {
+		t.Errorf("expected Docker provisioner.Stop invoked once with %q, got %v", wsID, stub.stopped)
+	}
+}
+
+// TestStopWorkspaceAuto_NoBackendIsNoOp — when neither backend is wired
+// (misconfigured deployment, or test fixture), StopWorkspaceAuto returns
+// nil silently. Distinct from provisionWorkspaceAuto's mark-failed
+// behavior: there's no row state to mark "failed to stop" against, and
+// the absence of a backend means nothing was running to stop.
+func TestStopWorkspaceAuto_NoBackendIsNoOp(t *testing.T) {
+	bcast := &concurrentSafeBroadcaster{}
+	h := NewWorkspaceHandler(bcast, nil, "http://localhost:8080", t.TempDir())
+	// Neither SetCPProvisioner nor a Docker provisioner — both nil.
+
+	if err := h.StopWorkspaceAuto(context.Background(), "ws-noback"); err != nil {
+		t.Errorf("expected nil error on no-backend stop, got %v", err)
+	}
+}
+
+// stoppingLocalProv is a minimal LocalProvisionerAPI stub that records
+// Stop invocations. Other methods panic — guards against accidental
+// use by tests that should be using a different stub.
+type stoppingLocalProv struct {
+	stopped []string
+}
+
+func (s *stoppingLocalProv) Stop(_ context.Context, workspaceID string) error {
+	s.stopped = append(s.stopped, workspaceID)
+	return nil
+}
+func (s *stoppingLocalProv) Start(_ context.Context, _ provisioner.WorkspaceConfig) (string, error) {
+	panic("stoppingLocalProv: Start not implemented for this test")
+}
+func (s *stoppingLocalProv) IsRunning(_ context.Context, _ string) (bool, error) {
+	panic("stoppingLocalProv: IsRunning not implemented for this test")
+}
+func (s *stoppingLocalProv) ExecRead(_ context.Context, _, _ string) ([]byte, error) {
+	panic("stoppingLocalProv: ExecRead not implemented for this test")
+}
+func (s *stoppingLocalProv) RemoveVolume(_ context.Context, _ string) error {
+	panic("stoppingLocalProv: RemoveVolume not implemented for this test")
+}
+func (s *stoppingLocalProv) VolumeHasFile(_ context.Context, _, _ string) (bool, error) {
+	panic("stoppingLocalProv: VolumeHasFile not implemented for this test")
+}
+func (s *stoppingLocalProv) WriteAuthTokenToVolume(_ context.Context, _, _ string) error {
+	panic("stoppingLocalProv: WriteAuthTokenToVolume not implemented for this test")
+}
+
+// TestNoCallSiteCallsBareStop — source-level pin against the bug
+// pattern that motivated this PR. Any non-test handler that wants to
+// "stop the workload" must go through h.X.StopWorkspaceAuto, not bare
+// h.X.provisioner.Stop / h.X.cpProv.Stop / h.X.Stop. Pre-2026-05-05
+// team.go and workspace_crud.go both called h.provisioner.Stop directly
+// inside `if h.provisioner != nil { ... }` gates — silent no-op on
+// SaaS, EC2 leak (#2813, #2814).
+//
+// Allowed exceptions:
+//   - workspace.go: defines StopWorkspaceAuto (the dispatcher itself).
+//   - workspace_provision.go: defines per-backend Start/Stop bodies.
+//   - workspace_restart.go: pre-dates the dispatchers and uses manual
+//     if-cpProv-else dispatch with retry semantics tuned for the
+//     restart hot path. Functionally equivalent + wraps cpStopWithRetry,
+//     so it's not the bug class this gate targets — but it IS
+//     architectural duplication, tracked under #2799.
+//   - container_files.go: drives Docker daemon directly for file-copy
+//     short-lived containers; no workspace-level Stop semantics.
+func TestNoCallSiteCallsBareStop(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	entries, err := os.ReadDir(wd)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	bareShapes := []string{
+		".provisioner.Stop(",
+		".cpProv.Stop(",
+	}
+	allowedFiles := map[string]bool{
+		"workspace.go":           true,
+		"workspace_provision.go": true,
+		"workspace_restart.go":   true,
+		"container_files.go":     true,
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if filepath.Ext(name) != ".go" {
+			continue
+		}
+		if len(name) > len("_test.go") &&
+			name[len(name)-len("_test.go"):] == "_test.go" {
+			continue
+		}
+		if allowedFiles[name] {
+			continue
+		}
+		src, err := os.ReadFile(filepath.Join(wd, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		// Strip line + block comments before substring check — the gate
+		// targets call expressions in real code, not historical
+		// references in documentation/comments. Without this, comments
+		// describing the old buggy shape (kept on purpose for
+		// archaeology) trip the test.
+		stripped := stripGoComments(src)
+		for _, needle := range bareShapes {
+			if bytes.Contains(stripped, []byte(needle)) {
+				t.Errorf("%s contains bare `%s` — must go through h.X.StopWorkspaceAuto so SaaS tenants route to CP. "+
+					"Pre-2026-05-05 team.go and workspace_crud.go did this and silently leaked EC2s on every SaaS collapse / delete (#2813, #2814).", name, needle)
+			}
+		}
+	}
+}
+
+// stripGoComments removes // line comments and /* */ block comments
+// from Go source. Imperfect (doesn't handle comments-inside-strings)
+// but adequate for the source-level pin tests in this file — none of
+// our gated needles legitimately appear inside string literals in the
+// handlers package.
+func stripGoComments(src []byte) []byte {
+	out := make([]byte, 0, len(src))
+	for i := 0; i < len(src); i++ {
+		// Block comment
+		if i+1 < len(src) && src[i] == '/' && src[i+1] == '*' {
+			i += 2
+			for i+1 < len(src) && !(src[i] == '*' && src[i+1] == '/') {
+				i++
+			}
+			i++ // skip closing /
+			continue
+		}
+		// Line comment — preserve the newline so line counts stay sane
+		if i+1 < len(src) && src[i] == '/' && src[i+1] == '/' {
+			for i < len(src) && src[i] != '\n' {
+				i++
+			}
+			if i < len(src) {
+				out = append(out, '\n')
+			}
+			continue
+		}
+		out = append(out, src[i])
+	}
+	return out
 }

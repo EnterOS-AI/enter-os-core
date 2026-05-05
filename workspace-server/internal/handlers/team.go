@@ -11,7 +11,6 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
-	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
@@ -25,28 +24,21 @@ import (
 // NULL auth_token — same drift class as the SaaS bug fixed in #2366.
 type TeamHandler struct {
 	broadcaster *events.Broadcaster
-	// provisioner is interface-typed (#2369) for the same reason as
-	// WorkspaceHandler.provisioner — Stop is the only call site here
-	// and it's on the LocalProvisionerAPI surface, so widening is free
-	// and symmetric with WorkspaceHandler.
-	provisioner provisioner.LocalProvisionerAPI
 	wh          *WorkspaceHandler
 	platformURL string
 	configsDir  string
 }
 
-func NewTeamHandler(b *events.Broadcaster, p *provisioner.Provisioner, wh *WorkspaceHandler, platformURL, configsDir string) *TeamHandler {
-	h := &TeamHandler{
+// NewTeamHandler constructs a TeamHandler. Backend selection (Docker vs
+// CP) goes through h.wh.StopWorkspaceAuto + h.wh.provisionWorkspaceAuto;
+// no per-handler provisioner field is needed here.
+func NewTeamHandler(b *events.Broadcaster, wh *WorkspaceHandler, platformURL, configsDir string) *TeamHandler {
+	return &TeamHandler{
 		broadcaster: b,
 		wh:          wh,
 		platformURL: platformURL,
 		configsDir:  configsDir,
 	}
-	// Avoid the typed-nil interface trap (see NewWorkspaceHandler note).
-	if p != nil {
-		h.provisioner = p
-	}
-	return h
 }
 
 // Expand handles POST /workspaces/:id/expand
@@ -203,9 +195,14 @@ func (h *TeamHandler) Collapse(c *gin.Context) {
 			continue
 		}
 
-		// Stop container if provisioner available
-		if h.provisioner != nil {
-			h.provisioner.Stop(ctx, childID)
+		// Stop the workload via the backend dispatcher (CP for SaaS,
+		// Docker for self-hosted). Pre-2026-05-05 this was
+		// `if h.provisioner != nil { h.provisioner.Stop(...) }`, which
+		// silently skipped on every SaaS tenant — child EC2s kept running
+		// after team-collapse until the orphan sweeper caught them
+		// (issue #2813).
+		if err := h.wh.StopWorkspaceAuto(ctx, childID); err != nil {
+			log.Printf("Team collapse: stop %s failed: %v — orphan sweeper will reconcile", childID, err)
 		}
 
 		// Mark as removed

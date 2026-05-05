@@ -170,6 +170,43 @@ func (h *WorkspaceHandler) provisionWorkspaceAuto(workspaceID, templatePath stri
 	return false
 }
 
+// StopWorkspaceAuto picks the backend (CP for SaaS, local Docker for
+// self-hosted) and stops the workspace synchronously. Returns nil when
+// neither backend is wired (a workspace nobody is running can't be
+// stopped — that's a no-op, not an error).
+//
+// Single source of truth for "stop a workspace" — symmetric with
+// provisionWorkspaceAuto. Pre-2026-05-05 the stop side had no Auto
+// dispatcher and every caller wrote `if h.provisioner != nil { Stop }`,
+// which silently leaked EC2s on SaaS:
+//   - team.go:208 (Collapse) — issue #2813
+//   - workspace_crud.go:432 (stopAndRemove during Delete) — issue #2814
+//
+// Both bugs reproduced for ~6 months. The pattern is the same drift
+// class as the org-import provision bug closed by PR #2811.
+//
+// Why CP wins when both are wired (matching provisionWorkspaceAuto):
+// production runs exactly one backend at a time — a SaaS tenant has
+// cpProv set + provisioner nil; a self-hosted operator has provisioner
+// set + cpProv nil. The "both set" case only arises in test fixtures,
+// and the CP-wins ordering matches how Auto picks for provisioning so
+// the test stubs stay on a single side.
+//
+// Volume cleanup (workspace_crud.go) stays Docker-only — CP-managed
+// workspaces have no volumes to clean. Callers that need that extra
+// step keep their `if h.provisioner != nil { RemoveVolume(...) }`
+// gate AFTER calling StopWorkspaceAuto. The abstraction here is "stop
+// the running workload," not "tear down all state."
+func (h *WorkspaceHandler) StopWorkspaceAuto(ctx context.Context, workspaceID string) error {
+	if h.cpProv != nil {
+		return h.cpProv.Stop(ctx, workspaceID)
+	}
+	if h.provisioner != nil {
+		return h.provisioner.Stop(ctx, workspaceID)
+	}
+	return nil
+}
+
 // SetEnvMutators wires a provisionhook.Registry into the handler. Plugins
 // living in separate repos register on the same Registry instance during
 // boot (see cmd/server/main.go) and main.go calls this setter once before
