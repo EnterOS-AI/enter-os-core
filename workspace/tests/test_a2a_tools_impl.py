@@ -226,16 +226,16 @@ class TestToolDelegateTask:
 
     async def test_peer_not_found_returns_error(self):
         import a2a_tools
-        with patch("a2a_tools.discover_peer", return_value=None):
+        with patch("a2a_tools_delegation.discover_peer", return_value=None):
             result = await a2a_tools.tool_delegate_task("ws-missing", "task")
         assert "not found" in result or "Error" in result
 
     async def test_offline_peer_returns_error(self):
         """A peer with status=offline short-circuits before we hit the proxy."""
         import a2a_tools
-        with patch("a2a_tools.discover_peer", return_value={"id": "ws-1", "status": "offline"}):
+        with patch("a2a_tools_delegation.discover_peer", return_value={"id": "ws-1", "status": "offline"}):
             mc = _make_http_mock()
-            with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+            with patch("a2a_tools_delegation.httpx.AsyncClient", return_value=mc):
                 result = await a2a_tools.tool_delegate_task("ws-1", "task")
         assert "offline" in result.lower()
 
@@ -261,8 +261,8 @@ class TestToolDelegateTask:
             captured["source"] = source_workspace_id
             return "ok"
 
-        with patch("a2a_tools.discover_peer", return_value=peer), \
-             patch("a2a_tools.send_a2a_message", side_effect=fake_send), \
+        with patch("a2a_tools_delegation.discover_peer", return_value=peer), \
+             patch("a2a_tools_delegation.send_a2a_message", side_effect=fake_send), \
              patch("a2a_tools.report_activity", new=AsyncMock()):
             await a2a_tools.tool_delegate_task(peer_id, "do thing")
 
@@ -274,8 +274,8 @@ class TestToolDelegateTask:
         import a2a_tools
 
         peer = {"id": "ws-1", "url": "http://ws-1.svc/a2a", "name": "Worker"}
-        with patch("a2a_tools.discover_peer", return_value=peer), \
-             patch("a2a_tools.send_a2a_message", return_value="Task completed!"), \
+        with patch("a2a_tools_delegation.discover_peer", return_value=peer), \
+             patch("a2a_tools_delegation.send_a2a_message", return_value="Task completed!"), \
              patch("a2a_tools.report_activity", new=AsyncMock()):
             result = await a2a_tools.tool_delegate_task("ws-1", "do something")
 
@@ -287,8 +287,8 @@ class TestToolDelegateTask:
 
         peer = {"id": "ws-1", "url": "http://ws-1.svc/a2a", "name": "Worker"}
         error_msg = f"{a2a_tools._A2A_ERROR_PREFIX}Agent error: something bad"
-        with patch("a2a_tools.discover_peer", return_value=peer), \
-             patch("a2a_tools.send_a2a_message", return_value=error_msg), \
+        with patch("a2a_tools_delegation.discover_peer", return_value=peer), \
+             patch("a2a_tools_delegation.send_a2a_message", return_value=error_msg), \
              patch("a2a_tools.report_activity", new=AsyncMock()):
             result = await a2a_tools.tool_delegate_task("ws-1", "do something")
 
@@ -302,8 +302,8 @@ class TestToolDelegateTask:
         # Pre-populate the cache
         a2a_tools._peer_names["ws-cached"] = "CachedName"
         peer = {"id": "ws-cached", "url": "http://ws-cached.svc/a2a"}  # no 'name'
-        with patch("a2a_tools.discover_peer", return_value=peer), \
-             patch("a2a_tools.send_a2a_message", return_value="done"), \
+        with patch("a2a_tools_delegation.discover_peer", return_value=peer), \
+             patch("a2a_tools_delegation.send_a2a_message", return_value="done"), \
              patch("a2a_tools.report_activity", new=AsyncMock()):
             result = await a2a_tools.tool_delegate_task("ws-cached", "task")
 
@@ -316,8 +316,8 @@ class TestToolDelegateTask:
         # Ensure not in cache
         a2a_tools._peer_names.pop("ws-nona000", None)
         peer = {"id": "ws-nona000", "url": "http://x.svc/a2a"}  # no 'name'
-        with patch("a2a_tools.discover_peer", return_value=peer), \
-             patch("a2a_tools.send_a2a_message", return_value="ok"), \
+        with patch("a2a_tools_delegation.discover_peer", return_value=peer), \
+             patch("a2a_tools_delegation.send_a2a_message", return_value="ok"), \
              patch("a2a_tools.report_activity", new=AsyncMock()):
             result = await a2a_tools.tool_delegate_task("ws-nona000", "task")
 
@@ -349,7 +349,7 @@ class TestToolDelegateTaskAsync:
         import a2a_tools
 
         mc = _make_http_mock(post_resp=_resp(202, {"delegation_id": "d-123", "status": "delegated"}))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_delegation.httpx.AsyncClient", return_value=mc):
             result = await a2a_tools.tool_delegate_task_async("ws-1", "do task")
 
         data = json.loads(result)
@@ -362,7 +362,7 @@ class TestToolDelegateTaskAsync:
         import a2a_tools
 
         mc = _make_http_mock(post_resp=_resp(500, {"error": "internal"}))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_delegation.httpx.AsyncClient", return_value=mc):
             result = await a2a_tools.tool_delegate_task_async("ws-1", "do task")
 
         assert "Error" in result
@@ -372,7 +372,7 @@ class TestToolDelegateTaskAsync:
         import a2a_tools
 
         mc = _make_http_mock(post_exc=httpx.ConnectError("connection refused"))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_delegation.httpx.AsyncClient", return_value=mc):
             result = await a2a_tools.tool_delegate_task_async("ws-1", "do task")
 
         assert "Error" in result or "failed" in result.lower()
@@ -393,7 +393,7 @@ class TestToolCheckTaskStatus:
             {"delegation_id": "d-2", "target_id": "ws-u", "status": "pending", "summary": "waiting"},
         ]
         mc = _make_http_mock(get_resp=_resp(200, delegations))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_delegation.httpx.AsyncClient", return_value=mc):
             result = await a2a_tools.tool_check_task_status("ws-1", "")
 
         data = json.loads(result)
@@ -409,7 +409,7 @@ class TestToolCheckTaskStatus:
             {"delegation_id": "d-2", "status": "pending"},
         ]
         mc = _make_http_mock(get_resp=_resp(200, delegations))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_delegation.httpx.AsyncClient", return_value=mc):
             result = await a2a_tools.tool_check_task_status("ws-1", "d-1")
 
         data = json.loads(result)
@@ -421,7 +421,7 @@ class TestToolCheckTaskStatus:
         import a2a_tools
 
         mc = _make_http_mock(get_resp=_resp(200, []))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_delegation.httpx.AsyncClient", return_value=mc):
             result = await a2a_tools.tool_check_task_status("ws-1", "d-missing")
 
         data = json.loads(result)
@@ -432,7 +432,7 @@ class TestToolCheckTaskStatus:
         import a2a_tools
 
         mc = _make_http_mock(get_resp=_resp(500, {"error": "db down"}))
-        with patch("a2a_tools.httpx.AsyncClient", return_value=mc):
+        with patch("a2a_tools_delegation.httpx.AsyncClient", return_value=mc):
             result = await a2a_tools.tool_check_task_status("ws-1", "d-1")
 
         assert "Error" in result or "failed" in result.lower()
