@@ -154,6 +154,73 @@ describe("AttachmentPreview dispatch", () => {
     });
   });
 
+  // ─── PR-2: video / audio dispatch ───────────────────────────────
+
+  it("kind=video → renders <video controls> after fetch resolves", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      blob: async () => new Blob(["fake-mp4"], { type: "video/mp4" }),
+    });
+    preview({ uri: "workspace:/workspace/clip.mp4", name: "clip.mp4", mimeType: "video/mp4" });
+    // Loading placeholder first.
+    expect(await screen.findByLabelText(/Loading clip\.mp4/i)).toBeTruthy();
+    // After the blob resolves, a <video> element with controls=true
+    // is in the DOM. Use a tag query — there's no built-in role for
+    // <video>, but the element is unambiguous in the bubble.
+    await waitFor(() => {
+      const v = document.querySelector("video");
+      expect(v).not.toBeNull();
+      // controls attribute pinned — without it the user can't play.
+      expect(v?.hasAttribute("controls")).toBe(true);
+      // src is the blob URL we minted.
+      expect((v as HTMLVideoElement).src).toBe("blob:test-url");
+    });
+    // Chip MUST NOT render — proves dispatch routed to video, not file.
+    expect(screen.queryByTitle(/Download clip\.mp4/i)).toBeNull();
+  });
+
+  it("kind=video fetch fails → falls back to AttachmentChip", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 404 });
+    preview({ uri: "workspace:/workspace/missing.mp4", name: "missing.mp4", mimeType: "video/mp4" });
+    await waitFor(() => {
+      expect(screen.getByTitle(/Download missing\.mp4/i)).toBeTruthy();
+    });
+  });
+
+  it("kind=video by extension fallback (no mime) → video path", async () => {
+    fetchMock.mockReturnValue(new Promise(() => {}));
+    preview({ uri: "workspace:/workspace/recording.webm", name: "recording.webm" });
+    expect(await screen.findByLabelText(/Loading recording\.webm/i)).toBeTruthy();
+  });
+
+  it("kind=audio → renders <audio controls> with filename label", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      blob: async () => new Blob(["fake-mp3"], { type: "audio/mpeg" }),
+    });
+    preview({ uri: "workspace:/workspace/song.mp3", name: "song.mp3", mimeType: "audio/mpeg" });
+    await waitFor(() => {
+      const a = document.querySelector("audio");
+      expect(a).not.toBeNull();
+      expect(a?.hasAttribute("controls")).toBe(true);
+      expect((a as HTMLAudioElement).src).toBe("blob:test-url");
+    });
+    // Filename label pinned: helps the user know what they're hearing
+    // BEFORE pressing play. Multiple matches — `<span>` text and the
+    // `<audio>`'s fallback `{name}` text node — so getAllByText.
+    expect(screen.getAllByText("song.mp3").length).toBeGreaterThan(0);
+  });
+
+  it("kind=audio fetch fails → falls back to chip", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 403 });
+    preview({ uri: "workspace:/workspace/locked.wav", name: "locked.wav", mimeType: "audio/wav" });
+    await waitFor(() => {
+      expect(screen.getByTitle(/Download locked\.wav/i)).toBeTruthy();
+    });
+  });
+
+  // ─── universal-fallback regression ─────────────────────────────────
+
   it("kind=file is the universal fallback for unknown MIME (regression: don't try to preview a zip)", () => {
     // Critical safety: agent could attach a misnamed file. Pre-fix
     // the chip path was unconditional; we want unknown MIME to
