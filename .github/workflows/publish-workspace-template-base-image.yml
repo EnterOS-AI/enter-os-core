@@ -1,0 +1,142 @@
+name: publish-workspace-template-base-image
+
+# Builds + pushes ghcr.io/molecule-ai/workspace-template-base on
+# changes to Dockerfiles/workspace-template-base/. The 9 workspace
+# template repos consume this image via FROM. Closes #2277 / RFC #3018.
+#
+# Branch / tag policy mirrors publish-workspace-server-image.yml:
+#
+#   staging push  → :staging-<sha>, :staging-latest
+#   main push     → :staging-<sha>, :staging-latest, :v1, :latest
+#
+# canary-verify of this base image is the next-tier work — for now,
+# main pushes go straight to :v1 and :latest. Templates pin :v1 for
+# safety against accidental :latest moves.
+#
+# Manual workflow_dispatch supported for emergency rebuilds (e.g.
+# applying a security patch without bumping any source files).
+
+on:
+  push:
+    branches: [staging, main]
+    paths:
+      - 'Dockerfiles/workspace-template-base/**'
+      - '.github/workflows/publish-workspace-template-base-image.yml'
+  workflow_dispatch:
+    inputs:
+      tag_override:
+        description: 'Override the published tag (default: derived from branch)'
+        required: false
+        default: ''
+
+# Per-branch concurrency (same shape as publish-workspace-server-image).
+# Two staging pushes serialize; staging + main can run in parallel
+# because they produce different :staging-<sha> tags.
+concurrency:
+  group: publish-workspace-template-base-image-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/molecule-ai/workspace-template-base
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Compute tags
+        id: tags
+        run: |
+          set -euo pipefail
+          short_sha="${GITHUB_SHA::7}"
+          echo "sha=${short_sha}" >> "$GITHUB_OUTPUT"
+
+          # Branch-based tag list. Staging pushes get :staging-* tags
+          # only; main pushes get :v1 + :latest in addition.
+          # Templates pin `:v1` for production; staging-CP can pin
+          # `:staging-latest` to test base-image changes pre-promote.
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            tags="${IMAGE_NAME}:staging-${short_sha},${IMAGE_NAME}:staging-latest,${IMAGE_NAME}:v1,${IMAGE_NAME}:latest"
+          else
+            tags="${IMAGE_NAME}:staging-${short_sha},${IMAGE_NAME}:staging-latest"
+          fi
+
+          # Operator override (workflow_dispatch with tag_override input)
+          # appends the override tag — useful for rebuilding under an
+          # arbitrary label without changing source. Defense: ONLY append
+          # if non-empty; never silently lose the branch-derived tags.
+          override="${{ github.event.inputs.tag_override }}"
+          if [ -n "${override}" ]; then
+            tags="${tags},${IMAGE_NAME}:${override}"
+          fi
+
+          echo "tag_list=${tags}" >> "$GITHUB_OUTPUT"
+          echo "Computed tags: ${tags}"
+
+      - name: Build and push
+        uses: docker/build-push-action@5cd11c3a4ced054e52742c5fd54dca954e0edd85 # v6.7.0
+        with:
+          context: Dockerfiles/workspace-template-base
+          file: Dockerfiles/workspace-template-base/Dockerfile
+          push: true
+          tags: ${{ steps.tags.outputs.tag_list }}
+          # Cache fanout: pull from + push to the registry's own
+          # buildcache layer. Keeps incremental rebuilds fast across
+          # CI runners (GitHub doesn't pin builders to specific hosts).
+          cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache,mode=max
+          # Multi-arch: amd64 today; arm64 once we have an ARM tenant
+          # backend (none today; punt to follow-up).
+          platforms: linux/amd64
+
+      - name: Smoke test the published image
+        # Pull the just-pushed :staging-<sha> tag and verify it boots
+        # to the runtime entrypoint without crashing. Mirrors the
+        # template-image smoke pattern from molecule-ci PR #33 (10s →
+        # 90s timeout). For a base image the smoke is shallower —
+        # we just confirm the entrypoint exists and exits cleanly on
+        # --help-style invocation.
+        run: |
+          set -euo pipefail
+          tag="${{ env.IMAGE_NAME }}:staging-${{ steps.tags.outputs.sha }}"
+          echo "Smoke testing ${tag}"
+          docker pull "${tag}"
+
+          # Verify the entrypoint binary exists. molecule-runtime is
+          # installed by pip; if pip install silently failed during
+          # build, this catches it.
+          docker run --rm --entrypoint=which "${tag}" molecule-runtime || {
+            echo "::error::molecule-runtime not on PATH in published image"
+            exit 1
+          }
+
+          # Verify the agent user exists at uid 1000.
+          docker run --rm --entrypoint=id "${tag}" agent | grep -q "uid=1000" || {
+            echo "::error::agent user missing or wrong uid"
+            exit 1
+          }
+
+          # Verify the runtime imports cleanly.
+          docker run --rm --entrypoint=python3 "${tag}" -c "import molecule_runtime; print(molecule_runtime.__name__)" || {
+            echo "::error::molecule_runtime module fails to import"
+            exit 1
+          }
+
+          echo "✓ smoke passed"
