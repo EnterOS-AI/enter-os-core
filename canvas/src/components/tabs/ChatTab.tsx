@@ -8,7 +8,8 @@ import { useCanvasStore, type WorkspaceNodeData } from "@/store/canvas";
 import { useSocketEvent } from "@/hooks/useSocketEvent";
 import { type ChatMessage, type ChatAttachment, createMessage, appendMessageDeduped } from "./chat/types";
 import { uploadChatFiles, downloadChatFile, isPlatformAttachment } from "./chat/uploads";
-import { AttachmentChip, PendingAttachmentPill } from "./chat/AttachmentViews";
+import { PendingAttachmentPill } from "./chat/AttachmentViews";
+import { AttachmentPreview } from "./chat/AttachmentPreview";
 import { extractFilesFromTask } from "./chat/message-parser";
 import { AgentCommsPanel } from "./chat/AgentCommsPanel";
 import { appendActivityLine } from "./chat/activityLog";
@@ -1137,8 +1138,9 @@ function MyChatPanel({ workspaceId, data }: Props) {
               {msg.attachments && msg.attachments.length > 0 && (
                 <div className={`flex flex-wrap gap-1 ${msg.content ? "mt-1.5" : ""}`}>
                   {msg.attachments.map((att, i) => (
-                    <AttachmentChip
+                    <AttachmentPreview
                       key={`${msg.id}-${i}`}
+                      workspaceId={workspaceId}
                       attachment={att}
                       onDownload={downloadAttachment}
                       tone={msg.role === "user" ? "user" : "agent"}
