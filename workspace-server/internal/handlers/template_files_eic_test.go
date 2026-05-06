@@ -7,39 +7,112 @@ import (
 	"testing"
 )
 
-// TestResolveWorkspaceFilePath_KnownRuntimes — the runtime → base-path
-// map is the source of truth for where saved files land on the workspace
-// EC2. Changing a base path without a migration shim silently orphans
-// previously-saved files; this test pins the current contract.
-func TestResolveWorkspaceFilePath_KnownRuntimes(t *testing.T) {
+// TestResolveWorkspaceFilePath_RuntimeIndirection pins the
+// `?root="/configs"` (or empty / unrecognized) → runtime managed-config
+// dir behavior. Hermes uses /home/ubuntu/.hermes; claude-code uses
+// /configs; unknowns fall back to /configs. This indirection is the
+// reason hermes Config-tab edits land in the right place even though
+// the canvas only ever sends `?root=/configs`. Changing it without a
+// migration shim silently orphans previously-saved files.
+func TestResolveWorkspaceFilePath_RuntimeIndirection(t *testing.T) {
 	cases := []struct {
 		runtime string
+		root    string
 		relPath string
 		want    string
 	}{
-		{"hermes", "config.yaml", "/home/ubuntu/.hermes/config.yaml"},
-		{"HERMES", "config.yaml", "/home/ubuntu/.hermes/config.yaml"}, // case-insensitive
-		{"hermes", "nested/a.yaml", "/home/ubuntu/.hermes/nested/a.yaml"},
+		{"hermes", "/configs", "config.yaml", "/home/ubuntu/.hermes/config.yaml"},
+		{"HERMES", "/configs", "config.yaml", "/home/ubuntu/.hermes/config.yaml"}, // case-insensitive
+		{"hermes", "/configs", "nested/a.yaml", "/home/ubuntu/.hermes/nested/a.yaml"},
+		{"hermes", "", "config.yaml", "/home/ubuntu/.hermes/config.yaml"},     // empty root → runtime indirection
+		{"hermes", "/etc", "config.yaml", "/home/ubuntu/.hermes/config.yaml"}, // out-of-allowlist → runtime indirection
 		// claude-code (and any future containerized runtime) lands at /configs —
 		// the path user-data creates and bind-mounts into the container. Pre-fix
 		// this fell through to /opt/configs which doesn't exist on workspace EC2s
 		// and would 500 with EACCES on save (the bug that motivated this gate).
-		{"claude-code", "config.yaml", "/configs/config.yaml"},
-		{"CLAUDE-CODE", "config.yaml", "/configs/config.yaml"}, // case-insensitive
-		{"langgraph", "config.yaml", "/opt/configs/config.yaml"},
-		{"external", "skills.json", "/opt/configs/skills.json"},
-		{"", "config.yaml", "/configs/config.yaml"},        // empty → default
-		{"unknown", "config.yaml", "/configs/config.yaml"}, // unknown → default
+		{"claude-code", "/configs", "config.yaml", "/configs/config.yaml"},
+		{"CLAUDE-CODE", "/configs", "config.yaml", "/configs/config.yaml"}, // case-insensitive
+		{"langgraph", "/configs", "config.yaml", "/opt/configs/config.yaml"},
+		{"external", "/configs", "skills.json", "/opt/configs/skills.json"},
+		{"", "/configs", "config.yaml", "/configs/config.yaml"},        // empty runtime → default
+		{"unknown", "/configs", "config.yaml", "/configs/config.yaml"}, // unknown → default
 	}
 	for _, tc := range cases {
-		t.Run(tc.runtime+"/"+tc.relPath, func(t *testing.T) {
-			got, err := resolveWorkspaceFilePath(tc.runtime, tc.relPath)
+		t.Run(tc.runtime+"+"+tc.root+"/"+tc.relPath, func(t *testing.T) {
+			got, err := resolveWorkspaceFilePath(tc.runtime, tc.root, tc.relPath)
 			if err != nil {
 				t.Fatalf("unexpected err: %v", err)
 			}
 			if got != tc.want {
-				t.Errorf("resolveWorkspaceFilePath(%q,%q) = %q, want %q",
-					tc.runtime, tc.relPath, got, tc.want)
+				t.Errorf("resolveWorkspaceFilePath(%q,%q,%q) = %q, want %q",
+					tc.runtime, tc.root, tc.relPath, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveWorkspaceFilePath_LiteralRoots pins that the universal
+// allow-listed roots (`/home`, `/workspace`, `/plugins`) pass through
+// LITERALLY rather than getting rewritten to the runtime prefix. This
+// is the half of the resolver that the FilesTab "/home" selector
+// depends on — without it, picking /home on a hermes workspace would
+// route to /home/ubuntu/.hermes (the runtime indirection) and the
+// canvas's tree row would never line up with what the user sees on
+// the EC2 host.
+func TestResolveWorkspaceFilePath_LiteralRoots(t *testing.T) {
+	cases := []struct {
+		runtime string
+		root    string
+		relPath string
+		want    string
+	}{
+		// /home is always literal regardless of runtime — it's a
+		// universal Linux path, not a managed-config indirection.
+		{"hermes", "/home", "ubuntu/.bashrc", "/home/ubuntu/.bashrc"},
+		{"claude-code", "/home", "ubuntu/notes.md", "/home/ubuntu/notes.md"},
+		{"langgraph", "/home", "ubuntu/x", "/home/ubuntu/x"},
+		// /workspace and /plugins are also literal — runtime is ignored.
+		{"hermes", "/workspace", "src/main.go", "/workspace/src/main.go"},
+		{"claude-code", "/plugins", "p/manifest.yaml", "/plugins/p/manifest.yaml"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.runtime+"+"+tc.root+"/"+tc.relPath, func(t *testing.T) {
+			got, err := resolveWorkspaceFilePath(tc.runtime, tc.root, tc.relPath)
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("resolveWorkspaceFilePath(%q,%q,%q) = %q, want %q",
+					tc.runtime, tc.root, tc.relPath, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveWorkspaceRootPath pins the directory-only translation
+// used by listFilesViaEIC. Same indirection rules as
+// resolveWorkspaceFilePath but without joining a relative path.
+func TestResolveWorkspaceRootPath(t *testing.T) {
+	cases := []struct {
+		runtime string
+		root    string
+		want    string
+	}{
+		{"hermes", "/configs", "/home/ubuntu/.hermes"},
+		{"claude-code", "/configs", "/configs"},
+		{"hermes", "", "/home/ubuntu/.hermes"},
+		{"hermes", "/home", "/home"},
+		{"claude-code", "/workspace", "/workspace"},
+		{"hermes", "/plugins", "/plugins"},
+		{"unknown", "/configs", "/configs"},
+		{"hermes", "/etc", "/home/ubuntu/.hermes"}, // not allowlisted → runtime indirection
+	}
+	for _, tc := range cases {
+		t.Run(tc.runtime+"+"+tc.root, func(t *testing.T) {
+			got := resolveWorkspaceRootPath(tc.runtime, tc.root)
+			if got != tc.want {
+				t.Errorf("resolveWorkspaceRootPath(%q,%q) = %q, want %q",
+					tc.runtime, tc.root, got, tc.want)
 			}
 		})
 	}
@@ -53,48 +126,80 @@ func TestResolveWorkspaceFilePath_KnownRuntimes(t *testing.T) {
 // We only assert the cases that Clean() can't rescue.
 func TestResolveWorkspaceFilePath_RejectsTraversal(t *testing.T) {
 	bad := []string{
-		"../etc/shadow",   // escapes base via ..
-		"/etc/shadow",     // absolute path
-		"./../../etc",     // multiple ..
-		"a/../../etc",     // escapes via deeper ..
+		"../etc/shadow", // escapes base via ..
+		"/etc/shadow",   // absolute path
+		"./../../etc",   // multiple ..
+		"a/../../etc",   // escapes via deeper ..
 	}
 	for _, rel := range bad {
 		t.Run(rel, func(t *testing.T) {
-			_, err := resolveWorkspaceFilePath("hermes", rel)
+			_, err := resolveWorkspaceFilePath("hermes", "/configs", rel)
 			if err == nil {
-				t.Errorf("resolveWorkspaceFilePath(hermes, %q) should have errored, got nil", rel)
+				t.Errorf("resolveWorkspaceFilePath(hermes,/configs,%q) should have errored, got nil", rel)
 			}
 		})
 	}
 }
 
-// TestSSHArgs_LogLevelErrorBothSites pins that BOTH ssh invocations
-// (writeFileViaEIC + readFileViaEIC) include `-o LogLevel=ERROR`.
+// TestSSHArgs_HardenedFlags pins the ssh option set returned by
+// eicSSHSession.sshArgs(). Centralising the args was deliberate so a
+// fix like PR #2822's `LogLevel=ERROR` (silences the benign
+// known-hosts warning that fooled the read/list "empty stderr → not
+// found" classifier) only needs to land in one place.
 //
-// Without that flag, ssh emits a "Warning: Permanently added
-// '[127.0.0.1]:NNNNN' (ED25519) to the list of known hosts." line on
-// every fresh tunnel connection (even with UserKnownHostsFile=/dev/null
-// — that prevents persistence, not the warning). The warning lands on
-// stderr, which fools readFileViaEIC's "empty stdout + empty stderr →
-// file not found" classifier into thinking the warning is a real
-// ssh-layer error and returning 500 instead of 404.
-//
-// Caught 2026-05-05 02:38 on hongming.moleculesai.app: opening Hermes
-// workspace's Config tab returned 500 with body
+// Caught 2026-05-05 02:38 on hongming.moleculesai.app: opening
+// Hermes workspace's Config tab returned 500 with body
 // `ssh cat: exit status 1 (Warning: Permanently added '[127.0.0.1]:37951'…)`.
 //
-// LogLevel=ERROR silences info+warning while keeping real auth/tunnel
-// errors visible. This test reads the source and asserts the flag
-// appears at least twice (one per ssh block) — fires if a future edit
-// removes it from either site.
-func TestSSHArgs_LogLevelErrorBothSites(t *testing.T) {
+// Asserts each load-bearing flag appears in the args slice — fires if
+// a future edit removes any of them.
+func TestSSHArgs_HardenedFlags(t *testing.T) {
+	s := eicSSHSession{keyPath: "/tmp/k", localPort: 12345, osUser: "ubuntu", instanceID: "i-x"}
+	got := s.sshArgs("echo hi")
+	wantFragments := [][]string{
+		{"-i", "/tmp/k"},
+		{"-o", "StrictHostKeyChecking=no"},
+		{"-o", "UserKnownHostsFile=/dev/null"},
+		{"-o", "LogLevel=ERROR"},
+		{"-o", "ServerAliveInterval=15"},
+		{"-p", "12345"},
+	}
+	joined := strings.Join(got, " ")
+	for _, frag := range wantFragments {
+		if !strings.Contains(joined, strings.Join(frag, " ")) {
+			t.Errorf("sshArgs() missing fragment %v; got: %v", frag, got)
+		}
+	}
+	// Last two args must be `<user>@127.0.0.1` then the remote command.
+	if got[len(got)-2] != "ubuntu@127.0.0.1" {
+		t.Errorf("sshArgs() second-last must be user@127.0.0.1; got: %q", got[len(got)-2])
+	}
+	if got[len(got)-1] != "echo hi" {
+		t.Errorf("sshArgs() last must be the remote command; got: %q", got[len(got)-1])
+	}
+}
+
+// TestEicSSHSessionSingleSourceForSSHFlags is a structural guard: the
+// production EIC source must invoke s.sshArgs() exclusively for ssh
+// invocations — direct ssh args inlined in any helper would re-open
+// the regression that PR #2822 closed (LogLevel=ERROR drift between
+// helpers). Counts `s.sshArgs(` occurrences (one per file op) and
+// fails if anyone copy-pastes a raw ssh args slice.
+func TestEicSSHSessionSingleSourceForSSHFlags(t *testing.T) {
 	src, err := os.ReadFile("template_files_eic.go")
 	if err != nil {
 		t.Fatalf("read source: %v", err)
 	}
-	matches := regexp.MustCompile(`"-o", "LogLevel=ERROR"`).FindAllIndex(src, -1)
-	if len(matches) < 2 {
-		t.Errorf("expected LogLevel=ERROR in BOTH ssh blocks (write + read); found %d occurrences", len(matches))
+	// Each of write/read/list/delete should call s.sshArgs once.
+	matches := regexp.MustCompile(`s\.sshArgs\(`).FindAllIndex(src, -1)
+	if len(matches) < 4 {
+		t.Errorf("expected ≥4 s.sshArgs() callers (write/read/list/delete); found %d", len(matches))
+	}
+	// Belt and braces: no helper should be assembling its own
+	// `LogLevel=ERROR` literal outside of sshArgs.
+	literal := regexp.MustCompile(`"-o", "LogLevel=ERROR"`).FindAllIndex(src, -1)
+	if len(literal) != 1 {
+		t.Errorf("LogLevel=ERROR must appear exactly once (in sshArgs); found %d occurrences — drift risk", len(literal))
 	}
 }
 

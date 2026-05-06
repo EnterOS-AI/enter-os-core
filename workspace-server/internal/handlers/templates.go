@@ -243,8 +243,11 @@ func (h *TemplatesHandler) ListFiles(c *gin.Context) {
 		listPath = rootPath + "/" + subPath
 	}
 
-	var wsName string
-	if err := db.DB.QueryRowContext(ctx, `SELECT name FROM workspaces WHERE id = $1`, workspaceID).Scan(&wsName); err != nil {
+	var wsName, instanceID, runtime string
+	if err := db.DB.QueryRowContext(ctx,
+		`SELECT name, COALESCE(instance_id, ''), COALESCE(runtime, '') FROM workspaces WHERE id = $1`,
+		workspaceID,
+	).Scan(&wsName, &instanceID, &runtime); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
 		return
 	}
@@ -253,6 +256,32 @@ func (h *TemplatesHandler) ListFiles(c *gin.Context) {
 		Path string `json:"path"`
 		Size int64  `json:"size"`
 		Dir  bool   `json:"dir"`
+	}
+
+	// SaaS workspace (EC2-per-workspace) — no Docker on this tenant. List
+	// via SSH through the EIC endpoint, mirroring ReadFile/WriteFile's
+	// dispatch. Pre-fix this branch was missing and SaaS workspaces
+	// always fell through to local-Docker check (finds nothing on a SaaS
+	// tenant) + template-dir fallback (returns the seed template, not
+	// the persisted state, and almost never matches on user-named
+	// workspaces). Net effect: the canvas Files tab always rendered "0
+	// files / No config files yet" for SaaS workspaces, regardless of
+	// what was actually on disk. See issue #2999.
+	if instanceID != "" {
+		entries, err := listFilesViaEIC(ctx, instanceID, runtime, rootPath, subPath, depth)
+		if err != nil {
+			log.Printf("ListFiles EIC for %s root=%s sub=%s: %v", workspaceID, rootPath, subPath, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to list files: %v", err)})
+			return
+		}
+		// Translate to the handler's wire shape (the field names match
+		// 1:1, but Go can't implicit-convert named struct types).
+		out := make([]fileEntry, 0, len(entries))
+		for _, e := range entries {
+			out = append(out, fileEntry{Path: e.Path, Size: e.Size, Dir: e.Dir})
+		}
+		c.JSON(http.StatusOK, out)
+		return
 	}
 
 	// Try container filesystem first
@@ -378,12 +407,13 @@ func (h *TemplatesHandler) ReadFile(c *gin.Context) {
 	// canvas Config tab always 404'd for SaaS workspaces — visible to
 	// users after #2781 added the "no config.yaml" error UX.
 	//
-	// The ?root= query param is intentionally ignored on the SaaS path —
-	// it's a local-Docker concept (arbitrary container roots). The
-	// runtime → base-path map (workspaceFilePathPrefix in
-	// template_files_eic.go) is the SaaS source of truth.
+	// `?root=` flows through resolveWorkspaceFilePath: "/configs" stays
+	// the per-runtime managed-config indirection (claude-code → /configs,
+	// hermes → /home/ubuntu/.hermes); other allow-listed roots
+	// (`/home`, `/workspace`, `/plugins`) pass through literally so
+	// list/read/write/delete agree on what file a tree row points to.
 	if instanceID != "" {
-		content, err := readFileViaEIC(ctx, instanceID, runtime, filePath)
+		content, err := readFileViaEIC(ctx, instanceID, runtime, rootPath, filePath)
 		if err == nil {
 			c.JSON(http.StatusOK, gin.H{
 				"path":    filePath,
@@ -468,6 +498,11 @@ func (h *TemplatesHandler) WriteFile(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+	rootPath := c.DefaultQuery("root", "/configs")
+	if !allowedRoots[rootPath] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "root must be one of: /configs, /workspace, /home, /plugins"})
+		return
+	}
 	var wsName, instanceID, runtime string
 	if err := db.DB.QueryRowContext(ctx,
 		`SELECT name, COALESCE(instance_id, ''), COALESCE(runtime, '') FROM workspaces WHERE id = $1`,
@@ -479,8 +514,11 @@ func (h *TemplatesHandler) WriteFile(c *gin.Context) {
 
 	// SaaS workspace (EC2-per-workspace) — no Docker on this tenant. Write
 	// via SSH through the EIC endpoint to the runtime-specific path.
+	// `?root=` flows through the same per-runtime / literal indirection
+	// as ReadFile so list/read/write/delete agree on what file a tree
+	// row points to.
 	if instanceID != "" {
-		if err := writeFileViaEIC(ctx, instanceID, runtime, filePath, []byte(body.Content)); err != nil {
+		if err := writeFileViaEIC(ctx, instanceID, runtime, rootPath, filePath, []byte(body.Content)); err != nil {
 			log.Printf("WriteFile EIC for %s path=%s: %v", workspaceID, filePath, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to write file: %v", err)})
 			return
@@ -528,9 +566,32 @@ func (h *TemplatesHandler) DeleteFile(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	var wsName string
-	if err := db.DB.QueryRowContext(ctx, `SELECT name FROM workspaces WHERE id = $1`, workspaceID).Scan(&wsName); err != nil {
+	rootPath := c.DefaultQuery("root", "/configs")
+	if !allowedRoots[rootPath] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "root must be one of: /configs, /workspace, /home, /plugins"})
+		return
+	}
+	var wsName, instanceID, runtime string
+	if err := db.DB.QueryRowContext(ctx,
+		`SELECT name, COALESCE(instance_id, ''), COALESCE(runtime, '') FROM workspaces WHERE id = $1`,
+		workspaceID,
+	).Scan(&wsName, &instanceID, &runtime); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
+		return
+	}
+
+	// SaaS workspace (EC2-per-workspace) — no Docker on this tenant. Delete
+	// via SSH through the EIC endpoint, mirroring ReadFile/WriteFile's
+	// dispatch. Pre-fix this branch was missing — DeleteFile fell through
+	// to local-Docker (no container) + ephemeral-volume (no Docker) and
+	// silently 500'd. See issue #2999.
+	if instanceID != "" {
+		if err := deleteFileViaEIC(ctx, instanceID, runtime, rootPath, filePath); err != nil {
+			log.Printf("DeleteFile EIC for %s root=%s path=%s: %v", workspaceID, rootPath, filePath, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to delete file: %v", err)})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "deleted", "path": filePath})
 		return
 	}
 
