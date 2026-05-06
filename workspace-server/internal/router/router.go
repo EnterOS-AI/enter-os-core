@@ -315,6 +315,13 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		wsAuth.POST("/activity", acth.Report)
 		wsAuth.POST("/notify", acth.Notify)
 
+		// Chat history — RFC #2945 PR-C (issue #3017). Server-side
+		// rendering of activity_logs rows into the canonical
+		// ChatMessage shape so canvas (and future API consumers) don't
+		// re-implement the A2A-envelope walk per-client.
+		chh := handlers.NewChatHistoryHandler()
+		wsAuth.GET("/chat-history", chh.List)
+
 		// Config
 		cfgh := handlers.NewConfigHandler()
 		wsAuth.GET("/config", cfgh.Get)
