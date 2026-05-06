@@ -119,6 +119,18 @@ type Storage interface {
 	// the whole batch succeeds or the user re-uploads.
 	PutBatch(ctx context.Context, workspaceID uuid.UUID, items []PutItem) ([]uuid.UUID, error)
 
+	// PutBatchTx is the Tx-aware variant of PutBatch. It runs its INSERTs
+	// inside the caller-provided tx so multi-file uploads can commit
+	// atomically with sibling writes (e.g. activity_logs rows in
+	// chat_files uploadPollMode). Pre-input validation runs before any
+	// DB work; on validation failure no INSERT is issued.
+	//
+	// Caller owns the Tx lifecycle: BeginTx before, Commit/Rollback
+	// after. PutBatchTx does NOT call Commit — a successful return only
+	// means the inserts queued cleanly inside the Tx. The caller's
+	// Commit is what actually persists the rows.
+	PutBatchTx(ctx context.Context, tx *sql.Tx, workspaceID uuid.UUID, items []PutItem) ([]uuid.UUID, error)
+
 	// Get returns the full row including content. Returns ErrNotFound
 	// when the row is absent, acked, or past expires_at. Caller should
 	// not differentiate the three cases in the response — from the
@@ -207,19 +219,8 @@ func (p *PostgresStorage) PutBatch(ctx context.Context, workspaceID uuid.UUID, i
 	if len(items) == 0 {
 		return nil, nil
 	}
-	for i, it := range items {
-		if len(it.Content) == 0 {
-			return nil, fmt.Errorf("pendinguploads: item %d: empty content", i)
-		}
-		if len(it.Content) > MaxFileBytes {
-			return nil, ErrTooLarge
-		}
-		if it.Filename == "" {
-			return nil, fmt.Errorf("pendinguploads: item %d: empty filename", i)
-		}
-		if len(it.Filename) > 100 {
-			return nil, fmt.Errorf("pendinguploads: item %d: filename exceeds 100 chars", i)
-		}
+	if err := validatePutBatchItems(items); err != nil {
+		return nil, err
 	}
 
 	tx, err := p.db.BeginTx(ctx, nil)
@@ -232,6 +233,53 @@ func (p *PostgresStorage) PutBatch(ctx context.Context, workspaceID uuid.UUID, i
 		_ = tx.Rollback()
 	}()
 
+	out, err := putBatchInsertRows(ctx, tx, workspaceID, items)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("pendinguploads: commit batch: %w", err)
+	}
+	return out, nil
+}
+
+// PutBatchTx runs the same INSERT sequence as PutBatch but inside the
+// caller's tx. The caller is responsible for Commit/Rollback. Pre-input
+// validation still happens; on validation failure the tx is left in
+// whatever state it had (the caller will typically Rollback). On a
+// per-row INSERT error the caller MUST Rollback — pending_uploads rows
+// already inserted in this tx (rows 0..i-1) are not yet visible and
+// disappear with the rollback.
+func (p *PostgresStorage) PutBatchTx(ctx context.Context, tx *sql.Tx, workspaceID uuid.UUID, items []PutItem) ([]uuid.UUID, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+	if err := validatePutBatchItems(items); err != nil {
+		return nil, err
+	}
+	return putBatchInsertRows(ctx, tx, workspaceID, items)
+}
+
+func validatePutBatchItems(items []PutItem) error {
+	for i, it := range items {
+		if len(it.Content) == 0 {
+			return fmt.Errorf("pendinguploads: item %d: empty content", i)
+		}
+		if len(it.Content) > MaxFileBytes {
+			return ErrTooLarge
+		}
+		if it.Filename == "" {
+			return fmt.Errorf("pendinguploads: item %d: empty filename", i)
+		}
+		if len(it.Filename) > 100 {
+			return fmt.Errorf("pendinguploads: item %d: filename exceeds 100 chars", i)
+		}
+	}
+	return nil
+}
+
+func putBatchInsertRows(ctx context.Context, tx *sql.Tx, workspaceID uuid.UUID, items []PutItem) ([]uuid.UUID, error) {
 	out := make([]uuid.UUID, 0, len(items))
 	for i, it := range items {
 		var fid uuid.UUID
@@ -244,10 +292,6 @@ func (p *PostgresStorage) PutBatch(ctx context.Context, workspaceID uuid.UUID, i
 			return nil, fmt.Errorf("pendinguploads: batch insert item %d: %w", i, err)
 		}
 		out = append(out, fid)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("pendinguploads: commit batch: %w", err)
 	}
 	return out, nil
 }

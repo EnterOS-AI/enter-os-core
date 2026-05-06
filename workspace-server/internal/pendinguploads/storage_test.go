@@ -731,3 +731,138 @@ func TestPutBatch_CommitError_Wrapped(t *testing.T) {
 		t.Errorf("expectations: %v", err)
 	}
 }
+
+// ----- PutBatchTx ----------------------------------------------------------
+//
+// PutBatchTx is the Tx-aware variant added in #149 so chat_files
+// uploadPollMode can commit pending_uploads + activity_logs atomically
+// in one Tx. Pre-validation is shared with PutBatch (extracted into
+// validatePutBatchItems); these tests pin the contract that PutBatchTx
+// runs INSERTs in the caller's tx and never calls Begin/Commit itself.
+
+func TestPutBatchTx_HappyPath_RowsInsertedInTx_NoCommitFromHere(t *testing.T) {
+	db, mock := newMockDB(t)
+	store := pendinguploads.NewPostgres(db)
+
+	wsID := uuid.New()
+	id1, id2 := uuid.New(), uuid.New()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(insertSQL).
+		WithArgs(wsID, []byte("aaa"), int64(3), "a.txt", "text/plain").
+		WillReturnRows(sqlmock.NewRows([]string{"file_id"}).AddRow(id1))
+	mock.ExpectQuery(insertSQL).
+		WithArgs(wsID, []byte("bbbb"), int64(4), "b.bin", "application/octet-stream").
+		WillReturnRows(sqlmock.NewRows([]string{"file_id"}).AddRow(id2))
+	mock.ExpectCommit()
+
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+
+	got, err := store.PutBatchTx(context.Background(), tx, wsID, []pendinguploads.PutItem{
+		{Content: []byte("aaa"), Filename: "a.txt", Mimetype: "text/plain"},
+		{Content: []byte("bbbb"), Filename: "b.bin", Mimetype: "application/octet-stream"},
+	})
+	if err != nil {
+		t.Fatalf("PutBatchTx: %v", err)
+	}
+	if len(got) != 2 || got[0] != id1 || got[1] != id2 {
+		t.Errorf("ids out of order: got %v want [%s %s]", got, id1, id2)
+	}
+	// Caller is responsible for Commit — PutBatchTx must NOT have called it.
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("caller Commit: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+func TestPutBatchTx_EmptyItems_NoDBWork(t *testing.T) {
+	db, mock := newMockDB(t)
+	store := pendinguploads.NewPostgres(db)
+
+	// No expectations — PutBatchTx with empty items must short-circuit
+	// before any tx interaction.
+	got, err := store.PutBatchTx(context.Background(), nil, uuid.New(), nil)
+	if err != nil {
+		t.Fatalf("expected nil error on empty batch, got %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil ids on empty batch, got %v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+func TestPutBatchTx_ValidationFails_NoTxQuery(t *testing.T) {
+	db, mock := newMockDB(t)
+	store := pendinguploads.NewPostgres(db)
+
+	// Caller opens the Tx; PutBatchTx must reject the invalid item
+	// before issuing any tx.QueryRowContext. Rollback comes from the
+	// caller's defer, not from PutBatchTx.
+	mock.ExpectBegin()
+	mock.ExpectRollback()
+
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+
+	_, err = store.PutBatchTx(context.Background(), tx, uuid.New(), []pendinguploads.PutItem{
+		{Content: []byte("hi"), Filename: ""},
+	})
+	if err == nil || !strings.Contains(err.Error(), "empty filename") {
+		t.Fatalf("expected empty-filename error, got %v", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+func TestPutBatchTx_PerRowErrorPropagates_CallerRollsBack(t *testing.T) {
+	// PutBatchTx returns an error on per-row INSERT failure but does
+	// NOT call Rollback itself — that's the caller's job. This pins
+	// the Tx-lifecycle ownership contract: the caller controls Begin
+	// and Rollback/Commit, PutBatchTx only runs INSERTs.
+	db, mock := newMockDB(t)
+	store := pendinguploads.NewPostgres(db)
+
+	wsID := uuid.New()
+	id1 := uuid.New()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(insertSQL).
+		WithArgs(wsID, []byte("ok"), int64(2), "a.txt", "text/plain").
+		WillReturnRows(sqlmock.NewRows([]string{"file_id"}).AddRow(id1))
+	mock.ExpectQuery(insertSQL).
+		WithArgs(wsID, []byte("xx"), int64(2), "b.txt", "text/plain").
+		WillReturnError(errors.New("connection lost mid-insert"))
+	mock.ExpectRollback()
+
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+
+	_, err = store.PutBatchTx(context.Background(), tx, wsID, []pendinguploads.PutItem{
+		{Content: []byte("ok"), Filename: "a.txt", Mimetype: "text/plain"},
+		{Content: []byte("xx"), Filename: "b.txt", Mimetype: "text/plain"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "batch insert item 1") {
+		t.Fatalf("expected wrapped item-1 error, got %v", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("caller Rollback: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}

@@ -2,6 +2,7 @@ package pendinguploads_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -45,6 +46,9 @@ func (f *fakeSweepStorage) Ack(_ context.Context, _ uuid.UUID) error {
 	return errors.New("not used")
 }
 func (f *fakeSweepStorage) PutBatch(_ context.Context, _ uuid.UUID, _ []pendinguploads.PutItem) ([]uuid.UUID, error) {
+	return nil, errors.New("not used")
+}
+func (f *fakeSweepStorage) PutBatchTx(_ context.Context, _ *sql.Tx, _ uuid.UUID, _ []pendinguploads.PutItem) ([]uuid.UUID, error) {
 	return nil, errors.New("not used")
 }
 func (f *fakeSweepStorage) Sweep(_ context.Context, ackRetention time.Duration) (pendinguploads.SweepResult, error) {

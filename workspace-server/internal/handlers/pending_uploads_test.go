@@ -2,6 +2,7 @@ package handlers_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -82,6 +83,9 @@ func (f *fakeStorage) Sweep(_ context.Context, _ time.Duration) (pendinguploads.
 // (inMemStorage). Stubbed here because the Get/Ack tests don't drive
 // PutBatch, but the interface must be satisfied.
 func (f *fakeStorage) PutBatch(_ context.Context, _ uuid.UUID, _ []pendinguploads.PutItem) ([]uuid.UUID, error) {
+	return nil, nil
+}
+func (f *fakeStorage) PutBatchTx(_ context.Context, _ *sql.Tx, _ uuid.UUID, _ []pendinguploads.PutItem) ([]uuid.UUID, error) {
 	return nil, nil
 }
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -906,6 +907,114 @@ func TestLogActivity_Broadcast_IncludesRequestAndResponseBodies(t *testing.T) {
 	// renders an empty agent reply bubble).
 	if _, present := payload["response_body"]; present {
 		t.Errorf("response_body should be omitted when nil, got %v", payload["response_body"])
+	}
+}
+
+// TestLogActivityTx_DefersBroadcastUntilCommitHook pins the #149
+// contract: LogActivityTx returns a commitHook that the caller MUST
+// invoke after tx.Commit(); the broadcast MUST NOT fire from inside
+// LogActivityTx itself. Firing inside would leak a websocket event
+// for a row that the caller may roll back, painting a ghost message
+// into the canvas's optimistic UI that disappears on the next refresh.
+func TestLogActivityTx_DefersBroadcastUntilCommitHook(t *testing.T) {
+	mock := setupTestDB(t)
+	defer mock.ExpectationsWereMet()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO activity_logs").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	tx, err := db.DB.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+
+	cb := &recordingBroadcaster{}
+	method := "chat_upload_receive"
+	hook, err := LogActivityTx(context.Background(), tx, cb, ActivityParams{
+		WorkspaceID:  "ws-123",
+		ActivityType: "a2a_receive",
+		Method:       &method,
+		Status:       "ok",
+	})
+	if err != nil {
+		t.Fatalf("LogActivityTx: %v", err)
+	}
+	if len(cb.calls) != 0 {
+		t.Errorf("broadcast leaked before commitHook: got %d calls", len(cb.calls))
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	hook()
+	if len(cb.calls) != 1 {
+		t.Fatalf("commitHook must broadcast exactly once, got %d", len(cb.calls))
+	}
+	if cb.calls[0].eventType != "ACTIVITY_LOGGED" {
+		t.Errorf("event type = %q, want ACTIVITY_LOGGED", cb.calls[0].eventType)
+	}
+}
+
+// TestLogActivityTx_InsertError_NoHook_NoBroadcast — when the INSERT
+// fails inside the Tx, LogActivityTx returns an error and a nil
+// commitHook. The caller is expected to Rollback; no broadcast can
+// possibly fire because the hook never exists.
+func TestLogActivityTx_InsertError_NoHook_NoBroadcast(t *testing.T) {
+	mock := setupTestDB(t)
+	defer mock.ExpectationsWereMet()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO activity_logs").
+		WillReturnError(errors.New("constraint violation simulated"))
+	mock.ExpectRollback()
+
+	tx, err := db.DB.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+
+	cb := &recordingBroadcaster{}
+	method := "chat_upload_receive"
+	hook, err := LogActivityTx(context.Background(), tx, cb, ActivityParams{
+		WorkspaceID:  "ws-123",
+		ActivityType: "a2a_receive",
+		Method:       &method,
+		Status:       "ok",
+	})
+	if err == nil {
+		t.Fatal("expected error on INSERT failure, got nil")
+	}
+	if hook != nil {
+		t.Errorf("commitHook must be nil on insert error, got non-nil hook")
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	if len(cb.calls) != 0 {
+		t.Errorf("broadcast must NOT fire on insert error, got %d calls", len(cb.calls))
+	}
+}
+
+// TestLogActivityTx_NilTx_Errors — passing a nil tx is caller misuse.
+// Return an error rather than panicking on the nil receiver inside
+// ExecContext (which would crash the request goroutine and surface as
+// a 500 with no log line tying it to the bad call site).
+func TestLogActivityTx_NilTx_Errors(t *testing.T) {
+	cb := &recordingBroadcaster{}
+	hook, err := LogActivityTx(context.Background(), nil, cb, ActivityParams{
+		WorkspaceID:  "ws-123",
+		ActivityType: "a2a_receive",
+		Status:       "ok",
+	})
+	if err == nil {
+		t.Fatal("nil tx must error, got nil")
+	}
+	if hook != nil {
+		t.Errorf("commitHook must be nil when tx is nil, got non-nil hook")
+	}
+	if len(cb.calls) != 0 {
+		t.Errorf("broadcast must NOT fire on nil-tx error, got %d", len(cb.calls))
 	}
 }
 

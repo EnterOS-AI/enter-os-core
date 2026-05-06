@@ -656,8 +656,28 @@ func (h *ChatFilesHandler) uploadPollMode(c *gin.Context, ctx context.Context, w
 		})
 	}
 
-	// Phase 2: atomic batch insert. On failure no rows commit.
-	fileIDs, err := h.pendingUploads.PutBatch(ctx, wsUUID, items)
+	// Phase 2+3: PutBatch + N activity-row inserts run in ONE Tx so
+	// either every pending_uploads row + every activity_logs row commits,
+	// or none do. Per-file pre-validation already happened above so the
+	// only failure modes inside the Tx are DB-side; either way Rollback
+	// leaves the table state unchanged and the client retries the whole
+	// multipart upload cleanly. Broadcasts are deferred until after
+	// Commit — emitting an ACTIVITY_LOGGED event for a row that ends up
+	// rolled back would leak a ghost message into the canvas's
+	// optimistic UI.
+	tx, err := db.DB.BeginTx(ctx, nil)
+	if err != nil {
+		log.Printf("chat_files uploadPollMode: begin tx for %s: %v", workspaceID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not stage files"})
+		return
+	}
+	// Defer-rollback is safe even after a successful Commit — the second
+	// Rollback is a no-op (database/sql tracks tx state).
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	fileIDs, err := h.pendingUploads.PutBatchTx(ctx, tx, wsUUID, items)
 	if err != nil {
 		if errors.Is(err, pendinguploads.ErrTooLarge) {
 			// Belt + suspenders: pre-validation above already caught
@@ -669,28 +689,20 @@ func (h *ChatFilesHandler) uploadPollMode(c *gin.Context, ctx context.Context, w
 			})
 			return
 		}
-		log.Printf("chat_files uploadPollMode: storage.PutBatch failed for %s: %v",
+		log.Printf("chat_files uploadPollMode: storage.PutBatchTx failed for %s: %v",
 			workspaceID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not stage files"})
 		return
 	}
 
-	// Phase 3: write per-file activity rows and build the response. Activity
-	// rows are written individually (not part of the same Tx as PutBatch)
-	// because LogActivity is shared across many handlers and threading the
-	// Tx through would be a bigger refactor. The trade-off: if an activity
-	// write fails after the PutBatch commits, the pending_uploads rows
-	// orphan until the 24h TTL — significantly better than the previous
-	// "every multi-file upload could orphan" behavior, and the workspace's
-	// fetcher handles soft-404 cleanly when activity rows reference a row
-	// the platform later expired.
 	out := make([]uploadedFile, 0, len(prepReady))
+	broadcasts := make([]func(), 0, len(prepReady))
 	for i, p := range prepReady {
 		fileID := fileIDs[i]
 		uri := fmt.Sprintf("platform-pending:%s/%s", workspaceID, fileID)
 		summary := "chat_upload_receive: " + p.Sanitized
 		method := "chat_upload_receive"
-		LogActivity(ctx, h.broadcaster, ActivityParams{
+		hook, err := LogActivityTx(ctx, tx, h.broadcaster, ActivityParams{
 			WorkspaceID:  workspaceID,
 			ActivityType: "a2a_receive",
 			TargetID:     &workspaceID,
@@ -705,16 +717,37 @@ func (h *ChatFilesHandler) uploadPollMode(c *gin.Context, ctx context.Context, w
 			},
 			Status: "ok",
 		})
-
-		log.Printf("chat_files uploadPollMode: staged %s/%s (file_id=%s size=%d mimetype=%q)",
-			workspaceID, p.Sanitized, fileID, len(p.Content), p.Mimetype)
-
+		if err != nil {
+			log.Printf("chat_files uploadPollMode: activity insert failed for %s/%s: %v",
+				workspaceID, p.Sanitized, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not log upload activity"})
+			return
+		}
+		broadcasts = append(broadcasts, hook)
 		out = append(out, uploadedFile{
 			URI:      uri,
 			Name:     p.Sanitized,
 			Mimetype: p.Mimetype,
 			Size:     int64(len(p.Content)),
 		})
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Printf("chat_files uploadPollMode: commit failed for %s: %v", workspaceID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not stage files"})
+		return
+	}
+
+	// Post-commit: fire deferred broadcasts and emit the staged log
+	// lines now that the rows are durable. Broadcasts are pure in-memory
+	// (no I/O); panicking here would NOT leak a row but would leak a
+	// log line, so the order doesn't matter for correctness.
+	for _, b := range broadcasts {
+		b()
+	}
+	for i, p := range prepReady {
+		log.Printf("chat_files uploadPollMode: staged %s/%s (file_id=%s size=%d mimetype=%q)",
+			workspaceID, p.Sanitized, fileIDs[i], len(p.Content), p.Mimetype)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"files": out})

@@ -121,8 +121,16 @@ jobs:
           # Per-migration result is logged so a failed migration that
           # SHOULD have been replayable surfaces in the CI log instead
           # of silently failing.
+          # Apply both *.sql (legacy, lives next to its module) and
+          # *.up.sql (newer up/down convention) in a single
+          # lexicographically-sorted pass. Excluding *.down.sql so the
+          # newest-naming-convention pairs don't undo themselves mid-run.
+          # Pre-#149-followup this loop only globbed *.up.sql, which
+          # silently skipped 001_workspaces.sql + 009_activity_logs.sql
+          # — fine while no integration test depended on those tables,
+          # not fine once a cross-table atomicity test came in.
           set +e
-          for migration in migrations/*.up.sql; do
+          for migration in $(ls migrations/*.sql 2>/dev/null | grep -v '\.down\.sql$' | sort); do
             if psql -h localhost -U postgres -d molecule -v ON_ERROR_STOP=1 \
                   -f "$migration" >/dev/null 2>&1; then
               echo "✓ $(basename "$migration")"
@@ -132,16 +140,19 @@ jobs:
           done
           set -e
 
-          # Sanity: the delegations table MUST exist for the integration
-          # tests to be meaningful. Hard-fail if 049 didn't land — that
-          # would be a real regression we want loud.
-          if ! psql -h localhost -U postgres -d molecule -tA \
-              -c "SELECT 1 FROM information_schema.tables WHERE table_name = 'delegations'" \
-              | grep -q 1; then
-            echo "::error::delegations table missing after migration replay — handler integration tests would be meaningless"
-            exit 1
-          fi
-          echo "✓ delegations table present"
+          # Sanity: the delegations + workspaces + activity_logs tables
+          # MUST exist for the integration tests to be meaningful. Hard-
+          # fail if any didn't land — that would be a real regression we
+          # want loud.
+          for tbl in delegations workspaces activity_logs pending_uploads; do
+            if ! psql -h localhost -U postgres -d molecule -tA \
+                -c "SELECT 1 FROM information_schema.tables WHERE table_name = '$tbl'" \
+                | grep -q 1; then
+              echo "::error::$tbl table missing after migration replay — handler integration tests would be meaningless"
+              exit 1
+            fi
+            echo "✓ $tbl table present"
+          done
 
       - if: needs.detect-changes.outputs.handlers == 'true'
         name: Run integration tests

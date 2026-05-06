@@ -580,7 +580,45 @@ func (h *ActivityHandler) Report(c *gin.Context) {
 // LogActivity inserts an activity log and optionally broadcasts via WebSocket.
 // Takes events.EventEmitter (#1814) so callers passing a stub broadcaster
 // in tests no longer need to construct the full *events.Broadcaster.
+//
+// Errors are logged and swallowed — this is the fire-and-forget contract
+// most callers expect. For atomic-with-sibling-writes use LogActivityTx
+// and propagate the error.
 func LogActivity(ctx context.Context, broadcaster events.EventEmitter, params ActivityParams) {
+	hook, err := logActivityExec(ctx, db.DB, broadcaster, params)
+	if err != nil {
+		log.Printf("LogActivity insert error: %v", err)
+		return
+	}
+	hook()
+}
+
+// LogActivityTx inserts the activity row inside the caller-provided tx
+// and returns a commitHook that fires the post-commit ACTIVITY_LOGGED
+// broadcast. Caller MUST invoke commitHook AFTER tx.Commit() — firing
+// it before commit can leak a WebSocket event for a row that ends up
+// rolled back, which the canvas's optimistic UI then shows then loses.
+//
+// Returns an error if the INSERT fails — caller should Rollback. Caller
+// is also responsible for tx.BeginTx + tx.Commit/Rollback. Used by
+// chat_files uploadPollMode so PutBatchTx + N activity rows commit
+// atomically; if any activity row fails, the pending_uploads rows roll
+// back too and the client retries the entire multipart upload cleanly.
+func LogActivityTx(ctx context.Context, tx *sql.Tx, broadcaster events.EventEmitter, params ActivityParams) (commitHook func(), err error) {
+	if tx == nil {
+		return nil, errors.New("LogActivityTx: tx is nil")
+	}
+	return logActivityExec(ctx, tx, broadcaster, params)
+}
+
+// activityExecutor is the SQL surface LogActivity[Tx] needs. *sql.Tx
+// and *sql.DB both satisfy it, so the same insert path serves the
+// fire-and-forget caller (db.DB) and the Tx-aware caller (*sql.Tx).
+type activityExecutor interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func logActivityExec(ctx context.Context, exec activityExecutor, broadcaster events.EventEmitter, params ActivityParams) (commitHook func(), err error) {
 	reqJSON, reqErr := json.Marshal(params.RequestBody)
 	if reqErr != nil {
 		log.Printf("LogActivity: failed to marshal request_body for %s: %v", params.WorkspaceID, reqErr)
@@ -606,20 +644,21 @@ func LogActivity(ctx context.Context, broadcaster events.EventEmitter, params Ac
 		traceStr = &s
 	}
 
-	_, err := db.DB.ExecContext(ctx, `
+	if _, err := exec.ExecContext(ctx, `
 		INSERT INTO activity_logs (workspace_id, activity_type, source_id, target_id, method, summary, request_body, response_body, tool_trace, duration_ms, status, error_detail)
 		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11, $12)
 	`, params.WorkspaceID, params.ActivityType, params.SourceID, params.TargetID,
 		params.Method, params.Summary, reqStr, respStr, traceStr,
-		params.DurationMs, params.Status, params.ErrorDetail)
-	if err != nil {
-		log.Printf("LogActivity insert error: %v", err)
-		return
+		params.DurationMs, params.Status, params.ErrorDetail); err != nil {
+		return nil, err
 	}
 
-	// Broadcast ACTIVITY_LOGGED event
+	// Build the broadcast payload up-front so the post-commit hook is a
+	// pure in-memory call — no JSON marshaling between commit and emit
+	// where a panic would leak the row without an event.
+	var payload map[string]interface{}
 	if broadcaster != nil {
-		payload := map[string]interface{}{
+		payload = map[string]interface{}{
 			"activity_type": params.ActivityType,
 			"method":        params.Method,
 			"summary":       params.Summary,
@@ -650,8 +689,13 @@ func LogActivity(ctx context.Context, broadcaster events.EventEmitter, params Ac
 		if respStr != nil {
 			payload["response_body"] = json.RawMessage(respJSON)
 		}
-		broadcaster.BroadcastOnly(params.WorkspaceID, string(events.EventActivityLogged), payload)
 	}
+
+	return func() {
+		if broadcaster != nil {
+			broadcaster.BroadcastOnly(params.WorkspaceID, string(events.EventActivityLogged), payload)
+		}
+	}, nil
 }
 
 type ActivityParams struct {

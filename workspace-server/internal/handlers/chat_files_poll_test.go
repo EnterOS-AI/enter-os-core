@@ -107,6 +107,16 @@ func (s *inMemStorage) PutBatch(_ context.Context, ws uuid.UUID, items []pending
 	return ids, nil
 }
 
+// PutBatchTx mirrors PutBatch for the Tx-aware caller path. The tx
+// argument is not consulted — production atomicity (PutBatch INSERTs +
+// activity_logs INSERTs in the same Tx) is verified by the dedicated
+// integration test against real Postgres. This in-mem fake records the
+// puts immediately; tests that exercise the rollback path use
+// putErr/sqlmock to simulate the failure.
+func (s *inMemStorage) PutBatchTx(ctx context.Context, _ *sql.Tx, ws uuid.UUID, items []pendinguploads.PutItem) ([]uuid.UUID, error) {
+	return s.PutBatch(ctx, ws, items)
+}
+
 func (s *inMemStorage) Get(context.Context, uuid.UUID) (pendinguploads.Record, error) {
 	return pendinguploads.Record{}, pendinguploads.ErrNotFound
 }
@@ -138,9 +148,35 @@ func expectPollDeliveryModeMissing(mock sqlmock.Sqlmock, workspaceID string) {
 
 // expectActivityInsert stubs the LogActivity INSERT so the poll branch's
 // per-file activity row write doesn't fail the sqlmock expectations.
+// In the post-#149 path this INSERT runs inside the BeginTx that wraps
+// PutBatchTx + N activity rows — pair it with expectUploadPollTxBegin
+// + expectUploadPollTxCommit (or Rollback) when the test exercises
+// uploadPollMode.
 func expectActivityInsert(mock sqlmock.Sqlmock) {
 	mock.ExpectExec(`INSERT INTO activity_logs`).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+}
+
+// expectUploadPollTxBegin marks the start of the BeginTx that
+// uploadPollMode opens around PutBatchTx + per-file LogActivityTx.
+// inMemStorage doesn't drive sqlmock for the pending_uploads INSERTs
+// (it's a process-local fake), so the only Tx-scoped DB calls
+// sqlmock sees are the activity_logs INSERTs.
+func expectUploadPollTxBegin(mock sqlmock.Sqlmock) {
+	mock.ExpectBegin()
+}
+
+// expectUploadPollTxCommit pairs with expectUploadPollTxBegin on the
+// happy path — every activity row inserted, Tx committed.
+func expectUploadPollTxCommit(mock sqlmock.Sqlmock) {
+	mock.ExpectCommit()
+}
+
+// expectUploadPollTxRollback pairs with expectUploadPollTxBegin on a
+// failure path — PutBatchTx error, activity insert error, or any other
+// abort that triggers the deferred tx.Rollback() in uploadPollMode.
+func expectUploadPollTxRollback(mock sqlmock.Sqlmock) {
+	mock.ExpectRollback()
 }
 
 // expectActivityInsertWithTypeAndMethod is a strict variant that pins
@@ -198,7 +234,9 @@ func TestPollUpload_HappyPath_OneFile_StagesAndLogs(t *testing.T) {
 
 	wsID := "11111111-2222-3333-4444-555555555555"
 	expectPollDeliveryMode(mock, wsID, "poll")
+	expectUploadPollTxBegin(mock)
 	expectActivityInsert(mock)
+	expectUploadPollTxCommit(mock)
 
 	store := newInMemStorage()
 	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
@@ -254,9 +292,11 @@ func TestPollUpload_MultipleFiles_AllStagedAndLogged(t *testing.T) {
 
 	wsID := "11111111-aaaa-bbbb-cccc-555555555555"
 	expectPollDeliveryMode(mock, wsID, "poll")
+	expectUploadPollTxBegin(mock)
 	expectActivityInsert(mock)
 	expectActivityInsert(mock)
 	expectActivityInsert(mock)
+	expectUploadPollTxCommit(mock)
 
 	store := newInMemStorage()
 	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
@@ -425,6 +465,8 @@ func TestPollUpload_StorageError_500(t *testing.T) {
 
 	wsID := "88888888-2222-3333-4444-555555555555"
 	expectPollDeliveryMode(mock, wsID, "poll")
+	expectUploadPollTxBegin(mock)
+	expectUploadPollTxRollback(mock)
 
 	store := newInMemStorage()
 	store.putErr = errors.New("disk full")
@@ -446,6 +488,8 @@ func TestPollUpload_StorageTooLarge_413(t *testing.T) {
 
 	wsID := "99999999-2222-3333-4444-555555555555"
 	expectPollDeliveryMode(mock, wsID, "poll")
+	expectUploadPollTxBegin(mock)
+	expectUploadPollTxRollback(mock)
 
 	store := newInMemStorage()
 	store.putErr = pendinguploads.ErrTooLarge
@@ -569,7 +613,9 @@ func TestPollUpload_SanitizesFilenameInResponse(t *testing.T) {
 
 	wsID := "bbbbbbbb-2222-3333-4444-555555555555"
 	expectPollDeliveryMode(mock, wsID, "poll")
+	expectUploadPollTxBegin(mock)
 	expectActivityInsert(mock)
+	expectUploadPollTxCommit(mock)
 
 	store := newInMemStorage()
 	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
@@ -650,6 +696,8 @@ func TestPollUpload_AtomicRollbackOnPutBatchError(t *testing.T) {
 
 	wsID := "bbbbbbbb-3333-3333-4444-555555555555"
 	expectPollDeliveryMode(mock, wsID, "poll")
+	expectUploadPollTxBegin(mock)
+	expectUploadPollTxRollback(mock)
 
 	store := newInMemStorage()
 	store.putErr = errors.New("db down mid-batch")
@@ -669,6 +717,58 @@ func TestPollUpload_AtomicRollbackOnPutBatchError(t *testing.T) {
 	}
 	if len(store.puts) != 0 {
 		t.Errorf("expected zero Puts after PutBatch error, got %d", len(store.puts))
+	}
+}
+
+// TestPollUpload_AtomicRollbackOnActivityInsertFailure pins the #149
+// guarantee: if an activity_logs INSERT fails mid-loop (after some
+// rows have already been INSERTed in the same Tx), uploadPollMode
+// MUST Rollback so neither the pending_uploads nor the activity rows
+// commit. Pre-#149 the activity rows were written one-by-one outside
+// any Tx; a mid-loop failure left orphan pending_uploads rows the
+// 24h TTL would later sweep, but the user never saw the file in the
+// canvas. Post-#149 the contract is all-or-nothing.
+//
+// What this pins: the second activity insert errors → Tx rolls back
+// → response is 500 → no Commit. Pin via the sqlmock rollback
+// expectation; the inMemStorage will report puts=N (it doesn't model
+// Tx state), but at the SQL layer no rows committed.
+func TestPollUpload_AtomicRollbackOnActivityInsertFailure(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	wsID := "cccccccc-3333-3333-4444-555555555555"
+	expectPollDeliveryMode(mock, wsID, "poll")
+	expectUploadPollTxBegin(mock)
+	// File 1 inserts cleanly. File 2's INSERT fails. uploadPollMode
+	// must NOT call Commit and the deferred tx.Rollback() runs.
+	mock.ExpectExec(`INSERT INTO activity_logs`).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(`INSERT INTO activity_logs`).
+		WillReturnError(errors.New("constraint violation simulated"))
+	expectUploadPollTxRollback(mock)
+
+	store := newInMemStorage()
+	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
+		WithPendingUploads(store, nil)
+
+	body, ct := pollUploadFixture(t, map[string][]byte{
+		"a.txt": []byte("aaa"),
+		"b.txt": []byte("bbb"),
+		"c.txt": []byte("ccc"),
+	})
+	c, w := makeUploadRequest(t, wsID, body, ct)
+	h.Upload(c)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%s, want 500 on activity-insert mid-loop failure",
+			w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		// This is the load-bearing assertion: ExpectationsWereMet only
+		// passes if Rollback was called and Commit was NOT — the SQL-
+		// level proof of the all-or-nothing contract.
+		t.Errorf("Tx must rollback (and NOT commit) on activity-insert failure: %v", err)
 	}
 }
 
@@ -731,7 +831,9 @@ func TestPollUpload_ActivityRowDiscriminator(t *testing.T) {
 
 	wsID := "abc12345-6789-4abc-8def-000000000999"
 	expectPollDeliveryMode(mock, wsID, "poll")
+	expectUploadPollTxBegin(mock)
 	expectActivityInsertWithTypeAndMethod(mock, wsID, "a2a_receive", "chat_upload_receive")
+	expectUploadPollTxCommit(mock)
 
 	store := newInMemStorage()
 	h := NewChatFilesHandler(NewTemplatesHandler(t.TempDir(), nil, nil)).
