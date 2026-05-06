@@ -90,6 +90,43 @@ export function useFilesApi(workspaceId: string, root: string) {
     [workspaceId]
   );
 
+  /**
+   * Fetch a file's content from the server and trigger a browser
+   * download. Used by the right-click "Download" context-menu item
+   * (PR-C of issue #2999) — distinct from `handleDownloadFile` in
+   * FilesTab which downloads the CURRENTLY-OPEN-IN-EDITOR file from
+   * the in-memory `editContent` buffer (so unsaved edits round-trip
+   * to disk). This helper downloads the on-server content, suitable
+   * for arbitrary tree rows the user hasn't opened.
+   */
+  const downloadFileByPath = useCallback(
+    async (path: string) => {
+      try {
+        const res = await api.get<{ content: string }>(
+          `/workspaces/${workspaceId}/files/${path}?root=${encodeURIComponent(root)}`,
+        );
+        // text/plain is correct for the canvas's text-only file
+        // surface (config.yaml, prompts, skill markdown). Binary
+        // files would need an Accept-arraybuffer path; the API
+        // returns string today so this matches the wire shape.
+        const blob = new Blob([res.content], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = path.split("/").pop() || "file";
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast(`Downloaded ${a.download}`, "success");
+      } catch (e) {
+        showToast(
+          `Download failed: ${e instanceof Error ? e.message : "unknown error"}`,
+          "error",
+        );
+      }
+    },
+    [workspaceId, root],
+  );
+
   const downloadAllFiles = useCallback(async () => {
     const fileEntries = files.filter((f) => !f.dir);
     const results = await Promise.allSettled(
@@ -165,6 +202,7 @@ export function useFilesApi(workspaceId: string, root: string) {
     readFile,
     writeFile,
     deleteFile,
+    downloadFileByPath,
     downloadAllFiles,
     uploadFiles,
     deleteAllFiles,

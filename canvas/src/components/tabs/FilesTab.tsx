@@ -45,6 +45,7 @@ export function FilesTab({ workspaceId }: Props) {
     readFile,
     writeFile,
     deleteFile,
+    downloadFileByPath,
     downloadAllFiles,
     uploadFiles,
     deleteAllFiles,
@@ -216,7 +217,15 @@ export function FilesTab({ workspaceId }: Props) {
               nodes={tree}
               selectedPath={selectedFile}
               onSelect={openFile}
+              // Delete is currently gated to /configs to match the
+              // toolbar's New / Upload / Clear affordances. Context
+              // menu and inline ✕ both honour the gate. PR-A made the
+              // backend EIC delete work on all roots — keeping the
+              // canvas gate conservative until we want to expose
+              // /home /workspace deletion intentionally.
               onDelete={root === "/configs" ? setConfirmDelete : () => {}}
+              onDownload={downloadFileByPath}
+              canDelete={root === "/configs"}
               expandedDirs={expandedDirs}
               onToggleDir={toggleDir}
               loadingDir={loadingDir}
