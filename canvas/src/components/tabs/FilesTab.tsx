@@ -2,9 +2,11 @@
 
 import { useState, useEffect, useRef, useMemo } from "react";
 import { showToast } from "../Toaster";
+import type { WorkspaceNodeData } from "@/store/canvas";
 import { FilesToolbar } from "./FilesTab/FilesToolbar";
 import { FileTree } from "./FilesTab/FileTree";
 import { FileEditor } from "./FilesTab/FileEditor";
+import { NotAvailablePanel } from "./FilesTab/NotAvailablePanel";
 import { useFilesApi } from "./FilesTab/useFilesApi";
 import { buildTree } from "./FilesTab/tree";
 
@@ -14,9 +16,40 @@ export type { TreeNode } from "./FilesTab/tree";
 
 interface Props {
   workspaceId: string;
+  /** Workspace metadata from the canvas store. Optional for back-compat
+   *  with any caller that still mounts <FilesTab workspaceId=.../> without
+   *  threading data through (legacy tests). When present, runtime gates
+   *  the early-return below. Mirrors TerminalTab's prop shape (#2830). */
+  data?: WorkspaceNodeData;
 }
 
-export function FilesTab({ workspaceId }: Props) {
+/** Runtimes whose filesystem the platform doesn't own. The canvas can't
+ *  list/read/write files on these — the agent runs on the user's own
+ *  hardware (mac laptop, mac mini, hermes-on-home-server) and reaches
+ *  the platform via the heartbeat-based polling Phase 30 layer.
+ *
+ *  Keep narrow — only add a runtime here when its provisioner genuinely
+ *  has no platform-owned filesystem. Otherwise the user loses access to
+ *  a real surface (e.g. claude-code SaaS workspaces have files served
+ *  by ListFiles via EIC; they belong on the rendering path, not here). */
+const RUNTIMES_WITHOUT_FILES = new Set(["external"]);
+
+export function FilesTab({ workspaceId, data }: Props) {
+  // Early-return for runtimes whose filesystem is not platform-owned.
+  // Skips the whole useFilesApi hook + tree render below — without this,
+  // mounting the tab for an external workspace would issue a GET that
+  // the platform can technically answer (it reads its own DB row, not
+  // the user's machine), but every result row is fictional. Showing
+  // "0 files / No config files yet" reads as a bug. The placeholder
+  // makes the absence intentional and points the user at the right
+  // surface (Chat).
+  if (data && RUNTIMES_WITHOUT_FILES.has(data.runtime)) {
+    return <NotAvailablePanel runtime={data.runtime} />;
+  }
+  return <PlatformOwnedFilesTab workspaceId={workspaceId} />;
+}
+
+function PlatformOwnedFilesTab({ workspaceId }: { workspaceId: string }) {
   const [root, setRoot] = useState("/configs");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState("");
