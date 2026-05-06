@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
+import a2a_response
 from platform_auth import auth_headers, self_source_headers
 
 logger = logging.getLogger(__name__)
@@ -353,6 +354,20 @@ def _agent_card_url_for(peer_id: str) -> str:
 # Used by delegate_task to distinguish real errors from normal response text.
 _A2A_ERROR_PREFIX = "[A2A_ERROR] "
 
+# Sentinel prefix for queued-for-poll-mode-peer outcomes (#2967).
+# When the target workspace is registered as delivery_mode=poll (no
+# public URL — typical for external molecule-mcp standalone runtimes),
+# the platform's a2a_proxy.go:402 short-circuit returns a synthetic
+# {"status":"queued","delivery_mode":"poll","method":"..."} envelope
+# instead of dispatching over HTTP. The message IS delivered (written
+# to the platform's inbox queue); there's just no synchronous reply
+# to relay. Pre-#2967 the client treated this as "unexpected response
+# shape" → caller saw DELEGATION FAILED → retried → recipient saw
+# duplicates. The Queued prefix lets callers branch on this outcome
+# explicitly: "delivered async, no synchronous reply expected" is
+# different from both success-with-text and failure.
+_A2A_QUEUED_PREFIX = "[A2A_QUEUED] "
+
 # Workspace IDs are UUIDs everywhere we generate them (platform's
 # workspaces.id column, /registry/discover/:id route param, etc.) but
 # the agent-facing tool surface receives them as free-form strings via
@@ -564,17 +579,43 @@ async def send_a2a_message(peer_id: str, message: str, source_workspace_id: str 
                     },
                 )
                 data = resp.json()
-                if "result" in data:
-                    parts = data["result"].get("parts", [])
-                    text = parts[0].get("text", "") if parts else "(no response)"
-                    # Tag child-reported errors so the caller can detect them reliably
+                # Dispatch via the SSOT response model (a2a_response.py).
+                # All shape detection lives in one place — the parser
+                # never raises and routes unknown shapes to Malformed
+                # so a future server-side change is loud, not silent.
+                variant = a2a_response.parse(data)
+                if isinstance(variant, a2a_response.Result):
+                    # Match legacy semantics:
+                    #   parts non-empty + first part has no text → ""
+                    #   parts empty                              → "(no response)"
+                    # Differentiation matters for callers that assert
+                    # on the empty-string case (test_a2a_client).
+                    if variant.parts:
+                        text = variant.text
+                    else:
+                        text = "(no response)"
+                    # Tag child-reported errors so the caller can
+                    # detect them reliably — agent-side bug surfaces
+                    # text like "Agent error: <traceback>" inside a
+                    # JSON-RPC success envelope.
                     if text.startswith("Agent error:"):
                         return f"{_A2A_ERROR_PREFIX}{text}"
                     return text
-                elif "error" in data:
-                    err = data["error"]
-                    msg = (err.get("message") or "").strip()
-                    code = err.get("code")
+                if isinstance(variant, a2a_response.Queued):
+                    # Poll-mode peer — message accepted into the inbox
+                    # queue, target agent will fetch via poll. NOT a
+                    # failure. Return the queued sentinel so callers
+                    # (delegate_task etc.) can render the outcome
+                    # accurately instead of treating it as an error.
+                    logger.info(
+                        "send_a2a_message: queued for poll-mode peer (target=%s method=%s)",
+                        target_url,
+                        variant.method,
+                    )
+                    return f"{_A2A_QUEUED_PREFIX}target={safe_id} method={variant.method}"
+                if isinstance(variant, a2a_response.Error):
+                    msg = variant.message
+                    code = variant.code
                     if msg and code is not None:
                         detail = f"{msg} (code={code})"
                     elif msg:
@@ -583,26 +624,33 @@ async def send_a2a_message(peer_id: str, message: str, source_workspace_id: str 
                         detail = f"JSON-RPC error with no message (code={code})"
                     else:
                         detail = "JSON-RPC error with no message"
+                    if variant.restarting:
+                        # Surface platform-restart-in-progress
+                        # explicitly — caller (UI / delegating agent)
+                        # can render a softer "agent is restarting"
+                        # message rather than a generic failure.
+                        retry = (
+                            f", retry_after={variant.retry_after}s"
+                            if variant.retry_after is not None
+                            else ""
+                        )
+                        detail = f"{detail} (restarting{retry})"
                     return f"{_A2A_ERROR_PREFIX}{detail} [target={target_url}]"
-                elif data.get("status") == "queued" and data.get("delivery_mode") == "poll":
-                    # Workspace-server's poll-mode short-circuit envelope
-                    # (workspace-server/internal/handlers/a2a_proxy.go ~line 402).
-                    # The peer is poll-mode and has no URL to dispatch to, so
-                    # the server queued the message for the peer's next inbox
-                    # poll instead of forwarding it. Delivery is acknowledged
-                    # but pending consumption.
-                    #
-                    # Pre-fix this fell through to the "unexpected response
-                    # shape" error path → callers logged false failures, then
-                    # delegate_task retried, and the peer received duplicate
-                    # delegations. Issue #2967.
-                    method = data.get("method") or "message/send"
-                    logger.info(
-                        "send_a2a_message: queued for poll-mode peer (method=%s, target=%s)",
-                        method, target_url,
-                    )
-                    return f"queued for poll-mode peer (method={method})"
-                return f"{_A2A_ERROR_PREFIX}unexpected response shape (no result, no error): {str(data)[:200]} [target={target_url}]"
+                # Malformed — log loud + surface as error so the
+                # operator notices a server change. SSOT refactor
+                # subsumes the inline "queued" check that landed in
+                # the #2972 hotfix; that branch is now the typed
+                # Queued variant above.
+                logger.warning(
+                    "send_a2a_message: malformed response (target=%s body=%.200s)",
+                    target_url,
+                    str(variant.raw),
+                )
+                return (
+                    f"{_A2A_ERROR_PREFIX}unexpected response shape "
+                    f"(no result, error, or queued envelope): "
+                    f"{str(variant.raw)[:200]} [target={target_url}]"
+                )
             except _TRANSIENT_HTTP_ERRORS as e:
                 last_exc = e
                 attempts_remaining = _DELEGATE_MAX_ATTEMPTS - (attempt + 1)

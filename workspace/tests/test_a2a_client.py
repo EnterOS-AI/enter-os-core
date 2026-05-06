@@ -462,6 +462,98 @@ def _make_seq_mock_client(post_side_effect):
     return mock_client
 
 
+class TestSendA2AMessagePollMode:
+    """Pin the #2967 fix: send_a2a_message recognizes the platform's
+    poll-mode short-circuit envelope and returns a queued sentinel
+    instead of an "unexpected response shape" error.
+
+    Pre-#2967 the client treated the queued envelope as malformed,
+    causing the calling agent to retry, which delivered the same
+    message twice to the (poll-mode) recipient. The Queued sentinel
+    lets delegate_task fall back to the durable polling path
+    transparently — see test_delegation_sync_via_polling for the
+    fallback verification.
+    """
+
+    async def test_poll_queued_envelope_returns_queued_sentinel(self):
+        # Workspace-server returns this shape (a2a_proxy.go:402-406)
+        # when the target workspace is registered as delivery_mode=poll
+        # (no public URL, typical for external molecule-mcp standalone
+        # runtimes).
+        import a2a_client
+
+        resp = _make_response(200, {
+            "status": "queued",
+            "delivery_mode": "poll",
+            "method": "message/send",
+        })
+        mock_client = _make_mock_client(post_resp=resp)
+        with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
+            result = await a2a_client.send_a2a_message(_TEST_PEER_ID, "task")
+
+        # Sentinel + structured payload so callers can branch on it.
+        assert result.startswith(a2a_client._A2A_QUEUED_PREFIX)
+        # Critically: NOT the error sentinel. Pre-#2967 it was the error path.
+        assert not result.startswith(a2a_client._A2A_ERROR_PREFIX)
+        # Carries enough info for the caller to log meaningfully.
+        assert _TEST_PEER_ID in result
+        assert "message/send" in result
+
+    async def test_poll_queued_envelope_method_is_recorded(self):
+        import a2a_client
+
+        resp = _make_response(200, {
+            "status": "queued",
+            "delivery_mode": "poll",
+            "method": "notify",
+        })
+        mock_client = _make_mock_client(post_resp=resp)
+        with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
+            result = await a2a_client.send_a2a_message(_TEST_PEER_ID, "task")
+
+        assert result.startswith(a2a_client._A2A_QUEUED_PREFIX)
+        assert "notify" in result
+
+    async def test_status_queued_without_delivery_mode_is_unexpected_shape(self):
+        # Server bug: only ``status=queued`` set, ``delivery_mode``
+        # missing. Surface as the malformed branch (not Queued) — the
+        # SSOT parser treats this as Malformed because the documented
+        # contract requires both keys.
+        import a2a_client
+
+        resp = _make_response(200, {"status": "queued", "method": "message/send"})
+        mock_client = _make_mock_client(post_resp=resp)
+        with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
+            result = await a2a_client.send_a2a_message(_TEST_PEER_ID, "task")
+
+        assert result.startswith(a2a_client._A2A_ERROR_PREFIX)
+        assert "unexpected response shape" in result
+        # Must explicitly mention "or queued envelope" so an operator
+        # debugging this knows the parser HAS a Queued branch and the
+        # body just didn't match — not that the parser is missing the
+        # logic entirely (the pre-#2967 confusion).
+        assert "queued envelope" in result
+
+    async def test_platform_error_with_restart_metadata_surfaces_in_message(self):
+        # The platform error envelope: 503 with restart metadata.
+        # Surfaced as an error string that includes "restarting" so
+        # the caller / agent can render a softer error to the user.
+        import a2a_client
+
+        resp = _make_response(200, {
+            "error": "workspace agent unreachable — container restart triggered",
+            "restarting": True,
+            "retry_after": 15,
+        })
+        mock_client = _make_mock_client(post_resp=resp)
+        with patch("a2a_client.httpx.AsyncClient", return_value=mock_client):
+            result = await a2a_client.send_a2a_message(_TEST_PEER_ID, "task")
+
+        assert result.startswith(a2a_client._A2A_ERROR_PREFIX)
+        assert "restarting" in result
+        assert "retry_after=15" in result
+
+
 class TestSendA2AMessageRetry:
     """Verify auto-retry on transient transport errors (RemoteProtocolError,
     ConnectError, ReadTimeout, etc.) up to _DELEGATE_MAX_ATTEMPTS times.
