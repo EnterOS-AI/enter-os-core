@@ -216,7 +216,12 @@ func (h *TemplatesHandler) ReplaceFiles(c *gin.Context) {
 	// as a follow-up.
 	if instanceID != "" {
 		for relPath, content := range body.Files {
-			if err := writeFileViaEIC(ctx, instanceID, runtime, relPath, []byte(content)); err != nil {
+			// ReplaceFiles is a bulk template-import endpoint — files
+			// always land in the runtime's managed-config dir. Pass
+			// "/configs" so resolveWorkspaceFilePath routes through the
+			// runtime prefix map (matches the local-Docker arm below
+			// which always copies to /configs).
+			if err := writeFileViaEIC(ctx, instanceID, runtime, "/configs", relPath, []byte(content)); err != nil {
 				log.Printf("ReplaceFiles EIC for %s path=%s: %v", workspaceID, relPath, err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to write file %s: %v", relPath, err)})
 				return
