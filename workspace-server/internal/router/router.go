@@ -11,6 +11,7 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/buildinfo"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/channels"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/messagestore"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/handlers"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/pendinguploads"
@@ -315,11 +316,16 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		wsAuth.POST("/activity", acth.Report)
 		wsAuth.POST("/notify", acth.Notify)
 
-		// Chat history — RFC #2945 PR-C (issue #3017). Server-side
-		// rendering of activity_logs rows into the canonical
-		// ChatMessage shape so canvas (and future API consumers) don't
-		// re-implement the A2A-envelope walk per-client.
-		chh := handlers.NewChatHistoryHandler()
+		// Chat history — RFC #2945 PR-C (issue #3017) + PR-D (issue
+		// #3026). Server-side rendering of activity_logs rows into
+		// the canonical ChatMessage shape; storage is plugin-shaped
+		// via the messagestore.MessageStore interface so OSS
+		// operators can swap in S3 / vector / in-memory backends
+		// without forking the handler. Platform default uses
+		// PostgresMessageStore wrapping the existing activity_logs
+		// table.
+		chatStore := messagestore.NewPostgresMessageStore(db.DB)
+		chh := handlers.NewChatHistoryHandler(chatStore)
 		wsAuth.GET("/chat-history", chh.List)
 
 		// Config
