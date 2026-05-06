@@ -19,6 +19,8 @@ import { getAttachmentPreviewKind } from "./preview-kind";
 import { AttachmentImage } from "./AttachmentImage";
 import { AttachmentVideo } from "./AttachmentVideo";
 import { AttachmentAudio } from "./AttachmentAudio";
+import { AttachmentPDF } from "./AttachmentPDF";
+import { AttachmentTextPreview } from "./AttachmentTextPreview";
 import { AttachmentChip } from "./AttachmentViews";
 
 interface Props {
@@ -63,9 +65,24 @@ export function AttachmentPreview({ workspaceId, attachment, onDownload, tone }:
           tone={tone}
         />
       );
-    // PR-3 will add cases for pdf / text.
     case "pdf":
+      return (
+        <AttachmentPDF
+          workspaceId={workspaceId}
+          attachment={attachment}
+          onDownload={onDownload}
+          tone={tone}
+        />
+      );
     case "text":
+      return (
+        <AttachmentTextPreview
+          workspaceId={workspaceId}
+          attachment={attachment}
+          onDownload={onDownload}
+          tone={tone}
+        />
+      );
     case "file":
     default:
       return <AttachmentChip attachment={attachment} onDownload={onDownload} tone={tone} />;

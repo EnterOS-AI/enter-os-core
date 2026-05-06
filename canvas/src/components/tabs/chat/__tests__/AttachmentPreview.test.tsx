@@ -219,6 +219,91 @@ describe("AttachmentPreview dispatch", () => {
     });
   });
 
+  // ─── PR-3: PDF / text dispatch ─────────────────────────────────────
+
+  it("kind=pdf → renders the PDF preview chip (click opens lightbox)", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      blob: async () => new Blob(["%PDF-1.4..."], { type: "application/pdf" }),
+    });
+    preview({ uri: "workspace:/workspace/doc.pdf", name: "doc.pdf", mimeType: "application/pdf" });
+
+    // Loading placeholder first.
+    expect(await screen.findByLabelText(/Loading doc\.pdf/i)).toBeTruthy();
+
+    // After fetch, preview chip with "PDF" tag rendered.
+    await waitFor(() => {
+      // The button title is "Preview doc.pdf"; alongside is a "PDF" tag.
+      expect(screen.getByLabelText(/Open doc\.pdf preview/i)).toBeTruthy();
+    });
+
+    // Click → lightbox opens with <embed> inside.
+    fireEvent.click(screen.getByLabelText(/Open doc\.pdf preview/i));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toBeTruthy();
+    expect(dialog.querySelector("embed[type='application/pdf']")).not.toBeNull();
+  });
+
+  it("kind=pdf fetch fails → falls back to chip", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 404 });
+    preview({ uri: "workspace:/workspace/missing.pdf", name: "missing.pdf", mimeType: "application/pdf" });
+    await waitFor(() => {
+      expect(screen.getByTitle(/Download missing\.pdf/i)).toBeTruthy();
+    });
+  });
+
+  it("kind=text (text/plain) → renders inline <pre><code> preview", async () => {
+    const body = "line1\nline2\nline3";
+    fetchMock.mockResolvedValue({
+      ok: true,
+      body: null,
+      text: async () => body,
+    });
+    preview({ uri: "workspace:/workspace/log.txt", name: "log.txt", mimeType: "text/plain" });
+
+    // testing-library normalizes whitespace by default. The <pre>
+    // contains the literal text node, so query the DOM directly.
+    await waitFor(() => {
+      const code = document.querySelector("pre code");
+      expect(code).not.toBeNull();
+      expect(code?.textContent).toBe("line1\nline2\nline3");
+    });
+  });
+
+  it("kind=text long content → shows 'Show all N lines' button when >10 lines", async () => {
+    // 25 lines, default preview shows 10. Button labels with full count.
+    const body = Array.from({ length: 25 }, (_, i) => `line ${i + 1}`).join("\n");
+    fetchMock.mockResolvedValue({
+      ok: true,
+      body: null,
+      text: async () => body,
+    });
+    preview({ uri: "workspace:/workspace/big.txt", name: "big.txt", mimeType: "text/plain" });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Show all 25 lines/i })).toBeTruthy();
+    });
+    // Pre-expand: only first 10 lines in <code>; line 11+ absent.
+    let code = document.querySelector("pre code");
+    expect(code?.textContent?.includes("line 10")).toBe(true);
+    expect(code?.textContent?.includes("line 11")).toBe(false);
+
+    // After clicking expand, all 25 lines present.
+    fireEvent.click(screen.getByRole("button", { name: /Show all 25 lines/i }));
+    await waitFor(() => {
+      code = document.querySelector("pre code");
+      expect(code?.textContent?.includes("line 25")).toBe(true);
+    });
+  });
+
+  it("kind=text fetch fails → chip fallback", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 404 });
+    preview({ uri: "workspace:/workspace/missing.json", name: "missing.json", mimeType: "application/json" });
+    await waitFor(() => {
+      expect(screen.getByTitle(/Download missing\.json/i)).toBeTruthy();
+    });
+  });
+
   // ─── universal-fallback regression ─────────────────────────────────
 
   it("kind=file is the universal fallback for unknown MIME (regression: don't try to preview a zip)", () => {
