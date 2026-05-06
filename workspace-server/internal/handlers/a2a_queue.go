@@ -22,6 +22,7 @@ import (
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/textutil"
 )
 
 // extractIdempotencyKey pulls params.message.messageId out of an A2A JSON-RPC
@@ -420,7 +421,7 @@ func (h *WorkspaceHandler) stitchDrainResponseToDelegation(ctx context.Context, 
 		   AND method         = 'delegate_result'
 		   AND target_id      = $4
 		   AND response_body->>'delegation_id' = $5
-	`, "Delegation completed ("+truncate(responseText, 80)+")", string(respJSON),
+	`, "Delegation completed ("+textutil.TruncateBytes(responseText, 80)+")", string(respJSON),
 		sourceID, targetID, delegationID)
 	if err != nil {
 		log.Printf("A2AQueue drain stitch: update failed for delegation %s: %v", delegationID, err)
@@ -439,7 +440,7 @@ func (h *WorkspaceHandler) stitchDrainResponseToDelegation(ctx context.Context, 
 		h.broadcaster.RecordAndBroadcast(ctx, string(events.EventDelegationComplete), sourceID, map[string]interface{}{
 			"delegation_id":    delegationID,
 			"target_id":        targetID,
-			"response_preview": truncate(responseText, 200),
+			"response_preview": textutil.TruncateBytes(responseText, 200),
 			"via":              "queue_drain",
 		})
 	}

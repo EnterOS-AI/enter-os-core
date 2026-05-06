@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/memory/contract"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/textutil"
 )
 
 const (
@@ -340,7 +341,7 @@ func decodeError(resp *http.Response) error {
 		// have rather than dropping it.
 		return &contract.Error{
 			Code:    httpStatusToCode(resp.StatusCode),
-			Message: fmt.Sprintf("status %d: %s", resp.StatusCode, truncate(string(body), 256)),
+			Message: fmt.Sprintf("status %d: %s", resp.StatusCode, textutil.TruncateBytes(string(body), 256)),
 		}
 	}
 	return &e
@@ -359,12 +360,7 @@ func httpStatusToCode(status int) contract.ErrorCode {
 	}
 }
 
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
-}
+// truncation moved to internal/textutil.TruncateBytes (#2962 SSOT).
 
 // --- Circuit breaker ---
 

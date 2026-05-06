@@ -10,6 +10,7 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/textutil"
 )
 
 // errDBDown is a sentinel error used by tests to simulate a DB connection failure.
@@ -618,7 +619,7 @@ func TestTruncate_utf8Safe_regression2026(t *testing.T) {
 		filler += "a"
 	}
 	input := filler + "…xxx" // 195 ASCII + 3-byte rune + 3 trailing
-	out := truncate(input, 200)
+	out := textutil.TruncateBytes(input, 200)
 
 	if !utf8.ValidString(out) {
 		t.Fatalf("truncate produced invalid UTF-8: %x", []byte(out))

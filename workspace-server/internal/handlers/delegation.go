@@ -10,6 +10,7 @@ import (
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/textutil"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -167,7 +168,7 @@ func (h *DelegationHandler) Delegate(c *gin.Context) {
 	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventDelegationSent), sourceID, map[string]interface{}{
 		"delegation_id": delegationID,
 		"target_id":     body.TargetID,
-		"task_preview":  truncate(body.Task, 100),
+		"task_preview":  textutil.TruncateBytes(body.Task, 100),
 	})
 
 	resp := gin.H{
@@ -407,7 +408,7 @@ func (h *DelegationHandler) executeDelegation(sourceID, targetID, delegationID s
 	if _, err := db.DB.ExecContext(ctx, `
 		INSERT INTO activity_logs (workspace_id, activity_type, method, source_id, target_id, summary, response_body, status)
 		VALUES ($1, 'delegation', 'delegate_result', $2, $3, $4, $5::jsonb, 'completed')
-	`, sourceID, sourceID, targetID, "Delegation completed ("+truncate(responseText, 80)+")", string(respJSON)); err != nil {
+	`, sourceID, sourceID, targetID, "Delegation completed ("+textutil.TruncateBytes(responseText, 80)+")", string(respJSON)); err != nil {
 		log.Printf("Delegation %s: failed to insert success log: %v", delegationID, err)
 	}
 
@@ -423,7 +424,7 @@ func (h *DelegationHandler) executeDelegation(sourceID, targetID, delegationID s
 	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventDelegationComplete), sourceID, map[string]interface{}{
 		"delegation_id":    delegationID,
 		"target_id":        targetID,
-		"response_preview": truncate(responseText, 200),
+		"response_preview": textutil.TruncateBytes(responseText, 200),
 	})
 	// RFC #2829 PR-2 result-push (see UpdateStatus for rationale).
 	pushDelegationResultToInbox(ctx, sourceID, delegationID, "completed", responseText, "")
@@ -506,7 +507,7 @@ func (h *DelegationHandler) Record(c *gin.Context) {
 	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventDelegationSent), sourceID, map[string]interface{}{
 		"delegation_id": body.DelegationID,
 		"target_id":     body.TargetID,
-		"task_preview":  truncate(body.Task, 100),
+		"task_preview":  textutil.TruncateBytes(body.Task, 100),
 	})
 
 	c.JSON(http.StatusAccepted, gin.H{
@@ -555,12 +556,12 @@ func (h *DelegationHandler) UpdateStatus(c *gin.Context) {
 		if _, err := db.DB.ExecContext(ctx, `
 			INSERT INTO activity_logs (workspace_id, activity_type, method, source_id, summary, response_body, status)
 			VALUES ($1, 'delegation', 'delegate_result', $2, $3, $4::jsonb, 'completed')
-		`, sourceID, sourceID, "Delegation completed ("+truncate(body.ResponsePreview, 80)+")", string(respJSON)); err != nil {
+		`, sourceID, sourceID, "Delegation completed ("+textutil.TruncateBytes(body.ResponsePreview, 80)+")", string(respJSON)); err != nil {
 			log.Printf("Delegation UpdateStatus: result insert failed for %s: %v", delegationID, err)
 		}
 		h.broadcaster.RecordAndBroadcast(ctx, string(events.EventDelegationComplete), sourceID, map[string]interface{}{
 			"delegation_id":    delegationID,
-			"response_preview": truncate(body.ResponsePreview, 200),
+			"response_preview": textutil.TruncateBytes(body.ResponsePreview, 200),
 		})
 		// RFC #2829 PR-2 result-push: when the gate is on, also write an
 		// a2a_receive row so the caller's inbox poller surfaces this to
@@ -626,7 +627,7 @@ func (h *DelegationHandler) ListDelegations(c *gin.Context) {
 			entry["error"] = errorDetail
 		}
 		if responseBody != "" {
-			entry["response_preview"] = truncate(responseBody, 300)
+			entry["response_preview"] = textutil.TruncateBytes(responseBody, 300)
 		}
 		delegations = append(delegations, entry)
 	}
@@ -727,9 +728,3 @@ func extractResponseText(body []byte) string {
 	return string(body)
 }
 
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + "..."
-}

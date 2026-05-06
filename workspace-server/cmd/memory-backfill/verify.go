@@ -21,6 +21,7 @@ import (
 	"os"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/memory/contract"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/textutil"
 )
 
 // verifyConfig is the typed dependency bundle for verifyParity.
@@ -121,7 +122,7 @@ func verifyParity(ctx context.Context, cfg verifyConfig, stdout *os.File) (*veri
 		matched := true
 		for _, c := range legacy {
 			if pluginContents[c] == 0 {
-				fmt.Fprintf(stdout, "[mismatch] workspace=%s missing-from-plugin content=%q\n", wsID, truncate(c, 80))
+				fmt.Fprintf(stdout, "[mismatch] workspace=%s missing-from-plugin content=%q\n", wsID, textutil.TruncateBytes(c, 80))
 				matched = false
 				break
 			}
@@ -192,9 +193,4 @@ func queryLegacyMemories(ctx context.Context, db *sql.DB, workspaceID string) ([
 	return out, rows.Err()
 }
 
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
-}
+// truncation moved to internal/textutil.TruncateBytes (#2962 SSOT).

@@ -17,6 +17,7 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/metrics"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/supervised"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/textutil"
 )
 
 const (
@@ -522,7 +523,7 @@ func (s *Scheduler) fireSchedule(ctx context.Context, sched scheduleRow) {
 		"schedule_id":   sched.ID,
 		"schedule_name": sched.Name,
 		"cron_expr":     sched.CronExpr,
-		"prompt":        sanitizeUTF8(truncate(sched.Prompt, 200)),
+		"prompt":        sanitizeUTF8(textutil.TruncateBytes(sched.Prompt, 200)),
 	})
 	// #152: persist lastError into error_detail on the activity_logs row
 	// so GET /workspaces/:id/schedules/:id/history can surface why a run
@@ -807,27 +808,10 @@ func isEmptyResponse(body []byte) bool {
 	return false
 }
 
-// truncate shortens s to at most maxLen bytes, appending "..." if truncated.
-// #2026: UTF-8 safe — byte-slicing at maxLen-3 would split multi-byte runes
-// (observed: U+2026 `…` = 0xe2 0x80 0xa6, sliced mid-char, concatenated with
-// "..." producing 0xe2 0x80 0x2e — rejected by Postgres as invalid UTF-8,
-// which wedged the activity_logs INSERT with no deadline and stalled the
-// scheduler).
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	cut := maxLen - 3
-	if cut < 0 {
-		cut = 0
-	}
-	// Back up to a rune boundary — utf8.RuneStart returns true for any
-	// non-continuation byte (ASCII, or the lead byte of a multi-byte rune).
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut] + "..."
-}
+// truncation moved to internal/textutil.TruncateBytes (#2962 SSOT).
+// The original #2026 fix lives in textutil's package docs as canonical
+// prior art. Ellipsis was previously "..." (3 ASCII bytes); the SSOT
+// uses "…" (3 UTF-8 bytes) — same byte budget, single-glyph display.
 
 // short returns up to n leading characters of s without panicking when s is
 // shorter than n. Used to safely display UUID prefixes in log lines where

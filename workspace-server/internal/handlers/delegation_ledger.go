@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/textutil"
 )
 
 // delegation_ledger.go — durable per-task ledger for A2A delegation
@@ -50,39 +51,14 @@ func NewDelegationLedger(handle *sql.DB) *DelegationLedger {
 	return &DelegationLedger{db: handle}
 }
 
-// truncatePreview caps stored preview at 4KB. The full prompt/response is
-// already in activity_logs.{request,response}_body — this is the at-a-glance
-// view for the dashboard, not a forensic record.
+// previewCap caps stored preview at 4KB. The full prompt/response is
+// already in activity_logs.{request,response}_body — this is the
+// at-a-glance view for the dashboard, not a forensic record.
 //
-// Rune-safe: previous byte-slice form (s[:previewCap]) split on a byte
-// boundary, which on a multi-byte codepoint at byte 4096 produced
-// invalid UTF-8 — Postgres JSONB rejects → ledger row not inserted →
-// audit gap. Issue #2962. Walks the string by rune, stops at the last
-// rune-boundary index that fits inside the cap. ASCII-only strings hit
-// the cap exactly; CJK/emoji strings stop slightly under the cap,
-// never over.
-//
-// Mirrors the truncatePreviewRunes fix from agent_message_writer.go
-// (#2959). Both call sites should consume a shared helper after both
-// fixes have landed — followup deduplication tracked in #2962's body.
+// Truncation goes through textutil.TruncateBytesNoMarker so it's
+// rune-safe (#2026 / #2959 / #2962 bug class: byte-slice mid-codepoint
+// → Postgres JSONB rejects → silent INSERT failure → audit gap).
 const previewCap = 4096
-
-func truncatePreview(s string) string {
-	if len(s) <= previewCap {
-		return s
-	}
-	// Range over a string yields rune-boundary byte indices. Walk
-	// until the next index would exceed previewCap; the previous
-	// index is the safe truncation point.
-	end := 0
-	for i := range s {
-		if i > previewCap {
-			break
-		}
-		end = i
-	}
-	return s[:end]
-}
 
 // InsertOpts is the agent's record-of-intent. Caller, callee, task preview,
 // and the chosen delegation_id are required; idempotency_key is optional.
@@ -118,7 +94,7 @@ func (l *DelegationLedger) Insert(ctx context.Context, opts InsertOpts) {
 		) VALUES ($1, $2, $3, $4, 'queued', $5, $6)
 		ON CONFLICT (delegation_id) DO NOTHING
 	`, opts.DelegationID, opts.CallerID, opts.CalleeID,
-		truncatePreview(opts.TaskPreview), deadline, idemArg)
+		textutil.TruncateBytesNoMarker(opts.TaskPreview, previewCap), deadline, idemArg)
 	if err != nil {
 		log.Printf("delegation_ledger Insert(%s): %v", opts.DelegationID, err)
 	}
@@ -197,7 +173,7 @@ func (l *DelegationLedger) SetStatus(ctx context.Context,
 		    result_preview = NULLIF($4, ''),
 		    updated_at = now()
 		WHERE delegation_id = $1
-	`, delegationID, status, errorDetail, truncatePreview(resultPreview))
+	`, delegationID, status, errorDetail, textutil.TruncateBytesNoMarker(resultPreview, previewCap))
 	return err
 }
 

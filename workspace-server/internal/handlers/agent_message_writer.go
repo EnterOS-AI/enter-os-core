@@ -42,9 +42,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"unicode/utf8"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/textutil"
 )
 
 // ErrWorkspaceNotFound is returned by AgentMessageWriter.Send when the
@@ -53,36 +53,6 @@ import (
 // whatever surface they expose. Real DB errors (connection drop, query
 // timeout) surface as wrapped errors and should be treated as 503.
 var ErrWorkspaceNotFound = errors.New("agent_message: workspace not found")
-
-// truncatePreviewRunes returns at most maxRunes runes of s, plus an ellipsis
-// when truncated. Operates on the rune (codepoint) boundary instead of
-// byte indices — the previous byte-slice version produced invalid UTF-8
-// when maxRunes landed mid-codepoint (CJK, emoji, accented characters
-// in agent-authored chat messages), and Postgres JSONB rejects invalid
-// UTF-8, dropping the activity_log INSERT silently. The persistence
-// failure log fires but the message vanishes from chat history — the
-// exact regression class the SSOT consolidation was built to prevent.
-//
-// maxRunes is in runes, not bytes — `truncatePreviewRunes("你好", 1)` returns
-// `"你…"`, not `"\xe4…"`. Set the cap on a UI-friendly basis (visible
-// character count, not stored byte count); 80 runes covers the
-// activity_logs.summary column comfortably.
-func truncatePreviewRunes(s string, maxRunes int) string {
-	if utf8.RuneCountInString(s) <= maxRunes {
-		return s
-	}
-	// Walk runes until we've consumed maxRunes; cut at that byte index.
-	count := 0
-	cut := len(s)
-	for i := range s {
-		if count == maxRunes {
-			cut = i
-			break
-		}
-		count++
-	}
-	return s[:cut] + "…"
-}
 
 // AgentMessageAttachment is one file attached to an agent → user
 // message. Identical to handlers.NotifyAttachment in field set; kept
@@ -186,7 +156,7 @@ func (w *AgentMessageWriter) Send(
 		respPayload["parts"] = fileParts
 	}
 	respJSON, _ := json.Marshal(respPayload)
-	preview := truncatePreviewRunes(message, 80)
+	preview := textutil.TruncateRunes(message, 80)
 	if _, err := w.db.ExecContext(ctx, `
 		INSERT INTO activity_logs (workspace_id, activity_type, method, summary, response_body, status)
 		VALUES ($1, 'a2a_receive', 'notify', $2, $3::jsonb, 'ok')

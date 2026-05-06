@@ -499,14 +499,10 @@ func TestHttpStatusToCode(t *testing.T) {
 	}
 }
 
-func TestTruncate(t *testing.T) {
-	if got := truncate("short", 10); got != "short" {
-		t.Errorf("got %q", got)
-	}
-	if got := truncate(strings.Repeat("a", 300), 10); !strings.HasSuffix(got, "…") {
-		t.Errorf("expected ellipsis: %q", got)
-	}
-}
+// Truncate moved to internal/textutil — coverage lives in
+// internal/textutil/truncate_test.go (TestTruncateBytes_RuneBoundary).
+// memory/client just calls it as a wire-shape helper for error
+// messages; no client-specific behavior to pin here.
 
 // --- Circuit breaker ---
 
