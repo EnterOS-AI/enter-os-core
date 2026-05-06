@@ -287,7 +287,7 @@ export function SidePanel() {
         {panelTab === "config" && <ConfigTab key={selectedNodeId} workspaceId={selectedNodeId} />}
         {panelTab === "schedule" && <ScheduleTab key={selectedNodeId} workspaceId={selectedNodeId} />}
         {panelTab === "channels" && <ChannelsTab key={selectedNodeId} workspaceId={selectedNodeId} />}
-        {panelTab === "files" && <FilesTab key={selectedNodeId} workspaceId={selectedNodeId} />}
+        {panelTab === "files" && <FilesTab key={selectedNodeId} workspaceId={selectedNodeId} data={node.data} />}
         {panelTab === "memory" && <MemoryInspectorPanel key={selectedNodeId} workspaceId={selectedNodeId} />}
         {panelTab === "traces" && <TracesTab key={selectedNodeId} workspaceId={selectedNodeId} />}
         {panelTab === "events" && <EventsTab key={selectedNodeId} workspaceId={selectedNodeId} />}
