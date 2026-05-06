@@ -193,7 +193,47 @@ jobs:
           # sweeper is best-effort. Next hourly tick re-attempts. We
           # only fail loud at the safety-cap gate above.
 
+      - name: Sweep orphan tunnels
+        # Stale-org cleanup deletes the org (which cascades to tunnel
+        # delete inside the CP). But when that cascade fails partway —
+        # CP transient 5xx after the org row is deleted but before the
+        # CF tunnel delete completes — the tunnel persists with no
+        # matching org row. The reconciler in internal/sweep flags this
+        # as `cf_tunnel kind=orphan`, but nothing automatically reaps it.
+        #
+        # `/cp/admin/orphan-tunnels/cleanup` is the operator-triggered
+        # reaper. Calling it here at the end of every sweep tick
+        # converges the staging CF account to clean even when CP
+        # cascades half-fail.
+        #
+        # PR #492 made the underlying DeleteTunnel actually check
+        # status — pre-fix it silent-succeeded on CF code 1022
+        # ("active connections"), so this step would have been a no-op
+        # against stuck connectors. Post-fix the cleanup invokes
+        # CleanupTunnelConnections + retry, which actually clears the
+        # 1022 case. (#2987)
+        #
+        # Best-effort. Failure here doesn't fail the workflow — next
+        # tick re-attempts. Errors flow to step output for ops review.
+        if: env.DRY_RUN != 'true'
+        run: |
+          set +e
+          curl -sS -o /tmp/cleanup_resp -w "%{http_code}" \
+            --max-time 60 \
+            -X POST "$MOLECULE_CP_URL/cp/admin/orphan-tunnels/cleanup" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" >/tmp/cleanup_code
+          set -e
+          http_code=$(cat /tmp/cleanup_code 2>/dev/null || echo "000")
+          body=$(cat /tmp/cleanup_resp 2>/dev/null | head -c 500)
+          if [ "$http_code" = "200" ]; then
+            count=$(echo "$body" | python3 -c "import sys,json; d=json.loads(sys.stdin.read() or '{}'); print(d.get('deleted_count', 0))" 2>/dev/null || echo "0")
+            failed_n=$(echo "$body" | python3 -c "import sys,json; d=json.loads(sys.stdin.read() or '{}'); print(len(d.get('failed') or {}))" 2>/dev/null || echo "0")
+            echo "Orphan-tunnel sweep: deleted=$count failed=$failed_n"
+          else
+            echo "::warning::orphan-tunnels cleanup returned HTTP $http_code — body: $body"
+          fi
+
       - name: Dry-run summary
         if: env.DRY_RUN == 'true'
         run: |
-          echo "DRY RUN — would have deleted ${{ steps.identify.outputs.count }} org(s). Re-run with dry_run=false to actually delete."
+          echo "DRY RUN — would have deleted ${{ steps.identify.outputs.count }} org(s) AND triggered orphan-tunnels cleanup. Re-run with dry_run=false to actually delete."
