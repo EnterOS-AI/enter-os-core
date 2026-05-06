@@ -69,7 +69,7 @@ func (h *AgentHandler) Assign(c *gin.Context) {
 		return
 	}
 
-	h.broadcaster.RecordAndBroadcast(ctx, "AGENT_ASSIGNED", workspaceID, map[string]interface{}{
+	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventAgentAssigned), workspaceID, map[string]interface{}{
 		"agent_id": agentID,
 		"model":    body.Model,
 	})
@@ -118,7 +118,7 @@ func (h *AgentHandler) Replace(c *gin.Context) {
 		return
 	}
 
-	h.broadcaster.RecordAndBroadcast(ctx, "AGENT_REPLACED", workspaceID, map[string]interface{}{
+	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventAgentReplaced), workspaceID, map[string]interface{}{
 		"agent_id":  agentID,
 		"model":     body.Model,
 		"old_model": oldModel,
@@ -148,7 +148,7 @@ func (h *AgentHandler) Remove(c *gin.Context) {
 		return
 	}
 
-	h.broadcaster.RecordAndBroadcast(ctx, "AGENT_REMOVED", workspaceID, map[string]interface{}{
+	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventAgentRemoved), workspaceID, map[string]interface{}{
 		"agent_id": agentID,
 		"model":    model,
 	})
@@ -215,21 +215,21 @@ func (h *AgentHandler) Move(c *gin.Context) {
 	}
 
 	// Broadcast on both workspaces
-	h.broadcaster.RecordAndBroadcast(ctx, "AGENT_MOVED", sourceID, map[string]interface{}{
-		"agent_id":             agentID,
-		"model":                model,
-		"target_workspace_id":  body.TargetWorkspaceID,
+	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventAgentMoved), sourceID, map[string]interface{}{
+		"agent_id":            agentID,
+		"model":               model,
+		"target_workspace_id": body.TargetWorkspaceID,
 	})
-	h.broadcaster.RecordAndBroadcast(ctx, "AGENT_MOVED", body.TargetWorkspaceID, map[string]interface{}{
-		"agent_id":             agentID,
-		"model":                model,
-		"source_workspace_id":  sourceID,
+	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventAgentMoved), body.TargetWorkspaceID, map[string]interface{}{
+		"agent_id":            agentID,
+		"model":               model,
+		"source_workspace_id": sourceID,
 	})
 
 	c.JSON(http.StatusOK, gin.H{
-		"agent_id":            agentID,
-		"model":               model,
-		"from_workspace":      sourceID,
-		"to_workspace":        body.TargetWorkspaceID,
+		"agent_id":       agentID,
+		"model":          model,
+		"from_workspace": sourceID,
+		"to_workspace":   body.TargetWorkspaceID,
 	})
 }

@@ -41,6 +41,7 @@ import (
 	"path/filepath"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/wsauth"
@@ -212,7 +213,7 @@ func (h *WorkspaceHandler) markProvisionFailed(ctx context.Context, workspaceID,
 	} else if _, hasErr := extra["error"]; !hasErr {
 		extra["error"] = msg
 	}
-	h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_PROVISION_FAILED", workspaceID, extra)
+	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceProvisionFailed), workspaceID, extra)
 	if _, dbErr := db.DB.ExecContext(ctx,
 		`UPDATE workspaces SET status = $3, last_sample_error = $2, updated_at = now() WHERE id = $1`,
 		workspaceID, msg, models.StatusFailed); dbErr != nil {

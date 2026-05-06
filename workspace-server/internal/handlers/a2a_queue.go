@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 )
 
 // extractIdempotencyKey pulls params.message.messageId out of an A2A JSON-RPC
@@ -435,7 +436,7 @@ func (h *WorkspaceHandler) stitchDrainResponseToDelegation(ctx context.Context, 
 	// "⏸ queued" line to "✓ completed" in real time. Without this the
 	// transition only surfaces after the user reloads or polls activity.
 	if h.broadcaster != nil {
-		h.broadcaster.RecordAndBroadcast(ctx, "DELEGATION_COMPLETE", sourceID, map[string]interface{}{
+		h.broadcaster.RecordAndBroadcast(ctx, string(events.EventDelegationComplete), sourceID, map[string]interface{}{
 			"delegation_id":    delegationID,
 			"target_id":        targetID,
 			"response_preview": truncate(responseText, 200),

@@ -20,12 +20,14 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/channels"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/crypto"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provlog"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/scheduler"
 	"github.com/google/uuid"
 )
+
 // createWorkspaceTree recursively materialises an OrgWorkspace (and its
 // descendants) into the workspaces + canvas_layouts tables and kicks off
 // Docker provisioning. absX/absY are THIS workspace's absolute canvas
@@ -227,7 +229,7 @@ func (h *OrgHandler) createWorkspaceTree(ws OrgWorkspace, parentID *string, absX
 	if parentID != nil {
 		payload["parent_id"] = *parentID
 	}
-	h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_PROVISIONING", id, payload)
+	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceProvisioning), id, payload)
 
 	// Seed initial memories from workspace config or defaults (issue #1050).
 	// Per-workspace initial_memories override defaults; if workspace has none,
@@ -243,7 +245,7 @@ func (h *OrgHandler) createWorkspaceTree(ws OrgWorkspace, parentID *string, absX
 		if _, err := db.DB.ExecContext(ctx, `UPDATE workspaces SET status = $1, url = $2 WHERE id = $3`, models.StatusOnline, ws.URL, id); err != nil {
 			log.Printf("Org import: external workspace status update failed for %s: %v", ws.Name, err)
 		}
-		h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_ONLINE", id, map[string]interface{}{
+		h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceOnline), id, map[string]interface{}{
 			"name": ws.Name, "external": true,
 		})
 	} else if h.workspace.HasProvisioner() {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 )
 
@@ -197,7 +198,7 @@ func sweepStuckProvisioning(ctx context.Context, emitter ProvisionTimeoutEmitter
 		// A separate event type was considered but the UI reaction is
 		// identical either way — operators who need to distinguish can
 		// tell from the `source` payload field.
-		if emitErr := emitter.RecordAndBroadcast(ctx, "WORKSPACE_PROVISION_FAILED", c.id, map[string]interface{}{
+		if emitErr := emitter.RecordAndBroadcast(ctx, string(events.EventWorkspaceProvisionFailed), c.id, map[string]interface{}{
 			"error":        msg,
 			"timeout_secs": timeoutSec,
 			"runtime":      c.runtime,

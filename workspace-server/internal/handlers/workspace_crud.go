@@ -16,12 +16,14 @@ import (
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/wsauth"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 )
+
 // State handles GET /workspaces/:id/state — minimal status payload for
 // remote-agent polling (Phase 30.4). Returns `{status, paused, deleted,
 // workspace_id}` so a remote agent can detect pause/resume/delete
@@ -380,7 +382,7 @@ func (h *WorkspaceHandler) Delete(c *gin.Context) {
 		pq.Array(allIDs)); err != nil {
 		log.Printf("Delete token revocation error for %s: %v", id, err)
 	}
-// #1027: cascade-disable all schedules for the deleted workspaces so
+	// #1027: cascade-disable all schedules for the deleted workspaces so
 	// the scheduler never fires a cron into a removed container.
 	if _, err := db.DB.ExecContext(ctx,
 		`UPDATE workspace_schedules SET enabled = false, updated_at = now()
@@ -466,14 +468,14 @@ func (h *WorkspaceHandler) Delete(c *gin.Context) {
 		// leaving other WS clients ignorant of the cascade. The DB
 		// row is already 'removed' so it's recoverable, but the
 		// inconsistency is avoidable.
-		h.broadcaster.RecordAndBroadcast(cleanupCtx, "WORKSPACE_REMOVED", descID, map[string]interface{}{})
+		h.broadcaster.RecordAndBroadcast(cleanupCtx, string(events.EventWorkspaceRemoved), descID, map[string]interface{}{})
 	}
 
 	stopAndRemove(id)
 	db.ClearWorkspaceKeys(cleanupCtx, id)
 	restartStates.Delete(id) // #2269: same as descendants above
 
-	h.broadcaster.RecordAndBroadcast(cleanupCtx, "WORKSPACE_REMOVED", id, map[string]interface{}{
+	h.broadcaster.RecordAndBroadcast(cleanupCtx, string(events.EventWorkspaceRemoved), id, map[string]interface{}{
 		"cascade_deleted": len(descendantIDs),
 	})
 

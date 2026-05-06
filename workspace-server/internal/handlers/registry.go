@@ -414,7 +414,7 @@ func (h *RegistryHandler) Register(c *gin.Context) {
 	}
 
 	// Broadcast WORKSPACE_ONLINE
-	if err := h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_ONLINE", payload.ID, map[string]interface{}{
+	if err := h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceOnline), payload.ID, map[string]interface{}{
 		"url":           cachedURL,
 		"agent_card":    payload.AgentCard,
 		"delivery_mode": effectiveMode,
@@ -572,7 +572,7 @@ func (h *RegistryHandler) Heartbeat(c *gin.Context) {
 
 	// Broadcast current task update only when it changed (avoid spamming on every heartbeat)
 	if payload.CurrentTask != prevTask {
-		h.broadcaster.BroadcastOnly(payload.WorkspaceID, "TASK_UPDATED", map[string]interface{}{
+		h.broadcaster.BroadcastOnly(payload.WorkspaceID, string(events.EventTaskUpdated), map[string]interface{}{
 			"current_task": payload.CurrentTask,
 			"active_tasks": payload.ActiveTasks,
 		})
@@ -593,7 +593,7 @@ func (h *RegistryHandler) Heartbeat(c *gin.Context) {
 	// so per-heartbeat cost is one in-memory channel send per active
 	// SSE subscriber and one WS hub fan-out. At 30s heartbeat cadence
 	// this is far below any noise floor on either path.
-	h.broadcaster.BroadcastOnly(payload.WorkspaceID, "WORKSPACE_HEARTBEAT", map[string]interface{}{
+	h.broadcaster.BroadcastOnly(payload.WorkspaceID, string(events.EventWorkspaceHeartbeat), map[string]interface{}{
 		"active_tasks":   payload.ActiveTasks,
 		"uptime_seconds": payload.UptimeSeconds,
 	})
@@ -678,7 +678,7 @@ func (h *RegistryHandler) evaluateStatus(c *gin.Context, payload models.Heartbea
 		if err != nil {
 			log.Printf("Heartbeat: failed to mark %s degraded (wedged): %v", payload.WorkspaceID, err)
 		}
-		h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_DEGRADED", payload.WorkspaceID, map[string]interface{}{
+		h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceDegraded), payload.WorkspaceID, map[string]interface{}{
 			"runtime_state": "wedged",
 			"sample_error":  payload.SampleError,
 		})
@@ -699,7 +699,7 @@ func (h *RegistryHandler) evaluateStatus(c *gin.Context, payload models.Heartbea
 		if _, err := db.DB.ExecContext(ctx, `UPDATE workspaces SET status = $1, updated_at = now() WHERE id = $2`, models.StatusDegraded, payload.WorkspaceID); err != nil {
 			log.Printf("Heartbeat: failed to mark %s degraded: %v", payload.WorkspaceID, err)
 		}
-		h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_DEGRADED", payload.WorkspaceID, map[string]interface{}{
+		h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceDegraded), payload.WorkspaceID, map[string]interface{}{
 			"error_rate":   payload.ErrorRate,
 			"sample_error": payload.SampleError,
 		})
@@ -718,7 +718,7 @@ func (h *RegistryHandler) evaluateStatus(c *gin.Context, payload models.Heartbea
 		if _, err := db.DB.ExecContext(ctx, `UPDATE workspaces SET status = $1, updated_at = now() WHERE id = $2`, models.StatusOnline, payload.WorkspaceID); err != nil {
 			log.Printf("Heartbeat: failed to recover %s to online: %v", payload.WorkspaceID, err)
 		}
-		h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_ONLINE", payload.WorkspaceID, map[string]interface{}{})
+		h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceOnline), payload.WorkspaceID, map[string]interface{}{})
 	}
 
 	// Recovery: if workspace was offline but is now sending heartbeats, bring it back online.
@@ -728,7 +728,7 @@ func (h *RegistryHandler) evaluateStatus(c *gin.Context, payload models.Heartbea
 		if _, err := db.DB.ExecContext(ctx, `UPDATE workspaces SET status = $1, updated_at = now() WHERE id = $2 AND status = 'offline'`, models.StatusOnline, payload.WorkspaceID); err != nil {
 			log.Printf("Heartbeat: failed to recover %s from offline: %v", payload.WorkspaceID, err)
 		}
-		h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_ONLINE", payload.WorkspaceID, map[string]interface{}{})
+		h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceOnline), payload.WorkspaceID, map[string]interface{}{})
 	}
 
 	// Auto-recovery: if a workspace is marked "provisioning" but is actively sending
@@ -743,7 +743,7 @@ func (h *RegistryHandler) evaluateStatus(c *gin.Context, payload models.Heartbea
 		} else {
 			log.Printf("Heartbeat: transitioned %s from provisioning to online (heartbeat received)", payload.WorkspaceID)
 		}
-		h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_ONLINE", payload.WorkspaceID, map[string]interface{}{
+		h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceOnline), payload.WorkspaceID, map[string]interface{}{
 			"recovered_from": currentStatus,
 		})
 	}
@@ -771,7 +771,7 @@ func (h *RegistryHandler) evaluateStatus(c *gin.Context, payload models.Heartbea
 		} else {
 			log.Printf("Heartbeat: transitioned %s from awaiting_agent to online (heartbeat received)", payload.WorkspaceID)
 		}
-		h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_ONLINE", payload.WorkspaceID, map[string]interface{}{
+		h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceOnline), payload.WorkspaceID, map[string]interface{}{
 			"recovered_from": currentStatus,
 		})
 	}
@@ -820,7 +820,7 @@ func (h *RegistryHandler) UpdateCard(c *gin.Context) {
 		return
 	}
 
-	h.broadcaster.RecordAndBroadcast(c.Request.Context(), "AGENT_CARD_UPDATED", payload.WorkspaceID, map[string]interface{}{
+	h.broadcaster.RecordAndBroadcast(c.Request.Context(), string(events.EventAgentCardUpdated), payload.WorkspaceID, map[string]interface{}{
 		"agent_card": payload.AgentCard,
 	})
 
