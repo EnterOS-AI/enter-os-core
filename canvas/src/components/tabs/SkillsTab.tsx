@@ -297,10 +297,49 @@ export function SkillsTab({ workspaceId, data }: Props) {
     }
   };
 
+  // Compact-empty pattern: when the workspace has zero plugins
+  // installed AND the registry isn't open, collapse the whole
+  // "Plugins" section into a single inline pill rather than rendering
+  // the full panel chrome. Reported on production 2026-05-05 (#2971):
+  // the empty state's panel-with-zero-list-rows layout gives the user
+  // a lot of vertical real estate for content that's just "0
+  // installed + Install button". The compact form keeps that
+  // affordance without the chrome.
+  //
+  // Expanded/full layout still fires when installed.length > 0 OR
+  // when the user opens the registry (clicked "+ Install Plugin").
+  // Once a plugin is installed the section auto-expands to surface
+  // the list.
+  const compactEmpty = installed.length === 0 && !showRegistry && installedLoaded;
+
+  if (compactEmpty) {
+    return (
+      <div className="p-4 space-y-4">
+        <div
+          className="flex items-center justify-between gap-2 rounded-full border border-line/60 bg-surface-sunken/70 px-3 py-1.5"
+          aria-label="Plugins (none installed)"
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] uppercase tracking-[0.2em] text-ink-soft">Plugins</span>
+            <span className="text-[11px] text-ink-mid">0 installed</span>
+          </div>
+          <button
+            onClick={() => setShowRegistry(true)}
+            className="rounded-full border border-violet-700/50 bg-violet-950/30 px-3 py-0.5 text-[10px] text-violet-200 hover:bg-violet-900/40 transition-colors"
+            aria-expanded="false"
+            aria-controls="plugins-section"
+          >
+            + Install Plugin
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="p-4 space-y-4">
       {/* Plugins section */}
-      <div className="rounded-xl border border-line bg-surface-sunken/70 p-3">
+      <div id="plugins-section" className="rounded-xl border border-line bg-surface-sunken/70 p-3">
         <div className="flex items-center justify-between gap-3">
           <div>
             <div className="text-[10px] uppercase tracking-[0.22em] text-ink-soft">Plugins</div>
@@ -311,6 +350,8 @@ export function SkillsTab({ workspaceId, data }: Props) {
           <button
             onClick={() => setShowRegistry(!showRegistry)}
             className="rounded-full border border-violet-700/50 bg-violet-950/30 px-3 py-1 text-[10px] text-violet-200 hover:bg-violet-900/40 transition-colors"
+            aria-expanded={showRegistry}
+            aria-controls="plugins-registry"
           >
             {showRegistry ? "Hide Registry" : "+ Install Plugin"}
           </button>
