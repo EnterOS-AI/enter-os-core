@@ -46,8 +46,8 @@ func TestWalkChain_RootOnly(t *testing.T) {
 	// Root workspace: parent_id is NULL, depth 0, single row.
 	mock.ExpectQuery(chainQuerySnippet).
 		WithArgs("ws-root", maxChainDepth).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "parent_id", "depth"}).
-			AddRow("ws-root", nil, 0))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "parent_id", "depth"}).
+			AddRow("ws-root", "", nil, 0))
 
 	chain, err := r.walkChain(context.Background(), "ws-root")
 	if err != nil {
@@ -68,9 +68,9 @@ func TestWalkChain_ChildToParent(t *testing.T) {
 
 	mock.ExpectQuery(chainQuerySnippet).
 		WithArgs("ws-child", maxChainDepth).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "parent_id", "depth"}).
-			AddRow("ws-child", "ws-root", 0).
-			AddRow("ws-root", nil, 1))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "parent_id", "depth"}).
+			AddRow("ws-child", "", "ws-root", 0).
+			AddRow("ws-root", "", nil, 1))
 
 	chain, err := r.walkChain(context.Background(), "ws-child")
 	if err != nil {
@@ -93,7 +93,7 @@ func TestWalkChain_DeepTreeRespectsMaxDepth(t *testing.T) {
 	r := New(db)
 
 	// Simulate a 51-deep chain: should be capped at maxChainDepth.
-	rows := sqlmock.NewRows([]string{"id", "parent_id", "depth"})
+	rows := sqlmock.NewRows([]string{"id", "name", "parent_id", "depth"})
 	for i := 0; i <= maxChainDepth; i++ {
 		var parent interface{}
 		if i < maxChainDepth {
@@ -101,7 +101,7 @@ func TestWalkChain_DeepTreeRespectsMaxDepth(t *testing.T) {
 		} else {
 			parent = nil // would be the cap point
 		}
-		rows.AddRow("ws-"+itoa(i), parent, i)
+		rows.AddRow("ws-"+itoa(i), "", parent, i)
 	}
 	mock.ExpectQuery(chainQuerySnippet).
 		WithArgs("ws-0", maxChainDepth).
@@ -127,7 +127,7 @@ func TestWalkChain_WorkspaceNotFound(t *testing.T) {
 
 	mock.ExpectQuery(chainQuerySnippet).
 		WithArgs("ws-missing", maxChainDepth).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "parent_id", "depth"}))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "parent_id", "depth"}))
 
 	_, err := r.walkChain(context.Background(), "ws-missing")
 	if !errors.Is(err, ErrWorkspaceNotFound) {
@@ -172,8 +172,8 @@ func TestWalkChain_RowsErr(t *testing.T) {
 
 	mock.ExpectQuery(chainQuerySnippet).
 		WithArgs("ws-x", maxChainDepth).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "parent_id", "depth"}).
-			AddRow("ws-x", nil, 0).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "parent_id", "depth"}).
+			AddRow("ws-x", "", nil, 0).
 			RowError(0, errors.New("mid-iteration")))
 
 	_, err := r.walkChain(context.Background(), "ws-x")
@@ -238,8 +238,8 @@ func TestReadableNamespaces_Root(t *testing.T) {
 
 	mock.ExpectQuery(chainQuerySnippet).
 		WithArgs("root-1", maxChainDepth).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "parent_id", "depth"}).
-			AddRow("root-1", nil, 0))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "parent_id", "depth"}).
+			AddRow("root-1", "", nil, 0))
 
 	got, err := r.ReadableNamespaces(context.Background(), "root-1")
 	if err != nil {
@@ -274,9 +274,9 @@ func TestReadableNamespaces_Child(t *testing.T) {
 
 	mock.ExpectQuery(chainQuerySnippet).
 		WithArgs("child-1", maxChainDepth).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "parent_id", "depth"}).
-			AddRow("child-1", "root-1", 0).
-			AddRow("root-1", nil, 1))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "parent_id", "depth"}).
+			AddRow("child-1", "", "root-1", 0).
+			AddRow("root-1", "", nil, 1))
 
 	got, err := r.ReadableNamespaces(context.Background(), "child-1")
 	if err != nil {
@@ -297,13 +297,93 @@ func TestReadableNamespaces_Child(t *testing.T) {
 	}
 }
 
+func TestReadableNamespaces_DisplayName_Root(t *testing.T) {
+	// Root workspace with a real name. All three derived namespaces
+	// (workspace/team/org) should carry the workspace's display name —
+	// for a root workspace they collapse on UUID but the name is the
+	// disambiguator surfaced in the canvas dropdown (issue #2988).
+	db, mock := setupMockDB(t)
+	r := New(db)
+
+	mock.ExpectQuery(chainQuerySnippet).
+		WithArgs("root-1", maxChainDepth).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "parent_id", "depth"}).
+			AddRow("root-1", "mac laptop", nil, 0))
+
+	got, err := r.ReadableNamespaces(context.Background(), "root-1")
+	if err != nil {
+		t.Fatalf("ReadableNamespaces: %v", err)
+	}
+	for i, ns := range got {
+		if ns.DisplayName != "mac laptop" {
+			t.Errorf("[%d] %q DisplayName = %q, want %q", i, ns.Name, ns.DisplayName, "mac laptop")
+		}
+	}
+}
+
+func TestReadableNamespaces_DisplayName_Child(t *testing.T) {
+	// Child has its own workspace name; team should pick up the
+	// PARENT's name (not the child's), and org follows the chain root.
+	db, mock := setupMockDB(t)
+	r := New(db)
+
+	mock.ExpectQuery(chainQuerySnippet).
+		WithArgs("child-1", maxChainDepth).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "parent_id", "depth"}).
+			AddRow("child-1", "Hongming Personal Brand", "root-1", 0).
+			AddRow("root-1", "mac laptop", nil, 1))
+
+	got, err := r.ReadableNamespaces(context.Background(), "child-1")
+	if err != nil {
+		t.Fatalf("ReadableNamespaces: %v", err)
+	}
+	want := map[string]string{
+		"workspace:child-1": "Hongming Personal Brand", // self
+		"team:root-1":       "mac laptop",              // parent
+		"org:root-1":        "mac laptop",              // root
+	}
+	for _, ns := range got {
+		w, ok := want[ns.Name]
+		if !ok {
+			t.Errorf("unexpected namespace %q", ns.Name)
+			continue
+		}
+		if ns.DisplayName != w {
+			t.Errorf("%q DisplayName = %q, want %q", ns.Name, ns.DisplayName, w)
+		}
+	}
+}
+
+func TestReadableNamespaces_DisplayName_EmptyOnNULL(t *testing.T) {
+	// COALESCE in the query produces "" when name is NULL. The
+	// resolver must propagate that as DisplayName="" so the handler's
+	// label shaper can fall back to the UUID-prefix shape.
+	db, mock := setupMockDB(t)
+	r := New(db)
+
+	mock.ExpectQuery(chainQuerySnippet).
+		WithArgs("root-1", maxChainDepth).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "parent_id", "depth"}).
+			AddRow("root-1", "", nil, 0))
+
+	got, err := r.ReadableNamespaces(context.Background(), "root-1")
+	if err != nil {
+		t.Fatalf("ReadableNamespaces: %v", err)
+	}
+	for _, ns := range got {
+		if ns.DisplayName != "" {
+			t.Errorf("%q DisplayName = %q, want empty (NULL fallback)", ns.Name, ns.DisplayName)
+		}
+	}
+}
+
 func TestReadableNamespaces_NotFound(t *testing.T) {
 	db, mock := setupMockDB(t)
 	r := New(db)
 
 	mock.ExpectQuery(chainQuerySnippet).
 		WithArgs("ghost", maxChainDepth).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "parent_id", "depth"}))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "parent_id", "depth"}))
 
 	_, err := r.ReadableNamespaces(context.Background(), "ghost")
 	if !errors.Is(err, ErrWorkspaceNotFound) {
@@ -319,8 +399,8 @@ func TestWritableNamespaces_RootSeesAll(t *testing.T) {
 
 	mock.ExpectQuery(chainQuerySnippet).
 		WithArgs("root-1", maxChainDepth).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "parent_id", "depth"}).
-			AddRow("root-1", nil, 0))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "parent_id", "depth"}).
+			AddRow("root-1", "", nil, 0))
 
 	got, err := r.WritableNamespaces(context.Background(), "root-1")
 	if err != nil {
@@ -337,9 +417,9 @@ func TestWritableNamespaces_ChildExcludesOrg(t *testing.T) {
 
 	mock.ExpectQuery(chainQuerySnippet).
 		WithArgs("child-1", maxChainDepth).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "parent_id", "depth"}).
-			AddRow("child-1", "root-1", 0).
-			AddRow("root-1", nil, 1))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "parent_id", "depth"}).
+			AddRow("child-1", "", "root-1", 0).
+			AddRow("root-1", "", nil, 1))
 
 	got, err := r.WritableNamespaces(context.Background(), "child-1")
 	if err != nil {
@@ -361,7 +441,7 @@ func TestWritableNamespaces_NotFound(t *testing.T) {
 
 	mock.ExpectQuery(chainQuerySnippet).
 		WithArgs("ghost", maxChainDepth).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "parent_id", "depth"}))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "parent_id", "depth"}))
 
 	_, err := r.WritableNamespaces(context.Background(), "ghost")
 	if !errors.Is(err, ErrWorkspaceNotFound) {
@@ -390,9 +470,9 @@ func TestCanWrite(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			db, mock := setupMockDB(t)
 			r := New(db)
-			rows := sqlmock.NewRows([]string{"id", "parent_id", "depth"})
+			rows := sqlmock.NewRows([]string{"id", "name", "parent_id", "depth"})
 			if tc.isRoot {
-				rows.AddRow("root-1", nil, 0)
+				rows.AddRow("root-1", "", nil, 0)
 				mock.ExpectQuery(chainQuerySnippet).WithArgs("root-1", maxChainDepth).WillReturnRows(rows)
 				ok, err := r.CanWrite(context.Background(), "root-1", tc.namespace)
 				if err != nil {
@@ -402,7 +482,7 @@ func TestCanWrite(t *testing.T) {
 					t.Errorf("CanWrite(%q) = %v, want %v", tc.namespace, ok, tc.want)
 				}
 			} else {
-				rows.AddRow("child-1", "root-1", 0).AddRow("root-1", nil, 1)
+				rows.AddRow("child-1", "", "root-1", 0).AddRow("root-1", "", nil, 1)
 				mock.ExpectQuery(chainQuerySnippet).WithArgs("child-1", maxChainDepth).WillReturnRows(rows)
 				ok, err := r.CanWrite(context.Background(), "child-1", tc.namespace)
 				if err != nil {
@@ -435,9 +515,9 @@ func TestIntersectReadable_DefaultAll(t *testing.T) {
 	r := New(db)
 	mock.ExpectQuery(chainQuerySnippet).
 		WithArgs("child-1", maxChainDepth).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "parent_id", "depth"}).
-			AddRow("child-1", "root-1", 0).
-			AddRow("root-1", nil, 1))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "parent_id", "depth"}).
+			AddRow("child-1", "", "root-1", 0).
+			AddRow("root-1", "", nil, 1))
 
 	// Empty requested → return everything readable.
 	got, err := r.IntersectReadable(context.Background(), "child-1", nil)
@@ -455,9 +535,9 @@ func TestIntersectReadable_Filters(t *testing.T) {
 	r := New(db)
 	mock.ExpectQuery(chainQuerySnippet).
 		WithArgs("child-1", maxChainDepth).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "parent_id", "depth"}).
-			AddRow("child-1", "root-1", 0).
-			AddRow("root-1", nil, 1))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "parent_id", "depth"}).
+			AddRow("child-1", "", "root-1", 0).
+			AddRow("root-1", "", nil, 1))
 
 	// Requested: one allowed, one disallowed (foreign workspace), one allowed
 	requested := []string{"workspace:child-1", "workspace:foreign", "team:root-1"}
@@ -476,8 +556,8 @@ func TestIntersectReadable_AllFiltered(t *testing.T) {
 	r := New(db)
 	mock.ExpectQuery(chainQuerySnippet).
 		WithArgs("ws-1", maxChainDepth).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "parent_id", "depth"}).
-			AddRow("ws-1", nil, 0))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "parent_id", "depth"}).
+			AddRow("ws-1", "", nil, 0))
 
 	// Request only namespaces the caller cannot read.
 	got, err := r.IntersectReadable(context.Background(), "ws-1", []string{"workspace:other", "team:other"})

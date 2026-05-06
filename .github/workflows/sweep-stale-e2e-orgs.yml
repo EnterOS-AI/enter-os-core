@@ -108,6 +108,14 @@ jobs:
           python3 > stale_slugs.txt <<'PY'
           import json, os
           from datetime import datetime, timezone, timedelta
+          # SSOT for this list lives in the controlplane Go code:
+          # molecule-controlplane/internal/slugs/ephemeral.go
+          # (var EphemeralPrefixes). The redeploy-fleet auto-rollout
+          # also reads from there to SKIP these slugs — without that
+          # filter, fleet redeploy SSM-failed in-flight E2E tenants
+          # whose containers were still booting, breaking the test
+          # that just spun them up (molecule-controlplane#493).
+          # Update both files together.
           EPHEMERAL_PREFIXES = ("e2e-", "rt-e2e-")
           with open("orgs.json") as f:
               data = json.load(f)

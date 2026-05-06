@@ -262,6 +262,27 @@ export function ConfigTab({ workspaceId }: Props) {
       setOriginalProvider("");
     }
 
+    // Skip the config.yaml fetch entirely for runtimes that manage
+    // their own config (external, hermes, etc.) — they don't have a
+    // platform-side template, so the GET would 404. The catch block
+    // below handles 404 gracefully, but issuing the request adds
+    // browser-console noise + a wasted RTT on every open of the
+    // Config tab for the affected workspaces. Reported on
+    // production reno-stars 2026-05-05 (workspace runtime=external,
+    // 404 on /files/config.yaml visible in the console even though
+    // the form rendered correctly).
+    if (RUNTIMES_WITH_OWN_CONFIG.has(wsMetadataRuntime)) {
+      setConfig({
+        ...DEFAULT_CONFIG,
+        runtime: wsMetadataRuntime,
+        model: wsMetadataModel,
+        ...(wsMetadataModel ? { runtime_config: { model: wsMetadataModel } } : {}),
+        ...(wsMetadataTier !== null ? { tier: wsMetadataTier } : {}),
+      } as ConfigData);
+      setOriginalModel(wsMetadataModel);
+      setLoading(false);
+      return;
+    }
     try {
       const res = await api.get<{ content: string }>(`/workspaces/${workspaceId}/files/config.yaml`);
       const parsed = parseYaml(res.content);

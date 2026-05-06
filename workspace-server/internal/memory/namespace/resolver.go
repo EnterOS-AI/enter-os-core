@@ -33,6 +33,25 @@ type Namespace struct {
 	Kind        contract.NamespaceKind `json:"kind"`
 	Description string                 `json:"description"`
 	Writable    bool                   `json:"writable"`
+	// DisplayName is the human-readable label for this namespace,
+	// derived from the workspace tree:
+	//   - workspace: this workspace's own name (`workspaces.name`)
+	//   - team: parent's name if child, this workspace's name if root
+	//          (degenerate case — team semantically means "memories
+	//          shared with peers in this team", so for a root workspace
+	//          with no peers, "your team" is conceptually correct.)
+	//   - org: the root workspace's name (org-wide memories — every
+	//          workspace under this root sees them)
+	//
+	// Empty string when the lookup failed (workspace row missing). The
+	// canvas uses DisplayName for the dropdown; falls back to a short
+	// UUID prefix when it's empty.
+	//
+	// Issue #2988: pre-fix, the canvas labelled all three namespaces
+	// with the SAME shortID-truncated UUID prefix on a root workspace
+	// because workspace==team==org IDs collide. The display name
+	// disambiguates them by surfacing real workspace names.
+	DisplayName string `json:"display_name,omitempty"`
 }
 
 // ErrWorkspaceNotFound is returned when the input workspace ID does
@@ -54,6 +73,7 @@ func New(db *sql.DB) *Resolver {
 // chainNode is one row from the recursive CTE.
 type chainNode struct {
 	id       string
+	name     string // workspaces.name (display label for the namespace)
 	parentID *string
 	depth    int
 }
@@ -64,16 +84,16 @@ type chainNode struct {
 func (r *Resolver) walkChain(ctx context.Context, workspaceID string) ([]chainNode, error) {
 	const query = `
 		WITH RECURSIVE chain AS (
-			SELECT id, parent_id, 0 AS depth
+			SELECT id, name, parent_id, 0 AS depth
 			FROM workspaces
 			WHERE id = $1
 			UNION ALL
-			SELECT w.id, w.parent_id, c.depth + 1
+			SELECT w.id, w.name, w.parent_id, c.depth + 1
 			FROM workspaces w
 			JOIN chain c ON w.id = c.parent_id
 			WHERE c.depth < $2
 		)
-		SELECT id::text, parent_id::text, depth FROM chain ORDER BY depth ASC
+		SELECT id::text, COALESCE(name, ''), parent_id::text, depth FROM chain ORDER BY depth ASC
 	`
 	rows, err := r.db.QueryContext(ctx, query, workspaceID, maxChainDepth)
 	if err != nil {
@@ -85,7 +105,7 @@ func (r *Resolver) walkChain(ctx context.Context, workspaceID string) ([]chainNo
 	for rows.Next() {
 		var n chainNode
 		var parentStr sql.NullString
-		if err := rows.Scan(&n.id, &parentStr, &n.depth); err != nil {
+		if err := rows.Scan(&n.id, &n.name, &parentStr, &n.depth); err != nil {
 			return nil, fmt.Errorf("scan chain: %w", err)
 		}
 		if parentStr.Valid && parentStr.String != "" {
@@ -122,6 +142,33 @@ func derive(chain []chainNode) (workspace, team, org string) {
 	return
 }
 
+// deriveNames computes the display name for each of the three
+// canonical namespaces. Mirrors derive() — same lookup logic, but
+// returns workspace/parent/root NAMES instead of IDs.
+//
+// For a root workspace (no parent), team and org both alias to self;
+// callers should still render them as semantically distinct (the
+// `kind` field on the Namespace carries that distinction). The name
+// itself collides on a depth-1 tree — that's expected; the kind
+// prefix in the canvas label disambiguates.
+//
+// Returns the empty string for any name that's missing on the chain
+// row (defensive — workspaces.name is NOT NULL today, but a future
+// migration could change that). Callers fall back to UUID prefix
+// when DisplayName is empty.
+func deriveNames(chain []chainNode) (workspace, team, org string) {
+	self := chain[0]
+	workspace = self.name
+	if self.parentID != nil && len(chain) > 1 {
+		// Parent is the next node in the chain (depth 1).
+		team = chain[1].name
+	} else {
+		team = self.name
+	}
+	org = chain[len(chain)-1].name
+	return
+}
+
 // ReadableNamespaces returns the namespaces the workspace can read
 // from. Order is deterministic (workspace, team, org) so callers can
 // reason about precedence.
@@ -131,6 +178,7 @@ func (r *Resolver) ReadableNamespaces(ctx context.Context, workspaceID string) (
 		return nil, err
 	}
 	wsID, teamID, orgID := derive(chain)
+	wsName, teamName, orgName := deriveNames(chain)
 	isRoot := chain[0].parentID == nil
 
 	out := []Namespace{
@@ -139,12 +187,14 @@ func (r *Resolver) ReadableNamespaces(ctx context.Context, workspaceID string) (
 			Kind:        contract.NamespaceKindWorkspace,
 			Description: "This workspace's private memories",
 			Writable:    true,
+			DisplayName: wsName,
 		},
 		{
 			Name:        "team:" + teamID,
 			Kind:        contract.NamespaceKindTeam,
 			Description: "Memories shared across team members (parent + siblings)",
 			Writable:    true,
+			DisplayName: teamName,
 		},
 	}
 	// Org namespace is readable by every workspace in the tree, but
@@ -155,6 +205,7 @@ func (r *Resolver) ReadableNamespaces(ctx context.Context, workspaceID string) (
 		Kind:        contract.NamespaceKindOrg,
 		Description: "Org-wide memories visible to every workspace under this root",
 		Writable:    isRoot,
+		DisplayName: orgName,
 	})
 	return out, nil
 }
