@@ -14,10 +14,13 @@ package messagestore
 // legacy source the server replaces; divergence == regression.
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 const fixedTimestamp = "2026-04-25T18:00:00Z"
@@ -279,6 +282,145 @@ func TestChatHistory_NoAgentMessageWhenResponseHasNoTextNoFiles(t *testing.T) {
 		if m.Role == "agent" {
 			t.Errorf("emitted agent bubble despite empty content: %+v", m)
 		}
+	}
+}
+
+// =====================================================================
+// List() integration — sqlmock-backed end-to-end via the real handler
+// =====================================================================
+
+// TestList_WireOrderIsOldestFirstAcrossPagedRows pins the integration
+// invariant: List() returns wire-display-ready messages even though
+// the underlying SQL is `ORDER BY created_at DESC`. This is the
+// load-bearing test for PR-C-2 — without the row-aware reversal,
+// canvas would render every paired bubble in the wrong order on every
+// chat reload (agent before user within each timestamp).
+//
+// Mutation-test cover: removing the `messages = reverseRowChunks(...)`
+// call in List() must turn this test red. (The lower-level
+// TestReverseRowChunks_PreservesPairOrderAcrossRows pins the helper
+// itself; this test pins that List ACTUALLY CALLS the helper.)
+func TestList_WireOrderIsOldestFirstAcrossPagedRows(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	// Server's SQL is ORDER BY created_at DESC. Build mock rows in
+	// THAT order so the row-aware reversal has work to do.
+	rows := sqlmock.NewRows([]string{"created_at", "status", "request_body", "response_body"}).
+		AddRow(mustParseTime(t, "2026-05-05T00:03:00Z"), "ok",
+			`{"params":{"message":{"parts":[{"kind":"text","text":"u3"}]}}}`,
+			`{"result":"a3"}`).
+		AddRow(mustParseTime(t, "2026-05-05T00:02:00Z"), "ok",
+			`{"params":{"message":{"parts":[{"kind":"text","text":"u2"}]}}}`,
+			`{"result":"a2"}`).
+		AddRow(mustParseTime(t, "2026-05-05T00:01:00Z"), "ok",
+			`{"params":{"message":{"parts":[{"kind":"text","text":"u1"}]}}}`,
+			`{"result":"a1"}`)
+
+	mock.ExpectQuery(`SELECT created_at, status, request_body::text, response_body::text`).
+		WillReturnRows(rows)
+
+	store := NewPostgresMessageStore(db)
+	msgs, reachedEnd, err := store.List(context.Background(), "ws-1", ListOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	wantContents := []string{"u1", "a1", "u2", "a2", "u3", "a3"}
+	if len(msgs) != len(wantContents) {
+		t.Fatalf("len(msgs)=%d want %d; got=%v", len(msgs), len(wantContents), msgs)
+	}
+	for i, w := range wantContents {
+		if msgs[i].Content != w {
+			t.Errorf("idx %d: got %q want %q (full slice ordering broken; reverseRowChunks regressed?)", i, msgs[i].Content, w)
+		}
+	}
+	if !reachedEnd {
+		t.Errorf("3 rows < limit 10 should reach end, got reachedEnd=false")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations: %v", err)
+	}
+}
+
+// =====================================================================
+// reverseRowChunks — wire-order helper added in PR-C-2
+// =====================================================================
+
+// TestReverseRowChunks_PreservesPairOrderAcrossRows pins the
+// row-aware reversal that List() applies before returning. Server's
+// SQL is `ORDER BY created_at DESC`, so messages come out
+// newest-row-first; activityRowToChatMessages emits [user, agent]
+// per row with same timestamp. A naive flat reversal of the messages
+// slice would flip each pair (agent before user). reverseRowChunks
+// reverses ROWS, preserving pair-internal order. Without this, canvas
+// would render every paired bubble in the wrong order on every chat
+// reload — the canvas-side reverse used to do the right thing because
+// it reversed ROWS BEFORE flattening, but PR-C/D moved the flattening
+// into the server, so the row-awareness has to live there too.
+func TestReverseRowChunks_PreservesPairOrderAcrossRows(t *testing.T) {
+	// Build messages newest-row-first as List() collects them. Each
+	// row is a pair sharing a timestamp, with [user, agent] order.
+	in := []ChatMessage{
+		{Role: "user", Content: "user_3", Timestamp: "2026-05-05T00:03:00Z"},
+		{Role: "agent", Content: "agent_3", Timestamp: "2026-05-05T00:03:00Z"},
+		{Role: "user", Content: "user_2", Timestamp: "2026-05-05T00:02:00Z"},
+		{Role: "agent", Content: "agent_2", Timestamp: "2026-05-05T00:02:00Z"},
+		{Role: "user", Content: "user_1", Timestamp: "2026-05-05T00:01:00Z"},
+		{Role: "agent", Content: "agent_1", Timestamp: "2026-05-05T00:01:00Z"},
+	}
+	got := reverseRowChunks(in)
+
+	want := []struct {
+		role, content string
+	}{
+		{"user", "user_1"}, {"agent", "agent_1"},
+		{"user", "user_2"}, {"agent", "agent_2"},
+		{"user", "user_3"}, {"agent", "agent_3"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len(got)=%d len(want)=%d", len(got), len(want))
+	}
+	for i, w := range want {
+		if got[i].Role != w.role || got[i].Content != w.content {
+			t.Errorf("idx %d: got role=%q content=%q want role=%q content=%q",
+				i, got[i].Role, got[i].Content, w.role, w.content)
+		}
+	}
+}
+
+// TestReverseRowChunks_HandlesSingleMessageRows pins the case where
+// a row has only a user OR only an agent message (e.g., agent reply
+// not yet recorded, attachments-only user upload). Naive reversal
+// still works for single-message chunks; the test guards against a
+// future change that special-cases the 2-message-row path.
+func TestReverseRowChunks_HandlesSingleMessageRows(t *testing.T) {
+	in := []ChatMessage{
+		{Role: "user", Content: "u3", Timestamp: "2026-05-05T00:03:00Z"},
+		{Role: "user", Content: "u2", Timestamp: "2026-05-05T00:02:00Z"}, // single, no agent
+		{Role: "agent", Content: "a2", Timestamp: "2026-05-05T00:02:00Z"},
+		{Role: "user", Content: "u1", Timestamp: "2026-05-05T00:01:00Z"},
+	}
+	got := reverseRowChunks(in)
+	wantContents := []string{"u1", "u2", "a2", "u3"}
+	if len(got) != len(wantContents) {
+		t.Fatalf("len got=%d want=%d", len(got), len(wantContents))
+	}
+	for i, w := range wantContents {
+		if got[i].Content != w {
+			t.Errorf("idx %d: got %q want %q", i, got[i].Content, w)
+		}
+	}
+}
+
+// TestReverseRowChunks_EmptyInput returns nil/empty without panic.
+func TestReverseRowChunks_EmptyInput(t *testing.T) {
+	got := reverseRowChunks(nil)
+	if len(got) != 0 {
+		t.Errorf("nil input should return empty, got %v", got)
 	}
 }
 
