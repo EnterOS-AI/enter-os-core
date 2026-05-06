@@ -94,6 +94,124 @@ class TestFlagOffLegacyPath:
 
 
 # ---------------------------------------------------------------------------
+# #2967: Auto-fallback to polling path when target is poll-mode
+# ---------------------------------------------------------------------------
+
+class TestPollModeAutoFallback:
+    """Pin the #2967 behavior: when send_a2a_message returns the queued
+    sentinel (target is poll-mode), tool_delegate_task transparently
+    falls back to _delegate_sync_via_polling — which DOES work for
+    poll-mode peers (the executeDelegation goroutine writes to the
+    inbox queue and the result row arrives when the target replies).
+
+    Pre-#2967 behavior: queued sentinel was never returned (the parser
+    misclassified the envelope as malformed), and the calling agent
+    saw a DELEGATION FAILED / unexpected-response-shape error. This
+    test guards both against the parser regression (sentinel-emission)
+    and the fallback regression (sentinel-handling).
+    """
+
+    async def test_queued_sentinel_triggers_polling_fallback(self, monkeypatch):
+        # Flag OFF — legacy send_a2a_message path. send returns the
+        # queued sentinel because the target is poll-mode. delegate_task
+        # must auto-route to _delegate_sync_via_polling so the agent
+        # eventually gets a real reply.
+        monkeypatch.delenv("DELEGATION_SYNC_VIA_INBOX", raising=False)
+
+        import a2a_tools
+        from a2a_client import _A2A_QUEUED_PREFIX
+
+        send_calls = []
+        poll_calls = []
+
+        async def fake_send(workspace_id, task, source_workspace_id=None):
+            send_calls.append((workspace_id, task, source_workspace_id))
+            return f"{_A2A_QUEUED_PREFIX}target={workspace_id} method=message/send"
+
+        async def fake_polling(workspace_id, task, src):
+            poll_calls.append((workspace_id, task, src))
+            return "real response from poll-mode peer"
+
+        async def fake_discover(*_a, **_kw):
+            return {"name": "poll-peer", "status": "online"}
+
+        async def fake_report_activity(*_a, **_kw):
+            return None
+
+        with patch("a2a_tools_delegation.send_a2a_message", side_effect=fake_send), \
+             patch("a2a_tools_delegation._delegate_sync_via_polling", side_effect=fake_polling), \
+             patch("a2a_tools_delegation.discover_peer", side_effect=fake_discover), \
+             patch("a2a_tools.report_activity", side_effect=fake_report_activity):
+            result = await a2a_tools.tool_delegate_task(
+                "ws-target", "task body", source_workspace_id="ws-self"
+            )
+
+        # send was tried first
+        assert len(send_calls) == 1
+        # …then fallback fired automatically
+        assert len(poll_calls) == 1
+        assert poll_calls[0] == ("ws-target", "task body", "ws-self")
+        # Caller sees the real reply, NOT the queued sentinel and NOT
+        # a DELEGATION FAILED string.
+        assert result == "real response from poll-mode peer"
+
+    async def test_non_queued_send_result_does_not_trigger_fallback(self, monkeypatch):
+        # Push-mode peer returns a normal text reply — fallback path
+        # MUST NOT fire (no extra round-trip cost).
+        monkeypatch.delenv("DELEGATION_SYNC_VIA_INBOX", raising=False)
+
+        import a2a_tools
+
+        async def fake_send(*_a, **_kw):
+            return "normal reply"
+
+        async def fake_discover(*_a, **_kw):
+            return {"name": "push-peer", "status": "online"}
+
+        async def fake_report_activity(*_a, **_kw):
+            return None
+
+        with patch("a2a_tools_delegation.send_a2a_message", side_effect=fake_send), \
+             patch("a2a_tools_delegation.discover_peer", side_effect=fake_discover), \
+             patch("a2a_tools.report_activity", side_effect=fake_report_activity), \
+             patch("a2a_tools_delegation._delegate_sync_via_polling", new=AsyncMock()) as poll_mock:
+            result = await a2a_tools.tool_delegate_task(
+                "ws-target", "task", source_workspace_id="ws-self"
+            )
+
+        assert result == "normal reply"
+        poll_mock.assert_not_called()
+
+    async def test_error_send_result_does_not_trigger_fallback(self, monkeypatch):
+        # Genuine error (not queued) — must surface as DELEGATION FAILED,
+        # not silently retried via the polling path.
+        monkeypatch.delenv("DELEGATION_SYNC_VIA_INBOX", raising=False)
+
+        import a2a_tools
+        from a2a_client import _A2A_ERROR_PREFIX
+
+        async def fake_send(*_a, **_kw):
+            return f"{_A2A_ERROR_PREFIX}HTTP 500 [target=...]"
+
+        async def fake_discover(*_a, **_kw):
+            return {"name": "broken-peer", "status": "online"}
+
+        async def fake_report_activity(*_a, **_kw):
+            return None
+
+        with patch("a2a_tools_delegation.send_a2a_message", side_effect=fake_send), \
+             patch("a2a_tools_delegation.discover_peer", side_effect=fake_discover), \
+             patch("a2a_tools.report_activity", side_effect=fake_report_activity), \
+             patch("a2a_tools_delegation._delegate_sync_via_polling", new=AsyncMock()) as poll_mock:
+            result = await a2a_tools.tool_delegate_task(
+                "ws-target", "task", source_workspace_id="ws-self"
+            )
+
+        assert "DELEGATION FAILED" in result
+        poll_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Flag-on: dispatch failures
 # ---------------------------------------------------------------------------
 

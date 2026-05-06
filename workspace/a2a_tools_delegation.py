@@ -29,14 +29,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from a2a_client import (
     PLATFORM_URL,
     WORKSPACE_ID,
     _A2A_ERROR_PREFIX,
+    _A2A_QUEUED_PREFIX,
     _peer_names,
     _peer_to_source,
     discover_peer,
@@ -245,6 +249,29 @@ async def tool_delegate_task(
         # (the platform proxy) so the same code works for in-container and
         # external (standalone molecule-mcp) callers.
         result = await send_a2a_message(workspace_id, task, source_workspace_id=src)
+        # #2967: when the target is a poll-mode peer, the platform's
+        # a2a_proxy short-circuits and returns a queued envelope —
+        # send_a2a_message surfaces that as the _A2A_QUEUED_PREFIX
+        # sentinel. The synchronous proxy path can't deliver a reply
+        # because the target has no public URL; fall back to the
+        # durable /delegate + /delegations polling path which DOES
+        # work for poll-mode peers (the executeDelegation goroutine
+        # writes to the inbox queue and the result row arrives when
+        # the target picks it up + replies).
+        #
+        # This is what makes external-runtime-to-external-runtime
+        # A2A actually deliver synchronous replies — without the
+        # fallback the calling agent sees the queued sentinel as
+        # success-with-no-text and never gets the peer's response.
+        if result.startswith(_A2A_QUEUED_PREFIX):
+            logger.info(
+                "tool_delegate_task: target=%s is poll-mode; "
+                "falling back from message/send to /delegate-poll path",
+                workspace_id,
+            )
+            result = await _delegate_sync_via_polling(
+                workspace_id, task, src or WORKSPACE_ID,
+            )
 
     # Detect delegation failures — wrap them clearly so the calling agent
     # can decide to retry, use another peer, or handle the task itself.
