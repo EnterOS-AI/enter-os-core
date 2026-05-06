@@ -35,11 +35,17 @@ import (
 // drift-risk #6.
 var ErrNoBackend = errors.New("provisioner: no backend configured (zero-valued receiver)")
 
-// RuntimeImages maps runtime names to their Docker image refs on GHCR.
+// RuntimeImages maps runtime names to their Docker image refs.
 // Each standalone template repo publishes its image via the reusable
 // publish-template-image workflow in molecule-ci on every main merge.
 // The provisioner pulls these on demand (see ensureImageLocal) — no
 // pre-build step on the tenant host.
+//
+// The registry prefix is determined by RegistryPrefix() in registry.go;
+// defaults to ghcr.io/molecule-ai (upstream OSS) and is overridden via the
+// MOLECULE_IMAGE_REGISTRY env var in production tenants that mirror to
+// AWS ECR or another registry. The map is computed at package init and
+// captures whatever prefix was active then.
 //
 // Legacy local-build path (`docker build -t workspace-template:<runtime>`
 // via scripts/build-images.sh) is still supported for development:
@@ -47,24 +53,19 @@ var ErrNoBackend = errors.New("provisioner: no backend configured (zero-valued r
 // Docker's image resolver matches it before any pull is attempted. Set
 // the env var WORKSPACE_IMAGE_LOCAL_OVERRIDE=1 (enforced by callers) to
 // short-circuit pulls entirely if needed.
-var RuntimeImages = map[string]string{
-	"langgraph":   "ghcr.io/molecule-ai/workspace-template-langgraph:latest",
-	"claude-code": "ghcr.io/molecule-ai/workspace-template-claude-code:latest",
-	"openclaw":    "ghcr.io/molecule-ai/workspace-template-openclaw:latest",
-	"deepagents":  "ghcr.io/molecule-ai/workspace-template-deepagents:latest",
-	"crewai":      "ghcr.io/molecule-ai/workspace-template-crewai:latest",
-	"autogen":     "ghcr.io/molecule-ai/workspace-template-autogen:latest",
-	"hermes":      "ghcr.io/molecule-ai/workspace-template-hermes:latest",     // Hermes (Nous Research) — real hermes-agent behind A2A bridge
-	"gemini-cli":  "ghcr.io/molecule-ai/workspace-template-gemini-cli:latest", // Google Gemini CLI
-}
+var RuntimeImages = computeRuntimeImages()
+
+// DefaultImage is the fallback workspace Docker image (langgraph is the
+// most common runtime). Computed via RegistryPrefix() so the prefix
+// override applies to the fallback path too.
+//
+// NOTE: Every runtime MUST have an entry in knownRuntimes (registry.go).
+// If a runtime is missing, it falls back to DefaultImage which may have
+// wrong deps. Add new runtimes to knownRuntimes AND create the standalone
+// template repo.
+var DefaultImage = RuntimeImage(defaultRuntime)
 
 const (
-	// DefaultImage is the fallback workspace Docker image (langgraph is the most common runtime).
-	DefaultImage = "ghcr.io/molecule-ai/workspace-template-langgraph:latest"
-	// NOTE: Every runtime MUST have an entry in RuntimeImages above. If a runtime is missing,
-	// it falls back to DefaultImage which may have wrong deps. Add new runtimes to both
-	// RuntimeImages AND create the standalone template repo.
-
 	// DefaultNetwork is the Docker network workspaces join.
 	DefaultNetwork = "molecule-monorepo-net"
 

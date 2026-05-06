@@ -56,10 +56,17 @@ type RefreshResult struct {
 	Recreated []string `json:"recreated"`
 }
 
-// TemplateImageRef returns the canonical GHCR ref for a runtime's template
-// image. Single source of truth shared with imagewatch.
+// TemplateImageRef returns the canonical image ref for a runtime's template,
+// using the configured registry (provisioner.RegistryPrefix()) and the
+// moving `:latest` tag. Single source of truth shared with imagewatch.
+//
+// Defaults to ghcr.io/molecule-ai/workspace-template-<runtime>:latest
+// (upstream OSS). When MOLECULE_IMAGE_REGISTRY is set in the environment
+// (typically the AWS ECR mirror in production), this returns the prefixed
+// equivalent so admin operations and image-watch checks hit the same
+// registry the provisioner pulls from.
 func TemplateImageRef(runtime string) string {
-	return fmt.Sprintf("ghcr.io/molecule-ai/workspace-template-%s:latest", runtime)
+	return fmt.Sprintf("%s/workspace-template-%s:latest", provisioner.RegistryPrefix(), runtime)
 }
 
 // ghcrAuthHeader returns the base64-encoded JSON auth payload Docker's
