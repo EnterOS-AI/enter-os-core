@@ -213,10 +213,15 @@ func setupSwapEnv(t *testing.T) (*handlers.MCPHandler, *flatPlugin, sqlmock.Sqlm
 
 // expectChainQuery sets up the recursive-CTE expectation matching
 // the resolver for a root workspace. Reusable across tests.
+//
+// The resolver SELECTs `name` so it can populate Namespace.DisplayName
+// (#2988); we pass an empty string here because the e2e tests don't
+// assert on label rendering — the namespace string ("workspace:root-1"
+// etc) is what the plugin sees.
 func expectChainQueryRoot(mock sqlmock.Sqlmock) {
 	mock.ExpectQuery("WITH RECURSIVE chain").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "parent_id", "depth"}).
-			AddRow("root-1", nil, 0))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "parent_id", "depth"}).
+			AddRow("root-1", "", nil, 0))
 }
 
 // --- The actual E2E ---
