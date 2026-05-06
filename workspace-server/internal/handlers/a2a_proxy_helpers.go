@@ -14,10 +14,12 @@ import (
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/wsauth"
 	"github.com/gin-gonic/gin"
 )
+
 // proxyDispatchBuildError is a sentinel wrapper for failures inside
 // http.NewRequestWithContext. handleA2ADispatchError unwraps it to emit the
 // "failed to create proxy request" 500 instead of the standard 502/503 paths.
@@ -90,10 +92,10 @@ func (h *WorkspaceHandler) handleA2ADispatchError(ctx context.Context, workspace
 				Status:  http.StatusServiceUnavailable,
 				Headers: map[string]string{"Retry-After": strconv.Itoa(busyRetryAfterSeconds)},
 				Response: gin.H{
-					"error":           "workspace agent busy — adapter handles retry (native_session)",
-					"busy":            true,
-					"retry_after":     busyRetryAfterSeconds,
-					"native_session":  true,
+					"error":          "workspace agent busy — adapter handles retry (native_session)",
+					"busy":           true,
+					"retry_after":    busyRetryAfterSeconds,
+					"native_session": true,
 				},
 			}
 		}
@@ -149,7 +151,7 @@ func (h *WorkspaceHandler) handleA2ADispatchError(ctx context.Context, workspace
 // Provisioner selection (mutually exclusive in production):
 //   - h.provisioner != nil  → local Docker deployment; IsRunning does docker inspect.
 //   - h.cpProv != nil       → SaaS / EC2 deployment; IsRunning calls CP's
-//                              /cp/workspaces/:id/status to read the EC2 state.
+//     /cp/workspaces/:id/status to read the EC2 state.
 //
 // Pre-fix this function ONLY consulted h.provisioner — for SaaS tenants
 // (h.provisioner=nil, h.cpProv=set) it short-circuited to false on every
@@ -191,7 +193,7 @@ func (h *WorkspaceHandler) maybeMarkContainerDead(ctx context.Context, workspace
 		log.Printf("ProxyA2A: failed to mark workspace %s offline: %v", workspaceID, err)
 	}
 	db.ClearWorkspaceKeys(ctx, workspaceID)
-	h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_OFFLINE", workspaceID, map[string]interface{}{})
+	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceOffline), workspaceID, map[string]interface{}{})
 	go h.RestartByID(workspaceID)
 	return true
 }
@@ -272,7 +274,7 @@ func (h *WorkspaceHandler) logA2ASuccess(ctx context.Context, workspaceID, calle
 	}(ctx)
 
 	if callerID == "" && statusCode < 400 {
-		h.broadcaster.BroadcastOnly(workspaceID, "A2A_RESPONSE", map[string]interface{}{
+		h.broadcaster.BroadcastOnly(workspaceID, string(events.EventA2AResponse), map[string]interface{}{
 			"response_body": json.RawMessage(respBody),
 			"method":        a2aMethod,
 			"duration_ms":   durationMs,

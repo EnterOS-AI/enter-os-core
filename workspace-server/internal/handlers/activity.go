@@ -55,7 +55,7 @@ func NewActivityHandler(b *events.Broadcaster) *ActivityHandler {
 func (h *ActivityHandler) List(c *gin.Context) {
 	workspaceID := c.Param("id")
 	activityType := c.Query("type")
-	source := c.Query("source") // "canvas" = source_id IS NULL, "agent" = source_id IS NOT NULL
+	source := c.Query("source")  // "canvas" = source_id IS NULL, "agent" = source_id IS NOT NULL
 	peerID := c.Query("peer_id") // optional UUID — restrict to rows where this peer is sender OR target
 	limitStr := c.DefaultQuery("limit", "100")
 	sinceSecsStr := c.Query("since_secs")
@@ -650,7 +650,7 @@ func LogActivity(ctx context.Context, broadcaster events.EventEmitter, params Ac
 		if respStr != nil {
 			payload["response_body"] = json.RawMessage(respJSON)
 		}
-		broadcaster.BroadcastOnly(params.WorkspaceID, "ACTIVITY_LOGGED", payload)
+		broadcaster.BroadcastOnly(params.WorkspaceID, string(events.EventActivityLogged), payload)
 	}
 }
 

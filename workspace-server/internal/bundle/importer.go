@@ -51,7 +51,7 @@ func Import(
 		return result
 	}
 
-	_ = broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_PROVISIONING", wsID, map[string]interface{}{
+	_ = broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceProvisioning), wsID, map[string]interface{}{
 		"name":             b.Name,
 		"tier":             b.Tier,
 		"source_bundle_id": b.ID,
@@ -142,7 +142,7 @@ func markFailed(ctx context.Context, wsID string, broadcaster *events.Broadcaste
 	db.DB.ExecContext(ctx,
 		`UPDATE workspaces SET status = $1, last_sample_error = $2, updated_at = now() WHERE id = $3`,
 		models.StatusFailed, msg, wsID)
-	broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_PROVISION_FAILED", wsID, map[string]interface{}{
+	broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceProvisionFailed), wsID, map[string]interface{}{
 		"error": msg,
 	})
 }

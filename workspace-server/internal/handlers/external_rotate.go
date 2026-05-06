@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/wsauth"
 	"github.com/gin-gonic/gin"
 )
@@ -100,7 +101,7 @@ func (h *WorkspaceHandler) RotateExternalCredentials(c *gin.Context) {
 	// see when credentials were rotated. No PII; the token plaintext
 	// is NOT logged.
 	if h.broadcaster != nil {
-		h.broadcaster.RecordAndBroadcast(ctx, "EXTERNAL_CREDENTIALS_ROTATED", id, map[string]interface{}{
+		h.broadcaster.RecordAndBroadcast(ctx, string(events.EventExternalCredentialsRotated), id, map[string]interface{}{
 			"workspace_id": id,
 		})
 	}

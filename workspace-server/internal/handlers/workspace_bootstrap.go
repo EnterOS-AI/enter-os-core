@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/gin-gonic/gin"
 )
@@ -85,7 +86,7 @@ func (h *WorkspaceHandler) BootstrapFailed(c *gin.Context) {
 		return
 	}
 
-	h.broadcaster.RecordAndBroadcast(c.Request.Context(), "WORKSPACE_PROVISION_FAILED", id, map[string]interface{}{
+	h.broadcaster.RecordAndBroadcast(c.Request.Context(), string(events.EventWorkspaceProvisionFailed), id, map[string]interface{}{
 		"error":    errMsg,
 		"log_tail": tail,
 		"source":   "bootstrap_watcher",

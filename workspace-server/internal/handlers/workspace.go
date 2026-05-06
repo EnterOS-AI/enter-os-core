@@ -112,7 +112,6 @@ func (h *WorkspaceHandler) SetCPProvisioner(cp provisioner.CPProvisionerAPI) {
 	h.cpProv = cp
 }
 
-
 // SetEnvMutators wires a provisionhook.Registry into the handler. Plugins
 // living in separate repos register on the same Registry instance during
 // boot (see cmd/server/main.go) and main.go calls this setter once before
@@ -361,7 +360,7 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 	// populate the Runtime pill on the side panel immediately — without it
 	// the node lives as "runtime: unknown" until something refetches the
 	// workspace row (which nothing does during provisioning).
-	h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_PROVISIONING", id, map[string]interface{}{
+	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceProvisioning), id, map[string]interface{}{
 		"name":    payload.Name,
 		"tier":    payload.Tier,
 		"runtime": payload.Runtime,
@@ -388,7 +387,7 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 			if err := db.CacheURL(ctx, id, payload.URL); err != nil {
 				log.Printf("External workspace: failed to cache URL for %s: %v", id, err)
 			}
-			h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_ONLINE", id, map[string]interface{}{
+			h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceOnline), id, map[string]interface{}{
 				"name": payload.Name, "external": true,
 			})
 		} else {
@@ -407,7 +406,7 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 			} else {
 				connectionToken = tok
 			}
-			h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_AWAITING_AGENT", id, map[string]interface{}{
+			h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceAwaitingAgent), id, map[string]interface{}{
 				"name": payload.Name, "external": true,
 			})
 		}
@@ -539,24 +538,24 @@ func scanWorkspaceRow(rows interface {
 	}
 
 	ws := map[string]interface{}{
-		"id":                id,
-		"name":              name,
-		"tier":              tier,
-		"status":            status,
-		"url":               url,
-		"parent_id":         parentID,
-		"active_tasks":          activeTasks,
-		"max_concurrent_tasks":  maxConcurrentTasks,
-		"last_error_rate":       errorRate,
-		"last_sample_error": sampleError,
-		"uptime_seconds":    uptimeSeconds,
-		"current_task":      currentTask,
-		"runtime":           runtime,
-		"workspace_dir":     nilIfEmpty(workspaceDir),
-		"monthly_spend":     monthlySpend,
-		"x":                 x,
-		"y":                 y,
-		"collapsed":         collapsed,
+		"id":                   id,
+		"name":                 name,
+		"tier":                 tier,
+		"status":               status,
+		"url":                  url,
+		"parent_id":            parentID,
+		"active_tasks":         activeTasks,
+		"max_concurrent_tasks": maxConcurrentTasks,
+		"last_error_rate":      errorRate,
+		"last_sample_error":    sampleError,
+		"uptime_seconds":       uptimeSeconds,
+		"current_task":         currentTask,
+		"runtime":              runtime,
+		"workspace_dir":        nilIfEmpty(workspaceDir),
+		"monthly_spend":        monthlySpend,
+		"x":                    x,
+		"y":                    y,
+		"collapsed":            collapsed,
 	}
 
 	// budget_limit: nil when no limit set, int64 otherwise

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 )
 
 const (
@@ -304,14 +305,14 @@ func (m *Manager) HandleInbound(ctx context.Context, ch ChannelRow, msg *Inbound
 				"parts":     []map[string]interface{}{{"kind": "text", "text": msg.Text}},
 			},
 			"metadata": map[string]interface{}{
-				"source":       ch.ChannelType,
-				"channel_id":   ch.ID,
-				"chat_id":      msg.ChatID,
-				"user_id":      msg.UserID,
-				"username":     msg.Username,
-				"message_id":   msg.MessageID,
-				"history":      history,
-				"extra":        msg.Metadata,
+				"source":     ch.ChannelType,
+				"channel_id": ch.ID,
+				"chat_id":    msg.ChatID,
+				"user_id":    msg.UserID,
+				"username":   msg.Username,
+				"message_id": msg.MessageID,
+				"history":    history,
+				"extra":      msg.Metadata,
 			},
 		},
 	})
@@ -383,7 +384,7 @@ func (m *Manager) HandleInbound(ctx context.Context, ch ChannelRow, msg *Inbound
 
 	// Broadcast event
 	if m.broadcaster != nil {
-		m.broadcaster.RecordAndBroadcast(ctx, "CHANNEL_MESSAGE", ch.WorkspaceID, map[string]interface{}{
+		m.broadcaster.RecordAndBroadcast(ctx, string(events.EventChannelMessage), ch.WorkspaceID, map[string]interface{}{
 			"channel_id":   ch.ID,
 			"channel_type": ch.ChannelType,
 			"username":     msg.Username,
@@ -427,7 +428,7 @@ func (m *Manager) SendOutbound(ctx context.Context, channelID string, text strin
 	}
 
 	if m.broadcaster != nil {
-		m.broadcaster.RecordAndBroadcast(ctx, "CHANNEL_MESSAGE", ch.WorkspaceID, map[string]interface{}{
+		m.broadcaster.RecordAndBroadcast(ctx, string(events.EventChannelMessage), ch.WorkspaceID, map[string]interface{}{
 			"channel_id":   ch.ID,
 			"channel_type": ch.ChannelType,
 			"direction":    "outbound",

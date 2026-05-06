@@ -14,6 +14,7 @@ import (
 	cronlib "github.com/robfig/cron/v3"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/metrics"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/supervised"
 )
@@ -541,7 +542,7 @@ func (s *Scheduler) fireSchedule(ctx context.Context, sched scheduleRow) {
 	insertCancel()
 
 	if s.broadcaster != nil {
-		s.broadcaster.RecordAndBroadcast(ctx, "CRON_EXECUTED", sched.WorkspaceID, map[string]interface{}{
+		s.broadcaster.RecordAndBroadcast(ctx, string(events.EventCronExecuted), sched.WorkspaceID, map[string]interface{}{
 			"schedule_id":   sched.ID,
 			"schedule_name": sched.Name,
 			"status":        lastStatus,
@@ -618,7 +619,7 @@ func (s *Scheduler) recordSkipped(ctx context.Context, sched scheduleRow, active
 	skipInsCancel()
 
 	if s.broadcaster != nil {
-		_ = s.broadcaster.RecordAndBroadcast(ctx, "CRON_SKIPPED", sched.WorkspaceID, map[string]interface{}{
+		_ = s.broadcaster.RecordAndBroadcast(ctx, string(events.EventCronSkipped), sched.WorkspaceID, map[string]interface{}{
 			"schedule_id":   sched.ID,
 			"schedule_name": sched.Name,
 			"reason":        reason,

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provlog"
 	"github.com/gin-gonic/gin"
@@ -147,7 +148,7 @@ func (h *WorkspaceHandler) Restart(c *gin.Context) {
 	// Reset to provisioning
 	db.DB.ExecContext(ctx,
 		`UPDATE workspaces SET status = $1, url = '', updated_at = now() WHERE id = $2`, models.StatusProvisioning, id)
-	h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_PROVISIONING", id, map[string]interface{}{
+	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceProvisioning), id, map[string]interface{}{
 		"name":    wsName,
 		"tier":    tier,
 		"runtime": containerRuntime,
@@ -341,7 +342,7 @@ func (h *WorkspaceHandler) HibernateWorkspace(ctx context.Context, workspaceID s
 	}
 
 	db.ClearWorkspaceKeys(ctx, workspaceID)
-	h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_HIBERNATED", workspaceID, map[string]interface{}{
+	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceHibernated), workspaceID, map[string]interface{}{
 		"name": wsName,
 		"tier": tier,
 	})
@@ -552,7 +553,7 @@ func (h *WorkspaceHandler) runRestartCycle(workspaceID string) {
 
 	db.DB.ExecContext(ctx,
 		`UPDATE workspaces SET status = $1, url = '', updated_at = now() WHERE id = $2`, models.StatusProvisioning, workspaceID)
-	h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_PROVISIONING", workspaceID, map[string]interface{}{
+	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceProvisioning), workspaceID, map[string]interface{}{
 		"name": wsName, "tier": tier, "runtime": dbRuntime,
 	})
 
@@ -640,7 +641,7 @@ func (h *WorkspaceHandler) Pause(c *gin.Context) {
 		db.DB.ExecContext(ctx,
 			`UPDATE workspaces SET status = $1, url = '', updated_at = now() WHERE id = $2`, models.StatusPaused, ws.id)
 		db.ClearWorkspaceKeys(ctx, ws.id)
-		h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_PAUSED", ws.id, map[string]interface{}{
+		h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspacePaused), ws.id, map[string]interface{}{
 			"name": ws.name,
 		})
 	}
@@ -709,7 +710,7 @@ func (h *WorkspaceHandler) Resume(c *gin.Context) {
 	for _, ws := range toResume {
 		db.DB.ExecContext(ctx,
 			`UPDATE workspaces SET status = $1, updated_at = now() WHERE id = $2`, models.StatusProvisioning, ws.id)
-		h.broadcaster.RecordAndBroadcast(ctx, "WORKSPACE_PROVISIONING", ws.id, map[string]interface{}{
+		h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceProvisioning), ws.id, map[string]interface{}{
 			"name": ws.name, "tier": ws.tier, "runtime": ws.runtime,
 		})
 		payload := models.CreateWorkspacePayload{Name: ws.name, Tier: ws.tier, Runtime: ws.runtime}
