@@ -331,45 +331,11 @@ func TestAgentMessageWriter_Send_DBErrorOnLookupReturnsWrapped(t *testing.T) {
 	}
 }
 
-// TestTruncatePreviewRunes_RuneBoundary pins the multi-byte-safe
-// truncation. The previous byte-slice version produced invalid UTF-8
-// when the cut landed mid-codepoint (CJK, emoji, accented), and
-// Postgres JSONB rejects invalid UTF-8 — INSERT fails, log.Printf
-// fires, message vanishes from chat history. Per memory
-// feedback_assert_exact_not_substring.md, pin the boundary cases
-// directly.
-func TestTruncatePreviewRunes_RuneBoundary(t *testing.T) {
-	cases := []struct {
-		name     string
-		in       string
-		max      int
-		want     string
-	}{
-		{"under-max ASCII", "hi", 80, "hi"},
-		{"under-max CJK", "你好", 80, "你好"},
-		{"exactly-at-max", "abcde", 5, "abcde"},
-		{"truncate ASCII", "abcdefghij", 5, "abcde…"},
-		{"truncate CJK at rune boundary", "你好世界你好世界", 4, "你好世界…"},
-		{"truncate emoji at rune boundary", "😀😀😀😀😀😀", 3, "😀😀😀…"},
-		// The pre-fix bug shape: byte-slice on non-ASCII would have
-		// mangled the codepoint here. With rune-boundary truncation
-		// the result is well-formed UTF-8.
-		{"non-zero with emoji prefix", "🚀abcdefghijk", 5, "🚀abcd…"},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := truncatePreviewRunes(c.in, c.max)
-			if got != c.want {
-				t.Errorf("truncatePreviewRunes(%q, %d) = %q, want %q", c.in, c.max, got, c.want)
-			}
-			// Always-valid UTF-8 invariant. A byte-slice truncation
-			// could leave partial codepoints; this version must not.
-			if !utf8.ValidString(got) {
-				t.Errorf("truncatePreviewRunes(%q, %d) returned invalid UTF-8: %q", c.in, c.max, got)
-			}
-		})
-	}
-}
+// Helper-level truncate tests now live in
+// internal/textutil/truncate_test.go (TestTruncateRunes). The
+// integration-level coverage that exercises the agent_message_writer
+// path with non-ASCII content is TestAgentMessageWriter_Send_NonASCIIMessagePersists
+// below.
 
 // TestAgentMessageWriter_Send_NonASCIIMessagePersists pins the end-to-end
 // path for non-ASCII messages — the original reno-stars regression

@@ -349,16 +349,8 @@ func TestVerifyParity_PickSampleError(t *testing.T) {
 	}
 }
 
-// --- Truncate ---
-
-func TestVerifyTruncate(t *testing.T) {
-	if got := truncate("short", 10); got != "short" {
-		t.Errorf("got %q", got)
-	}
-	if got := truncate(strings.Repeat("a", 200), 10); !strings.HasSuffix(got, "…") {
-		t.Errorf("expected ellipsis: %q", got)
-	}
-}
+// Truncate moved to internal/textutil — coverage in
+// internal/textutil/truncate_test.go (TestTruncateBytes_RuneBoundary).
 
 // --- CLI: -verify mode ---
 
