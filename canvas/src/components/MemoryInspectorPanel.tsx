@@ -325,7 +325,6 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
             {dropdownOptions.map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {opt.label}
-                {opt.kind ? `  (${opt.kind})` : ''}
               </option>
             ))}
           </select>

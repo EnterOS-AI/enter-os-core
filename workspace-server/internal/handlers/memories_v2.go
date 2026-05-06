@@ -331,43 +331,84 @@ func memoryToView(m contract.Memory) MemoryView {
 }
 
 // namespacesToViews converts resolver namespaces into UI-friendly
-// views. Stable sort: workspace → team → org → custom, then by name.
+// views. Prefers `DisplayName` from the resolver (workspace.name from
+// the DB) when present; falls back to a UUID-prefix label.
+//
+// Issue #2988: pre-fix, every namespace used a shortID-truncated UUID
+// label. On a root workspace where workspace==team==org IDs collide
+// (resolver derive() degenerate case), all three labels rendered
+// identically. DisplayName disambiguates by surfacing real workspace
+// names — the canvas dropdown now reads "Workspace (mac laptop)" /
+// "Team (mac laptop)" / "Org (mac laptop)" for a root workspace
+// rather than three identical UUID prefixes. The `kind` prefix
+// "Workspace/Team/Org" still carries the semantic distinction.
 func namespacesToViews(in []namespace.Namespace) []NamespaceView {
 	views := make([]NamespaceView, 0, len(in))
 	for _, n := range in {
 		views = append(views, NamespaceView{
 			Name:  n.Name,
 			Kind:  n.Kind,
-			Label: namespaceLabel(n.Name, n.Kind),
+			Label: namespaceLabelWithName(n.Name, n.Kind, n.DisplayName),
 		})
 	}
 	return views
 }
 
-// namespaceLabel renders a human-friendly label for a namespace. The
-// canvas displays this directly; we keep the formatting server-side
-// so the shape stays consistent across UIs (canvas, future TUI, etc.).
+// namespaceLabel renders a human-friendly label for a namespace using
+// the UUID-prefix fallback only. Kept for back-compat with callers
+// that don't yet plumb a display name. New callers should use
+// namespaceLabelWithName which prefers the workspace's display name
+// when available.
 //
-// Format:
-//   workspace:abc-123 → "Workspace (abc-123)"   (UUID short-prefixed)
+// Format (UUID-prefix fallback):
+//   workspace:abc-123 → "Workspace (abc-123)"
 //   team:t-1          → "Team (t-1)"
 //   org:acme          → "Org (acme)"
-//   custom:foo        → "foo"                   (operator-defined; raw)
+//   custom:foo        → "foo"
 func namespaceLabel(name string, kind contract.NamespaceKind) string {
+	return namespaceLabelWithName(name, kind, "")
+}
+
+// namespaceLabelWithName renders the human-friendly label, preferring
+// `displayName` when non-empty.
+//
+// When displayName is set:
+//   Workspace, "mac laptop"    → "Workspace (mac laptop)"
+//   Team, "Engineering team"   → "Team (Engineering team)"
+//   Org, "Hongming's Org"      → "Org (Hongming's Org)"
+//
+// When displayName is empty (lookup miss, future-migration drop, etc.),
+// falls back to the UUID-prefix shape for back-compat.
+//
+// Custom namespaces ignore displayName because they're operator-defined
+// — the operator chose the raw suffix as the label, surfacing a
+// different "name" would be a UX surprise.
+func namespaceLabelWithName(name string, kind contract.NamespaceKind, displayName string) string {
 	suffix := ""
 	if i := indexOfColon(name); i >= 0 && i+1 < len(name) {
 		suffix = name[i+1:]
 	}
 	switch kind {
 	case contract.NamespaceKindWorkspace:
+		if displayName != "" {
+			return "Workspace (" + displayName + ")"
+		}
 		return "Workspace (" + shortID(suffix) + ")"
 	case contract.NamespaceKindTeam:
+		if displayName != "" {
+			return "Team (" + displayName + ")"
+		}
 		return "Team (" + shortID(suffix) + ")"
 	case contract.NamespaceKindOrg:
+		if displayName != "" {
+			return "Org (" + displayName + ")"
+		}
 		return "Org (" + suffix + ")"
 	case contract.NamespaceKindCustom:
-		// Custom namespaces are operator-defined; surface the raw
-		// suffix so they can label them however they want.
+		// Operator-defined; the suffix IS the label they chose.
+		// displayName is ignored — surfacing a different name would
+		// be a UX surprise for an operator who deliberately named
+		// the namespace.
 		if suffix == "" {
 			return name
 		}

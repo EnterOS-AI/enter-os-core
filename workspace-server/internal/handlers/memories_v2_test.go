@@ -507,6 +507,92 @@ func TestMemoriesV2_Forget_MissingMemoryID_400(t *testing.T) {
 // View-shaping unit tests — pin individual helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+// namespaceLabelWithName tests — the new code path that prefers
+// DisplayName over UUID-prefix fallback (issue #2988).
+func TestNamespaceLabelWithName_PrefersDisplayNameWhenSet(t *testing.T) {
+	cases := []struct {
+		name         string
+		raw          string
+		kind         contract.NamespaceKind
+		display      string
+		want         string
+	}{
+		{"workspace with name", "workspace:abc-1234", contract.NamespaceKindWorkspace, "mac laptop", "Workspace (mac laptop)"},
+		{"team with name", "team:abc-1234", contract.NamespaceKindTeam, "Engineering", "Team (Engineering)"},
+		{"org with name", "org:acme", contract.NamespaceKindOrg, "Hongming's Org", "Org (Hongming's Org)"},
+		// Custom ignores displayName by design — operator chose the suffix.
+		{"custom ignores displayName", "custom:ops-shared", contract.NamespaceKindCustom, "FancyName", "ops-shared"},
+		{"unknown kind falls through", "weird:x", contract.NamespaceKind("future"), "WhoCares", "weird:x"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := namespaceLabelWithName(tc.raw, tc.kind, tc.display)
+			if got != tc.want {
+				t.Errorf("namespaceLabelWithName(%q, %q, %q) = %q, want %q",
+					tc.raw, tc.kind, tc.display, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNamespaceLabelWithName_FallsBackToUUIDPrefixWhenEmpty(t *testing.T) {
+	// When displayName is empty (NULL in DB, lookup miss, etc.), the
+	// label shape MUST match the legacy UUID-prefix shape exactly so
+	// existing canvas behaviour is unchanged for callers that don't
+	// plumb a name.
+	cases := []struct {
+		raw  string
+		kind contract.NamespaceKind
+		want string
+	}{
+		{"workspace:abcdefghij", contract.NamespaceKindWorkspace, "Workspace (abcdefgh)"},
+		{"team:t-99", contract.NamespaceKindTeam, "Team (t-99)"},
+		{"org:acme", contract.NamespaceKindOrg, "Org (acme)"},
+	}
+	for _, tc := range cases {
+		got := namespaceLabelWithName(tc.raw, tc.kind, "")
+		if got != tc.want {
+			t.Errorf("displayName=\"\" path: got %q, want %q", got, tc.want)
+		}
+	}
+}
+
+func TestNamespacesToViews_PassesDisplayNameThrough(t *testing.T) {
+	in := []namespace.Namespace{
+		{Name: "workspace:root-1", Kind: contract.NamespaceKindWorkspace, DisplayName: "mac laptop"},
+		{Name: "team:root-1", Kind: contract.NamespaceKindTeam, DisplayName: "mac laptop"}, // root → team aliases self
+		{Name: "org:root-1", Kind: contract.NamespaceKindOrg, DisplayName: "mac laptop"},
+	}
+	out := namespacesToViews(in)
+	if len(out) != 3 {
+		t.Fatalf("len = %d, want 3", len(out))
+	}
+	wantLabels := []string{
+		"Workspace (mac laptop)",
+		"Team (mac laptop)",
+		"Org (mac laptop)",
+	}
+	for i, v := range out {
+		if v.Label != wantLabels[i] {
+			t.Errorf("[%d] label = %q, want %q", i, v.Label, wantLabels[i])
+		}
+	}
+}
+
+func TestNamespacesToViews_FallsBackToUUIDLabelWhenDisplayNameEmpty(t *testing.T) {
+	// Exercises the back-compat path — DisplayName="" plumbs through
+	// to namespaceLabelWithName which returns the legacy UUID-prefix
+	// label. This is what callers see when the workspaces table
+	// has a NULL name (defensive — workspaces.name is NOT NULL today).
+	in := []namespace.Namespace{
+		{Name: "workspace:root-1", Kind: contract.NamespaceKindWorkspace}, // no DisplayName
+	}
+	out := namespacesToViews(in)
+	if out[0].Label != "Workspace (root-1)" {
+		t.Errorf("fallback label = %q, want %q", out[0].Label, "Workspace (root-1)")
+	}
+}
+
 func TestNamespaceLabel_AllKinds(t *testing.T) {
 	cases := []struct {
 		name string
