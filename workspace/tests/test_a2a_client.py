@@ -281,11 +281,11 @@ class TestSendA2AMessage:
         to the 'unexpected response shape' error path → callers retried,
         peer got duplicate delegations.
 
-        Pin: poll-queued envelope returns a clean success string that does
-        NOT start with _A2A_ERROR_PREFIX, so callers route it through the
-        normal-outcome path. Verified discriminating: assert_NOT_startswith
-        the error prefix would FAIL on the old code (which returned an
-        error-prefixed string) and PASSES on the new code.
+        Pin: poll-queued envelope returns a string tagged with the
+        _A2A_QUEUED_PREFIX sentinel (not _A2A_ERROR_PREFIX), so callers
+        can branch on the typed outcome without substring-sniffing.
+        Verified discriminating: pre-fix returned _A2A_ERROR_PREFIX so
+        the not-startswith assertion would FAIL on the old code.
         """
         import a2a_client
 
@@ -301,12 +301,13 @@ class TestSendA2AMessage:
 
         # Discriminating: pre-fix returned a string that startswith
         # _A2A_ERROR_PREFIX, so this assertion would have FAILED on the
-        # old code. New code returns a queued-success string.
+        # old code. New code returns the queued-success sentinel.
         assert not result.startswith(a2a_client._A2A_ERROR_PREFIX), (
             f"poll-queued envelope must not be tagged as A2A error; got: {result!r}"
         )
-        assert "queued" in result.lower()
-        assert "poll" in result.lower()
+        assert result.startswith(a2a_client._A2A_QUEUED_PREFIX), (
+            f"poll-queued envelope must use the queued sentinel; got: {result!r}"
+        )
         # The method is included so a structured-log scraper can route by
         # protocol verb if needed.
         assert "message/send" in result
@@ -329,6 +330,7 @@ class TestSendA2AMessage:
             result = await a2a_client.send_a2a_message(_TEST_PEER_ID, "task")
 
         assert not result.startswith(a2a_client._A2A_ERROR_PREFIX)
+        assert result.startswith(a2a_client._A2A_QUEUED_PREFIX)
         assert "message/sendStream" in result
 
     async def test_status_queued_without_poll_mode_still_falls_through(self):

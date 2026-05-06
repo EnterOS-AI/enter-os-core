@@ -157,6 +157,43 @@ A2A_RESP=$(curl -s --max-time "$TIMEOUT" -X POST "$BASE/workspaces/$POLL_WS_ID/a
   }')
 
 check "poll-mode A2A returns queued status" '"status":"queued"' "$A2A_RESP"
+
+# ---------- Phase 3.5: Python parser classifies queued envelope correctly ----------
+# (#2967) — server emits the queued envelope, the wheel's a2a_response.parse()
+# MUST classify it as the Queued variant, not Malformed. Pre-#2967 the bare
+# message/send parser in a2a_client.py:587 misclassified this and returned
+# "[A2A_ERROR] unexpected response shape", which broke external↔external A2A
+# on poll-mode peers.
+#
+# This phase exercises the actual on-the-wire response from a real
+# workspace-server (NOT a mocked dict) through the same module the production
+# wheel ships, so a regression in either the server emit shape OR the client
+# parser fails this E2E.
+
+echo ""
+echo "--- Phase 3.5: Python parser classifies real server response (#2967) ---"
+
+# Pipe the queued response captured above through a2a_response.parse and
+# assert the classification. WORKSPACE_ID is required at module import
+# time but irrelevant to this parsing call (any UUID is fine).
+PARSE_RESULT=$(WORKSPACE_ID="00000000-0000-0000-0000-000000000001" \
+  python3 -c "
+import json, sys
+sys.path.insert(0, '$(cd "$(dirname "$0")/../../workspace" && pwd)')
+import a2a_response
+data = json.loads(r'''$A2A_RESP''')
+v = a2a_response.parse(data)
+print(type(v).__name__)
+if isinstance(v, a2a_response.Queued):
+    print(f'method={v.method} delivery_mode={v.delivery_mode}')
+")
+
+check_eq "Python parser classifies real server response as Queued" \
+  "Queued" "$(printf '%s' "$PARSE_RESULT" | head -n1)"
+check "Queued variant captures method=message/send" \
+  "method=message/send" "$PARSE_RESULT"
+check "Queued variant captures delivery_mode=poll" \
+  "delivery_mode=poll" "$PARSE_RESULT"
 check "queued response echoes delivery_mode=poll" '"delivery_mode":"poll"' "$A2A_RESP"
 check "queued response echoes the JSON-RPC method" '"method":"message/send"' "$A2A_RESP"
 
