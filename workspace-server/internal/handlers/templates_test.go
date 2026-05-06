@@ -750,7 +750,11 @@ func TestListFiles_WorkspaceNotFound(t *testing.T) {
 
 	handler := NewTemplatesHandler(t.TempDir(), nil, nil)
 
-	mock.ExpectQuery("SELECT name FROM workspaces WHERE id =").
+	// SQL shape: SELECT name, COALESCE(instance_id, ''), COALESCE(runtime, '') FROM workspaces WHERE id = $1
+	// (matches the L/R/W/D unified shape so dispatchers can branch on
+	// instance_id; sqlmock matches via QueryMatcherRegexp so the parens
+	// need escaping.)
+	mock.ExpectQuery(`SELECT name, COALESCE\(instance_id, ''\), COALESCE\(runtime, ''\) FROM workspaces WHERE id =`).
 		WithArgs("ws-nonexist").
 		WillReturnError(sql.ErrNoRows)
 
@@ -777,9 +781,9 @@ func TestListFiles_FallbackToHost_NoTemplate(t *testing.T) {
 	tmpDir := t.TempDir()
 	handler := NewTemplatesHandler(tmpDir, nil, nil) // nil docker = no container
 
-	mock.ExpectQuery("SELECT name FROM workspaces WHERE id =").
+	mock.ExpectQuery(`SELECT name, COALESCE\(instance_id, ''\), COALESCE\(runtime, ''\) FROM workspaces WHERE id =`).
 		WithArgs("ws-fallback").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Unknown Agent"))
+		WillReturnRows(sqlmock.NewRows([]string{"name", "instance_id", "runtime"}).AddRow("Unknown Agent", "", ""))
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -817,9 +821,9 @@ func TestListFiles_FallbackToHost_WithTemplate(t *testing.T) {
 
 	handler := NewTemplatesHandler(tmpDir, nil, nil)
 
-	mock.ExpectQuery("SELECT name FROM workspaces WHERE id =").
+	mock.ExpectQuery(`SELECT name, COALESCE\(instance_id, ''\), COALESCE\(runtime, ''\) FROM workspaces WHERE id =`).
 		WithArgs("ws-tmpl").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Test Agent"))
+		WillReturnRows(sqlmock.NewRows([]string{"name", "instance_id", "runtime"}).AddRow("Test Agent", "", ""))
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -1103,7 +1107,7 @@ func TestDeleteFile_WorkspaceNotFound(t *testing.T) {
 
 	handler := NewTemplatesHandler(t.TempDir(), nil, nil)
 
-	mock.ExpectQuery("SELECT name FROM workspaces WHERE id =").
+	mock.ExpectQuery(`SELECT name, COALESCE\(instance_id, ''\), COALESCE\(runtime, ''\) FROM workspaces WHERE id =`).
 		WithArgs("ws-del-nf").
 		WillReturnError(sql.ErrNoRows)
 
