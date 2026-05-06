@@ -82,61 +82,6 @@ func (h *OrgHandler) createWorkspaceTree(ws OrgWorkspace, parentID *string, absX
 		}
 	}
 
-	// 5s timeout bounds the lookup independently of any HTTP request
-	// context. createWorkspaceTree runs in goroutines spawned from the
-	// /org/import handler, so plumbing the request context here would
-	// cascade-cancel into provisionWorkspaceAuto and abort in-flight
-	// EC2 provisioning if the client disconnected mid-import — that's
-	// the wrong behaviour. A short bounded timeout protects the
-	// per-row SELECT against a wedged DB without taking the
-	// drop-everything-on-disconnect tradeoff.
-	ctxLookup, cancelLookup := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancelLookup()
-	// Idempotency: if a workspace with the same (parent_id, name) already
-	// exists, skip the INSERT + canvas_layouts + broadcast + provisioning.
-	// This is what makes /org/import safe to call multiple times — the
-	// historical leak was every call recreating the entire tree (see
-	// tenant-hongming, 72 distinct child workspaces in 4 days, all from
-	// repeated org-template spawns of the same template).
-	//
-	// Recursion still runs on the existing id so partial-match templates
-	// (parent exists, some children missing) backfill the missing children
-	// instead of either no-op'ing the whole subtree or duplicating the
-	// existing children.
-	//
-	// /org/import is ADDITIVE-ONLY, never destructive. Children present
-	// in the existing tree but absent from the new template are
-	// preserved (no DELETE on diff). Skip-path also does NOT propagate
-	// updates to existing nodes — a re-import that adds an
-	// initial_memory or schedule to an existing workspace is silently
-	// dropped (the function bypasses seedInitialMemories, schedule SQL,
-	// channel config for skipped rows). To force-update an existing
-	// tree, delete and re-import or use a future /org/sync route.
-	existingID, existing, lookupErr := h.lookupExistingChild(ctxLookup, ws.Name, parentID)
-	if lookupErr != nil {
-		return fmt.Errorf("idempotency check for %s: %w", ws.Name, lookupErr)
-	}
-	if existing {
-		log.Printf("Org import: %q already exists (id=%s) — skipping create+provision, recursing into children for partial-match", ws.Name, existingID)
-		parentRef := ""
-		if parentID != nil {
-			parentRef = *parentID
-		}
-		provlog.Event("provision.skip_existing", map[string]any{
-			"name":        ws.Name,
-			"existing_id": existingID,
-			"parent_id":   parentRef,
-			"tier":        tier,
-		})
-		*results = append(*results, map[string]interface{}{
-			"id":      existingID,
-			"name":    ws.Name,
-			"tier":    tier,
-			"skipped": true,
-		})
-		return h.recurseChildrenForImport(ws, existingID, absX, absY, defaults, orgBaseDir, results, provisionSem)
-	}
-
 	id := uuid.New().String()
 	awarenessNS := workspaceAwarenessNamespace(id)
 
@@ -188,10 +133,67 @@ func (h *OrgHandler) createWorkspaceTree(ws OrgWorkspace, parentID *string, absX
 	if maxConcurrent <= 0 {
 		maxConcurrent = models.DefaultMaxConcurrentTasks
 	}
-	_, err := db.DB.ExecContext(ctx, `
+	// TOCTOU-safe insert (#2872 Critical 1).
+	//
+	// `ON CONFLICT DO NOTHING` paired with the partial unique index
+	// from migration 20260506000000_workspaces_unique_parent_name.up.sql
+	// atomically resolves a race window that the prior
+	// lookup-then-insert had: two concurrent /org/import POSTs both
+	// saw "not found" in lookupExistingChild and both INSERT'd the
+	// same (parent_id, name). After this swap the SECOND INSERT
+	// silently no-ops, RETURNING returns 0 rows → sql.ErrNoRows, and
+	// the skip-path runs.
+	//
+	// ON CONFLICT target uses (COALESCE(parent_id,...), name) WHERE
+	// status != 'removed' — must match the partial-index predicate
+	// EXACTLY for Postgres to consider the index applicable.
+	var insertedID string
+	err := db.DB.QueryRowContext(ctx, `
 		INSERT INTO workspaces (id, name, role, tier, runtime, awareness_namespace, status, parent_id, workspace_dir, workspace_access, max_concurrent_tasks)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-	`, id, ws.Name, role, tier, runtime, awarenessNS, "provisioning", parentID, workspaceDir, workspaceAccess, maxConcurrent)
+		ON CONFLICT (COALESCE(parent_id, '00000000-0000-0000-0000-000000000000'::uuid), name)
+		WHERE status != 'removed'
+		DO NOTHING
+		RETURNING id
+	`, id, ws.Name, role, tier, runtime, awarenessNS, "provisioning", parentID, workspaceDir, workspaceAccess, maxConcurrent).Scan(&insertedID)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Skip path — a non-removed row already exists for
+		// (parent_id, name). Re-select its id; idempotency-friendly
+		// semantics match the original lookupExistingChild path
+		// (parent_id IS NOT DISTINCT FROM matches NULL too,
+		// status='removed' rows are ignored).
+		ctxLookup, cancelLookup := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelLookup()
+		existingID, found, selErr := h.lookupExistingChild(ctxLookup, ws.Name, parentID)
+		if selErr != nil {
+			return fmt.Errorf("post-conflict re-select for %s: %w", ws.Name, selErr)
+		}
+		if !found {
+			// Index conflicted but row vanished between INSERT and
+			// re-SELECT (status flipped to 'removed' concurrently).
+			// Surface as an error rather than silently retrying —
+			// the user can re-trigger /org/import safely.
+			return fmt.Errorf("workspace %q conflicted on insert but not visible on re-select (concurrent status flip?)", ws.Name)
+		}
+		log.Printf("Org import: %q already exists (id=%s) — skipping create+provision, recursing into children for partial-match", ws.Name, existingID)
+		parentRef := ""
+		if parentID != nil {
+			parentRef = *parentID
+		}
+		provlog.Event("provision.skip_existing", map[string]any{
+			"name":        ws.Name,
+			"existing_id": existingID,
+			"parent_id":   parentRef,
+			"tier":        tier,
+		})
+		*results = append(*results, map[string]interface{}{
+			"id":      existingID,
+			"name":    ws.Name,
+			"tier":    tier,
+			"skipped": true,
+		})
+		return h.recurseChildrenForImport(ws, existingID, absX, absY, defaults, orgBaseDir, results, provisionSem)
+	}
 	if err != nil {
 		log.Printf("Org import: failed to create %s: %v", ws.Name, err)
 		return fmt.Errorf("failed to create %s: %w", ws.Name, err)
