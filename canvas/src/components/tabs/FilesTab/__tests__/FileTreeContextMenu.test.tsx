@@ -28,12 +28,13 @@ import type { TreeNode } from "../tree";
 
 afterEach(cleanup);
 
-const file: TreeNode = { name: "config.yaml", path: "config.yaml", isDir: false, children: [] };
+const file: TreeNode = { name: "config.yaml", path: "config.yaml", isDir: false, children: [], size: 0 };
 const dir: TreeNode = {
   name: "skills",
   path: "skills",
   isDir: true,
   children: [],
+  size: 0,
 };
 
 function renderTree(props: Partial<React.ComponentProps<typeof FileTree>> = {}) {

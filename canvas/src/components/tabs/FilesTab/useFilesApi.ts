@@ -151,16 +151,20 @@ export function useFilesApi(workspaceId: string, root: string) {
   }, [files, workspaceId]);
 
   const uploadFiles = useCallback(
-    async (fileList: FileList) => {
+    async (fileList: FileList, targetDir = "") => {
       let uploaded = 0;
       for (const file of Array.from(fileList)) {
         const path = file.webkitRelativePath || file.name;
         const parts = path.split("/");
+        // For folder picker: webkitRelativePath is "<picked-folder>/a/b.txt"
+        // — strip the picked-folder prefix so files land flat under the
+        // workspace's target dir, not under a redundant outer folder.
         const relPath = parts.length > 1 ? parts.slice(1).join("/") : parts[0];
+        const finalPath = targetDir ? `${targetDir}/${relPath}` : relPath;
         if (file.size > 1_000_000) continue;
         try {
           const content = await file.text();
-          await api.put(`/workspaces/${workspaceId}/files/${relPath}`, { content });
+          await api.put(`/workspaces/${workspaceId}/files/${finalPath}`, { content });
           uploaded++;
         } catch {
           /* skip binary */
@@ -168,12 +172,64 @@ export function useFilesApi(workspaceId: string, root: string) {
       }
       if (uploaded > 0) {
         useCanvasStore.getState().updateNodeData(workspaceId, { needsRestart: true });
-        showToast(`Uploaded ${uploaded} files`, "success");
+        showToast(`Uploaded ${uploaded} files${targetDir ? ` to ${targetDir}` : ""}`, "success");
         loadFiles();
       }
       return uploaded;
     },
     [workspaceId, loadFiles]
+  );
+
+  /**
+   * Upload files dragged from the OS via the HTML5 DataTransferItemList
+   * API. Unlike the folder-picker path (uploadFiles), this preserves
+   * the dropped folder structure under `targetDir` — drag a "skills/"
+   * folder onto the /configs/skills row and you get
+   * /configs/skills/skills/* (the OUTER folder name is preserved
+   * because the user explicitly chose to drop a NAMED folder, unlike
+   * the folder-picker which always wraps the picked dir).
+   *
+   * Walks FileSystemDirectoryEntry recursively via webkitGetAsEntry.
+   * VSCode/JupyterLab use the same primitive — there's no other
+   * portable browser API for "drag a folder from OS". `webkit*`
+   * naming is a Chromium relic; Firefox + Safari implement the same
+   * surface.
+   *
+   * Returns the number of files uploaded so the caller can show a
+   * tally / fail toast.
+   */
+  const uploadDataTransferItems = useCallback(
+    async (items: DataTransferItemList, targetDir = "") => {
+      const fileEntries = collectFileEntries(items);
+      let uploaded = 0;
+      for (const { file, relativePath } of await fileEntries) {
+        if (file.size > 1_000_000) continue;
+        const finalPath = targetDir
+          ? `${targetDir}/${relativePath}`
+          : relativePath;
+        try {
+          const content = await file.text();
+          await api.put(`/workspaces/${workspaceId}/files/${finalPath}`, {
+            content,
+          });
+          uploaded++;
+        } catch {
+          /* skip binary */
+        }
+      }
+      if (uploaded > 0) {
+        useCanvasStore
+          .getState()
+          .updateNodeData(workspaceId, { needsRestart: true });
+        showToast(
+          `Uploaded ${uploaded} file${uploaded === 1 ? "" : "s"}${targetDir ? ` to ${targetDir}` : ""}`,
+          "success",
+        );
+        loadFiles();
+      }
+      return uploaded;
+    },
+    [workspaceId, loadFiles],
   );
 
   const deleteAllFiles = useCallback(async () => {
@@ -205,6 +261,95 @@ export function useFilesApi(workspaceId: string, root: string) {
     downloadFileByPath,
     downloadAllFiles,
     uploadFiles,
+    uploadDataTransferItems,
     deleteAllFiles,
   };
 }
+
+// ----- DataTransfer entry walker (PR-D) ---------------------------------
+
+/**
+ * Minimal subset of the FileSystem Entry API surface we use. The DOM
+ * lib types this as FileSystemEntry / FileSystemFileEntry /
+ * FileSystemDirectoryEntry but the relevant methods are callback-
+ * based. Keep the shape narrow + explicit so the recursion below
+ * type-checks without pulling in the full DOM lib types.
+ */
+interface FSEntry {
+  isFile: boolean;
+  isDirectory: boolean;
+  name: string;
+  fullPath: string;
+  file?(success: (f: File) => void, fail?: (e: unknown) => void): void;
+  createReader?(): { readEntries(success: (entries: FSEntry[]) => void): void };
+}
+
+interface CollectedEntry {
+  file: File;
+  /** Path relative to the dropped root (e.g. "skills/web-search/SKILL.md"
+   *  for a dropped "skills/" folder containing web-search/SKILL.md). */
+  relativePath: string;
+}
+
+/**
+ * Walk a DataTransferItemList, returning every file entry as a flat
+ * array keyed by the path relative to the originally-dropped item.
+ * Folders dropped from the OS expand recursively; loose files
+ * passthrough with name as the relative path.
+ *
+ * Skips items where webkitGetAsEntry() returns null — that's how
+ * the browser signals a non-file payload (e.g. a dragged URL or
+ * text snippet).
+ */
+async function collectFileEntries(
+  items: DataTransferItemList,
+): Promise<CollectedEntry[]> {
+  const out: CollectedEntry[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.kind !== "file") continue;
+    // webkitGetAsEntry is the standardised name; older Firefox used
+    // getAsEntry. Both Chromium + Firefox + Safari ship the webkit-
+    // prefixed variant today. There's no non-prefixed alternative.
+    const entry = (item as DataTransferItem & {
+      webkitGetAsEntry?: () => FSEntry | null;
+    }).webkitGetAsEntry?.();
+    if (!entry) continue;
+    await walkEntry(entry, "", out);
+  }
+  return out;
+}
+
+async function walkEntry(
+  entry: FSEntry,
+  prefix: string,
+  out: CollectedEntry[],
+): Promise<void> {
+  const name = entry.name;
+  const relPath = prefix ? `${prefix}/${name}` : name;
+  if (entry.isFile && entry.file) {
+    const file = await new Promise<File>((resolve, reject) => {
+      entry.file!(resolve, reject);
+    });
+    out.push({ file, relativePath: relPath });
+    return;
+  }
+  if (entry.isDirectory && entry.createReader) {
+    const reader = entry.createReader();
+    // readEntries returns up to ~100 at a time on Chromium; loop
+    // until empty so large folders aren't truncated.
+    let batch: FSEntry[] = [];
+    do {
+      batch = await new Promise<FSEntry[]>((resolve) =>
+        reader.readEntries(resolve),
+      );
+      for (const child of batch) {
+        await walkEntry(child, relPath, out);
+      }
+    } while (batch.length > 0);
+  }
+}
+
+// Exported for direct testing — the recursion + readEntries batching
+// is the part most likely to silently truncate a real folder upload.
+export const __testables = { collectFileEntries, walkEntry };

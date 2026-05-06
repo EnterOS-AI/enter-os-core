@@ -81,8 +81,32 @@ function PlatformOwnedFilesTab({ workspaceId }: { workspaceId: string }) {
     downloadFileByPath,
     downloadAllFiles,
     uploadFiles,
+    uploadDataTransferItems,
     deleteAllFiles,
   } = useFilesApi(workspaceId, root);
+
+  // PR-D: track whether the user is currently dragging files OVER
+  // the root area (not over a specific subdir row). Used to show
+  // the "Drop to upload to root" highlight on the tree column.
+  const [rootDragHover, setRootDragHover] = useState(false);
+
+  const handleDropToTarget = (
+    targetDir: string,
+    items: DataTransferItemList,
+  ) => {
+    // canDelete is the gate proxy — same constraint as the toolbar
+    // Upload button (today only /configs is writable from the canvas
+    // surface). Without this check, dropping on /home would post
+    // through /workspaces/<id>/files/<path>, which the backend would
+    // reject only after an HTTP round-trip. Fail fast.
+    if (root !== "/configs") {
+      setError(
+        `Upload only allowed in /configs (current root: ${root}). Switch root or use Upload button.`,
+      );
+      return;
+    }
+    void uploadDataTransferItems(items, targetDir);
+  };
 
   const tree = useMemo(() => buildTree(files), [files]);
 
@@ -224,8 +248,46 @@ function PlatformOwnedFilesTab({ workspaceId }: { workspaceId: string }) {
       )}
 
       <div className="flex flex-1 min-h-0">
-        {/* File tree */}
-        <div className="w-[180px] border-r border-line/40 overflow-y-auto shrink-0">
+        {/* File tree column. PR-D: outer div is the drop zone for
+            "drop on root" — when the user drags into the column area
+            (not over a specific subdir row), the drop targets the
+            current root directory. Subdirectory rows in <FileTree>
+            stop propagation on their own drop event so a drop on
+            /configs/skills doesn't ALSO fire root-area drop. */}
+        <div
+          className={`w-[180px] border-r border-line/40 overflow-y-auto shrink-0 transition-colors ${
+            rootDragHover ? "bg-accent/10 outline outline-1 outline-accent/40 -outline-offset-2" : ""
+          }`}
+          onDragOver={(e) => {
+            // Only highlight + accept the drop when uploads are
+            // actually allowed for the current root. Without this
+            // check the user gets a misleading drag affordance,
+            // drops, then sees the toolbar's "switch root" toast —
+            // bad UX.
+            if (root !== "/configs") return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "copy";
+          }}
+          onDragEnter={(e) => {
+            if (root !== "/configs") return;
+            e.preventDefault();
+            setRootDragHover(true);
+          }}
+          onDragLeave={(e) => {
+            const next = e.relatedTarget as Node | null;
+            if (!next || !(e.currentTarget as HTMLElement).contains(next)) {
+              setRootDragHover(false);
+            }
+          }}
+          onDrop={(e) => {
+            if (root !== "/configs") return;
+            e.preventDefault();
+            setRootDragHover(false);
+            if (e.dataTransfer.items?.length) {
+              handleDropToTarget("", e.dataTransfer.items);
+            }
+          }}
+        >
           {/* New file input */}
           {showNewFile && (
             <div className="px-2 py-1 border-b border-line/40">
@@ -243,7 +305,11 @@ function PlatformOwnedFilesTab({ workspaceId }: { workspaceId: string }) {
 
           {files.length === 0 ? (
             <div className="px-3 py-4 text-[10px] text-ink-soft text-center">
-              No config files yet
+              {rootDragHover
+                ? "Drop to upload to root"
+                : root === "/configs"
+                  ? "No config files yet — drag files here to upload"
+                  : "No config files yet"}
             </div>
           ) : (
             <FileTree
@@ -259,6 +325,7 @@ function PlatformOwnedFilesTab({ workspaceId }: { workspaceId: string }) {
               onDelete={root === "/configs" ? setConfirmDelete : () => {}}
               onDownload={downloadFileByPath}
               canDelete={root === "/configs"}
+              onDropToTarget={handleDropToTarget}
               expandedDirs={expandedDirs}
               onToggleDir={toggleDir}
               loadingDir={loadingDir}
