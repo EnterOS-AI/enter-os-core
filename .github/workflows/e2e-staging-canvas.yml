@@ -139,7 +139,7 @@ jobs:
 
       - name: Upload Playwright report on failure
         if: failure() && needs.detect-changes.outputs.canvas == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@v3 # pinned to v3 for Gitea act_runner v0.6 compatibility (internal#46)
         with:
           name: playwright-report-staging
           path: canvas/playwright-report-staging/
@@ -147,7 +147,7 @@ jobs:
 
       - name: Upload screenshots on failure
         if: failure() && needs.detect-changes.outputs.canvas == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@v3 # pinned to v3 for Gitea act_runner v0.6 compatibility (internal#46)
         with:
           name: playwright-screenshots
           path: canvas/test-results/
