@@ -1,7 +1,7 @@
 name: Block internal-flavored paths
 
 # Hard CI gate. Internal content (positioning, competitive briefs, sales
-# playbooks, PMM/press drip, draft campaigns) lives in Molecule-AI/internal —
+# playbooks, PMM/press drip, draft campaigns) lives in molecule-ai/internal —
 # this public monorepo must never re-acquire those paths. CEO directive
 # 2026-04-23 after a fleet-wide audit found 79 internal files leaked here.
 #
@@ -135,7 +135,7 @@ jobs:
             echo "::error::Forbidden internal-flavored paths detected:"
             printf "$OFFENDING"
             echo ""
-            echo "These paths belong in Molecule-AI/internal, not this public repo."
+            echo "These paths belong in molecule-ai/internal, not this public repo."
             echo "See docs/internal-content-policy.md for canonical locations."
             echo ""
             echo "If your file is genuinely public-facing (e.g. a blog post"

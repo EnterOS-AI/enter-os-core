@@ -112,6 +112,19 @@ func (h *WorkspaceHandler) Restart(c *gin.Context) {
 		return
 	}
 
+	// runtime=mock: virtual workspace with canned A2A replies. No
+	// container, no EC2, no provisioning state to recycle. Mirror
+	// the external no-op so the canvas's Restart button doesn't
+	// silently fail or leak through to the (template-less) provisioner.
+	if dbRuntime == "mock" {
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "noop",
+			"runtime": "mock",
+			"message": "mock workspaces have no container — restart is a no-op",
+		})
+		return
+	}
+
 	// SaaS mode: cpProv handles workspace EC2 lifecycle. Self-hosted mode:
 	// provisioner handles local Docker containers. At least one must be
 	// available — previously only `provisioner` was checked, which broke
@@ -532,7 +545,9 @@ func (h *WorkspaceHandler) runRestartCycle(workspaceID string) {
 	}
 
 	// Don't auto-restart external workspaces (no Docker container)
-	if dbRuntime == "external" {
+	// or mock workspaces (no container, every reply is canned —
+	// see workspace-server/internal/handlers/mock_runtime.go).
+	if dbRuntime == "external" || dbRuntime == "mock" {
 		return
 	}
 

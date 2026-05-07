@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -177,16 +178,42 @@ func strDefault(m map[string]interface{}, key, fallback string) string {
 	return fallback
 }
 
+// findRunningContainer returns the live container name for workspaceID, or ""
+// when the container is genuinely not running OR the daemon errored
+// transiently. Routed through provisioner.RunningContainerName as the SSOT
+// (molecule-core#10) so this handler agrees with healthsweep on the same
+// inputs. Transient daemon errors are logged distinctly so triage doesn't
+// confuse a flaky daemon with a stopped container.
 func (h *PluginsHandler) findRunningContainer(ctx context.Context, workspaceID string) string {
-	if h.docker == nil {
+	name, err := provisioner.RunningContainerName(ctx, h.docker, workspaceID)
+	if err != nil {
+		log.Printf("plugins: docker inspect transient error for %s: %v (treating as not-running for this request)", workspaceID, err)
 		return ""
 	}
-	name := provisioner.ContainerName(workspaceID)
-	info, err := h.docker.ContainerInspect(ctx, name)
-	if err == nil && info.State.Running {
-		return name
+	return name
+}
+
+// isExternalRuntime reports whether the workspace's runtime is the
+// `external` (remote-pull) shape introduced in Phase 30. External
+// workspaces have no local container — `POST /plugins` (push-install via
+// docker exec) doesn't apply to them; they pull via the download endpoint
+// instead. Returns false (allow-install) if the lookup is unwired or
+// errors — failing open here is safe because the downstream
+// findRunningContainer step still gates on a real container being there.
+//
+// Background — molecule-core#10: without this check, external workspaces
+// fall through to findRunningContainer's NotFound path and return a
+// misleading 503 "container not running" instead of a clear "use the
+// pull endpoint" message.
+func (h *PluginsHandler) isExternalRuntime(workspaceID string) bool {
+	if h.runtimeLookup == nil {
+		return false
 	}
-	return ""
+	runtime, err := h.runtimeLookup(workspaceID)
+	if err != nil {
+		return false
+	}
+	return runtime == "external"
 }
 
 func (h *PluginsHandler) execAsRoot(ctx context.Context, containerName string, cmd []string) (string, error) {

@@ -37,6 +37,7 @@ on:
       - 'workspace-server/**'
       - 'canvas/**'
       - 'manifest.json'
+      - 'scripts/**'
       - '.github/workflows/publish-workspace-server-image.yml'
   workflow_dispatch:
 
@@ -74,32 +75,86 @@ jobs:
       # plugin was dropped + workspace-server/Dockerfile no longer
       # COPYs it.
 
-      - name: Configure AWS credentials for ECR
-        # GHCR was the pre-suspension target; the molecule-ai org on
-        # GitHub got swept 2026-05-06 and ghcr.io/molecule-ai/* is no
-        # longer reachable. Post-suspension target is the operator's
-        # ECR org (153263036946.dkr.ecr.us-east-2.amazonaws.com/
-        # molecule-ai/*), which already hosts platform-tenant +
-        # workspace-template-* + runner-base images. AWS creds come
-        # from the AWS_ACCESS_KEY_ID/SECRET secrets bound to the
-        # molecule-cp IAM user. Closes #161.
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-2
-
-      - name: Log in to ECR
-        id: ecr-login
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+      # ECR auth + buildx setup are now inline in each build step
+      # below (Task #173, 2026-05-07).
+      #
+      # Why moved inline: aws-actions/configure-aws-credentials@v4 +
+      # aws-actions/amazon-ecr-login@v2 + docker/setup-buildx-action
+      # all left auth state in places that the actual `docker push`
+      # couldn't see on Gitea Actions:
+      #   - The actions wrote to a step-scoped DOCKER_CONFIG path
+      #     that didn't survive into subsequent shell steps.
+      #   - Buildx couldn't bridge the runner container ↔
+      #     operator-host docker daemon auth gap (401 on the
+      #     docker-container driver, "no basic auth credentials"
+      #     with the action-driven login).
+      #
+      # Doing AWS+ECR auth inline (`aws ecr get-login-password |
+      # docker login`) in the same shell step as `docker build` +
+      # `docker push` is the operator-host manual approach, mapped
+      # 1:1 into CI. Auth state is guaranteed to live in the env that
+      # `docker push` actually runs from.
+      #
+      # Post-suspension target is the operator's ECR org
+      # (153263036946.dkr.ecr.us-east-2.amazonaws.com/molecule-ai/*),
+      # which already hosts platform-tenant + workspace-template-* +
+      # runner-base images. AWS creds come from the
+      # AWS_ACCESS_KEY_ID/SECRET secrets bound to the molecule-cp
+      # IAM user. Closes #161.
 
       - name: Compute tags
         id: tags
         run: |
           echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      # Pre-clone manifest deps before docker build (Task #173 fix).
+      #
+      # Why pre-clone: post-2026-05-06, every workspace-template-* repo on
+      # Gitea (codex, crewai, deepagents, gemini-cli, langgraph) plus all
+      # 7 org-template-* repos are private. The pre-fix Dockerfile.tenant
+      # ran `git clone` inside an in-image stage, which had no auth path
+      # — every CI build failed with "fatal: could not read Username for
+      # https://git.moleculesai.app". For weeks, every workspace-server
+      # rebuild required a manual operator-host push. Now we clone in the
+      # trusted CI context (where AUTO_SYNC_TOKEN is naturally available)
+      # and Dockerfile.tenant just COPYs from .tenant-bundle-deps/.
+      #
+      # Token shape: AUTO_SYNC_TOKEN is the devops-engineer persona PAT
+      # (see /etc/molecule-bootstrap/agent-secrets.env). Per saved memory
+      # `feedback_per_agent_gitea_identity_default`, every CI surface uses
+      # a per-persona token, never the founder PAT. clone-manifest.sh
+      # embeds it as basic-auth (oauth2:<token>) for the duration of the
+      # clones, then strips .git directories — the token never enters
+      # the resulting image.
+      #
+      # Idempotent: if a re-run finds populated dirs, clone-manifest.sh
+      # skips them; safe to retrigger via path-filter or workflow_dispatch.
+      - name: Pre-clone manifest deps
+        env:
+          MOLECULE_GITEA_TOKEN: ${{ secrets.AUTO_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MOLECULE_GITEA_TOKEN}" ]; then
+            echo "::error::AUTO_SYNC_TOKEN secret is empty — register the devops-engineer persona PAT in repo Actions secrets"
+            exit 1
+          fi
+          mkdir -p .tenant-bundle-deps
+          bash scripts/clone-manifest.sh \
+            manifest.json \
+            .tenant-bundle-deps/workspace-configs-templates \
+            .tenant-bundle-deps/org-templates \
+            .tenant-bundle-deps/plugins
+          # Sanity-check counts so a silent partial clone fails fast
+          # instead of producing a half-empty image.
+          ws_count=$(find .tenant-bundle-deps/workspace-configs-templates -mindepth 1 -maxdepth 1 -type d | wc -l)
+          org_count=$(find .tenant-bundle-deps/org-templates -mindepth 1 -maxdepth 1 -type d | wc -l)
+          plugins_count=$(find .tenant-bundle-deps/plugins -mindepth 1 -maxdepth 1 -type d | wc -l)
+          echo "Cloned: ws=$ws_count org=$org_count plugins=$plugins_count"
+          # Counts are derived from manifest.json (9 ws / 7 org / 21
+          # plugins as of 2026-05-07). If manifest.json grows but the
+          # clone step regresses silently, the find above caps at the
+          # actual disk state — but clone-manifest.sh's own EXPECTED vs
+          # CLONED check (line ~95) is the authoritative fail-fast.
 
       # Canary-gated release flow:
       #   - This step always publishes :staging-<sha> + :staging-latest.
@@ -126,58 +181,82 @@ jobs:
       # were running pre-RFC code. Adding the staging trigger above closes
       # that gap. Earlier 2026-04-24 incident: a static :staging-<sha> pin
       # drifted 10 days behind staging — same class of bug, different
-      # mechanism.
-      - name: Build & push platform image to GHCR (staging-<sha> + staging-latest)
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
-        with:
-          context: .
-          file: ./workspace-server/Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ${{ env.IMAGE_NAME }}:staging-${{ steps.tags.outputs.sha }}
-            ${{ env.IMAGE_NAME }}:staging-latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          # GIT_SHA bakes into the Go binary via -ldflags so /buildinfo
-          # returns it at runtime — see Dockerfile + buildinfo/buildinfo.go.
-          # This is the same value as the OCI revision label below; passing
-          # it twice is intentional, the OCI label is for registry tooling
-          # while /buildinfo is for the redeploy verification step.
-          build-args: |
-            GIT_SHA=${{ github.sha }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.description=Molecule AI platform (Go API server) — pending canary verify
+      # mechanism. ECR repo molecule-ai/platform created 2026-05-07.
+      # Build + push platform image with plain `docker` (no buildx).
+      # GIT_SHA bakes into the Go binary via -ldflags so /buildinfo
+      # returns it at runtime — see Dockerfile + buildinfo/buildinfo.go.
+      # The OCI revision label below carries the same value for registry
+      # tooling; the duplication is intentional.
+      - name: Build & push platform image to ECR (staging-<sha> + staging-latest)
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          TAG_SHA: staging-${{ steps.tags.outputs.sha }}
+          TAG_LATEST: staging-latest
+          GIT_SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-2
+        run: |
+          set -euo pipefail
+          # ECR auth in-step so config.json is populated in the same
+          # shell env that runs `docker push`. ECR get-login-password
+          # tokens last 12h, plenty for a single-step build+push.
+          ECR_REGISTRY="${IMAGE_NAME%%/*}"
+          aws ecr get-login-password --region us-east-2 | \
+            docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+          docker build \
+            --file ./workspace-server/Dockerfile \
+            --build-arg GIT_SHA="${GIT_SHA}" \
+            --label "org.opencontainers.image.source=https://github.com/${REPO}" \
+            --label "org.opencontainers.image.revision=${GIT_SHA}" \
+            --label "org.opencontainers.image.description=Molecule AI platform (Go API server) — pending canary verify" \
+            --tag "${IMAGE_NAME}:${TAG_SHA}" \
+            --tag "${IMAGE_NAME}:${TAG_LATEST}" \
+            .
+          docker push "${IMAGE_NAME}:${TAG_SHA}"
+          docker push "${IMAGE_NAME}:${TAG_LATEST}"
 
-      - name: Build & push tenant image to GHCR (staging-<sha> + staging-latest)
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
-        with:
-          context: .
-          file: ./workspace-server/Dockerfile.tenant
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ${{ env.TENANT_IMAGE_NAME }}:staging-${{ steps.tags.outputs.sha }}
-            ${{ env.TENANT_IMAGE_NAME }}:staging-latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          # Canvas uses same-origin fetches. The tenant Go platform
-          # reverse-proxies /cp/* to the SaaS CP via its CP_UPSTREAM_URL
-          # env; the tenant's /canvas/viewport, /approvals/pending,
-          # /org/templates etc. live on the tenant platform itself.
-          # Both legs share one origin (the tenant subdomain) so
-          # PLATFORM_URL="" forces canvas to fetch paths as relative,
-          # which land same-origin.
-          #
-          # Self-hosted / private-label deployments override this at
-          # build time with a specific backend (e.g. local dev:
-          # NEXT_PUBLIC_PLATFORM_URL=http://localhost:8080).
-          build-args: |
-            NEXT_PUBLIC_PLATFORM_URL=
-            GIT_SHA=${{ github.sha }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.description=Molecule AI tenant platform + canvas — pending canary verify
+      # Canvas uses same-origin fetches. The tenant Go platform
+      # reverse-proxies /cp/* to the SaaS CP via its CP_UPSTREAM_URL
+      # env; the tenant's /canvas/viewport, /approvals/pending,
+      # /org/templates etc. live on the tenant platform itself.
+      # Both legs share one origin (the tenant subdomain) so
+      # PLATFORM_URL="" forces canvas to fetch paths as relative,
+      # which land same-origin.
+      #
+      # Self-hosted / private-label deployments override this at
+      # build time with a specific backend (e.g. local dev:
+      # NEXT_PUBLIC_PLATFORM_URL=http://localhost:8080).
+      - name: Build & push tenant image to ECR (staging-<sha> + staging-latest)
+        env:
+          TENANT_IMAGE_NAME: ${{ env.TENANT_IMAGE_NAME }}
+          TAG_SHA: staging-${{ steps.tags.outputs.sha }}
+          TAG_LATEST: staging-latest
+          GIT_SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-2
+        run: |
+          set -euo pipefail
+          # Re-login: the platform-image step's docker login wrote to
+          # the same config.json, so this is technically redundant — but
+          # making each push step self-contained keeps the workflow
+          # robust to step reordering / future extraction.
+          ECR_REGISTRY="${TENANT_IMAGE_NAME%%/*}"
+          aws ecr get-login-password --region us-east-2 | \
+            docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+          docker build \
+            --file ./workspace-server/Dockerfile.tenant \
+            --build-arg NEXT_PUBLIC_PLATFORM_URL= \
+            --build-arg GIT_SHA="${GIT_SHA}" \
+            --label "org.opencontainers.image.source=https://github.com/${REPO}" \
+            --label "org.opencontainers.image.revision=${GIT_SHA}" \
+            --label "org.opencontainers.image.description=Molecule AI tenant platform + canvas — pending canary verify" \
+            --tag "${TENANT_IMAGE_NAME}:${TAG_SHA}" \
+            --tag "${TENANT_IMAGE_NAME}:${TAG_LATEST}" \
+            .
+          docker push "${TENANT_IMAGE_NAME}:${TAG_SHA}"
+          docker push "${TENANT_IMAGE_NAME}:${TAG_LATEST}"
+

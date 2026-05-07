@@ -25,7 +25,7 @@ name: publish-runtime
 #   3. Publishes to PyPI via the PyPA Trusted Publisher action (OIDC).
 #      No static API token is stored — PyPI verifies the workflow's
 #      OIDC claim against the trusted-publisher config registered for
-#      molecule-ai-workspace-runtime (Molecule-AI/molecule-core,
+#      molecule-ai-workspace-runtime (molecule-ai/molecule-core,
 #      publish-runtime.yml, environment pypi-publish).
 #
 # After publish: the 8 template repos pick up the new version on their
@@ -166,7 +166,7 @@ jobs:
 
       - name: Publish to PyPI (Trusted Publisher / OIDC)
         # PyPI side is configured: project molecule-ai-workspace-runtime →
-        # publisher Molecule-AI/molecule-core, workflow publish-runtime.yml,
+        # publisher molecule-ai/molecule-core, workflow publish-runtime.yml,
         # environment pypi-publish. The action mints a short-lived OIDC
         # token and exchanges it for a PyPI upload credential — no static
         # API token in this repo's secrets.

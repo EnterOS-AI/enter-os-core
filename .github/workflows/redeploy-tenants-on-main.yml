@@ -9,7 +9,7 @@ name: redeploy-tenants-on-main
 #
 # This workflow closes the gap by calling the control-plane admin
 # endpoint that performs a canary-first, batched, health-gated rolling
-# redeploy across every live tenant. Implemented in Molecule-AI/
+# redeploy across every live tenant. Implemented in molecule-ai/
 # molecule-controlplane as POST /cp/admin/tenants/redeploy-fleet
 # (feat/tenant-auto-redeploy, landing alongside this workflow).
 #
@@ -146,7 +146,7 @@ jobs:
 
       - name: Call CP redeploy-fleet
         # CP_ADMIN_API_TOKEN must be set as a repo/org secret on
-        # Molecule-AI/molecule-core, matching the staging/prod CP's
+        # molecule-ai/molecule-core, matching the staging/prod CP's
         # CP_ADMIN_API_TOKEN env. Stored in Railway, mirrored to this
         # repo's secrets for CI.
         env:

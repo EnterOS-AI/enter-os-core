@@ -71,9 +71,15 @@ func StartHealthSweep(ctx context.Context, checker ContainerChecker, interval ti
 }
 
 func sweepOnlineWorkspaces(ctx context.Context, checker ContainerChecker, onOffline OfflineHandler) {
-	// Skip external workspaces (runtime='external') — they have no Docker container
+	// Skip external + mock workspaces — neither has a Docker container.
+	// external: agent runs on operator's laptop, polled via heartbeat.
+	// mock: virtual workspace, every reply is canned (see
+	// workspace-server/internal/handlers/mock_runtime.go). Both would
+	// false-positive as "container gone" on every sweep tick and
+	// auto-restart would loop forever (provisioner has no template
+	// for either runtime).
 	rows, err := db.DB.QueryContext(ctx,
-		`SELECT id FROM workspaces WHERE status IN ('online', 'degraded') AND COALESCE(runtime, 'langgraph') != 'external'`)
+		`SELECT id FROM workspaces WHERE status IN ('online', 'degraded') AND COALESCE(runtime, 'langgraph') NOT IN ('external', 'mock')`)
 	if err != nil {
 		log.Printf("Health sweep: query error: %v", err)
 		return

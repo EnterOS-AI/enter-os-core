@@ -19,6 +19,7 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/handlers"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/imagewatch"
 	memwiring "github.com/Molecule-AI/molecule-monorepo/platform/internal/memory/wiring"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/middleware"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/pendinguploads"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/registry"
@@ -332,15 +333,23 @@ func main() {
 	// Router
 	r := router.Setup(hub, broadcaster, prov, platformURL, configsDir, wh, channelMgr, memBundle)
 
-	// HTTP server with graceful shutdown
+	// HTTP server with graceful shutdown.
+	//
+	// Bind host: in dev-mode (no ADMIN_TOKEN, MOLECULE_ENV=dev|development)
+	// the AdminAuth chain fails open by design; pairing that with a wildcard
+	// bind would expose unauth /workspaces to any same-LAN peer. Default to
+	// loopback when fail-open is active. Operators who need LAN exposure set
+	// BIND_ADDR=0.0.0.0 explicitly. Production (ADMIN_TOKEN set) is unchanged.
+	// See molecule-core#7.
+	bindHost := resolveBindHost()
 	srv := &http.Server{
-		Addr:    fmt.Sprintf(":%s", port),
+		Addr:    fmt.Sprintf("%s:%s", bindHost, port),
 		Handler: r,
 	}
 
 	// Start server in goroutine
 	go func() {
-		log.Printf("Platform starting on :%s", port)
+		log.Printf("Platform starting on %s:%s (dev-mode-fail-open=%v)", bindHost, port, middleware.IsDevModeFailOpen())
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server failed: %v", err)
 		}
@@ -373,6 +382,29 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// resolveBindHost picks the listener interface for the HTTP server.
+//
+// Precedence:
+//  1. BIND_ADDR — explicit operator override (any value, including "0.0.0.0").
+//  2. dev-mode fail-open active → "127.0.0.1" (loopback only).
+//  3. otherwise → "" (Go binds every interface; existing prod/self-host shape).
+//
+// Coupling the loopback default to middleware.IsDevModeFailOpen() means the
+// two safety levers — bind narrowness and auth strength — move together. A
+// production deploy (ADMIN_TOKEN set) keeps binding to all interfaces because
+// the auth chain is doing its job; a dev Mac (no ADMIN_TOKEN, MOLECULE_ENV=dev)
+// is reachable only via loopback because the auth chain is fail-open. See
+// molecule-core#7 for the original LAN exposure finding.
+func resolveBindHost() string {
+	if v := os.Getenv("BIND_ADDR"); v != "" {
+		return v
+	}
+	if middleware.IsDevModeFailOpen() {
+		return "127.0.0.1"
+	}
+	return ""
 }
 
 func findConfigsDir() string {

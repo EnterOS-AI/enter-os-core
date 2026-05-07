@@ -165,7 +165,7 @@ jobs:
               # Strip the package-import prefix so we can match .coverage-allowlist.txt
               # entries written as paths relative to workspace-server/.
               # Handle both module paths: platform/workspace-server/... and platform/...
-              rel=$(echo "$file" | sed 's|^github.com/Molecule-AI/molecule-monorepo/platform/workspace-server/||; s|^github.com/Molecule-AI/molecule-monorepo/platform/||')
+              rel=$(echo "$file" | sed 's|^github.com/molecule-ai/molecule-monorepo/platform/workspace-server/||; s|^github.com/molecule-ai/molecule-monorepo/platform/||')
 
               if echo "$ALLOWLIST" | grep -qxF "$rel"; then
                 echo "::warning file=workspace-server/$rel::Critical file at ${pct}% coverage (allowlisted, #1823) — fix before expiry."

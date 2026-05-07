@@ -131,6 +131,13 @@ backups/
 # Cloned by publish-workspace-server-image.yml so the Dockerfile's
 # replace-directive path resolves. Lives in its own repo.
 /molecule-ai-plugin-github-app-auth/
+# Tenant-image build context — populated by the workflow's
+# "Pre-clone manifest deps" step. Mirrors the public manifest, holds the
+# same content as the three /<>/ dirs above but namespaced under one
+# parent so the Docker build context is a single COPY-friendly tree.
+# Each entry is a transient working-dir, never source-of-truth, never
+# committed.
+/.tenant-bundle-deps/
 
 # Internal-flavored content lives in Molecule-AI/internal — NEVER in this
 # public monorepo. Migrated 2026-04-23 (CEO directive). The CI workflow

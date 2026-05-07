@@ -413,9 +413,54 @@ func (h *WorkspaceHandler) proxyA2ARequest(ctx context.Context, workspaceID stri
 		return http.StatusOK, respBody, nil
 	}
 
+	// Mock-runtime short-circuit. Workspaces with runtime='mock' have
+	// no container, no EC2, no URL — every reply is synthesised here
+	// from a small canned-variant pool. Built for the "200-workspace
+	// mock org" demo: a CEO/VPs/Managers/ICs hierarchy that renders
+	// at scale on the canvas without burning real LLM credits or
+	// provisioning 200 EC2 instances. See mock_runtime.go for the
+	// full rationale + reply shape contract.
+	//
+	// Position: AFTER poll-mode (mock isn't a delivery mode, it's a
+	// runtime; treating poll-set-on-mock as poll matches operator
+	// intent if anyone ever does that), BEFORE resolveAgentURL (mock
+	// has no URL — going through resolveAgentURL would 404 on the
+	// SELECT url since the row is provisioned as NULL).
+	if status, respBody, handled := h.handleMockA2A(ctx, workspaceID, callerID, body, a2aMethod, logActivity); handled {
+		return status, respBody, nil
+	}
+
 	agentURL, proxyErr := h.resolveAgentURL(ctx, workspaceID)
 	if proxyErr != nil {
 		return 0, nil, proxyErr
+	}
+
+	// Pre-flight container-health check (#36). The dispatchA2A path below
+	// does Docker-DNS forwarding to `ws-<wsShort>:8000` and only catches a
+	// missing/dead container REACTIVELY via maybeMarkContainerDead in
+	// handleA2ADispatchError. That works but costs the caller a full
+	// network-timeout (2-30s) before the structured 503 surfaces.
+	//
+	// When we KNOW the workspace is container-backed (h.docker != nil + we
+	// rewrite to Docker-DNS form below), do a single proactive
+	// RunningContainerName lookup. If the container is genuinely missing,
+	// short-circuit with the same structured 503 + async restart that
+	// maybeMarkContainerDead would produce — but immediately, without the
+	// network round-trip.
+	//
+	// Three outcomes of provisioner.RunningContainerName(ctx, h.docker, id):
+	//   ("ws-<id>", nil) → forward as today.
+	//   ("",        nil) → container is genuinely not running. Fast-503.
+	//   ("",        err) → transient daemon error. Fall through to optimistic
+	//                       forward — matches Provisioner.IsRunning's
+	//                       (true, err) "fail-soft as alive" contract.
+	//
+	// Same SSOT as findRunningContainer (#10/#12). See AST gate
+	// TestProxyA2A_RoutesThroughProvisionerSSOT.
+	if h.provisioner != nil && platformInDocker && strings.HasPrefix(agentURL, "http://"+provisioner.ContainerName(workspaceID)+":") {
+		if proxyErr := h.preflightContainerHealth(ctx, workspaceID); proxyErr != nil {
+			return 0, nil, proxyErr
+		}
 	}
 
 	startTime := time.Now()

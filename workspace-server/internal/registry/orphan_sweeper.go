@@ -413,22 +413,20 @@ func sweepStaleTokensWithoutContainer(ctx context.Context, reaper OrphanReaper) 
 	// `"5m0s"` mismatch with Postgres interval grammar; passing seconds
 	// as an int keeps the binding portable.
 	graceSeconds := int(staleTokenGrace.Seconds())
-	// `runtime != 'external'` is load-bearing: external workspaces have NO
-	// local container by design (the agent runs off-host), so the
-	// "no live container" predicate below would match every external
-	// workspace and revoke its token. The token is the off-host agent's
-	// only authentication credential — revoking breaks the entire
-	// external-runtime feature. Discovered 2026-05-03 when a fresh
-	// external workspace had its token silently revoked ~6 minutes after
-	// creation by this sweep, killing the operator's MCP heartbeat and
-	// inbox poll with `HTTP 401 — token may be revoked`.
+	// `runtime NOT IN ('external','mock')` is load-bearing: neither
+	// runtime has a local container, so the "no live container"
+	// predicate below would match every row and revoke its token.
+	// external: token is the off-host agent's only credential —
+	// revoking breaks the entire external-runtime feature
+	// (incident 2026-05-03). mock: same shape — no container by
+	// design, see workspace-server/internal/handlers/mock_runtime.go.
 	rows, qErr := db.DB.QueryContext(ctx, `
 		SELECT DISTINCT t.workspace_id::text
 		  FROM workspace_auth_tokens t
 		  JOIN workspaces w ON w.id = t.workspace_id
 		 WHERE t.revoked_at IS NULL
 		   AND w.status NOT IN ('removed', 'provisioning')
-		   AND w.runtime != 'external'
+		   AND w.runtime NOT IN ('external', 'mock')
 		   AND COALESCE(t.last_used_at, t.created_at) < now() - make_interval(secs => $2)
 		   AND (
 		         cardinality($1::text[]) = 0

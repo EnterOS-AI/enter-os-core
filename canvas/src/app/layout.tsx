@@ -3,6 +3,7 @@ import { cookies, headers } from "next/headers";
 import "./globals.css";
 import { AuthGate } from "@/components/AuthGate";
 import { CookieConsent } from "@/components/CookieConsent";
+import { PurchaseSuccessModal } from "@/components/PurchaseSuccessModal";
 import { ThemeProvider } from "@/lib/theme-provider";
 import {
   THEME_COOKIE,
@@ -86,6 +87,12 @@ export default async function RootLayout({
               vercel preview URL, apex) pass through unchanged. */}
           <AuthGate>{children}</AuthGate>
           <CookieConsent />
+          {/* Demo Mock #1: post-purchase success toast. Mounted at the
+              layout level so it persists across page state transitions
+              (loading → hydrated → error) without being unmounted and
+              losing its open-state. Reads ?purchase_success=1 from the
+              URL on first paint, then strips the param. */}
+          <PurchaseSuccessModal />
         </ThemeProvider>
       </body>
     </html>

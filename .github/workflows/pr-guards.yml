@@ -19,4 +19,4 @@ permissions:
 
 jobs:
   disable-auto-merge-on-push:
-    uses: Molecule-AI/molecule-ci/.github/workflows/disable-auto-merge-on-push.yml@main
+    uses: molecule-ai/molecule-ci/.github/workflows/disable-auto-merge-on-push.yml@main

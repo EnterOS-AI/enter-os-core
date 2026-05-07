@@ -1073,18 +1073,53 @@ func (p *Provisioner) IsRunning(ctx context.Context, workspaceID string) (bool, 
 	if p == nil || p.cli == nil {
 		return false, ErrNoBackend
 	}
-	name := ContainerName(workspaceID)
-	info, err := p.cli.ContainerInspect(ctx, name)
+	name, err := RunningContainerName(ctx, p.cli, workspaceID)
 	if err != nil {
-		if isContainerNotFound(err) {
-			return false, nil
-		}
 		// Transient daemon error: caller treats !running as dead + restarts.
 		// Returning true + the underlying error preserves the error for
 		// metrics/logging without triggering the destructive path.
 		return true, err
 	}
-	return info.State.Running, nil
+	return name != "", nil
+}
+
+// RunningContainerName returns the container name for workspaceID iff the
+// container exists AND is in the Running state. Single source of truth for
+// "what live container should I exec into for this workspace?" — used by
+// both Provisioner.IsRunning (healthsweep) and the plugins handler.
+//
+// Distinguishes three outcomes so callers can pick their own policy:
+//
+//   - ("ws-<id>", nil): container is running. Caller can exec into it.
+//   - ("",        nil): container does not exist OR exists but is stopped
+//                       (NotFound, Exited, Created, Restarting…). Caller
+//                       should treat as a definitive "not running."
+//   - ("",        err): transient daemon error (timeout, socket EOF, ctx
+//                       cancel). Caller should NOT infer "not running" —
+//                       this could be a flaky daemon under load. Decide
+//                       per-callsite whether to fail soft or hard.
+//
+// Background — molecule-core#10: the plugins handler used to carry its own
+// copy of this inspect logic (`findRunningContainer`) which collapsed
+// transient errors into the same "" return as a genuinely-stopped container.
+// That hid daemon flakes as misleading 503 "container not running" responses
+// AND let the two impls drift on edge-case behavior. This is the SSOT.
+func RunningContainerName(ctx context.Context, cli *client.Client, workspaceID string) (string, error) {
+	if cli == nil {
+		return "", ErrNoBackend
+	}
+	name := ContainerName(workspaceID)
+	info, err := cli.ContainerInspect(ctx, name)
+	if err != nil {
+		if isContainerNotFound(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	if info.State.Running {
+		return name, nil
+	}
+	return "", nil
 }
 
 // isContainerNotFound returns true when the Docker client indicates the
