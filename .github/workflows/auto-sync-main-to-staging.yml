@@ -103,7 +103,7 @@ jobs:
         with:
           fetch-depth: 0
           ref: staging
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.AUTO_SYNC_TOKEN }}
 
       - name: Configure git author
         run: |
@@ -174,7 +174,7 @@ jobs:
       - name: Open auto-sync PR + enable auto-merge
         if: steps.check.outputs.needs_sync == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTO_SYNC_TOKEN }}
           BRANCH: ${{ steps.check.outputs.branch }}
           MAIN_SHORT: ${{ steps.check.outputs.main_short }}
           DID_FF: ${{ steps.prep.outputs.did_ff }}
