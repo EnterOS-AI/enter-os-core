@@ -211,15 +211,23 @@ jobs:
         run: |
           set -euo pipefail
           response_file="$(mktemp)"
+          code_file="$(mktemp)"
           # `--max-time 30`: full call ceiling. `--connect-timeout 10`:
-          # DNS + TCP. `-w "%{http_code}"` to a separate var (not
-          # response body — see feedback_curl_status_capture_pollution).
-          status=$(curl -sS -o "$response_file" \
+          # DNS + TCP. `-w "%{http_code}"` routed to a tempfile so curl's
+          # exit code can't pollute the captured status — see
+          # feedback_curl_status_capture_pollution + the
+          # `lint-curl-status-capture.yml` gate that rejects the unsafe
+          # `$(curl ... || echo "000")` shape.
+          set +e
+          curl -sS -o "$response_file" \
             --max-time 30 --connect-timeout 10 \
             -w "%{http_code}" \
             -H "Authorization: token ${AUTO_SYNC_TOKEN}" \
             -H "Accept: application/json" \
-            "https://${GITEA_HOST}/api/v1/user" || echo "000")
+            "https://${GITEA_HOST}/api/v1/user" >"$code_file" 2>/dev/null
+          set -e
+          status=$(cat "$code_file" 2>/dev/null || true)
+          [ -z "$status" ] && status="000"
 
           if [ "$status" != "200" ]; then
             echo "::error::Token rotation suspected: GET /api/v1/user returned HTTP $status (expected 200)." >&2
@@ -247,12 +255,20 @@ jobs:
         run: |
           set -euo pipefail
           response_file="$(mktemp)"
-          status=$(curl -sS -o "$response_file" \
+          code_file="$(mktemp)"
+          # See first probe step for the rationale on the tempfile-routed
+          # `-w "%{http_code}"` pattern — the unsafe `|| echo "000"` shape
+          # is rejected by lint-curl-status-capture.yml.
+          set +e
+          curl -sS -o "$response_file" \
             --max-time 30 --connect-timeout 10 \
             -w "%{http_code}" \
             -H "Authorization: token ${AUTO_SYNC_TOKEN}" \
             -H "Accept: application/json" \
-            "https://${GITEA_HOST}/api/v1/repos/${REPO_PATH}" || echo "000")
+            "https://${GITEA_HOST}/api/v1/repos/${REPO_PATH}" >"$code_file" 2>/dev/null
+          set -e
+          status=$(cat "$code_file" 2>/dev/null || true)
+          [ -z "$status" ] && status="000"
 
           if [ "$status" != "200" ]; then
             echo "::error::Token lacks read:repository scope on ${REPO_PATH}: HTTP $status." >&2
