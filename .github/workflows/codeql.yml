@@ -1,36 +1,92 @@
 name: CodeQL
 
-# Controls CodeQL scan triggers for this repo.
+# Stub workflow — CodeQL Action is structurally incompatible with Gitea
+# Actions (post-2026-05-06 SCM migration off GitHub).
 #
-# GitHub's "Code quality" default setup (the UI-configured one) is
-# hardcoded to only scan the default branch — on this repo that's
-# `staging`, so PRs promoting staging→main would otherwise never be
-# scanned. This workflow fills that gap by explicitly scanning both
-# branches on push and PR.
+# Why this is a stub, not a real CodeQL run:
 #
-# Runs on ubuntu-latest (GHA-hosted — public repo, free). GHAS is NOT
-# enabled on this repo, so results are not uploaded to the Security
-# tab — the scan fails the PR check on findings, and the SARIF is
-# kept as a workflow artifact for triage.
+# 1. github/codeql-action/init@v4 hits api.github.com endpoints
+#    (CodeQL CLI bundle download + query-pack registry + telemetry)
+#    that Gitea 1.22.x does NOT proxy. The act_runner has
+#    GITHUB_SERVER_URL=https://git.moleculesai.app correctly set
+#    (per saved memory feedback_act_runner_github_server_url and
+#    /config.yaml on the operator host), but the Gitea API surface
+#    simply does not implement the codeql-action bundle endpoints.
+#    Observed in run 1d/3101 (2026-05-07): "::error::404 page not
+#    found" inside the Initialize CodeQL step, before any analysis.
+#
+# 2. PR #35 attempted to mark `continue-on-error: true` at the JOB
+#    level (correct YAML structure). Gitea 1.22.6 does NOT propagate
+#    job-level continue-on-error to the commit-status API — every
+#    matrix leg still posts `failure` to the status surface, which
+#    keeps OVERALL=failure on every push to main + staging and
+#    blocks visual auto-promote signals (#156).
+#
+# 3. Hongming policy decision (2026-05-07, task #156): CodeQL is
+#    ADVISORY, not blocking, on Gitea Actions. We do not block PR
+#    merge or staging→main promotion on CodeQL findings until we
+#    have a Gitea-compatible static-analysis pipeline.
+#
+# What this stub preserves:
+#
+# - Workflow name `CodeQL` (referenced by auto-promote-staging.yml
+#   line 67 as a workflow_run gate — must stay stable).
+# - Job name template `Analyze (${{ matrix.language }})` and the
+#   3-leg matrix (go, javascript-typescript, python). Branch
+#   protection / required-check parity (#144) keys on these
+#   exact context names.
+# - merge_group + push + pull_request + schedule triggers, so the
+#   merge-queue check name still resolves (per saved memory
+#   feedback_branch_protection_check_name_parity).
+#
+# Re-enabling real analysis (future work):
+#
+# - Option A: self-hosted Semgrep / OpenGrep via a custom action
+#   that doesn't hit api.github.com. Tracked behind #156 follow-up.
+# - Option B: Sonatype Nexus IQ or similar, called from a step
+#   that uses the Gitea-issued token only.
+# - Option C: re-host this workflow on a small GitHub mirror used
+#   ONLY for SAST (push-mirrored from Gitea). Acceptable trade-off
+#   if/when payment is restored on a non-suspended GitHub org —
+#   but per saved memory feedback_no_single_source_of_truth, we
+#   should design for multi-vendor backup, not GitHub-only SAST.
+#
+# Until one of those lands, this stub keeps commit-status green so
+# the auto-promote chain isn't permanently red on a tool we cannot
+# actually run.
+#
+# Security policy: ADVISORY. We accept the residual risk of un-scanned
+# pushes during this window. Compensating controls in place:
+#   - secret-scan.yml runs on every push (active, blocks on hits)
+#   - block-internal-paths.yml blocks forbidden file paths
+#   - lint-curl-status-capture.yml catches one specific class of bug
+#   - branch-protection-drift.yml + the merge_group required-checks
+#     parity keep the gate surface stable
+# These are not equivalent to CodeQL coverage. Status of the
+# replacement plan is tracked in #156.
 
 on:
   push:
     branches: [main, staging]
   pull_request:
     branches: [main, staging]
-  # GitHub merge queue fires `merge_group` for the queue's pre-merge CI run.
-  # Required so CodeQL Analyze checks get a real result on the queued
-  # commit instead of a false-green. Event only fires once merge queue is
-  # enabled on the target branch — safe to add unconditionally.
+  # Required so the matrix legs emit a real result on the queued
+  # commit instead of a false-green when merge queue is enabled.
+  # Per saved memory feedback_branch_protection_check_name_parity:
+  # path-filtered / matrix workflows MUST emit the protected name
+  # via a job that always runs.
   merge_group:
     types: [checks_requested]
   schedule:
-    # Weekly run picks up findings in code that hasn't been touched.
+    # Weekly heartbeat. Cheap on a stub (the no-op job is ~5s) but
+    # keeps the workflow visible in Gitea's Actions UI so the next
+    # operator notices it's a stub instead of a missing surface.
     - cron: '30 1 * * 0'
 
-# Workflow-level concurrency: only one CodeQL run per branch/PR at a time.
-# `cancel-in-progress: false` queues new runs so a quick follow-up push
-# doesn't nuke a 45-min analysis mid-flight.
+# Workflow-level concurrency: only one stub run per branch/PR at a
+# time. cancel-in-progress: false because a quick follow-up push
+# shouldn't kill an in-flight run — even though the stub is fast,
+# the contract should match a real CodeQL run for when we re-enable.
 concurrency:
   group: codeql-${{ github.ref }}
   cancel-in-progress: false
@@ -38,16 +94,17 @@ concurrency:
 permissions:
   actions: read
   contents: read
-  # No security-events: write — we don't call the upload API.
+  # No security-events: write — we don't call the upload API anyway,
+  # GHAS isn't on Gitea.
 
 jobs:
   analyze:
+    # Job NAME shape is load-bearing — auto-promote-staging.yml +
+    # branch protection both key on `Analyze (${{ matrix.language }})`.
+    # Do NOT rename without coordinating both surfaces.
     name: Analyze (${{ matrix.language }})
-    # CodeQL set to advisory (non-blocking) on Gitea Actions — Hongming dec'''n 2026-05-07 (#156).
-    # Findings still emit as SARIF artifacts; failing CodeQL run does not block PR merge.
-    continue-on-error: true
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 5
 
     strategy:
       fail-fast: false
@@ -55,68 +112,25 @@ jobs:
         language: [go, javascript-typescript, python]
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      # github-app-auth sibling-checkout removed 2026-05-07 (#157):
-      # plugin was dropped + the Dockerfile no longer needs it.
-      # jq is pre-installed on ubuntu-latest — no setup step needed.
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v4.35.2
-        with:
-          languages: ${{ matrix.language }}
-          # security-extended widens past the default to include the
-          # full security-query set for a public SaaS surface.
-          queries: security-extended
-
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v4.35.2
-
-      - name: Perform CodeQL Analysis
-        id: analyze
-        uses: github/codeql-action/analyze@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v4.35.2
-        with:
-          category: "/language:${{ matrix.language }}"
-          # upload: never — GHAS isn't enabled on this repo, so the
-          # upload API 403s. Write SARIF locally instead.
-          upload: never
-          output: sarif-results/${{ matrix.language }}
-
-      - name: Parse SARIF + fail on findings
-        # The analyze step writes <database>.sarif into the output
-        # directory — database name is the short CodeQL lang id, not
-        # the matrix value (e.g. "javascript-typescript" →
-        # javascript.sarif), so glob rather than hardcode.
-        # Filter to error/warning severity: security-extended emits
-        # "note" rows for informational findings we don't want to fail
-        # the build over.
+      # Single-step stub: log the policy decision + emit success.
+      # Exit 0 explicitly so the commit-status API records `success`
+      # for each of the three matrix legs.
+      - name: CodeQL stub (advisory, non-blocking on Gitea)
         shell: bash
         run: |
           set -euo pipefail
-          dir="sarif-results/${{ matrix.language }}"
-          sarif=$(ls "$dir"/*.sarif 2>/dev/null | head -1 || true)
-          if [ -z "$sarif" ] || [ ! -f "$sarif" ]; then
-            echo "::error::No SARIF file found under $dir"
-            ls -la "$dir" 2>/dev/null || true
-            exit 1
-          fi
-          echo "Parsing $sarif"
-          count=$(jq '[.runs[].results[] | select(.level == "error" or .level == "warning")] | length' "$sarif")
-          echo "CodeQL findings (error+warning) for ${{ matrix.language }}: $count"
-          if [ "$count" -gt 0 ]; then
-            echo "::error::CodeQL found $count issues. Details below; full SARIF in the artifact."
-            jq -r '.runs[].results[] | select(.level == "error" or .level == "warning") | "  - [\(.level)] \(.ruleId // "?"): \(.message.text // "(no message)") @ \(.locations[0].physicalLocation.artifactLocation.uri // "?"):\(.locations[0].physicalLocation.region.startLine // "?")"' "$sarif"
-            exit 1
-          fi
-
-      - name: Upload SARIF artifact
-        # Keep SARIF around on success + failure so triagers can diff.
-        # 14-day retention — longer than default 3, short enough not
-        # to bloat quota.
-        if: always()
-        uses: actions/upload-artifact@v3 # pinned to v3 for Gitea act_runner v0.6 compatibility (internal#46)
-        with:
-          name: codeql-sarif-${{ matrix.language }}
-          path: sarif-results/${{ matrix.language }}/
-          retention-days: 14
+          cat <<EOF
+          CodeQL is currently ADVISORY on Gitea Actions (post-2026-05-06).
+          Language matrix leg: ${{ matrix.language }}
+          Reason: github/codeql-action/init@v4 calls api.github.com
+                  bundle endpoints that Gitea 1.22.x does not implement.
+                  Observed: "::error::404 page not found" in the Init
+                  CodeQL step on every prior run.
+          Policy: per Hongming decision 2026-05-07 (#156), CodeQL is
+                  non-blocking until a Gitea-compatible SAST pipeline
+                  lands. See workflow file header for replacement
+                  options + compensating controls.
+          Status: emitting success so auto-promote isn't permanently
+                  red on a tool we cannot actually run today.
+          EOF
+          echo "::notice::CodeQL ${{ matrix.language }} — advisory stub, success."
