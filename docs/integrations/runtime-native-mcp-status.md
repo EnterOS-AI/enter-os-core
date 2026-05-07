@@ -58,8 +58,11 @@ green — proves wire shape end-to-end against a real `hermes gateway run`
 subprocess + stub OpenAI-compat LLM. Caught + fixed a real `KeyError`
 in upstream `hermes_cli/tools_config.py` (PLATFORMS dict lookup
 crashed on plugin platforms) — fix on the patched fork branch
-(`HongmingWang-Rabbit/hermes-agent` `feat/platform-adapter-plugins`,
-commit `18e4849e`). Upstream PR #18775 OPEN; CONFLICTING with main.
+(`molecule-ai/hermes-agent` `feat/platform-adapter-plugins`, commit
+`18e4849e`, hosted on Gitea at
+`https://git.moleculesai.app/molecule-ai/hermes-agent` — moved from the
+suspended `github.com/HongmingWang-Rabbit/hermes-agent`, see
+`molecule-ai/internal#72`). Upstream PR #18775 OPEN; CONFLICTING with main.
 Not on critical path for our platform — patched fork is what the
 workspace image installs.
 
