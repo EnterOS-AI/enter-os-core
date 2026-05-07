@@ -95,7 +95,19 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Set up Docker Buildx
+        # driver: docker — use the host docker daemon directly. The
+        # default `docker-container` driver spawns a buildkit container
+        # that doesn't share the host's ECR auth (set up by
+        # amazon-ecr-login above) and silently 401s on push to ECR. With
+        # driver: docker, buildx delegates to the host daemon which
+        # already has the ECR creds. Caught on Gitea Actions run #893
+        # post-Task-#173 (2026-05-07): the pre-clone fix worked and the
+        # image built end-to-end, but `failed to push: 401 Unauthorized`
+        # because the build container couldn't see the host's
+        # ~/.docker/config.json.
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        with:
+          driver: docker
 
       - name: Compute tags
         id: tags
@@ -187,8 +199,15 @@ jobs:
           tags: |
             ${{ env.IMAGE_NAME }}:staging-${{ steps.tags.outputs.sha }}
             ${{ env.IMAGE_NAME }}:staging-latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # cache-from/cache-to: type=gha removed for Gitea Actions —
+          # the GHA artifact cache backend is GitHub-specific; on Gitea
+          # the cache endpoint is unreachable and times out
+          # ("artifactcache/cache?keys=index-buildkit-... i/o timeout").
+          # Driver `docker` (set above) doesn't support the gha cache
+          # protocol either. Inline cache via type=registry could be
+          # added back later if rebuild time becomes painful, but
+          # 37-repo clone + Go/Node builds take <10min cold — fine for
+          # now, and a noisy failure is worse than a slow success.
           # GIT_SHA bakes into the Go binary via -ldflags so /buildinfo
           # returns it at runtime — see Dockerfile + buildinfo/buildinfo.go.
           # This is the same value as the OCI revision label below; passing
@@ -211,8 +230,8 @@ jobs:
           tags: |
             ${{ env.TENANT_IMAGE_NAME }}:staging-${{ steps.tags.outputs.sha }}
             ${{ env.TENANT_IMAGE_NAME }}:staging-latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # cache-from/cache-to: type=gha removed — see platform image
+          # build step above for rationale. Same Gitea-Actions limitation.
           # Canvas uses same-origin fetches. The tenant Go platform
           # reverse-proxies /cp/* to the SaaS CP via its CP_UPSTREAM_URL
           # env; the tenant's /canvas/viewport, /approvals/pending,
