@@ -45,11 +45,18 @@ clone_category() {
             continue
         fi
 
-        echo "  cloning $repo -> $target_dir/$name (ref=$ref)"
+        # Post-2026-05-06 GitHub-org-suspension: clone from Gitea instead.
+        # manifest.json paths still read "Molecule-AI/..." (the historic
+        # github.com slug); Gitea lowercases the org part to "molecule-ai/".
+        # Lowercase the org segment on the fly so we don't need to rewrite
+        # every manifest entry.
+        repo_gitea="$(echo "$repo" | awk -F/ '{ printf "%s", tolower($1); for (i=2; i<=NF; i++) printf "/%s", $i; print "" }')"
+
+        echo "  cloning $repo_gitea -> $target_dir/$name (ref=$ref)"
         if [ "$ref" = "main" ]; then
-            git clone --depth=1 -q "https://github.com/${repo}.git" "$target_dir/$name"
+            git clone --depth=1 -q "https://git.moleculesai.app/${repo_gitea}.git" "$target_dir/$name"
         else
-            git clone --depth=1 -q --branch "$ref" "https://github.com/${repo}.git" "$target_dir/$name"
+            git clone --depth=1 -q --branch "$ref" "https://git.moleculesai.app/${repo_gitea}.git" "$target_dir/$name"
         fi
         CLONED=$((CLONED + 1))
         i=$((i + 1))
