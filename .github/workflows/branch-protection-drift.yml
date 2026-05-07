@@ -19,6 +19,7 @@ on:
     branches: [staging, main]
     paths:
       - 'tools/branch-protection/**'
+      - '.github/workflows/**'
       - '.github/workflows/branch-protection-drift.yml'
 
 permissions:
@@ -79,3 +80,32 @@ jobs:
           # Repo-admin scope, needed for /branches/:b/protection.
           GH_TOKEN: ${{ secrets.GH_TOKEN_FOR_ADMIN_API }}
         run: bash tools/branch-protection/drift_check.sh
+
+      # Self-test the parity script before running it on the real
+      # workflows — pins the script's classification logic against
+      # synthetic safe/unsafe/missing/unsafe-mix/matrix fixtures so a
+      # regression in the script can't false-pass on the production
+      # workflow audit. Cheap (~0.5s); always runs.
+      - name: Self-test check-name parity script
+        run: bash tools/branch-protection/test_check_name_parity.sh
+
+      # Check-name parity gate (#144 / saved memory
+      # feedback_branch_protection_check_name_parity).
+      #
+      # drift_check.sh asserts the live branch protection matches what
+      # apply.sh would set; check_name_parity.sh closes the orthogonal
+      # gap: it asserts every required check name in apply.sh maps to a
+      # workflow job whose "always emits this status" shape is intact.
+      #
+      # The two checks fail in different scenarios:
+      #
+      #   - drift_check fails → live state was rewritten out-of-band
+      #     (UI click, manual PATCH).
+      #   - check_name_parity fails → an apply.sh required name has no
+      #     emitter, OR the emitting workflow has a top-level paths:
+      #     filter without per-step if-gates (the silent-block shape).
+      #
+      # Cheap (~1s); runs without the admin token because it only reads
+      # apply.sh + .github/workflows/ from the checkout.
+      - name: Run check-name parity gate
+        run: bash tools/branch-protection/check_name_parity.sh
