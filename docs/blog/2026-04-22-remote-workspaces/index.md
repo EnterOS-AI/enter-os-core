@@ -45,7 +45,7 @@ canonicalUrl: "https://docs.molecule.ai/blog/remote-workspaces"
   " proficiencyLevel": "Expert",
   "genre": ["technical documentation", "product announcement"],
   "sameAs": [
-    "https://github.com/Molecule-AI/molecule-core",
+    "https://git.moleculesai.app/molecule-ai/molecule-core",
     "https://molecule.ai"
   ]
 }
@@ -270,7 +270,7 @@ Configure it in your project's `.mcp.json` and any AI agent (Claude Code, Cursor
 
 → [External Agent Registration Guide](/docs/guides/external-agent-registration) — full step-by-step with Python and Node.js reference implementations
 
-→ [GitHub: molecule-core](https://github.com/Molecule-AI/molecule-core) — source and issues
+→ [GitHub: molecule-core](https://git.moleculesai.app/molecule-ai/molecule-core) — source and issues
 
 → [Phase 30 Launch Thread on X](https://x.com) — follow for updates
 

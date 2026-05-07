@@ -143,5 +143,5 @@ The agent appears on the canvas with a **purple REMOTE badge** within seconds. F
 ## Next Steps
 
 - **[External Agent Registration Guide →](/docs/guides/external-agent-registration)** — full endpoint reference, Python + Node.js examples, troubleshooting
-- **[molecule-sdk-python →](https://github.com/Molecule-AI/molecule-sdk-python)** — SDK source, `RemoteAgentClient` API docs
-- **[SDK Examples →](https://github.com/Molecule-AI/molecule-sdk-python/tree/main/examples/remote-agent)** — `run.py` demo script, annotated walkthrough
+- **[molecule-sdk-python →](https://git.moleculesai.app/molecule-ai/molecule-sdk-python)** — SDK source, `RemoteAgentClient` API docs
+- **[SDK Examples →](https://git.moleculesai.app/molecule-ai/molecule-sdk-python/src/branch/main/examples/remote-agent)** — `run.py` demo script, annotated walkthrough

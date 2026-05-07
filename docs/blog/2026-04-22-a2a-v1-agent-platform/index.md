@@ -133,4 +133,4 @@ With protocol-native A2A, you get:
 
 Molecule AI's external agent registration is production-ready. Documentation is live at [External Agent Registration Guide](https://docs.molecule.ai/docs/guides/external-agent-registration). The npm package for the MCP server is available at [`@molecule-ai/mcp-server`](https://www.npmjs.com/package/@molecule-ai/mcp-server).
 
-Read the full [A2A v1.0 protocol spec](https://github.com/Molecule-AI/molecule-core/blob/main/docs/api-protocol/a2a-protocol.md) on GitHub.
+Read the full [A2A v1.0 protocol spec](https://git.moleculesai.app/molecule-ai/molecule-core/src/branch/main/docs/api-protocol/a2a-protocol.md) on GitHub.

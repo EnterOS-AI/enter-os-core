@@ -4,7 +4,7 @@ How a workspace-server code change reaches the prod tenant fleet — and how to 
 
 > **⚠️ State note (2026-04-22):** this doc describes the **intended design**. As of this write, the canary fleet described below is **not actually running** — no canary tenants are provisioned, `CANARY_TENANT_URLS` / `CANARY_ADMIN_TOKENS` / `CANARY_CP_SHARED_SECRET` are empty in repo secrets, and `canary-verify.yml` fails every run.
 >
-> Current merges gate on manual `promote-latest.yml` dispatches, not canary. See [molecule-controlplane/docs/canary-tenants.md](https://github.com/Molecule-AI/molecule-controlplane/blob/main/docs/canary-tenants.md) for the Phase 1 code work that's already shipped + the Phase 2 plan for actually standing up the fleet + a "should we even do this now?" decision framework.
+> Current merges gate on manual `promote-latest.yml` dispatches, not canary. See [molecule-controlplane/docs/canary-tenants.md](https://git.moleculesai.app/molecule-ai/molecule-controlplane/src/branch/main/docs/canary-tenants.md) for the Phase 1 code work that's already shipped + the Phase 2 plan for actually standing up the fleet + a "should we even do this now?" decision framework.
 >
 > **Account-specific identifiers (AWS account ID, IAM role name) referenced below in the original design have been redacted from this public doc.** The actual values — if they exist — are in `Molecule-AI/internal/runbooks/canary-fleet.md`. If you're implementing Phase 2, start there.
 >

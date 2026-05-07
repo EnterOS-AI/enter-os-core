@@ -38,8 +38,8 @@
   <a href="./docs/agent-runtime/workspace-runtime.md"><strong>Workspace Runtime</strong></a>
 </p>
 
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/Molecule-AI/molecule-core)
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Molecule-AI/molecule-core)
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://git.moleculesai.app/molecule-ai/molecule-core)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://git.moleculesai.app/molecule-ai/molecule-core)
 
 </div>
 
@@ -248,7 +248,7 @@ Workspace Runtime (Python image with adapters)
 ## 快速开始
 
 ```bash
-git clone https://github.com/Molecule-AI/molecule-core.git
+git clone https://git.moleculesai.app/molecule-ai/molecule-core.git
 cd molecule-core
 
 cp .env.example .env

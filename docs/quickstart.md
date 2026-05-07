@@ -17,7 +17,7 @@ This path is aligned to the current repository and current UI. It gets you from 
 ## The one-command path
 
 ```bash
-git clone https://github.com/Molecule-AI/molecule-monorepo.git
+git clone https://git.moleculesai.app/molecule-ai/molecule-monorepo.git
 cd molecule-monorepo
 ./scripts/dev-start.sh
 ```
@@ -42,7 +42,7 @@ If you'd rather run each component yourself — useful when you're iterating on 
 ### Step 1: Clone the repository
 
 ```bash
-git clone https://github.com/Molecule-AI/molecule-monorepo.git
+git clone https://git.moleculesai.app/molecule-ai/molecule-monorepo.git
 cd molecule-monorepo
 ```
 
