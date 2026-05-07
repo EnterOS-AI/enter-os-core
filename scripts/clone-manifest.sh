@@ -47,9 +47,9 @@ clone_category() {
 
         echo "  cloning $repo -> $target_dir/$name (ref=$ref)"
         if [ "$ref" = "main" ]; then
-            git clone --depth=1 -q "https://github.com/${repo}.git" "$target_dir/$name"
+            git clone --depth=1 -q "https://git.moleculesai.app/${repo}.git" "$target_dir/$name"
         else
-            git clone --depth=1 -q --branch "$ref" "https://github.com/${repo}.git" "$target_dir/$name"
+            git clone --depth=1 -q --branch "$ref" "https://git.moleculesai.app/${repo}.git" "$target_dir/$name"
         fi
         CLONED=$((CLONED + 1))
         i=$((i + 1))
