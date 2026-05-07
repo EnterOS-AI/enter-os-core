@@ -87,7 +87,7 @@ jobs:
         run: go mod download
       - if: needs.changes.outputs.platform == 'true'
         run: go build ./cmd/server
-      # CLI (molecli) moved to standalone repo: github.com/Molecule-AI/molecule-cli
+      # CLI (molecli) moved to standalone repo: github.com/molecule-ai/molecule-cli
       - if: needs.changes.outputs.platform == 'true'
         run: go vet ./... || true
       - if: needs.changes.outputs.platform == 'true'
@@ -165,7 +165,7 @@ jobs:
               # Strip the package-import prefix so we can match .coverage-allowlist.txt
               # entries written as paths relative to workspace-server/.
               # Handle both module paths: platform/workspace-server/... and platform/...
-              rel=$(echo "$file" | sed 's|^github.com/Molecule-AI/molecule-monorepo/platform/workspace-server/||; s|^github.com/Molecule-AI/molecule-monorepo/platform/||')
+              rel=$(echo "$file" | sed 's|^github.com/molecule-ai/molecule-monorepo/platform/workspace-server/||; s|^github.com/molecule-ai/molecule-monorepo/platform/||')
 
               if echo "$ALLOWLIST" | grep -qxF "$rel"; then
                 echo "::warning file=workspace-server/$rel::Critical file at ${pct}% coverage (allowlisted, #1823) — fix before expiry."
@@ -243,8 +243,8 @@ jobs:
           if-no-files-found: warn
 
   # MCP Server + SDK removed from CI — now in standalone repos:
-  # - github.com/Molecule-AI/molecule-mcp-server (npm CI)
-  # - github.com/Molecule-AI/molecule-sdk-python (PyPI CI)
+  # - github.com/molecule-ai/molecule-mcp-server (npm CI)
+  # - github.com/molecule-ai/molecule-sdk-python (PyPI CI)
 
   # e2e-api job moved to .github/workflows/e2e-api.yml (issue #458).
   # It now has workflow-level concurrency (cancel-in-progress: false) so
@@ -434,5 +434,5 @@ jobs:
           fi
 
       # SDK + plugin validation moved to standalone repo:
-      # github.com/Molecule-AI/molecule-sdk-python
+      # github.com/molecule-ai/molecule-sdk-python
 

@@ -97,7 +97,7 @@ jobs:
 
       - name: Call staging-CP redeploy-fleet
         # CP_STAGING_ADMIN_API_TOKEN must be set as a repo/org secret
-        # on Molecule-AI/molecule-core, matching staging-CP's
+        # on molecule-ai/molecule-core, matching staging-CP's
         # CP_ADMIN_API_TOKEN env var (visible in Railway controlplane
         # / staging environment). Stored separately from the prod
         # CP_ADMIN_API_TOKEN so a leak of one doesn't auth the other.
