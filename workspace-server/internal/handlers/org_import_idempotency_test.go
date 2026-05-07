@@ -31,11 +31,25 @@ import (
 // tests pin the helper's three observable behaviors plus an AST gate
 // that catches future re-introductions of the un-checked INSERT.
 
+// lookupChildSQLRE anchors the sqlmock ExpectQuery on every load-bearing
+// token of lookupExistingChild's SELECT (org_import.go:639-645). A loose
+// substring match (the prior shape, just `SELECT id FROM workspaces`)
+// would silent-pass a regression that drops `IS NOT DISTINCT FROM`
+// (breaks NULL-parent matching), drops `parent_id` entirely (hijacks
+// siblings of the same name across different parents), or drops the
+// `status != 'removed'` filter (blocks re-import after Collapse).
+// RFC #2872 Important-2.
+//
+// The four anchored tokens are exactly the predicates the bug shapes
+// would tamper with. Whitespace is `\s+` so a future formatter pass
+// doesn't churn this string.
+const lookupChildSQLRE = `(?s)SELECT id FROM workspaces\s+WHERE name = \$1\s+AND parent_id IS NOT DISTINCT FROM \$2\s+AND status != 'removed'`
+
 func TestLookupExistingChild_NotFound_ReturnsFalseNoError(t *testing.T) {
 	mock := setupTestDB(t)
 	// 0-row result → driver returns sql.ErrNoRows on Scan.
 	parent := "parent-1"
-	mock.ExpectQuery(`SELECT id FROM workspaces`).
+	mock.ExpectQuery(lookupChildSQLRE).
 		WithArgs("Alpha", &parent).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
@@ -56,7 +70,7 @@ func TestLookupExistingChild_NotFound_ReturnsFalseNoError(t *testing.T) {
 func TestLookupExistingChild_Found_ReturnsIDAndTrue(t *testing.T) {
 	mock := setupTestDB(t)
 	parent := "parent-1"
-	mock.ExpectQuery(`SELECT id FROM workspaces`).
+	mock.ExpectQuery(lookupChildSQLRE).
 		WithArgs("Alpha", &parent).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ws-existing-uuid"))
 
@@ -79,7 +93,7 @@ func TestLookupExistingChild_NilParent_MatchesRoot(t *testing.T) {
 	// a plain `=` would never match a NULL row. Pin that roots
 	// (parent_id=NULL) are still found by the lookup.
 	mock := setupTestDB(t)
-	mock.ExpectQuery(`SELECT id FROM workspaces`).
+	mock.ExpectQuery(lookupChildSQLRE).
 		WithArgs("RootAgent", (*string)(nil)).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ws-root-uuid"))
 
@@ -102,7 +116,7 @@ func TestLookupExistingChild_DBError_Propagates(t *testing.T) {
 	mock := setupTestDB(t)
 	parent := "parent-1"
 	connFail := errors.New("simulated postgres unavailable")
-	mock.ExpectQuery(`SELECT id FROM workspaces`).
+	mock.ExpectQuery(lookupChildSQLRE).
 		WithArgs("Alpha", &parent).
 		WillReturnError(connFail)
 
@@ -137,7 +151,7 @@ func TestLookupExistingChild_WrappedNoRows_TreatedAsNotFound(t *testing.T) {
 	mock := setupTestDB(t)
 	parent := "parent-1"
 	wrapped := fmt.Errorf("driver-wrapped: %w", sql.ErrNoRows)
-	mock.ExpectQuery(`SELECT id FROM workspaces`).
+	mock.ExpectQuery(lookupChildSQLRE).
 		WithArgs("Alpha", &parent).
 		WillReturnError(wrapped)
 
