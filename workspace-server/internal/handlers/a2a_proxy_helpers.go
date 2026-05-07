@@ -198,6 +198,60 @@ func (h *WorkspaceHandler) maybeMarkContainerDead(ctx context.Context, workspace
 	return true
 }
 
+// preflightContainerHealth runs a proactive Provisioner.IsRunning check
+// (#36) before dispatching the a2a forward. Routed through provisioner's
+// SSOT IsRunning, which itself wraps RunningContainerName — same source
+// as findRunningContainer in the plugins handler (#10/#12).
+//
+// Returns nil when the forward should proceed:
+//   - container is running, OR
+//   - daemon errored transiently (matches IsRunning's (true, err)
+//     "fail-soft as alive" contract — let the optimistic forward run
+//     and reactive maybeMarkContainerDead catch a real failure).
+//
+// Returns a structured 503 + triggers the same async restart that
+// maybeMarkContainerDead would produce, when:
+//   - container is genuinely not running (NotFound / Exited / Created…).
+//
+// The point of running this BEFORE the forward is to save the caller
+// 2-30s of network-timeout cost when the container is missing — a common
+// shape post-EC2-replace (see molecule-controlplane#20 incident
+// 2026-05-07) where the reconciler hasn't respawned the agent yet.
+func (h *WorkspaceHandler) preflightContainerHealth(ctx context.Context, workspaceID string) *proxyA2AError {
+	running, err := h.provisioner.IsRunning(ctx, workspaceID)
+	if err != nil {
+		// Transient daemon error. Provisioner.IsRunning returns (true, err)
+		// in this case — fall through to the optimistic forward, reactive
+		// maybeMarkContainerDead handles a real failure later.
+		log.Printf("ProxyA2A preflight: IsRunning transient error for %s: %v (proceeding with forward)", workspaceID, err)
+		return nil
+	}
+	if running {
+		// Container is running — forward as today.
+		return nil
+	}
+	// Container is genuinely not running. Mark offline + trigger restart
+	// (same effect as maybeMarkContainerDead's branch), and return the
+	// structured 503 immediately so the caller skips the forward.
+	log.Printf("ProxyA2A preflight: container for %s is not running — marking offline and triggering restart (#36)", workspaceID)
+	if _, dbErr := db.DB.ExecContext(ctx,
+		`UPDATE workspaces SET status = $1, updated_at = now() WHERE id = $2 AND status NOT IN ('removed', 'provisioning')`,
+		models.StatusOffline, workspaceID); dbErr != nil {
+		log.Printf("ProxyA2A preflight: failed to mark workspace %s offline: %v", workspaceID, dbErr)
+	}
+	db.ClearWorkspaceKeys(ctx, workspaceID)
+	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceOffline), workspaceID, map[string]interface{}{})
+	go h.RestartByID(workspaceID)
+	return &proxyA2AError{
+		Status: http.StatusServiceUnavailable,
+		Response: gin.H{
+			"error":      "workspace container not running — restart triggered",
+			"restarting": true,
+			"preflight":  true, // distinguishes from reactive containerDead path
+		},
+	}
+}
+
 // logA2AFailure records a failed A2A attempt to activity_logs in a detached
 // goroutine (the request context may already be done by the time it runs).
 func (h *WorkspaceHandler) logA2AFailure(ctx context.Context, workspaceID, callerID string, body []byte, a2aMethod string, err error, durationMs int) {

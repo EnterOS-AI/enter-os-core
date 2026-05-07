@@ -435,6 +435,34 @@ func (h *WorkspaceHandler) proxyA2ARequest(ctx context.Context, workspaceID stri
 		return 0, nil, proxyErr
 	}
 
+	// Pre-flight container-health check (#36). The dispatchA2A path below
+	// does Docker-DNS forwarding to `ws-<wsShort>:8000` and only catches a
+	// missing/dead container REACTIVELY via maybeMarkContainerDead in
+	// handleA2ADispatchError. That works but costs the caller a full
+	// network-timeout (2-30s) before the structured 503 surfaces.
+	//
+	// When we KNOW the workspace is container-backed (h.docker != nil + we
+	// rewrite to Docker-DNS form below), do a single proactive
+	// RunningContainerName lookup. If the container is genuinely missing,
+	// short-circuit with the same structured 503 + async restart that
+	// maybeMarkContainerDead would produce — but immediately, without the
+	// network round-trip.
+	//
+	// Three outcomes of provisioner.RunningContainerName(ctx, h.docker, id):
+	//   ("ws-<id>", nil) → forward as today.
+	//   ("",        nil) → container is genuinely not running. Fast-503.
+	//   ("",        err) → transient daemon error. Fall through to optimistic
+	//                       forward — matches Provisioner.IsRunning's
+	//                       (true, err) "fail-soft as alive" contract.
+	//
+	// Same SSOT as findRunningContainer (#10/#12). See AST gate
+	// TestProxyA2A_RoutesThroughProvisionerSSOT.
+	if h.provisioner != nil && platformInDocker && strings.HasPrefix(agentURL, "http://"+provisioner.ContainerName(workspaceID)+":") {
+		if proxyErr := h.preflightContainerHealth(ctx, workspaceID); proxyErr != nil {
+			return 0, nil, proxyErr
+		}
+	}
+
 	startTime := time.Now()
 	resp, cancelFwd, err := h.dispatchA2A(ctx, workspaceID, agentURL, body, callerID)
 	if cancelFwd != nil {
