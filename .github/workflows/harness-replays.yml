@@ -102,7 +102,7 @@ jobs:
         if: needs.detect-changes.outputs.run == 'true'
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          repository: Molecule-AI/molecule-ai-plugin-github-app-auth
+          repository: molecule-ai/molecule-ai-plugin-github-app-auth
           path: molecule-ai-plugin-github-app-auth
           token: ${{ secrets.PLUGIN_REPO_PAT || secrets.GITHUB_TOKEN }}
 
