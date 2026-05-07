@@ -36,6 +36,10 @@ vi.mock("@/hooks/useWorkspaceName", () => ({
   useWorkspaceName: () => () => "Test WS",
 }));
 
+import {
+  emitSocketEvent,
+  _resetSocketEventListenersForTests,
+} from "@/store/socket-events";
 import { ActivityTab } from "../tabs/ActivityTab";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -355,6 +359,191 @@ describe("ActivityTab — refresh button", () => {
     await waitFor(() => {
       expect(mockGet).toHaveBeenCalled();
     });
+  });
+});
+
+// ── Suite 6.5: ACTIVITY_LOGGED subscription (#61 stage 3) ─────────────────────
+//
+// Pin the post-#61 behaviour: WS push extends the rendered list with NO
+// additional HTTP fetch. The 5s polling loop is gone; live updates
+// arrive over the WebSocket bus.
+
+describe("ActivityTab — #61 stage 3: ACTIVITY_LOGGED subscription", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGet.mockResolvedValue([]);
+    _resetSocketEventListenersForTests();
+  });
+  afterEach(() => {
+    cleanup();
+    _resetSocketEventListenersForTests();
+  });
+
+  function emitActivity(overrides: {
+    workspaceId?: string;
+    activityType?: string;
+    summary?: string;
+    id?: string;
+  } = {}) {
+    const realNow = Date.now();
+    emitSocketEvent({
+      event: "ACTIVITY_LOGGED",
+      workspace_id: overrides.workspaceId ?? "ws-1",
+      timestamp: new Date(realNow).toISOString(),
+      payload: {
+        id: overrides.id ?? `act-${Math.random().toString(36).slice(2)}`,
+        activity_type: overrides.activityType ?? "agent_log",
+        source_id: null,
+        target_id: null,
+        method: null,
+        summary: overrides.summary ?? "live-pushed",
+        status: "ok",
+        created_at: new Date(realNow - 5_000).toISOString(),
+      },
+    });
+  }
+
+  it("WS push for matching workspace prepends to the list with NO HTTP call", async () => {
+    render(<ActivityTab workspaceId="ws-1" />);
+    await waitFor(() => {
+      expect(screen.getByText(/0 activities|no activity/i)).toBeTruthy();
+    });
+    mockGet.mockClear();
+
+    await act(async () => {
+      emitActivity({ summary: "live-row-from-bus" });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/live-row-from-bus/)).toBeTruthy();
+    });
+    expect(mockGet).not.toHaveBeenCalled();
+  });
+
+  it("WS push for a different workspace is ignored", async () => {
+    render(<ActivityTab workspaceId="ws-1" />);
+    await waitFor(() => screen.getByText(/no activity/i));
+
+    await act(async () => {
+      emitActivity({
+        workspaceId: "ws-other",
+        summary: "should-not-render-other-ws",
+      });
+    });
+
+    expect(screen.queryByText(/should-not-render-other-ws/)).toBeNull();
+  });
+
+  it("WS push respects the active filter — non-matching activity_type is ignored", async () => {
+    render(<ActivityTab workspaceId="ws-1" />);
+    await waitFor(() => screen.getByText(/no activity/i));
+
+    // Apply "Tasks" filter.
+    clickButton(/tasks/i);
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /tasks/i }).getAttribute("aria-pressed"),
+      ).toBe("true");
+    });
+
+    // Push an a2a_send (does NOT match task_update filter).
+    await act(async () => {
+      emitActivity({
+        activityType: "a2a_send",
+        summary: "should-not-render-filter-mismatch",
+      });
+    });
+
+    expect(
+      screen.queryByText(/should-not-render-filter-mismatch/),
+    ).toBeNull();
+  });
+
+  it("WS push respects the active filter — matching activity_type is rendered", async () => {
+    render(<ActivityTab workspaceId="ws-1" />);
+    await waitFor(() => screen.getByText(/no activity/i));
+
+    clickButton(/tasks/i);
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /tasks/i }).getAttribute("aria-pressed"),
+      ).toBe("true");
+    });
+
+    await act(async () => {
+      emitActivity({
+        activityType: "task_update",
+        summary: "task-filter-match",
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/task-filter-match/)).toBeTruthy();
+    });
+  });
+
+  it("WS push while autoRefresh is paused is ignored", async () => {
+    render(<ActivityTab workspaceId="ws-1" />);
+    await waitFor(() => screen.getByText(/no activity/i));
+
+    // Toggle Live → Paused.
+    clickButton(/live/i);
+    await waitFor(() => {
+      expect(screen.getByText(/Paused/)).toBeTruthy();
+    });
+
+    await act(async () => {
+      emitActivity({ summary: "should-not-render-paused" });
+    });
+
+    expect(screen.queryByText(/should-not-render-paused/)).toBeNull();
+  });
+
+  it("WS push for a row already in the list is deduped (no double-render)", async () => {
+    // Bootstrap with one row — same id as the WS push to trigger dedup.
+    mockGet.mockResolvedValueOnce([
+      makeEntry({ id: "shared-id", summary: "bootstrap-summary" }),
+    ]);
+    render(<ActivityTab workspaceId="ws-1" />);
+    await waitFor(() => {
+      expect(screen.getByText(/bootstrap-summary/)).toBeTruthy();
+    });
+    mockGet.mockClear();
+
+    // Push a row with the SAME id but a different summary — must not
+    // render the new summary; original row stays.
+    await act(async () => {
+      emitActivity({
+        id: "shared-id",
+        summary: "should-not-replace-existing",
+      });
+    });
+
+    expect(screen.queryByText(/should-not-replace-existing/)).toBeNull();
+    // Also verify count didn't grow.
+    expect(screen.getByText(/1 activities/)).toBeTruthy();
+  });
+
+  it("does NOT poll on a 5s interval after mount (post-#61)", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<ActivityTab workspaceId="ws-1" />);
+      // Drain the mount-time bootstrap promise.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const callsAfterBootstrap = mockGet.mock.calls.length;
+      expect(callsAfterBootstrap).toBeGreaterThanOrEqual(1);
+
+      // Pre-#61: a 30s clock advance fires 6 more polls. Post-#61: 0.
+      await act(async () => {
+        vi.advanceTimersByTime(30_000);
+      });
+      expect(mockGet.mock.calls.length).toBe(callsAfterBootstrap);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
