@@ -181,7 +181,7 @@ jobs:
       # were running pre-RFC code. Adding the staging trigger above closes
       # that gap. Earlier 2026-04-24 incident: a static :staging-<sha> pin
       # drifted 10 days behind staging — same class of bug, different
-      # mechanism.
+      # mechanism. ECR repo molecule-ai/platform created 2026-05-07.
       # Build + push platform image with plain `docker` (no buildx).
       # GIT_SHA bakes into the Go binary via -ldflags so /buildinfo
       # returns it at runtime — see Dockerfile + buildinfo/buildinfo.go.
