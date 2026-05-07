@@ -1,5 +1,41 @@
 # Local Development
 
+## Workspace Template Images: Local-Build Mode (Issue #63)
+
+OSS contributors who run `molecule-core` locally do **not** need to authenticate to GHCR or AWS ECR. When the `MOLECULE_IMAGE_REGISTRY` env var is **unset**, the platform automatically:
+
+1. Looks up the HEAD sha of `https://git.moleculesai.app/molecule-ai/molecule-ai-workspace-template-<runtime>` (single API call, no clone).
+2. If a local image tagged `molecule-local/workspace-template-<runtime>:<sha12>` already exists, reuses it (cache hit).
+3. Otherwise, shallow-clones the repo into `~/.cache/molecule/workspace-template-build/<runtime>/<sha12>/` and runs `docker build --platform=linux/amd64 -t <tag> .`.
+4. Hands the SHA-pinned tag to Docker for `ContainerCreate`.
+
+**First-provision build time:** 5–10 min on Apple Silicon (amd64 emulation). Subsequent provisions hit the cache and start in seconds. Cache is invalidated automatically when the template repo's HEAD moves.
+
+**Currently mirrored on Gitea:** `claude-code`, `hermes`, `langgraph`, `autogen`. Other runtimes (`crewai`, `deepagents`, `codex`, `gemini-cli`, `openclaw`) fail with an actionable "not mirrored to Gitea" error pointing at the missing repo.
+
+**Production tenants are unaffected** — every prod tenant sets `MOLECULE_IMAGE_REGISTRY` to its private ECR mirror via Railway env / EC2 user-data, so the SaaS pull path stays identical.
+
+### Environment overrides
+
+| Var | Default | Use case |
+|-----|---------|----------|
+| `MOLECULE_IMAGE_REGISTRY` | (unset) | Set to a real registry URL to switch from local-build to SaaS-pull mode. |
+| `MOLECULE_LOCAL_BUILD_CACHE` | `~/.cache/molecule/workspace-template-build` | Override cache directory. |
+| `MOLECULE_LOCAL_TEMPLATE_REPO_PREFIX` | `https://git.moleculesai.app/molecule-ai/molecule-ai-workspace-template-` | Point at a fork. |
+| `MOLECULE_GITEA_TOKEN` | (unset) | Required only if your fork has private template repos. |
+
+### Verifying a switch from the GHCR-retag stopgap
+
+Pre-fix, OSS contributors worked around the suspended GHCR org by manually retagging an `:latest` image. After this change, that workaround is **redundant**: simply unset `MOLECULE_IMAGE_REGISTRY` (or leave it unset), boot the platform, and provision a workspace. Logs will show:
+
+```
+Provisioner: local-build mode → using locally-built image molecule-local/workspace-template-claude-code:<sha12> for runtime claude-code
+local-build: cloning https://git.moleculesai.app/molecule-ai/molecule-ai-workspace-template-claude-code → ...
+local-build: docker build done in <duration>
+```
+
+If you still see `ghcr.io/molecule-ai/...` in the boot log, double-check `env | grep MOLECULE_IMAGE_REGISTRY` — a stale shell export from the pre-fix workaround could keep SaaS-mode active.
+
 ## Starting the Stack
 
 ```bash
