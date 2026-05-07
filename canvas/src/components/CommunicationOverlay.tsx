@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useCanvasStore } from "@/store/canvas";
 import { api } from "@/lib/api";
+import { useSocketEvent } from "@/hooks/useSocketEvent";
 import { COMM_TYPE_LABELS } from "@/lib/design-tokens";
 
 interface Communication {
@@ -18,32 +19,71 @@ interface Communication {
   durationMs: number | null;
 }
 
+/** Workspace-server `ACTIVITY_LOGGED` payload shape. Pulled out so the
+ *  WS handler below has a typed view of the same fields the HTTP
+ *  bootstrap consumes — drift between the two paths is a class of bug
+ *  AgentCommsPanel hit historically. */
+interface ActivityLoggedPayload {
+  id?: string;
+  activity_type?: string;
+  source_id?: string | null;
+  target_id?: string | null;
+  workspace_id?: string;
+  summary?: string | null;
+  status?: string;
+  duration_ms?: number | null;
+  created_at?: string;
+}
+
+/** Fan-out cap for the bootstrap HTTP fetch on mount / on visibility
+ *  re-open. Kept at 3 (carried over from the 2026-05-04 fix) so a
+ *  freshly-mounted overlay on a 15-workspace tenant only spends 3
+ *  round-trips bootstrapping. Live updates after that arrive via the
+ *  WS subscription below — no polling, no fan-out to maintain. */
+const BOOTSTRAP_FAN_OUT_CAP = 3;
+
+/** Cap on the rendered list. Bootstrap + every WS push prepends, the
+ *  list is sliced to this size after each update. Mirrors the prior
+ *  polling-loop behaviour. */
+const COMMS_RENDER_CAP = 20;
+
 /**
  * Overlay showing recent A2A communications between workspaces.
- * Renders as a floating log panel that auto-updates.
+ *
+ * Update shape (issue #61 Stage 1, replaces the 30s polling loop):
+ *  - On mount (when visible): one HTTP bootstrap per online workspace,
+ *    capped at BOOTSTRAP_FAN_OUT_CAP. Yields the initial recent-comms
+ *    window without waiting for live events.
+ *  - Steady state: subscribes to ACTIVITY_LOGGED via useSocketEvent.
+ *    Each event with a matching activity_type from a visible online
+ *    workspace gets synthesised into a Communication and prepended.
+ *  - Visibility re-open: re-bootstraps so the user sees the freshest
+ *    window even if WS was idle while collapsed.
+ *
+ * No interval poll. The singleton ReconnectingSocket in `store/socket.ts`
+ * already owns reconnect/backoff/health-check, and `useSocketEvent`
+ * inherits those guarantees. If WS is genuinely unhealthy, the overlay
+ * shows the bootstrap snapshot until the next visibility re-open or
+ * the next WS reconnect (which fires its own rehydrate burst).
  */
 export function CommunicationOverlay() {
   const [comms, setComms] = useState<Communication[]>([]);
   const [visible, setVisible] = useState(true);
   const selectedNodeId = useCanvasStore((s) => s.selectedNodeId);
   const nodes = useCanvasStore((s) => s.nodes);
+  // nodesRef gives the WS handler current node-name resolution without
+  // re-subscribing on every node-list change. The bus listener is
+  // registered exactly once per mount; subscriber-side filtering reads
+  // the latest value via this ref.
   const nodesRef = useRef(nodes);
   nodesRef.current = nodes;
 
-  const fetchComms = useCallback(async () => {
+  const bootstrapComms = useCallback(async () => {
     try {
-      // Fan-out cap: each polled workspace = 1 round-trip. The platform
-      // rate limits at 600 req/min/IP; combined with heartbeats + other
-      // canvas polling, every workspace polled here costs ~6 req/min
-      // (1 every 30s × 1 per workspace). Capping at 3 keeps this
-      // overlay's footprint at 18 req/min worst case — well under
-      // budget even with 8+ workspaces visible. Caught 2026-05-04 when
-      // a user with 8+ workspaces (Design Director + 6 sub-agents +
-      // 3 standalones) saw sustained 429s in canvas console.
       const onlineNodes = nodesRef.current.filter((n) => n.data.status === "online");
       const allComms: Communication[] = [];
 
-      for (const node of onlineNodes.slice(0, 3)) {
+      for (const node of onlineNodes.slice(0, BOOTSTRAP_FAN_OUT_CAP)) {
         try {
           const activities = await api.get<Array<{
             id: string;
@@ -59,8 +99,8 @@ export function CommunicationOverlay() {
 
           for (const a of activities) {
             if (a.activity_type === "a2a_send" || a.activity_type === "a2a_receive") {
-              const sourceNode = nodes.find((n) => n.id === (a.source_id || a.workspace_id));
-              const targetNode = nodes.find((n) => n.id === (a.target_id || ""));
+              const sourceNode = nodesRef.current.find((n) => n.id === (a.source_id || a.workspace_id));
+              const targetNode = nodesRef.current.find((n) => n.id === (a.target_id || ""));
               allComms.push({
                 id: a.id,
                 sourceId: a.source_id || a.workspace_id,
@@ -76,11 +116,12 @@ export function CommunicationOverlay() {
             }
           }
         } catch {
-          // Skip workspaces that fail
+          // Per-workspace failures must not blank the panel — the same
+          // robustness the polling version had.
         }
       }
 
-      // Sort by timestamp, newest first, dedupe
+      // Newest-first with id-dedup, capped at COMMS_RENDER_CAP.
       const seen = new Set<string>();
       const sorted = allComms
         .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
@@ -89,29 +130,78 @@ export function CommunicationOverlay() {
           seen.add(c.id);
           return true;
         })
-        .slice(0, 20);
+        .slice(0, COMMS_RENDER_CAP);
 
       setComms(sorted);
     } catch {
-      // Silently handle API errors
+      // Bootstrap failure is non-blocking — the WS subscription below
+      // will populate the panel as live events arrive.
     }
   }, []);
 
+  // Bootstrap once on mount + every time the user re-opens after a
+  // collapse. Closed-panel state intentionally drops live updates so
+  // the panel doesn't churn invisible state — the next open reloads.
   useEffect(() => {
-    // Gate polling on visibility — when the user collapses the overlay
-    // the data isn't being read, so the per-workspace fan-out becomes
-    // pure rate-limit overhead. Pre-fix this overlay polled regardless
-    // of whether the panel was shown, costing ~36 req/min from a
-    // hidden surface.
     if (!visible) return;
-    fetchComms();
-    // 30s cadence (was 10s). At 3-workspace fan-out that's 6 req/min
-    // worst case from this overlay. Combined with heartbeats (~30/min)
-    // and other canvas polling, leaves ample headroom under the 600/
-    // min/IP server-side rate limit even at 8+ workspace tenants.
-    const interval = setInterval(fetchComms, 30000);
-    return () => clearInterval(interval);
-  }, [fetchComms, visible]);
+    bootstrapComms();
+  }, [bootstrapComms, visible]);
+
+  // Live-update path. Filters server-side ACTIVITY_LOGGED events down
+  // to the comm-overlay-relevant subset and prepends each into the
+  // rendered list with the same dedup the bootstrap path uses.
+  //
+  // Scope guard: ignore events for workspaces not in the visible online
+  // set, so a user collapsing one workspace doesn't see its comms
+  // continue to scroll in. Same shape the bootstrap path applies.
+  useSocketEvent((msg) => {
+    if (!visible) return;
+    if (msg.event !== "ACTIVITY_LOGGED") return;
+
+    const p = (msg.payload || {}) as ActivityLoggedPayload;
+    const type = p.activity_type;
+    if (type !== "a2a_send" && type !== "a2a_receive" && type !== "task_update") return;
+
+    const wsId = msg.workspace_id;
+    const onlineSet = new Set(
+      nodesRef.current.filter((n) => n.data.status === "online").map((n) => n.id),
+    );
+    if (!onlineSet.has(wsId)) return;
+
+    const sourceId = p.source_id || wsId;
+    const targetId = p.target_id || "";
+    const sourceNode = nodesRef.current.find((n) => n.id === sourceId);
+    const targetNode = nodesRef.current.find((n) => n.id === targetId);
+
+    const incoming: Communication = {
+      id: p.id || `${msg.timestamp || Date.now()}:${sourceId}:${targetId}`,
+      sourceId,
+      targetId,
+      sourceName: sourceNode?.data.name || "Unknown",
+      targetName: targetNode?.data.name || "Unknown",
+      type: type as Communication["type"],
+      summary: p.summary || "",
+      status: p.status || "ok",
+      timestamp: p.created_at || msg.timestamp || new Date().toISOString(),
+      durationMs: p.duration_ms ?? null,
+    };
+
+    setComms((prev) => {
+      // Prepend, dedup by id, re-cap. Functional setState is necessary
+      // because two ACTIVITY_LOGGED events arriving in the same React
+      // batch would otherwise read a stale `comms` from the closure.
+      const seen = new Set<string>();
+      const merged = [incoming, ...prev]
+        .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+        .filter((c) => {
+          if (seen.has(c.id)) return false;
+          seen.add(c.id);
+          return true;
+        })
+        .slice(0, COMMS_RENDER_CAP);
+      return merged;
+    });
+  });
 
   if (!visible || comms.length === 0) {
     return (
