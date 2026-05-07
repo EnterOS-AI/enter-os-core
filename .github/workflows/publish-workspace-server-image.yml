@@ -181,3 +181,4 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.description=Molecule AI tenant platform + canvas — pending canary verify
+
