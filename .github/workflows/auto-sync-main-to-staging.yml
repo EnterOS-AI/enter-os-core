@@ -3,85 +3,138 @@ name: Auto-sync main → staging
 # Reflects every push to `main` back onto `staging` so the
 # staging-as-superset-of-main invariant holds.
 #
-# Background:
+# ============================================================
+# What this workflow does
+# ============================================================
 #
-# `auto-promote-staging.yml` advances main via `git merge --ff-only`
-# + `git push origin main` — that's a clean fast-forward, no merge
-# commit. But manual merges of `staging → main` PRs through the
-# GitHub UI / API create a merge commit on main that staging
-# doesn't have. The next `staging → main` PR then evaluates as
-# "BEHIND" because staging is missing that merge commit, requiring
-# a manual `gh pr update-branch` round-trip.
+# On every push to `main`:
+#   1. Checks if staging already contains main → no-op.
+#   2. Fetches both branches, merges main into staging in the
+#      runner workspace (fast-forward if possible, else
+#      `--no-ff` merge commit).
+#   3. Pushes staging directly to origin via the
+#      `devops-engineer` persona's `AUTO_SYNC_TOKEN`.
 #
-# This happened twice on 2026-04-28 (PRs #2202, #2205, both manual
-# bridges). Each time the bridge needed update-branch + a re-CI
-# round before merging. Operationally annoying and avoidable.
+# Authoritative path: a single `git push origin staging` from
+# inside this workflow is the SSOT for advancing staging after
+# a main push. No PR, no merge queue, no human approval —
+# staging is mechanically maintained as a superset of main.
 #
-# Architecture:
+# `auto-promote-staging.yml` is the reverse-direction
+# counterpart (staging → main, gated on green CI). Together
+# they keep the staging-superset-of-main invariant tight.
 #
-# This repo's `staging` branch is protected by a `merge_queue`
-# ruleset (id 15500102) that blocks ALL direct pushes — no bypass
-# even for org admins or the GitHub Actions integration. Direct
-# `git push origin staging` returns GH013. So instead of pushing
-# directly, this workflow:
+# ============================================================
+# Why direct push (and not "open a PR")
+# ============================================================
 #
-#   1. Checks if main is already in staging's ancestry → no-op.
-#   2. Creates an `auto-sync/main-<sha>` branch from staging.
-#   3. Tries `git merge --ff-only origin/main` → if staging hasn't
-#      diverged this is a clean ff.
-#   4. Otherwise `git merge --no-ff origin/main` to absorb main's
-#      tip while keeping staging's history.
-#   5. Pushes the auto-sync branch.
-#   6. Opens a PR (base=staging, head=auto-sync/main-<sha>) and
-#      enables auto-merge so the merge queue lands it.
+# Pre-2026-05-06 the canonical SCM was GitHub.com, where:
+#   - The `staging` branch had a `merge_queue` ruleset that
+#     blocked ALL direct pushes (no bypass even for org
+#     admins or the GitHub Actions integration).
+#   - Therefore this workflow opened a PR via `gh pr create`
+#     and let auto-merge land it through the queue.
 #
-# This mirrors the path human PRs take through staging — same
-# rules, same gates, no special-case bypass.
+# Post-2026-05-06 the canonical SCM is Gitea
+# (`git.moleculesai.app/molecule-ai/molecule-core`). Gitea:
+#   - Has no `merge_queue` concept.
+#   - Allows direct push to protected branches via per-user
+#     `push_whitelist_usernames` on the branch protection.
+#   - Does not expose a GraphQL endpoint, so `gh pr create`
+#     returns `HTTP 405 Method Not Allowed
+#     (https://git.moleculesai.app/api/graphql)` — the
+#     pre-suspension architecture cannot work on Gitea.
 #
-# Loop safety:
+# The molecule-ai/molecule-core staging branch protection
+# (verified via `GET /api/v1/repos/.../branch_protections`)
+# whitelists `devops-engineer` for direct push. So the
+# correct Gitea-shape architecture is: authenticate as
+# `devops-engineer`, merge locally, push staging directly.
 #
-# `GITHUB_TOKEN`-authored merges (including the merge queue's land
-# of the auto-sync PR) do NOT trigger downstream workflow runs
-# (GitHub Actions safety). So when the auto-sync PR lands on
-# staging, `auto-promote-staging.yml` is NOT triggered by that
-# push. The next developer push to staging triggers auto-promote
-# normally. No loop possible.
+# This is structurally simpler than the GitHub-era PR dance
+# and removes the dependence on `gh` CLI / GraphQL entirely.
 #
-# Concurrency:
+# ============================================================
+# Identity + token (anti-bot-ring per saved-memory
+# `feedback_per_agent_gitea_identity_default`)
+# ============================================================
 #
-# Two pushes to main in quick succession (e.g., manual UI merge
-# immediately followed by auto-promote-staging's ff-merge) could
-# otherwise open two overlapping auto-sync PRs. The concurrency
-# group serializes runs; the second waits for the first to exit.
-# (The first run exits after opening + auto-merge-queueing the PR,
-# not after the merge actually completes — so multiple PRs can be
-# open simultaneously, but the merge queue handles them serially.)
+# This workflow uses `secrets.AUTO_SYNC_TOKEN`, which is a
+# personal access token issued to the `devops-engineer`
+# persona on Gitea — NOT the founder PAT. The bot-ring
+# fingerprint that triggered the GitHub org suspension on
+# 2026-05-06 was characterised by founder PAT acting as CI
+# at machine speed; per-persona identities split the
+# attribution honestly.
+#
+# Token scope on Gitea: repo write. Push target restricted
+# to `staging` (this workflow is the only writer; main is
+# untouched). Compromise blast radius: bounded to staging
+# branch + this repo's read surface.
+#
+# Commits are authored by the persona email
+# `devops-engineer@agents.moleculesai.app` so commit history
+# reflects which automation produced the merge.
+#
+# ============================================================
+# Failure modes & operational notes
+# ============================================================
+#
+# A — staging has commits main doesn't, and the merge
+#     conflicts:
+#     - The `--no-ff` merge step exits non-zero. Workflow
+#       fails red. Operator (devops-engineer or human)
+#       resolves manually:
+#         git fetch origin
+#         git checkout staging
+#         git merge --no-ff origin/main
+#         # resolve conflicts
+#         git push origin staging
+#     - Step summary surfaces the conflict so the failed run
+#       is self-explanatory.
+#
+# B — `AUTO_SYNC_TOKEN` rotated / wrong scope:
+#     - `git push` step exits non-zero with `HTTP 401` /
+#       `403`. Step summary surfaces the failed push.
+#     - Re-issue the token from `~/.molecule-ai/personas/`
+#       on the operator host and update the repo Actions
+#       secret. Re-run the workflow.
+#
+# C — staging branch protection no longer whitelists
+#     `devops-engineer`:
+#     - `git push` exits non-zero with a Gitea protected-
+#       branch rejection. Step summary surfaces it.
+#     - Re-add `devops-engineer` to
+#       `push_whitelist_usernames` on the staging
+#       protection (Settings → Branches → staging).
+#
+# D — concurrent push to main while a sync is in flight:
+#     - The `concurrency` group below serialises runs.
+#       The second waits for the first; if main advances
+#       again while we're syncing, the second run picks
+#       up the new tip on its own fetch.
+#
+# ============================================================
+# Loop safety
+# ============================================================
+#
+# The push to staging from this workflow does NOT itself
+# fire a `push: branches: [main]` event (different branch),
+# so there's no risk of self-recursion. `auto-promote-staging.yml`
+# fires on `workflow_run` of CI etc. — it sees the new
+# staging tip on its next gate-completion event, NOT on this
+# push directly. No loop.
 
 on:
   push:
     branches: [main]
-  # workflow_dispatch lets:
-  #   1. Operators manually backfill a missed sync (e.g. after a manual
-  #      UI merge that the runner missed).
-  #   2. auto-promote-staging.yml's polling tail explicitly invoke us
-  #      after the promote PR lands. This is load-bearing: when the
-  #      merge queue lands a promote-PR merge, the resulting push to
-  #      `main` is "by GITHUB_TOKEN", and per GitHub's no-recursion
-  #      rule (https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow)
-  #      that push event does NOT fire any downstream workflows. The
-  #      `on: push` trigger above is silently dead for the very pattern
-  #      we exist to handle. Verified empirically 2026-05-02 against
-  #      SHA 76c604fb (PR #2437 staging→main): only ONE workflow fired
-  #      (publish-workspace-server-image, dispatched explicitly by
-  #      auto-promote's polling tail with an App token). Every other
-  #      `on: push: branches: [main]` workflow — including this one —
-  #      was suppressed. Until the underlying merge call moves to an
-  #      App token, an explicit dispatch is the only reliable path.
+  # workflow_dispatch lets operators manually backfill a
+  # missed sync (e.g. if AUTO_SYNC_TOKEN was rotated and a
+  # main push slipped through while the secret was stale).
   workflow_dispatch:
 
 permissions:
   contents: write
-  pull-requests: write
 
 concurrency:
   group: auto-sync-main-to-staging
@@ -89,26 +142,25 @@ concurrency:
 
 jobs:
   sync-staging:
-    # ubuntu-latest matches every other workflow in this repo. The
-    # earlier `[self-hosted, macos, arm64]` was a copy-paste artefact
-    # from the molecule-controlplane repo (which IS private and uses a
-    # Mac runner) — molecule-core has no Mac runner registered, so the
-    # job sat unassigned whenever the trigger fired. Verified 2026-05-02:
-    # this is the ONLY workflow in molecule-core/.github/workflows/ with
-    # a non-ubuntu runs-on.
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout staging
+      - name: Checkout staging (with devops-engineer push token)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           ref: staging
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # AUTO_SYNC_TOKEN authenticates as the
+          # `devops-engineer` Gitea persona — the only
+          # identity whitelisted for direct push to
+          # staging. See header comment for context.
+          token: ${{ secrets.AUTO_SYNC_TOKEN }}
 
       - name: Configure git author
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Per-persona identity, NOT founder PAT.
+          # `feedback_per_agent_gitea_identity_default`.
+          git config user.name "devops-engineer"
+          git config user.email "devops-engineer@agents.moleculesai.app"
 
       - name: Check if staging already contains main
         id: check
@@ -118,7 +170,7 @@ jobs:
           if git merge-base --is-ancestor origin/main HEAD; then
             echo "needs_sync=false" >> "$GITHUB_OUTPUT"
             {
-              echo "## ✅ No-op"
+              echo "## No-op"
               echo
               echo "staging already contains \`origin/main\` ($(git rev-parse --short=8 origin/main))."
             } >> "$GITHUB_STEP_SUMMARY"
@@ -126,112 +178,78 @@ jobs:
             echo "needs_sync=true" >> "$GITHUB_OUTPUT"
             MAIN_SHORT=$(git rev-parse --short=8 origin/main)
             echo "main_short=${MAIN_SHORT}" >> "$GITHUB_OUTPUT"
-            echo "branch=auto-sync/main-${MAIN_SHORT}" >> "$GITHUB_OUTPUT"
-            echo "::notice::staging is missing main's tip (${MAIN_SHORT}) — opening sync PR"
+            echo "::notice::staging is missing main's tip (${MAIN_SHORT}) — merging in-runner and pushing"
           fi
 
-      - name: Create auto-sync branch + merge main
+      - name: Merge main into staging (in-runner)
         if: steps.check.outputs.needs_sync == 'true'
-        id: prep
+        id: merge
         run: |
           set -euo pipefail
-          BRANCH="${{ steps.check.outputs.branch }}"
-
-          # If a previous auto-sync run already opened a branch for the
-          # same main sha, prefer reusing it (idempotent behavior on
-          # workflow restart). Force-update from latest staging anyway
-          # so it absorbs any staging-side commits that landed since.
-          git checkout -B "$BRANCH"
-
+          # Already on staging from checkout. Try fast-forward
+          # first (cleanest history); fall back to merge commit
+          # if staging has commits main doesn't.
           if git merge --ff-only origin/main; then
             echo "did_ff=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Fast-forwarded ${BRANCH} to origin/main"
+            echo "::notice::Fast-forwarded staging to origin/main"
           else
             echo "did_ff=false" >> "$GITHUB_OUTPUT"
-            if ! git merge --no-ff origin/main -m "chore: sync main → staging (auto)"; then
+            if ! git merge --no-ff origin/main \
+                -m "chore: sync main → staging (auto, ${{ steps.check.outputs.main_short }})"; then
               # Hygiene: leave the work tree clean before failing.
               git merge --abort || true
               {
-                echo "## ❌ Conflict"
+                echo "## Conflict"
                 echo
                 echo "Auto-merge \`main → staging\` failed with conflicts."
-                echo "A human needs to resolve manually."
+                echo "A human (or devops-engineer persona) needs to resolve manually:"
+                echo
+                echo '```'
+                echo "git fetch origin"
+                echo "git checkout staging"
+                echo "git merge --no-ff origin/main"
+                echo "# resolve conflicts"
+                echo "git push origin staging"
+                echo '```'
               } >> "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
           fi
 
-      - name: Push auto-sync branch
+      - name: Push staging to origin
         if: steps.check.outputs.needs_sync == 'true'
         run: |
           set -euo pipefail
-          # Force-with-lease so a concurrent auto-sync run can't
-          # silently clobber an in-flight branch we just updated. If a
-          # different writer touched the branch, we abort and the next
-          # run picks up the latest state.
-          git push --force-with-lease origin "${{ steps.check.outputs.branch }}"
-
-      - name: Open auto-sync PR + enable auto-merge
-        if: steps.check.outputs.needs_sync == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BRANCH: ${{ steps.check.outputs.branch }}
-          MAIN_SHORT: ${{ steps.check.outputs.main_short }}
-          DID_FF: ${{ steps.prep.outputs.did_ff }}
-        run: |
-          set -euo pipefail
-
-          # Find existing PR for this branch (idempotent on workflow
-          # restart) before creating a new one.
-          PR_NUM=$(gh pr list --head "$BRANCH" --base staging --state open --json number --jq '.[0].number // ""')
-
-          if [ -z "$PR_NUM" ]; then
-            # Body lives in a temp file to keep the multi-line content
-            # out of the YAML block scalar (un-indented newlines inside
-            # an inline shell string break YAML parsing).
-            BODY_FILE=$(mktemp)
-            if [ "$DID_FF" = "true" ]; then
-              TITLE="chore: sync main → staging (auto, ff to ${MAIN_SHORT})"
-              cat > "$BODY_FILE" <<EOFBODY
-          Automated fast-forward of \`staging\` to \`origin/main\` (\`${MAIN_SHORT}\`). Staging has no in-flight commits that diverge from main. Merge queue lands this; no human action needed.
-
-          This PR is auto-generated by \`.github/workflows/auto-sync-main-to-staging.yml\` on every push to \`main\`. It exists because this repo's \`staging\` branch has a \`merge_queue\` ruleset that blocks direct pushes — even from the GitHub Actions integration.
-          EOFBODY
-            else
-              TITLE="chore: sync main → staging (auto, merge ${MAIN_SHORT})"
-              cat > "$BODY_FILE" <<EOFBODY
-          Automated merge of \`origin/main\` (\`${MAIN_SHORT}\`) into \`staging\`. Staging has commits main doesn't, so this is a non-ff merge that absorbs main's tip. Merge queue lands this.
-
-          This PR is auto-generated by \`.github/workflows/auto-sync-main-to-staging.yml\` on every push to \`main\`.
-          EOFBODY
-            fi
-
-            # gh pr create prints the URL on stdout; extract the PR number.
-            PR_URL=$(gh pr create \
-              --base staging \
-              --head "$BRANCH" \
-              --title "$TITLE" \
-              --body-file "$BODY_FILE")
-            PR_NUM=$(echo "$PR_URL" | grep -oE '[0-9]+$' | tail -1)
-            rm -f "$BODY_FILE"
-            echo "::notice::Opened PR #${PR_NUM}"
-          else
-            echo "::notice::Re-using existing PR #${PR_NUM} for ${BRANCH}"
-          fi
-
-          # Enable auto-merge — the merge queue picks it up once
-          # required gates are green. Use --merge for merge commits
-          # (matches the rest of this repo's PR convention).
-          if ! gh pr merge "$PR_NUM" --auto --merge 2>&1; then
-            echo "::warning::Failed to enable auto-merge on PR #${PR_NUM} — operator may need to merge manually."
+          # Direct push to staging. devops-engineer persona is
+          # whitelisted for direct push on the staging branch
+          # protection (Settings → Branches → staging).
+          #
+          # No --force / --force-with-lease: a fast-forward or
+          # legitimate merge commit on top of current staging
+          # is the only thing we'd ever push. If origin/staging
+          # advanced under us (concurrent merge), the push
+          # legitimately rejects and the next run picks up the
+          # new state.
+          if ! git push origin staging; then
+            {
+              echo "## Push rejected"
+              echo
+              echo "Direct push to \`staging\` failed. Likely causes:"
+              echo "- \`AUTO_SYNC_TOKEN\` rotated / wrong scope (HTTP 401/403)"
+              echo "- \`devops-engineer\` no longer in"
+              echo "  \`push_whitelist_usernames\` on the staging"
+              echo "  branch protection (HTTP 422)"
+              echo "- staging advanced concurrently — re-running this"
+              echo "  workflow on the new main tip will pick it up"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
 
           {
-            echo "## ✅ Auto-sync PR opened"
+            echo "## Auto-sync succeeded"
             echo
-            echo "- Branch: \`$BRANCH\`"
-            echo "- PR: #$PR_NUM"
-            echo "- Strategy: $([ "$DID_FF" = "true" ] && echo "ff" || echo "merge commit")"
-            echo
-            echo "Merge queue lands the PR once required gates are green; no human action needed unless gates fail."
+            echo "- staging advanced to: \`$(git rev-parse --short=8 HEAD)\`"
+            echo "- main tip: \`${{ steps.check.outputs.main_short }}\`"
+            echo "- Strategy: $([ "${{ steps.merge.outputs.did_ff }}" = "true" ] && echo "fast-forward" || echo "merge commit")"
+            echo "- Pushed by: \`devops-engineer\` (per-agent persona, anti-bot-ring)"
           } >> "$GITHUB_STEP_SUMMARY"
