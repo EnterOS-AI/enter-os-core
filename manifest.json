@@ -41,6 +41,7 @@
     {"name": "medo-smoke", "repo": "Molecule-AI/molecule-ai-org-template-medo-smoke", "ref": "main"},
     {"name": "molecule-worker-gemini", "repo": "Molecule-AI/molecule-ai-org-template-molecule-worker-gemini", "ref": "main"},
     {"name": "reno-stars", "repo": "Molecule-AI/molecule-ai-org-template-reno-stars", "ref": "main"},
-    {"name": "ux-ab-lab", "repo": "Molecule-AI/molecule-ai-org-template-ux-ab-lab", "ref": "main"}
+    {"name": "ux-ab-lab", "repo": "Molecule-AI/molecule-ai-org-template-ux-ab-lab", "ref": "main"},
+    {"name": "mock-bigorg", "repo": "Molecule-AI/molecule-ai-org-template-mock-bigorg", "ref": "main"}
   ]
 }

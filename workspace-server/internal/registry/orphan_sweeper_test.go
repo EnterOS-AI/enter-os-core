@@ -26,7 +26,7 @@ import (
 // accidentally matching a future query that opens with the same column
 // name OR a regression that drops one of the load-bearing predicates.
 func expectStaleTokenSweepNoOp(mock sqlmock.Sqlmock) {
-	mock.ExpectQuery(`(?s)^\s*SELECT DISTINCT t\.workspace_id::text\s+FROM workspace_auth_tokens.*status NOT IN \('removed', 'provisioning'\).*runtime != 'external'`).
+	mock.ExpectQuery(`(?s)^\s*SELECT DISTINCT t\.workspace_id::text\s+FROM workspace_auth_tokens.*status NOT IN \('removed', 'provisioning'\).*runtime NOT IN \('external', 'mock'\)`).
 		WillReturnRows(sqlmock.NewRows([]string{"workspace_id"}))
 }
 
@@ -492,7 +492,7 @@ func TestSweepOnce_StaleTokenRevokeFiresWhenNoContainer(t *testing.T) {
 	// excludes 'external' (2026-05-03 fix — the sweep was incorrectly
 	// targeting external workspaces which have no container by design),
 	// and the staleness predicate appears in the SELECT.
-	mock.ExpectQuery(`(?s)^\s*SELECT DISTINCT t\.workspace_id::text\s+FROM workspace_auth_tokens.*status NOT IN \('removed', 'provisioning'\).*runtime != 'external'.*COALESCE\(t\.last_used_at, t\.created_at\) < now\(\) - make_interval`).
+	mock.ExpectQuery(`(?s)^\s*SELECT DISTINCT t\.workspace_id::text\s+FROM workspace_auth_tokens.*status NOT IN \('removed', 'provisioning'\).*runtime NOT IN \('external', 'mock'\).*COALESCE\(t\.last_used_at, t\.created_at\) < now\(\) - make_interval`).
 		WillReturnRows(sqlmock.NewRows([]string{"workspace_id"}).
 			AddRow(orphanedID))
 
@@ -548,7 +548,7 @@ func TestSweepOnce_StaleTokenRevokeFailureBailsLoop(t *testing.T) {
 
 	// Third-pass returns two stale-token workspaces; the first revoke
 	// errors. Loop must bail without attempting the second.
-	mock.ExpectQuery(`(?s)^\s*SELECT DISTINCT t\.workspace_id::text\s+FROM workspace_auth_tokens.*status NOT IN \('removed', 'provisioning'\).*runtime != 'external'`).
+	mock.ExpectQuery(`(?s)^\s*SELECT DISTINCT t\.workspace_id::text\s+FROM workspace_auth_tokens.*status NOT IN \('removed', 'provisioning'\).*runtime NOT IN \('external', 'mock'\)`).
 		WillReturnRows(sqlmock.NewRows([]string{"workspace_id"}).
 			AddRow("aaaa1111-0000-0000-0000-000000000000").
 			AddRow("bbbb2222-0000-0000-0000-000000000000"))

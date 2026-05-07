@@ -413,6 +413,23 @@ func (h *WorkspaceHandler) proxyA2ARequest(ctx context.Context, workspaceID stri
 		return http.StatusOK, respBody, nil
 	}
 
+	// Mock-runtime short-circuit. Workspaces with runtime='mock' have
+	// no container, no EC2, no URL — every reply is synthesised here
+	// from a small canned-variant pool. Built for the "200-workspace
+	// mock org" demo: a CEO/VPs/Managers/ICs hierarchy that renders
+	// at scale on the canvas without burning real LLM credits or
+	// provisioning 200 EC2 instances. See mock_runtime.go for the
+	// full rationale + reply shape contract.
+	//
+	// Position: AFTER poll-mode (mock isn't a delivery mode, it's a
+	// runtime; treating poll-set-on-mock as poll matches operator
+	// intent if anyone ever does that), BEFORE resolveAgentURL (mock
+	// has no URL — going through resolveAgentURL would 404 on the
+	// SELECT url since the row is provisioned as NULL).
+	if status, respBody, handled := h.handleMockA2A(ctx, workspaceID, callerID, body, a2aMethod, logActivity); handled {
+		return status, respBody, nil
+	}
+
 	agentURL, proxyErr := h.resolveAgentURL(ctx, workspaceID)
 	if proxyErr != nil {
 		return 0, nil, proxyErr

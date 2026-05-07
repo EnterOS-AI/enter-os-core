@@ -250,6 +250,21 @@ func (h *OrgHandler) createWorkspaceTree(ws OrgWorkspace, parentID *string, absX
 		h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceOnline), id, map[string]interface{}{
 			"name": ws.Name, "external": true,
 		})
+	} else if IsMockRuntime(runtime) {
+		// Mock-runtime workspaces have no container, no EC2, no URL —
+		// the proxyA2ARequest short-circuit synthesises every reply
+		// from a canned variant pool (see mock_runtime.go). Status
+		// goes straight to 'online' so the canvas renders the node
+		// as reachable + the chat tab's send button is enabled. No
+		// URL is set; the proxy never tries to resolve one for mock
+		// runtimes. Built for the funding-demo "200-workspace mock
+		// org" template — visual scale without real backend cost.
+		if _, err := db.DB.ExecContext(ctx, `UPDATE workspaces SET status = $1 WHERE id = $2`, models.StatusOnline, id); err != nil {
+			log.Printf("Org import: mock workspace status update failed for %s: %v", ws.Name, err)
+		}
+		h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceOnline), id, map[string]interface{}{
+			"name": ws.Name, "mock": true, "runtime": runtime,
+		})
 	} else if h.workspace.HasProvisioner() {
 		// Provision container — either backend (CP for SaaS, local Docker
 		// for self-hosted) is fine. Pre-2026-05-05 this gate was
@@ -675,7 +690,23 @@ func (h *OrgHandler) recurseChildrenForImport(ws OrgWorkspace, parentID string, 
 		if err := h.createWorkspaceTree(child, &parentID, childAbsX, childAbsY, slotX, slotY, defaults, orgBaseDir, results, provisionSem); err != nil {
 			return err
 		}
-		time.Sleep(workspaceCreatePacingMs * time.Millisecond)
+		// Pacing exists to throttle Docker container-spawn thundering
+		// during a self-hosted import. Mock-runtime children spawn no
+		// container — no Docker pressure, no LLM bursts, just DB
+		// inserts + a broadcast. Skipping the 2s sleep collapses a
+		// 200-workspace mock-org import from ~7min → ~5s, which is
+		// the difference between a snappy demo and a "did it freeze?"
+		// staring contest. Real (containerful) runtimes still pace.
+		// Inheritance: if the child itself doesn't declare a runtime,
+		// fall back to defaults.runtime — the org template sets
+		// runtime: mock once at the org level, not on every IC node.
+		childRuntime := child.Runtime
+		if childRuntime == "" {
+			childRuntime = defaults.Runtime
+		}
+		if !IsMockRuntime(childRuntime) {
+			time.Sleep(workspaceCreatePacingMs * time.Millisecond)
+		}
 	}
 	return nil
 }

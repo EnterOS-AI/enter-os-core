@@ -78,6 +78,10 @@ var fallbackRuntimes = map[string]struct{}{
 	"openclaw":    {},
 	"codex":       {},
 	"external":    {},
+	// mock — virtual workspace with hardcoded canned A2A replies.
+	// No container, no EC2, no template repo. See mock_runtime.go
+	// for the full rationale (200-workspace funding-demo org).
+	"mock": {},
 }
 
 // loadRuntimesFromManifest builds the runtime allowlist from
@@ -104,6 +108,10 @@ func loadRuntimesFromManifest(path string) (map[string]struct{}, error) {
 		// the manifest doesn't know about it. Injected here so we
 		// don't need a special-case in every caller.
 		"external": {},
+		// mock is ALWAYS available for the same reason as external:
+		// virtual workspace, no template repo, never spawns a
+		// container. See mock_runtime.go.
+		"mock": {},
 	}
 	for _, e := range m.WorkspaceTemplates {
 		name := strings.TrimSpace(e.Name)
