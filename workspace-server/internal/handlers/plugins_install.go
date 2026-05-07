@@ -32,6 +32,18 @@ import (
 // inside the workspace at startup.
 func (h *PluginsHandler) Install(c *gin.Context) {
 	workspaceID := c.Param("id")
+	// External-runtime guard (molecule-core#10): push-install via docker
+	// exec is meaningless for `runtime='external'` workspaces — they have
+	// no local container. Reject early with a hint pointing at the
+	// pull-mode endpoint, instead of falling through to a misleading
+	// "container not running" 503 from findRunningContainer.
+	if h.isExternalRuntime(workspaceID) {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"error": "plugin install via push is not supported for external runtimes",
+			"hint":  "external workspaces pull plugins via GET /workspaces/:id/plugins/:name/download",
+		})
+		return
+	}
 	// Cap the JSON body so a pathological POST can't exhaust parser memory.
 	bodyMax := envx.Int64("PLUGIN_INSTALL_BODY_MAX_BYTES", defaultInstallBodyMaxBytes)
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, bodyMax)
@@ -92,6 +104,16 @@ func (h *PluginsHandler) Uninstall(c *gin.Context) {
 	workspaceID := c.Param("id")
 	pluginName := c.Param("name")
 	ctx := c.Request.Context()
+
+	// Mirror Install's external-runtime guard (molecule-core#10) so the
+	// two endpoints reject the same shape with the same message.
+	if h.isExternalRuntime(workspaceID) {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"error": "plugin uninstall via docker exec is not supported for external runtimes",
+			"hint":  "external workspaces manage their own plugin directory; remove it locally",
+		})
+		return
+	}
 
 	if err := validatePluginName(pluginName); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid plugin name"})
