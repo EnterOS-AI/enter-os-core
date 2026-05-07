@@ -1,18 +1,16 @@
 'use client';
 
-import { useEffect, useMemo, useCallback } from "react";
+import { useEffect, useMemo, useCallback, useRef } from "react";
 import { type Edge, MarkerType } from "@xyflow/react";
 import { api } from "@/lib/api";
 import { useCanvasStore } from "@/store/canvas";
+import { useSocketEvent } from "@/hooks/useSocketEvent";
 import type { ActivityEntry } from "@/types/activity";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 /** 60-minute look-back window for delegation activity */
 export const A2A_WINDOW_MS = 60 * 60 * 1000;
-
-/** Polling interval — refresh edges every 60 seconds */
-export const A2A_POLL_MS = 60 * 1_000;
 
 /** Threshold for "hot" edges: < 5 minutes → animated + violet stroke */
 export const A2A_HOT_MS = 5 * 60 * 1_000;
@@ -131,6 +129,20 @@ export function buildA2AEdges(
  * `a2aEdges`. Canvas.tsx merges these with topology edges and passes the
  * combined list to ReactFlow.
  *
+ * Update shape (issue #61 Stage 2, replaces the 60s polling loop):
+ *  - On mount (when showA2AEdges): one HTTP fan-out per visible workspace
+ *    (delegation rows, 60-min window). Bootstraps the local row buffer.
+ *  - Steady state: subscribes to ACTIVITY_LOGGED via useSocketEvent.
+ *    Each delegation event from a visible workspace is appended to the
+ *    buffer; edges are re-derived via the existing buildA2AEdges helper.
+ *  - showA2AEdges toggle off: clears edges + buffer.
+ *  - Visible-ID-set change: re-bootstraps so a freshly-shown workspace
+ *    backfills its 60-min history (existing visibleIdsKey selector
+ *    behaviour preserved — that's the 2026-05-04 render-loop fix).
+ *
+ * No interval poll. The singleton ReconnectingSocket already owns
+ * reconnect / backoff / health-check; useSocketEvent inherits those.
+ *
  * Mount this inside CanvasInner (no ReactFlow hook dependency).
  */
 export function A2ATopologyOverlay() {
@@ -157,7 +169,9 @@ export function A2ATopologyOverlay() {
   // the symptom of this re-render storm.
   //
   // The fix is purely the dependency-stability change here; the fetch
-  // logic is unchanged.
+  // logic is unchanged. Post-#61 the polling-driven fetch is gone, but
+  // the visibleIdsKey gate is still required so a peer-discovery write
+  // doesn't trigger a wasteful re-bootstrap.
   const visibleIdsKey = useCanvasStore((s) =>
     s.nodes
       .filter((n) => !n.hidden)
@@ -171,16 +185,42 @@ export function A2ATopologyOverlay() {
     [visibleIdsKey]
   );
 
-  // Fetch delegation activity for all visible workspaces and rebuild overlay edges.
-  const fetchAndUpdate = useCallback(async () => {
+  // Local rolling buffer of delegation rows. Pruned by A2A_WINDOW_MS on
+  // each rebuild so a long-lived session doesn't accumulate unbounded
+  // history. The buffer's high-water mark is approximately:
+  //    visibleIds.length × bootstrap-fetch-limit (500) + WS arrivals
+  // Real-world ceiling: ~3000 entries at the 60-min boundary, all of
+  // which buildA2AEdges aggregates into at most N² edges.
+  const bufferRef = useRef<ActivityEntry[]>([]);
+  // visibleIdsRef gives the WS handler the latest visible-ID set without
+  // re-subscribing on every render. The bus listener is registered
+  // exactly once per mount; subscriber-side filtering reads from this ref.
+  const visibleIdsRef = useRef(visibleIds);
+  visibleIdsRef.current = visibleIds;
+
+  // Re-derive overlay edges from the current buffer + push to store.
+  // Prunes by A2A_WINDOW_MS first so memory stays bounded across long
+  // sessions and the aggregation cost stays O(window-size).
+  const recomputeAndPush = useCallback(() => {
+    const cutoff = Date.now() - A2A_WINDOW_MS;
+    bufferRef.current = bufferRef.current.filter(
+      (r) => new Date(r.created_at).getTime() > cutoff
+    );
+    setA2AEdges(buildA2AEdges(bufferRef.current));
+  }, [setA2AEdges]);
+
+  // Bootstrap fan-out — one HTTP per visible workspace. Replaces the
+  // 60s polling loop entirely. Race-aware: any WS arrivals that landed
+  // in the buffer DURING the fetch (between the await and resume) are
+  // preserved by id-dedup-with-fetched-first ordering.
+  const bootstrap = useCallback(async () => {
     if (visibleIds.length === 0) {
+      bufferRef.current = [];
       setA2AEdges([]);
       return;
     }
     try {
-      // Fan-out — one request per visible workspace.
-      // Per-request failures are swallowed so one broken workspace doesn't blank the overlay.
-      const allRows = (
+      const fetchedRows = (
         await Promise.all(
           visibleIds.map((id) =>
             api
@@ -192,24 +232,76 @@ export function A2ATopologyOverlay() {
         )
       ).flat();
 
-      setA2AEdges(buildA2AEdges(allRows));
+      // Merge: fetched rows first, then any in-flight WS arrivals that
+      // accumulated during the await. Dedup by id so rows that appear
+      // in both paths are not double-counted in the aggregation.
+      const merged = [...fetchedRows, ...bufferRef.current];
+      const seen = new Set<string>();
+      bufferRef.current = merged.filter((r) => {
+        if (seen.has(r.id)) return false;
+        seen.add(r.id);
+        return true;
+      });
+      recomputeAndPush();
     } catch {
       // Overlay failure is non-critical — canvas remains functional
     }
-  }, [visibleIds, setA2AEdges]);
+  }, [visibleIds, setA2AEdges, recomputeAndPush]);
 
   useEffect(() => {
     if (!showA2AEdges) {
-      // Clear edges immediately when toggled off
+      // Clear edges + buffer immediately when toggled off
+      bufferRef.current = [];
       setA2AEdges([]);
       return;
     }
+    void bootstrap();
+  }, [showA2AEdges, bootstrap, setA2AEdges]);
 
-    // Initial fetch, then poll every 60 s
-    void fetchAndUpdate();
-    const timer = setInterval(() => void fetchAndUpdate(), A2A_POLL_MS);
-    return () => clearInterval(timer);
-  }, [showA2AEdges, fetchAndUpdate, setA2AEdges]);
+  // Live-update path. Filters server-side ACTIVITY_LOGGED events down
+  // to delegation initiations from visible workspaces and appends each
+  // into the rolling buffer, re-deriving edges via buildA2AEdges.
+  //
+  // Only `method === "delegate"` rows count — the same filter
+  // buildA2AEdges applies — so delegate_result rows arriving over the
+  // wire don't double-count.
+  useSocketEvent((msg) => {
+    if (!showA2AEdges) return;
+    if (msg.event !== "ACTIVITY_LOGGED") return;
+
+    const p = (msg.payload || {}) as Record<string, unknown>;
+    if (p.activity_type !== "delegation") return;
+    if (p.method !== "delegate") return;
+
+    const wsId = msg.workspace_id;
+    if (!visibleIdsRef.current.includes(wsId)) return;
+
+    // Synthesise an ActivityEntry from the WS payload so buildA2AEdges
+    // (which the bootstrap path also feeds) handles it identically.
+    const entry: ActivityEntry = {
+      id:
+        (p.id as string) ||
+        `ws-push-${msg.timestamp || Date.now()}-${wsId}`,
+      workspace_id: wsId,
+      activity_type: "delegation",
+      source_id: (p.source_id as string | null) ?? null,
+      target_id: (p.target_id as string | null) ?? null,
+      method: "delegate",
+      summary: (p.summary as string | null) ?? null,
+      request_body: null,
+      response_body: null,
+      duration_ms: (p.duration_ms as number | null) ?? null,
+      status: (p.status as string) || "ok",
+      error_detail: null,
+      created_at:
+        (p.created_at as string) ||
+        msg.timestamp ||
+        new Date().toISOString(),
+    };
+
+    bufferRef.current = [...bufferRef.current, entry];
+    recomputeAndPush();
+  });
 
   // Pure side-effect — renders nothing
   return null;

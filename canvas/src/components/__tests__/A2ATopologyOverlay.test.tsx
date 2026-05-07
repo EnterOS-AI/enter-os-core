@@ -42,6 +42,10 @@ vi.mock("@/store/canvas", () => ({
 
 import { api } from "@/lib/api";
 import {
+  emitSocketEvent,
+  _resetSocketEventListenersForTests,
+} from "@/store/socket-events";
+import {
   buildA2AEdges,
   formatA2ARelativeTime,
   A2ATopologyOverlay,
@@ -340,6 +344,151 @@ describe("A2ATopologyOverlay component", () => {
 
     // No additional fetches should have fired.
     expect(mockGet.mock.calls.length).toBe(callsAfterMount);
+  });
+
+  // ── #61 Stage 2: ACTIVITY_LOGGED subscription tests ────────────────────────
+  //
+  // Pin the post-#61 behaviour: WS push for delegation contributes to
+  // the overlay's edge buffer with NO additional HTTP fetch. Same shape
+  // as Stage 1 (CommunicationOverlay).
+
+  describe("#61 stage 2 — ACTIVITY_LOGGED subscription", () => {
+    beforeEach(() => {
+      _resetSocketEventListenersForTests();
+    });
+    afterEach(() => {
+      _resetSocketEventListenersForTests();
+    });
+
+    function emitDelegation(overrides: {
+      workspaceId?: string;
+      sourceId?: string;
+      targetId?: string;
+      method?: string;
+      activityType?: string;
+    } = {}) {
+      // Use Date.now() (real time, fake-timer-frozen) rather than the
+      // hardcoded NOW constant — buildA2AEdges prunes by Date.now() -
+      // A2A_WINDOW_MS, so a row dated against the wrong epoch silently
+      // falls outside the window and the test fails for a confusing
+      // reason ("edges array empty" vs "filter dropped my row").
+      const realNow = Date.now();
+      emitSocketEvent({
+        event: "ACTIVITY_LOGGED",
+        workspace_id: overrides.workspaceId ?? "ws-a",
+        timestamp: new Date(realNow).toISOString(),
+        payload: {
+          id: `act-${Math.random().toString(36).slice(2)}`,
+          activity_type: overrides.activityType ?? "delegation",
+          method: overrides.method ?? "delegate",
+          source_id: overrides.sourceId ?? "ws-a",
+          target_id: overrides.targetId ?? "ws-b",
+          status: "ok",
+          created_at: new Date(realNow - 30_000).toISOString(),
+        },
+      });
+    }
+
+    it("does NOT poll on a 60s interval after bootstrap (post-#61)", async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockGet.mockResolvedValue([] as any);
+      render(<A2ATopologyOverlay />);
+      await act(async () => { await Promise.resolve(); });
+      const callsAfterBootstrap = mockGet.mock.calls.length;
+      expect(callsAfterBootstrap).toBe(2); // ws-a + ws-b
+
+      // Pre-#61: a 60s clock tick would fire a fresh fan-out (2 more
+      // calls). Post-#61: no interval, no extra calls.
+      await act(async () => {
+        vi.advanceTimersByTime(120_000);
+      });
+      expect(mockGet.mock.calls.length).toBe(callsAfterBootstrap);
+    });
+
+    it("WS push for a delegation event from a visible workspace updates edges with NO HTTP call", async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockGet.mockResolvedValue([] as any);
+      render(<A2ATopologyOverlay />);
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+      mockGet.mockClear();
+      mockStoreState.setA2AEdges.mockClear();
+
+      await act(async () => {
+        emitDelegation({ sourceId: "ws-a", targetId: "ws-b" });
+      });
+
+      // Edges-set called with at least one a2a edge for the new push.
+      const calls = mockStoreState.setA2AEdges.mock.calls;
+      expect(calls.length).toBeGreaterThanOrEqual(1);
+      const lastCall = calls[calls.length - 1][0] as Array<{ id: string }>;
+      expect(lastCall.some((e) => e.id === "a2a-ws-a-ws-b")).toBe(true);
+
+      // Critical: no HTTP fetch fired during the WS path.
+      expect(mockGet).not.toHaveBeenCalled();
+    });
+
+    it("WS push for a non-delegation activity_type is ignored", async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockGet.mockResolvedValue([] as any);
+      render(<A2ATopologyOverlay />);
+      await act(async () => { await Promise.resolve(); });
+      mockStoreState.setA2AEdges.mockClear();
+
+      await act(async () => {
+        emitDelegation({ activityType: "a2a_send" });
+      });
+
+      // setA2AEdges must not be called by the WS handler — the only
+      // setA2AEdges calls in this test came from the initial bootstrap.
+      expect(mockStoreState.setA2AEdges).not.toHaveBeenCalled();
+    });
+
+    it("WS push for a delegate_result row is ignored (mirrors buildA2AEdges filter)", async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockGet.mockResolvedValue([] as any);
+      render(<A2ATopologyOverlay />);
+      await act(async () => { await Promise.resolve(); });
+      mockStoreState.setA2AEdges.mockClear();
+
+      await act(async () => {
+        emitDelegation({ method: "delegate_result" });
+      });
+
+      // delegate_result rows do not contribute to the edge count — they
+      // are completion signals, not initiations.
+      expect(mockStoreState.setA2AEdges).not.toHaveBeenCalled();
+    });
+
+    it("WS push from a hidden workspace is ignored", async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockGet.mockResolvedValue([] as any);
+      render(<A2ATopologyOverlay />);
+      await act(async () => { await Promise.resolve(); });
+      mockStoreState.setA2AEdges.mockClear();
+
+      await act(async () => {
+        emitDelegation({ workspaceId: "ws-hidden" });
+      });
+
+      expect(mockStoreState.setA2AEdges).not.toHaveBeenCalled();
+    });
+
+    it("WS push while showA2AEdges is false is ignored", async () => {
+      mockStoreState.showA2AEdges = false;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockGet.mockResolvedValue([] as any);
+      render(<A2ATopologyOverlay />);
+      // The mount path with showA2AEdges=false calls setA2AEdges([])
+      // once — clear that to isolate the WS path.
+      mockStoreState.setA2AEdges.mockClear();
+
+      await act(async () => {
+        emitDelegation();
+      });
+
+      expect(mockStoreState.setA2AEdges).not.toHaveBeenCalled();
+      expect(mockGet).not.toHaveBeenCalled();
+    });
   });
 
   it("re-fetches when the visible ID set actually changes", async () => {
