@@ -2,61 +2,148 @@ name: Auto-promote staging → main
 
 # Fires after any of the staging-branch quality gates complete. When ALL
 # required gates are green on the same staging SHA, opens (or re-uses)
-# a PR `staging → main` and enables auto-merge so the merge queue lands
-# it. Closes the gap that historically let features sit on staging for
-# weeks waiting for a bulk promotion PR (see molecule-core#1496 for the
-# 1172-commit example).
+# a PR `staging → main` and schedules Gitea auto-merge so the PR lands
+# automatically once approval + status checks are satisfied.
 #
-# 2026-04-28 rewrite (PR #142): the previous version did a direct
-# `git merge --ff-only origin staging && git push origin main`. That
-# breaks against main's branch-protection ruleset, which requires
-# status checks "set by the expected GitHub apps" — direct pushes
-# can't satisfy that condition (only PR merges through the queue can).
-# The workflow was failing every tick with:
-#   remote: error: GH006: Protected branch update failed for refs/heads/main.
-#   remote: - Required status checks ... were not set by the expected GitHub apps.
-# Fix: mirror the PR-based pattern from auto-sync-main-to-staging.yml
-# (the reverse-direction sync, fixed in #2234 for the same reason).
-# Both directions now use the same merge-queue path that humans use,
-# no special-case bypass.
+# ============================================================
+# What this workflow does
+# ============================================================
 #
-# Safety model:
-# - Runs ONLY on workflow_run events for the staging branch.
-# - Requires EVERY named gate workflow to have the same head_sha and
-#   all be `conclusion == success`. If any of them is red, skipped,
-#   cancelled, or pending, we abort (stay on the current main).
-# - The PR base=main head=staging path lets GitHub itself enforce
-#   branch protection. If main has diverged from staging or required
-#   checks aren't satisfied, the merge queue declines the PR — no
-#   need for a manual ff-only ancestry check here.
-# - Loop safety: the auto-sync-main-to-staging workflow fires when
-#   main lands the auto-promote PR, but its merge into staging is by
-#   GITHUB_TOKEN which doesn't trigger downstream workflow_run events
-#   (GitHub Actions safety). So this workflow doesn't re-fire from
-#   its own promote landing.
+# 1. On a workflow_run completion event for one of the staging gate
+#    workflows (CI, E2E Staging Canvas, E2E API Smoke, CodeQL),
+#    checks if the combined status on the staging head SHA is green.
+# 2. If green, opens (or re-uses) a PR `head: staging → base: main`
+#    via Gitea REST `POST /api/v1/repos/.../pulls`.
+# 3. Schedules auto-merge via `POST /api/v1/repos/.../pulls/{index}/merge`
+#    with `merge_when_checks_succeed: true`. Gitea waits for the
+#    approval requirement on `main` (`required_approvals: 1`) and
+#    the status-check gates, then merges.
+# 4. The merge commit lands on `main` and fires
+#    `publish-workspace-server-image.yml` naturally via its
+#    `on: push: branches: [main]` trigger — no explicit dispatch
+#    needed (see "Why no workflow_dispatch tail" below).
 #
-# Toggle via repo variable AUTO_PROMOTE_ENABLED (true/unset). When
-# unset, the workflow logs what it would have done but doesn't open
-# the PR — useful for dry-running the gate logic without surfacing
-# a noisy PR while staging CI is still flaky.
+# `auto-sync-main-to-staging.yml` is the reverse-direction
+# counterpart (main → staging, fast-forward push). Together they
+# keep the staging-superset-of-main invariant tight.
 #
-# **One-time repo setting (load-bearing):** this workflow opens the
-# staging→main PR via `gh pr create` using the default GITHUB_TOKEN.
-# Since GitHub's 2022 default change, that token cannot create or
-# approve PRs unless the repo opts in. The toggle is at:
+# ============================================================
+# Why Gitea REST (and not `gh pr create`)
+# ============================================================
 #
-#   Settings → Actions → General → Workflow permissions
-#   → ✅ Allow GitHub Actions to create and approve pull requests
+# Pre-2026-05-06 this workflow used `gh pr create`, `gh pr merge --auto`,
+# `gh run list`, and `gh workflow run` against GitHub. After the
+# GitHub→Gitea cutover those calls fail because:
 #
-# Without it, every workflow_run fails with:
+#   - `gh pr create / merge / view / list` route to GitHub GraphQL
+#     (`/api/graphql`). Gitea does not expose a GraphQL endpoint;
+#     every call returns `HTTP 405 Method Not Allowed` — same root
+#     cause as #65 (auto-sync) which PR #66 fixed by dropping `gh`
+#     entirely.
+#   - `gh run list --workflow=...` GitHub-shape; Gitea has the
+#     simpler `GET /repos/.../commits/{ref}/status` combined-status
+#     endpoint instead.
+#   - `gh workflow run X.yml` calls `POST /repos/.../actions/workflows/{id}/dispatches`,
+#     which does NOT exist on Gitea 1.22.6 (verified via swagger.v1.json).
 #
-#   pull request create failed: GraphQL: GitHub Actions is not
-#   permitted to create or approve pull requests (createPullRequest)
+# So this workflow uses direct `curl` calls to Gitea REST. No `gh`
+# CLI dependency, no GraphQL, no missing-endpoint footgun.
 #
-# Observed 2026-04-29 01:43 UTC blocking promotion of fcd87b9 (PRs
-# #2248 + #2249); manually bridged via PR #2252. Re-check this
-# setting if auto-promote starts failing with createPullRequest
-# errors after a repo or org admin change.
+# ============================================================
+# Why no workflow_dispatch tail (was load-bearing on GitHub, dead on Gitea)
+# ============================================================
+#
+# The GitHub-era version had a 60-line polling step that waited for
+# the promote PR to merge, then explicitly dispatched
+# `publish-workspace-server-image.yml` on `--ref main`. That step
+# existed because GitHub's GITHUB_TOKEN-initiated merges suppress
+# downstream `on: push` workflows (the documented "no recursion" rule
+# — https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow).
+# The explicit dispatch was the workaround.
+#
+# Gitea Actions does NOT have this no-recursion rule. PR #66's auto-
+# sync merge to main fired `auto-promote-staging` on the next push
+# trigger naturally. So the cascade fires on the natural push event;
+# the explicit dispatch is dead code. (And even if we wanted to
+# preserve it, Gitea has no `workflow_dispatch` REST endpoint.)
+#
+# Removed in this rewrite. If we ever observe the cascade misfire,
+# operator can push an empty commit to `main` to wake it.
+#
+# ============================================================
+# Why open a PR (and not direct push)
+# ============================================================
+#
+# `main` branch protection has `enable_push: false` with NO
+# `push_whitelist_usernames`. Direct push is impossible for any
+# persona, including admins. PR-mediated merge is the only path,
+# which is intentional: prod state mutations (and staging→main IS a
+# prod mutation, since the next deploy fans out to tenants) require
+# Hongming's approval per `feedback_prod_apply_needs_hongming_chat_go`.
+#
+# The auto-merge schedule preserves this gate: `merge_when_checks_succeed`
+# does NOT bypass `required_approvals: 1`. Gitea waits for BOTH
+# approval AND green checks before merging. Hongming reviews via the
+# canvas/chat-handle of the PR notification, approves, and Gitea
+# auto-merges within seconds.
+#
+# ============================================================
+# Identity + token (anti-bot-ring per saved-memory
+# `feedback_per_agent_gitea_identity_default`)
+# ============================================================
+#
+# This workflow uses `secrets.AUTO_SYNC_TOKEN` — a personal access
+# token issued to the `devops-engineer` Gitea persona. NOT the
+# founder PAT. The bot-ring fingerprint that triggered the GitHub
+# org suspension on 2026-05-06 was characterised by founder PAT
+# acting as CI at machine speed.
+#
+# Token scope: `push: true` (read+write) on this repo. The persona
+# can: open PRs, comment on PRs, schedule auto-merge. The persona
+# CANNOT bypass main's branch protection (`required_approvals: 1`
+# still applies — only Hongming's review unblocks merge).
+#
+# Authorship: the PR is opened by `devops-engineer`; the merge
+# commit credits Hongming-as-approver and `devops-engineer` as
+# the merger.
+#
+# ============================================================
+# Failure modes & operational notes
+# ============================================================
+#
+# A — staging gates not all green at trigger time:
+#     - The combined-status check returns `state: pending|failure`.
+#       Workflow exits 0 with a step-summary "not all green; staying
+#       on current main". Re-fires on the next gate completion.
+#
+# B — Gitea PR-create returns non-201 (e.g. 422 already-exists):
+#     - Idempotent: the workflow first GETs the existing open
+#       staging→main PR. If found, reuse it; if not, POST a new one.
+#       422 should never surface; if it does (race), step summary
+#       captures the body and the next workflow_run picks up.
+#
+# C — `merge_when_checks_succeed` schedule fails:
+#     - 422 with "Pull request is not mergeable" if there are
+#       conflicts or stale base. Step summary surfaces it; operator
+#       (or `auto-sync-main-to-staging`) needs to bring staging up
+#       to date with main first. Workflow exits 1 to surface red.
+#
+# D — `AUTO_SYNC_TOKEN` rotated / wrong scope:
+#     - 401/403 on first REST call. Step summary surfaces it.
+#       Re-issue the token from `~/.molecule-ai/personas/` on the
+#       operator host and update the repo Actions secret.
+#
+# ============================================================
+# Loop safety
+# ============================================================
+#
+# When the promote PR merges to main, `auto-sync-main-to-staging.yml`
+# fires (on:push:main) and pushes the merge commit back to staging.
+# That push to staging is by `devops-engineer`, NOT this workflow's
+# token, and triggers the staging gate workflows. When they all
+# complete, we end up back here — but the tree-diff guard catches
+# it: staging tree == main tree (the merge commit changes nothing),
+# so we skip and the cycle terminates.
 
 on:
   workflow_run:
@@ -74,26 +161,16 @@ on:
         default: "false"
 
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
-  # actions: write is needed by the post-merge dispatch tail step
-  # (#2358 / #2357) — `gh workflow run publish-workspace-server-image.yml`
-  # POSTs to /actions/workflows/.../dispatches which requires this scope.
-  # Without it the call 403s and the publish/canary/redeploy chain still
-  # doesn't run on staging→main promotions, undoing #2358.
-  actions: write
 
 # Serialize auto-promote runs. Multiple staging gate completions can land
 # in quick succession (CI + E2E + CodeQL all finish within seconds of
 # each other on a green PR) — without this, two parallel runs both:
-#   1. Open / re-use the same promote PR.
-#   2. Both call `gh pr merge --auto` (idempotent — fine).
-#   3. Both poll for the same mergedAt and both `gh workflow run` publish
-#      → 2× redundant publish builds racing for the same `:staging-latest`
-#      retag, and 2× canary-verify chains.
-# cancel-in-progress: false because we don't want a brand-new run to kill
-# a polling-tail that's about to dispatch — the polling tail's 30 min cap
-# is the right backstop, not workflow-level cancel.
+#   1. Would race the GET-or-POST PR step.
+#   2. Would both call merge-schedule (idempotent — fine on Gitea).
+# cancel-in-progress: false because the second run on a fresh staging
+# tip should NOT kill the first which has already opened the PR.
 concurrency:
   group: auto-promote-staging
   cancel-in-progress: false
@@ -111,126 +188,112 @@ jobs:
       all_green: ${{ steps.gates.outputs.all_green }}
       head_sha: ${{ steps.gates.outputs.head_sha }}
     steps:
-      # Skip empty-tree promotes (the perpetual auto-promote↔auto-sync cycle
-      # observed 2026-05-03). Sequence: auto-promote merges via the staging
-      # merge-queue's MERGE strategy, creating a merge commit on main that
-      # staging doesn't have. auto-sync then merges main back into staging
-      # via another merge commit (the queue's MERGE strategy applies on
-      # the staging side too, even when the workflow's local FF would
-      # have sufficed). Now staging has a new merge-commit SHA whose
-      # tree == main's tree — but auto-promote sees "staging ahead of
-      # main by 1" and opens YET another empty promote PR. Each round
-      # costs ~30-40 min wallclock, ~2 manual approvals, and burns a
-      # full CodeQL Go run (~15 min). Without this guard the cycle
-      # repeats indefinitely.
-      #
-      # Long-term fix is to switch the merge_queue ruleset's
-      # `merge_method` away from MERGE so FF-able PRs land cleanly,
-      # but that's a broader change affecting every staging PR's
-      # commit shape. This guard is the one-line surgical fix that
-      # breaks the cycle without touching merge-queue config.
-      #
-      # Fail-open: if `git diff` errors for any reason, fall through
-      # to the gate check (preserve existing behavior). Only skip
-      # when the diff is DEFINITIVELY empty.
+      # Skip empty-tree promotes (the perpetual auto-promote↔auto-sync
+      # cycle observed pre-cutover on GitHub). On Gitea the cycle shape
+      # is different (auto-sync uses fast-forward, no merge commit),
+      # but the tree-diff guard is cheap insurance and protects against
+      # any future merge-style regression.
       - name: Checkout for tree-diff check
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           ref: staging
-      - name: Skip if staging tree == main tree (perpetual-cycle break)
+
+      - name: Skip if staging tree == main tree (cycle-break safety)
         id: tree-diff
         env:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           set -eu
           git fetch origin main --depth=50 || { echo "::warning::git fetch main failed — proceeding (fail-open)"; exit 0; }
-          # Compare staging tip's tree against main's tree. `git diff
-          # --quiet` exits 0 if no differences, 1 if there are.
           if git diff --quiet origin/main "$HEAD_SHA" -- 2>/dev/null; then
             {
-              echo "## ⏭ Skipped — no code to promote"
+              echo "## Skipped — no code to promote"
               echo
               echo "staging tip (\`${HEAD_SHA:0:8}\`) and \`main\` have identical trees."
-              echo "This is the auto-promote↔auto-sync merge-commit cycle: staging has a"
-              echo "new SHA (a sync-back merge commit) but the underlying file tree is"
-              echo "already on main, so there's no real code to ship."
-              echo
-              echo "Skipping to avoid opening an empty promote PR. Cycle terminates here."
+              echo "Skipping to avoid opening an empty promote PR."
             } >> "$GITHUB_STEP_SUMMARY"
             echo "::notice::auto-promote: staging tree == main tree — no code to promote, skipping"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
-      - name: Check all required gates on this SHA
+
+      - name: Check combined status on staging head
         if: steps.tree-diff.outputs.skip != 'true'
         id: gates
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITEA_TOKEN: ${{ secrets.AUTO_SYNC_TOKEN }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           REPO: ${{ github.repository }}
+          GITEA_HOST: ${{ vars.GITEA_HOST || 'https://git.moleculesai.app' }}
         run: |
           set -euo pipefail
 
-          # Required gate workflow files. Use file paths (relative to
-          # .github/workflows/) rather than display names because:
+          # Gitea-native combined-status endpoint aggregates every
+          # check context attached to a SHA. This is structurally
+          # cleaner than the GitHub-era per-workflow `gh run list`
+          # loop because:
           #
-          #   1. `gh run list --workflow=<name>` is ambiguous when two
-          #      workflows have the same `name:` — observed 2026-04-28
-          #      with "CodeQL" matching both `codeql.yml` (explicit) and
-          #      GitHub's UI-configured Code-quality default setup
-          #      (internal "codeql"). gh CLI returns "could not resolve
-          #      to a unique workflow" → empty result → gate evaluated
-          #      as missing/none → auto-promote dead-locked despite all
-          #      checks actually passing.
+          #   1. There's no risk of "workflow name collision" (the
+          #      GitHub-era code had to switch from `--workflow=NAME`
+          #      to `--workflow=FILE.YML` to disambiguate "CodeQL"
+          #      between the explicit workflow and GitHub's UI-
+          #      configured default setup; Gitea has no such
+          #      duplicate-name surface).
+          #   2. Gitea's combined state already encodes the AND
+          #      across all contexts: success only if EVERY context
+          #      is success. Pending or failure on any context
+          #      produces non-success state.
           #
-          #   2. File paths are the unique identifier for workflows;
-          #      `name:` is just a display string and can collide.
-          #
-          # When adding/removing a gate, update this list AND the
-          # branch-protection required-checks list (which uses check-run
-          # display names, not workflow names; the two are decoupled and
-          # should be kept in sync manually).
-          GATES=(
-            "ci.yml"
-            "e2e-staging-canvas.yml"
-            "e2e-api.yml"
-            "codeql.yml"
-          )
+          # See https://docs.gitea.com/api/1.22 for the schema —
+          # `state` is one of: success, pending, failure, error.
 
           echo "head_sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
-          echo "Checking gates on SHA ${HEAD_SHA}"
+          echo "Checking combined status on SHA ${HEAD_SHA}"
 
-          ALL_GREEN=true
-          for gate in "${GATES[@]}"; do
-            # Query the most recent run of this workflow on this SHA.
-            # event=push to avoid picking up PR runs. branch=staging to
-            # guard against someone dispatching the gate on a non-staging
-            # branch at the same SHA.
-            RESULT=$(gh run list \
-              --repo "$REPO" \
-              --workflow "$gate" \
-              --branch staging \
-              --event push \
-              --commit "$HEAD_SHA" \
-              --limit 1 \
-              --json status,conclusion \
-              --jq '.[0] | "\(.status)/\(.conclusion // "none")"' \
-              2>/dev/null || echo "missing/none")
+          # `set +o pipefail` for the http-code capture pattern; restore
+          # immediately. Pattern hardened per `feedback_curl_status_capture_pollution`.
+          BODY_FILE=$(mktemp)
+          set +e
+          STATUS=$(curl -sS \
+            -H "Authorization: token ${GITEA_TOKEN}" \
+            -H "Accept: application/json" \
+            -o "${BODY_FILE}" \
+            -w "%{http_code}" \
+            "${GITEA_HOST}/api/v1/repos/${REPO}/commits/${HEAD_SHA}/status")
+          CURL_RC=$?
+          set -e
 
-            echo "  $gate → $RESULT"
+          if [ "${CURL_RC}" -ne 0 ] || [ "${STATUS}" != "200" ]; then
+            echo "::error::combined-status fetch failed: curl=${CURL_RC} http=${STATUS}"
+            cat "${BODY_FILE}" | head -c 500 || true
+            rm -f "${BODY_FILE}"
+            echo "all_green=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
-            # Only completed/success counts. completed/failure or
-            # in_progress/anything or no record at all = abort.
-            if [ "$RESULT" != "completed/success" ]; then
-              ALL_GREEN=false
-            fi
-          done
+          STATE=$(jq -r '.state // "missing"' < "${BODY_FILE}")
+          TOTAL=$(jq -r '.total_count // 0' < "${BODY_FILE}")
+          rm -f "${BODY_FILE}"
 
-          echo "all_green=${ALL_GREEN}" >> "$GITHUB_OUTPUT"
-          if [ "$ALL_GREEN" != "true" ]; then
-            echo "::notice::auto-promote: not all gates are green on ${HEAD_SHA} — staying on current main"
+          echo "Combined status: state=${STATE} total_count=${TOTAL}"
+
+          if [ "${STATE}" = "success" ] && [ "${TOTAL}" -gt 0 ]; then
+            echo "all_green=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::All gates green on ${HEAD_SHA} (${TOTAL} contexts)"
+          else
+            echo "all_green=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Not promoting — combined status not green"
+              echo
+              echo "- SHA: \`${HEAD_SHA:0:8}\`"
+              echo "- Combined state: \`${STATE}\`"
+              echo "- Context count: ${TOTAL}"
+              echo
+              echo "Will re-fire on the next gate completion. Investigate any red gate via the Actions UI."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::auto-promote: combined status is ${STATE} on ${HEAD_SHA} — staying on current main"
           fi
 
   promote:
@@ -247,188 +310,183 @@ jobs:
           # Repo variable AUTO_PROMOTE_ENABLED=true flips this on. While
           # it's unset, the workflow dry-runs (logs what it would have
           # done) but doesn't open the promote PR. Set the variable in
-          # Settings → Secrets and variables → Actions → Variables.
+          # Settings → Actions → Variables.
           if [ "${AUTO_PROMOTE_ENABLED:-}" != "true" ] && [ "${FORCE_INPUT:-false}" != "true" ]; then
             {
-              echo "## ⏸ Auto-promote disabled"
+              echo "## Auto-promote disabled"
               echo
               echo "Repo variable \`AUTO_PROMOTE_ENABLED\` is not set to \`true\`."
               echo "All gates are green on staging; would have opened a promote PR to \`main\`."
               echo
-              echo "To enable: Settings → Secrets and variables → Actions → Variables → \`AUTO_PROMOTE_ENABLED=true\`."
+              echo "To enable: Settings → Actions → Variables → \`AUTO_PROMOTE_ENABLED=true\`."
               echo "To test once manually: workflow_dispatch with \`force=true\`."
             } >> "$GITHUB_STEP_SUMMARY"
             echo "::notice::auto-promote disabled — dry run only"
             exit 0
           fi
 
-      # Mint the App token BEFORE the promote-PR step so the auto-merge
-      # call can use it. GITHUB_TOKEN-initiated merges suppress the
-      # downstream `push` event on main, breaking the
-      # publish-workspace-server-image → canary-verify → redeploy-tenants
-      # chain (issue #2357). Using the App token here means the
-      # merge-queue-landed merge IS able to fire the cascade naturally;
-      # the polling tail below stays as defense-in-depth.
-      - name: Mint App token for promote-PR + downstream dispatch
-        if: ${{ vars.AUTO_PROMOTE_ENABLED == 'true' || github.event.inputs.force == 'true' }}
-        id: app-token
-        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
-        with:
-          app-id: ${{ secrets.MOLECULE_AI_APP_ID }}
-          private-key: ${{ secrets.MOLECULE_AI_APP_PRIVATE_KEY }}
-
-      - name: Open (or reuse) staging → main promote PR + enable auto-merge
+      - name: Open or reuse promote PR + schedule auto-merge
         if: ${{ vars.AUTO_PROMOTE_ENABLED == 'true' || github.event.inputs.force == 'true' }}
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITEA_TOKEN: ${{ secrets.AUTO_SYNC_TOKEN }}
           REPO: ${{ github.repository }}
           TARGET_SHA: ${{ needs.check-all-gates-green.outputs.head_sha }}
+          GITEA_HOST: ${{ vars.GITEA_HOST || 'https://git.moleculesai.app' }}
         run: |
           set -euo pipefail
 
-          # Look for an existing open promote PR (idempotent on re-run
-          # of the workflow). The PR's head IS the staging branch — the
-          # whole point is "advance main to staging's tip", so we don't
-          # need a per-SHA branch like auto-sync-main-to-staging uses.
-          PR_NUM=$(gh pr list --repo "$REPO" \
-            --base main --head staging --state open \
-            --json number --jq '.[0].number // ""')
+          API="${GITEA_HOST}/api/v1/repos/${REPO}"
+          AUTH=(-H "Authorization: token ${GITEA_TOKEN}" -H "Accept: application/json")
 
-          if [ -z "$PR_NUM" ]; then
+          # http_status_get RESULT_VAR URL
+          # Sets RESULT_VAR to "<http_code>:<body_file>". Curl status
+          # capture pattern per `feedback_curl_status_capture_pollution`:
+          # http_code goes to its own tempfile-equivalent (-w), body to
+          # another tempfile, set +e/-e bracket protects pipeline state.
+          http_get() {
+            local body_file="$1"; shift
+            local url="$1"; shift
+            set +e
+            local code
+            code=$(curl -sS "${AUTH[@]}" -o "${body_file}" -w "%{http_code}" "${url}")
+            local rc=$?
+            set -e
+            if [ "${rc}" -ne 0 ]; then
+              echo "::error::curl GET failed (rc=${rc}) on ${url}"
+              return 99
+            fi
+            echo "${code}"
+          }
+          http_post_json() {
+            local body_file="$1"; shift
+            local data="$1"; shift
+            local url="$1"; shift
+            set +e
+            local code
+            code=$(curl -sS "${AUTH[@]}" -H "Content-Type: application/json" \
+              -X POST -d "${data}" -o "${body_file}" -w "%{http_code}" "${url}")
+            local rc=$?
+            set -e
+            if [ "${rc}" -ne 0 ]; then
+              echo "::error::curl POST failed (rc=${rc}) on ${url}"
+              return 99
+            fi
+            echo "${code}"
+          }
+
+          # Step 1: look for an existing open staging→main promote PR
+          # (idempotent on workflow re-run). Gitea doesn't have a
+          # head/base filter on the list endpoint that's as ergonomic
+          # as gh's, but the dedicated `/pulls/{base}/{head}` lookup
+          # works.
+          BODY=$(mktemp)
+          STATUS=$(http_get "${BODY}" "${API}/pulls/main/staging") || true
+
+          PR_NUM=""
+          if [ "${STATUS}" = "200" ]; then
+            STATE=$(jq -r '.state // "missing"' < "${BODY}")
+            if [ "${STATE}" = "open" ]; then
+              PR_NUM=$(jq -r '.number // ""' < "${BODY}")
+              echo "::notice::Re-using existing open promote PR #${PR_NUM}"
+            fi
+          fi
+          rm -f "${BODY}"
+
+          # Step 2: if no open PR, create one.
+          if [ -z "${PR_NUM}" ]; then
             TITLE="staging → main: auto-promote ${TARGET_SHA:0:7}"
-            BODY_FILE=$(mktemp)
-            cat > "$BODY_FILE" <<EOFBODY
-          Automated promotion of \`staging\` (\`${TARGET_SHA:0:8}\`) to \`main\`. All required staging gates green at this SHA: CI, E2E Staging Canvas, E2E API Smoke, CodeQL.
+            BODY_TEXT=$(cat <<EOFBODY
+          Automated promotion of \`staging\` (\`${TARGET_SHA:0:8}\`) to \`main\`. All required staging gates are green at this SHA (combined status reported success).
 
-          This PR is auto-generated by \`.github/workflows/auto-promote-staging.yml\` whenever every required gate completes green on the same staging SHA. It exists because main's branch protection requires status checks "set by the expected GitHub apps" — direct \`git push\` from a workflow can't satisfy that, only PR merges through the queue can.
+          This PR is auto-generated by \`.github/workflows/auto-promote-staging.yml\` whenever every required gate completes green on the same staging SHA.
 
-          Merge queue lands this; no human action needed unless gates fail. Reverse-direction sync (the merge commit on main → staging) is handled by \`auto-sync-main-to-staging.yml\`.
+          **Approval gate:** \`main\` branch protection requires 1 approval before this can land. Once approved, Gitea will auto-merge (the workflow scheduled \`merge_when_checks_succeed: true\` immediately after open).
+
+          The reverse-direction sync (the merge commit on \`main\` → \`staging\`) is handled automatically by \`auto-sync-main-to-staging.yml\` after this PR lands.
+
+          ---
+          - Source: staging at \`${TARGET_SHA}\`
+          - Opened by: \`devops-engineer\` persona (anti-bot-ring; never founder PAT)
+          - Refs: #65, #73, #195
           EOFBODY
-            PR_URL=$(gh pr create --repo "$REPO" \
-              --base main --head staging \
-              --title "$TITLE" \
-              --body-file "$BODY_FILE")
-            PR_NUM=$(echo "$PR_URL" | grep -oE '[0-9]+$' | tail -1)
-            rm -f "$BODY_FILE"
-            echo "::notice::Opened PR #${PR_NUM}"
-          else
-            echo "::notice::Re-using existing promote PR #${PR_NUM}"
+          )
+            REQ=$(jq -n \
+              --arg title "${TITLE}" \
+              --arg body "${BODY_TEXT}" \
+              --arg base "main" \
+              --arg head "staging" \
+              '{title:$title, body:$body, base:$base, head:$head}')
+
+            BODY=$(mktemp)
+            STATUS=$(http_post_json "${BODY}" "${REQ}" "${API}/pulls")
+
+            if [ "${STATUS}" = "201" ]; then
+              PR_NUM=$(jq -r '.number // ""' < "${BODY}")
+              echo "::notice::Opened promote PR #${PR_NUM}"
+            else
+              echo "::error::Failed to create promote PR: HTTP ${STATUS}"
+              jq -r '.message // .' < "${BODY}" | head -c 500
+              rm -f "${BODY}"
+              exit 1
+            fi
+            rm -f "${BODY}"
           fi
 
-          # Enable auto-merge — the merge queue picks it up once
-          # required gates are green on the merge_group ref.
-          if ! gh pr merge "$PR_NUM" --repo "$REPO" --auto --merge 2>&1; then
-            echo "::warning::Failed to enable auto-merge on PR #${PR_NUM} — operator may need to merge manually."
-          fi
+          # Step 3: schedule auto-merge. merge_when_checks_succeed
+          # tells Gitea to wait for both:
+          #   - all required status checks to pass
+          #   - the required-approvals gate (1 approval on main)
+          # before merging. On approval+green, Gitea merges within
+          # seconds. On any check failing or approval being denied,
+          # the schedule stays armed but doesn't fire.
+          #
+          # Idempotent: re-arming on an already-armed PR is a no-op.
+          REQ=$(jq -n '{Do:"merge", merge_when_checks_succeed:true}')
+          BODY=$(mktemp)
+          STATUS=$(http_post_json "${BODY}" "${REQ}" "${API}/pulls/${PR_NUM}/merge")
+
+          # Gitea returns:
+          #   - 200/204 on successful immediate merge (gates already green AND approved)
+          #   - 405 "Please try again later" when scheduled successfully but waiting
+          #   - 422 on "Pull request is not mergeable" (conflict, stale base, etc.)
+          #
+          # 405 here is benign — Gitea's way of saying "scheduled, not merging now".
+          # We treat 200/204/405 as success, anything else as failure.
+          case "${STATUS}" in
+            200|204)
+              MERGE_OUTCOME="merged-immediately"
+              echo "::notice::Promote PR #${PR_NUM} merged immediately (gates+approval already green)"
+              ;;
+            405)
+              MERGE_OUTCOME="auto-merge-scheduled"
+              echo "::notice::Promote PR #${PR_NUM}: auto-merge scheduled (Gitea will land on approval+green)"
+              ;;
+            422)
+              MERGE_OUTCOME="not-mergeable"
+              echo "::warning::Promote PR #${PR_NUM}: not mergeable (conflict, stale base, or already merging)."
+              jq -r '.message // .' < "${BODY}" | head -c 500
+              ;;
+            *)
+              echo "::error::Unexpected status ${STATUS} on merge schedule"
+              jq -r '.message // .' < "${BODY}" | head -c 500
+              rm -f "${BODY}"
+              exit 1
+              ;;
+          esac
+          rm -f "${BODY}"
 
           {
-            echo "## ✅ Auto-promote PR opened"
+            echo "## Auto-promote PR opened"
             echo
             echo "- Source: staging at \`${TARGET_SHA:0:8}\`"
             echo "- PR: #${PR_NUM}"
+            echo "- Outcome: \`${MERGE_OUTCOME}\`"
             echo
-            echo "Merge queue lands the PR once required gates are green; no human action needed unless gates fail."
+            if [ "${MERGE_OUTCOME}" = "auto-merge-scheduled" ]; then
+              echo "Gitea will auto-merge once Hongming approves and all checks are green. No human action needed beyond approval."
+            elif [ "${MERGE_OUTCOME}" = "merged-immediately" ]; then
+              echo "Merged immediately. \`publish-workspace-server-image.yml\` will fire naturally on the resulting \`main\` push."
+            else
+              echo "PR is not auto-merging. Operator may need to bring staging up to date with main, then re-trigger this workflow via workflow_dispatch."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
-
-          # Hand the PR number to the next step so we can dispatch the
-          # tenant-redeploy chain after the merge queue lands the merge.
-          echo "promote_pr_num=${PR_NUM}" >> "$GITHUB_OUTPUT"
-        id: promote_pr
-
-      # The App token minted above (before the promote-PR step) is
-      # also used by the polling tail below. Defense-in-depth: with
-      # the merge-queue-landed merge now using the App token, the
-      # main-branch push event SHOULD fire the publish/canary/redeploy
-      # cascade naturally — but if for any reason it doesn't (e.g. an
-      # unrelated event-suppression edge case), the explicit dispatches
-      # below still wake the chain.
-      - name: Wait for promote merge, then dispatch publish + redeploy (#2357)
-        # Defense-in-depth dispatch. With the auto-merge call above
-        # now using the App token (this commit), the merge-queue-landed
-        # merge SHOULD fire publish-workspace-server-image naturally
-        # via on:push:[main] — App-token-initiated pushes DO trigger
-        # workflow_run cascades, unlike GITHUB_TOKEN-initiated ones
-        # (the documented "no recursion" rule —
-        # https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow).
-        #
-        # This explicit dispatch stays as belt-and-suspenders for any
-        # edge case where the natural cascade misfires. If it never
-        # observably fires after this token swap (i.e. the publish
-        # workflow has already started by the time we get here), the
-        # second dispatch is a harmless no-op (publish-workspace-server-image
-        # has its own concurrency group that dedupes).
-        #
-        # See PR for #2357: pre-fix the merge action was via
-        # GITHUB_TOKEN, suppressing the cascade and forcing this tail
-        # to be the SOLE chain trigger. With the auto-merge token swap
-        # the tail becomes redundant in the happy path; keep until
-        # we've observed >=10 successful natural cascades, then drop.
-        if: steps.promote_pr.outputs.promote_pr_num != ''
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          REPO: ${{ github.repository }}
-          PR_NUM: ${{ steps.promote_pr.outputs.promote_pr_num }}
-        run: |
-          # Poll for merge — max 30 min (60 × 30s). The merge queue
-          # typically lands within 5-10 min when gates are green. Break
-          # early if the PR is closed without merging (operator action,
-          # gates flipped red post-approval, branch-protection rejection)
-          # so we don't tie up a runner for the full 30 min on a dead PR.
-          MERGED=""
-          STATE=""
-          for _ in $(seq 1 60); do
-            VIEW=$(gh pr view "$PR_NUM" --repo "$REPO" --json mergedAt,state)
-            MERGED=$(echo "$VIEW" | jq -r '.mergedAt // ""')
-            STATE=$(echo "$VIEW" | jq -r '.state // ""')
-            if [ -n "$MERGED" ] && [ "$MERGED" != "null" ]; then
-              echo "::notice::Promote PR #${PR_NUM} merged at ${MERGED}"
-              break
-            fi
-            if [ "$STATE" = "CLOSED" ]; then
-              echo "::warning::Promote PR #${PR_NUM} was closed without merging — skipping deploy dispatch."
-              exit 0
-            fi
-            sleep 30
-          done
-
-          if [ -z "$MERGED" ] || [ "$MERGED" = "null" ]; then
-            echo "::warning::Promote PR #${PR_NUM} didn't merge within 30min — skipping deploy dispatch (manually run \`gh workflow run publish-workspace-server-image.yml --ref main\` once it lands)."
-            exit 0
-          fi
-
-          # Dispatch publish on main using the App token. App-initiated
-          # workflow_dispatch DOES propagate the workflow_run cascade,
-          # unlike GITHUB_TOKEN-initiated dispatch.
-          # publish completes → canary-verify chains via workflow_run →
-          # redeploy-tenants-on-main chains via workflow_run + branches:[main].
-          if gh workflow run publish-workspace-server-image.yml \
-              --repo "$REPO" --ref main 2>&1; then
-            echo "::notice::Dispatched publish-workspace-server-image on ref=main as molecule-ai App — canary-verify and redeploy-tenants-on-main will chain via workflow_run."
-            {
-              echo "## 🚀 Tenant redeploy chain dispatched"
-              echo
-              echo "- publish-workspace-server-image (workflow_dispatch on \`main\`, actor: \`molecule-ai[bot]\`)"
-              echo "- canary-verify will chain on completion"
-              echo "- redeploy-tenants-on-main will chain on canary green"
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "::error::Failed to dispatch publish-workspace-server-image. Run manually: gh workflow run publish-workspace-server-image.yml --ref main"
-          fi
-
-          # ALSO dispatch auto-sync-main-to-staging.yml. Same root cause as
-          # publish above (issue #2357): the merge-queue-initiated push to
-          # main is by GITHUB_TOKEN → no `on: push` triggers fire downstream.
-          # Without this dispatch, every staging→main promote leaves staging
-          # one merge commit BEHIND main, which silently dead-locks the NEXT
-          # promote PR as `mergeStateStatus: BEHIND` because main's
-          # branch-protection has `strict: true`. Verified empirically on
-          # 2026-05-02 against PR #2442 (Phase 2 promote): only the explicit
-          # publish-workspace-server-image dispatch fired on the previous
-          # promote SHA 76c604fb, while auto-sync silently no-op'd, leaving
-          # staging behind for ~24h until manually bridged.
-          if gh workflow run auto-sync-main-to-staging.yml \
-              --repo "$REPO" --ref main 2>&1; then
-            echo "::notice::Dispatched auto-sync-main-to-staging on ref=main as molecule-ai App — staging will absorb the new main merge commit via PR + merge queue."
-          else
-            echo "::error::Failed to dispatch auto-sync-main-to-staging. Run manually: gh workflow run auto-sync-main-to-staging.yml --ref main"
-          fi
