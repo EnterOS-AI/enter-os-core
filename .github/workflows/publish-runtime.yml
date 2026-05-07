@@ -287,7 +287,7 @@ jobs:
           # Fine-grained PAT with `actions:write` on the 8 template repos.
           # GITHUB_TOKEN can't fire dispatches across repos — needs an explicit
           # token. Stored as a repo secret; rotate per the standard schedule.
-          DISPATCH_TOKEN: ${{ secrets.TEMPLATE_DISPATCH_TOKEN }}
+          DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
           # Single source of truth: the publish job's output, which handles
           # tag/manual-input/auto-bump uniformly. The previous fallback
           # (`steps.version.outputs.version` from inside the cascade job)
@@ -313,11 +313,11 @@ jobs:
           #                           after fixing the secret)
           if [ -z "$DISPATCH_TOKEN" ]; then
             if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-              echo "::warning::TEMPLATE_DISPATCH_TOKEN secret not set — skipping cascade."
+              echo "::warning::DISPATCH_TOKEN secret not set — skipping cascade."
               echo "::warning::set it at Settings → Secrets and Variables → Actions, then rerun. Templates will stay on the prior runtime version until either this token is set or each template is rebuilt manually."
               exit 0
             fi
-            echo "::error::TEMPLATE_DISPATCH_TOKEN secret missing — cascade cannot fan out."
+            echo "::error::DISPATCH_TOKEN secret missing — cascade cannot fan out."
             echo "::error::PyPI was published, but the 8 template repos will NOT pick up the new version until this token is restored and a republish dispatches the cascade."
             echo "::error::set it at Settings → Secrets and Variables → Actions; then re-trigger publish-runtime via workflow_dispatch."
             exit 1
