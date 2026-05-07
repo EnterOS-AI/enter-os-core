@@ -6,8 +6,6 @@ github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERo
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
 github.com/Molecule-AI/molecule-ai-plugin-gh-identity v0.0.0-20260424033845-4fd5ac7be30f h1:YkLRhUg+9qr9OV9N8dG1Hj0Ml7TThHlRwh5F//oUJVs=
 github.com/Molecule-AI/molecule-ai-plugin-gh-identity v0.0.0-20260424033845-4fd5ac7be30f/go.mod h1:NqdtlWZDJvpXNJRHnMkPhTKHdA1LZTNH+63TB66JSOU=
-github.com/Molecule-AI/molecule-ai-plugin-github-app-auth v0.0.0-20260421064811-7d98ae51e31d h1:GpYhP6FxaJZc1Ljy5/YJ9ZIVGvfOqZBmDolNr2S5x2g=
-github.com/Molecule-AI/molecule-ai-plugin-github-app-auth v0.0.0-20260421064811-7d98ae51e31d/go.mod h1:3a6LR/zd7FjR9ZwLTbytwYlWuCBsbCOVFlEg0WnoYiM=
 github.com/alicebob/miniredis/v2 v2.37.0 h1:RheObYW32G1aiJIj81XVt78ZHJpHonHLHW7OLIshq68=
 github.com/alicebob/miniredis/v2 v2.37.0/go.mod h1:TcL7YfarKPGDAthEtl5NBeHZfeUQj6OXMm/+iu5cLMM=
 github.com/bsm/ginkgo/v2 v2.12.0 h1:Ny8MWAHyOepLGlLKYmXG4IEkioBysk6GpaRTLC8zwWs=

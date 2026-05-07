@@ -55,17 +55,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Checkout sibling plugin repo
-        # Same reasoning as publish-workspace-server-image.yml — the Go
-        # module's replace directive needs the plugin source so
-        # CodeQL's "go build" phase can resolve.
-        if: matrix.language == 'go'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          repository: Molecule-AI/molecule-ai-plugin-github-app-auth
-          path: molecule-ai-plugin-github-app-auth
-          token: ${{ secrets.PLUGIN_REPO_PAT || secrets.GITHUB_TOKEN }}
-
+      # github-app-auth sibling-checkout removed 2026-05-07 (#157):
+      # plugin was dropped + the Dockerfile no longer needs it.
       # jq is pre-installed on ubuntu-latest — no setup step needed.
 
       - name: Initialize CodeQL

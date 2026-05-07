@@ -16,9 +16,10 @@
 # ── Stage 1: Go platform binary ──────────────────────────────────────
 FROM golang:1.25-alpine AS go-builder
 WORKDIR /app
-COPY molecule-ai-plugin-github-app-auth/ /plugin/
 COPY workspace-server/go.mod workspace-server/go.sum ./
-RUN echo 'replace github.com/Molecule-AI/molecule-ai-plugin-github-app-auth => /plugin' >> go.mod
+# github-app-auth plugin removed 2026-05-07 (#157): per-agent Gitea
+# identities replaced GitHub-App tokens post-suspension. The sibling
+# COPY + replace directive are gone.
 RUN go mod download
 COPY workspace-server/ .
 

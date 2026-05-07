@@ -29,8 +29,7 @@ import (
 
 	// External plugins — each registers EnvMutator(s) that run at workspace
 	// provision time. Loaded via soft-dep gates in main() so self-hosters
-	// without the App or without per-agent identity configured keep working.
-	githubappauth "github.com/Molecule-AI/molecule-ai-plugin-github-app-auth/pluginloader"
+	// without per-agent identity configured keep working.
 	ghidentity "github.com/Molecule-AI/molecule-ai-plugin-gh-identity/pluginloader"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/pkg/provisionhook"
@@ -179,12 +178,15 @@ func main() {
 	}
 
 	// External-plugin env mutators — each plugin contributes 0+ mutators
-	// onto a shared registry. Order matters: gh-identity populates
-	// MOLECULE_AGENT_ROLE-derived attribution env vars that downstream
-	// mutators and the workspace's install.sh can then read. Keep
-	// github-app-auth last because it fails loudly on misconfig and its
-	// failure mode is "no GITHUB_TOKEN" — worth surfacing after the
-	// cheaper mutators already ran.
+	// onto a shared registry. gh-identity populates MOLECULE_AGENT_ROLE-
+	// derived attribution env vars that the workspace's install.sh can
+	// then read.
+	//
+	// github-app-auth was dropped 2026-05-07 (closes #157): per-agent
+	// Gitea identities (this gh-identity plugin's role-derived path)
+	// replaced GitHub-App-installation tokens after the 2026-05-06
+	// suspension. Workspaces now provision with a per-persona Gitea PAT
+	// from .env instead of an App-rotated GITHUB_TOKEN.
 	envReg := provisionhook.NewRegistry()
 
 	// gh-identity plugin — per-agent attribution via env injection + gh
@@ -196,26 +198,6 @@ func main() {
 	} else {
 		envReg.Register(res.Mutator)
 		log.Printf("gh-identity: registered (config file=%q)", os.Getenv("MOLECULE_GH_IDENTITY_CONFIG_FILE"))
-	}
-
-	// github-app-auth plugin — injects GITHUB_TOKEN + GH_TOKEN into every
-	// workspace env using the App's installation access token (rotates ~hourly).
-	// Soft-skip when GITHUB_APP_* env vars are absent so dev/self-hosters
-	// without an App configured keep working; fail-loud only on MISCONFIG
-	// (e.g. APP_ID set but key file missing), not on unset.
-	if os.Getenv("GITHUB_APP_ID") != "" {
-		if reg, err := githubappauth.BuildRegistry(); err != nil {
-			log.Fatalf("github-app-auth plugin: %v", err)
-		} else {
-			// Copy the plugin's mutators onto the shared registry so the
-			// TokenProvider probe (FirstTokenProvider) still finds them.
-			for _, m := range reg.Mutators() {
-				envReg.Register(m)
-			}
-			log.Printf("github-app-auth: registered, %d mutator(s) added to chain", reg.Len())
-		}
-	} else {
-		log.Println("github-app-auth: GITHUB_APP_ID unset — skipping plugin registration (agents will use any PAT from .env)")
 	}
 
 	wh.SetEnvMutators(envReg)
