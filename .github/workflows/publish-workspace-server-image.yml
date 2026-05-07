@@ -37,6 +37,7 @@ on:
       - 'workspace-server/**'
       - 'canvas/**'
       - 'manifest.json'
+      - 'scripts/**'
       - '.github/workflows/publish-workspace-server-image.yml'
   workflow_dispatch:
 
