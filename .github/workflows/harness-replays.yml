@@ -98,6 +98,55 @@ jobs:
       # github-app-auth sibling-checkout removed 2026-05-07 (#157):
       # the plugin was dropped + Dockerfile.tenant no longer COPYs it.
 
+      # Pre-clone manifest deps before docker compose builds the tenant
+      # image (Task #173 followup — same pattern as
+      # publish-workspace-server-image.yml's "Pre-clone manifest deps"
+      # step).
+      #
+      # Why pre-clone here too: tests/harness/compose.yml builds tenant-alpha
+      # and tenant-beta from workspace-server/Dockerfile.tenant with
+      # context=../.. (repo root). That Dockerfile expects
+      # .tenant-bundle-deps/{workspace-configs-templates,org-templates,plugins}
+      # to be present at build context root (post-#173 it COPYs from there
+      # instead of running an in-image clone — the in-image clone failed
+      # with "could not read Username for https://git.moleculesai.app"
+      # because there's no auth path inside the build sandbox).
+      #
+      # Without this step harness-replays fails before any replay runs,
+      # with `failed to calculate checksum of ref ...
+      # "/.tenant-bundle-deps/plugins": not found`. Caught by run #892
+      # (main, 2026-05-07T20:28:53Z) and run #964 (staging — same
+      # symptom, different root cause: staging still has the in-image
+      # clone path, hits the auth error directly).
+      #
+      # Token shape matches publish-workspace-server-image.yml: AUTO_SYNC_TOKEN
+      # is the devops-engineer persona PAT, NOT the founder PAT (per
+      # `feedback_per_agent_gitea_identity_default`). clone-manifest.sh
+      # embeds it as basic-auth for the duration of the clones and strips
+      # .git directories — the token never enters the resulting image.
+      - name: Pre-clone manifest deps
+        if: needs.detect-changes.outputs.run == 'true'
+        env:
+          MOLECULE_GITEA_TOKEN: ${{ secrets.AUTO_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MOLECULE_GITEA_TOKEN}" ]; then
+            echo "::error::AUTO_SYNC_TOKEN secret is empty — register the devops-engineer persona PAT in repo Actions secrets"
+            exit 1
+          fi
+          mkdir -p .tenant-bundle-deps
+          bash scripts/clone-manifest.sh \
+            manifest.json \
+            .tenant-bundle-deps/workspace-configs-templates \
+            .tenant-bundle-deps/org-templates \
+            .tenant-bundle-deps/plugins
+          # Sanity-check counts so a silent partial clone fails fast
+          # instead of producing a half-empty image.
+          ws_count=$(find .tenant-bundle-deps/workspace-configs-templates -mindepth 1 -maxdepth 1 -type d | wc -l)
+          org_count=$(find .tenant-bundle-deps/org-templates -mindepth 1 -maxdepth 1 -type d | wc -l)
+          plugins_count=$(find .tenant-bundle-deps/plugins -mindepth 1 -maxdepth 1 -type d | wc -l)
+          echo "Cloned: ws=$ws_count org=$org_count plugins=$plugins_count"
+
       - name: Install Python deps for replays
         # peer-discovery-404 (and future replays) eval Python against the
         # running tenant — importing workspace/a2a_client.py pulls in
