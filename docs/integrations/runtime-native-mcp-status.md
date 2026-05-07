@@ -99,7 +99,7 @@ fork needed in production.
 - **Plugin package**: [Molecule-AI/hermes-platform-molecule-a2a](https://git.moleculesai.app/molecule-ai/hermes-platform-molecule-a2a)
   v0.1.0 — public, MIT-licensed. 11 unit tests + 8 in-process E2E
   + 4 real-subprocess E2E checkpoints all green.
-- **Workspace template patch**: [Molecule-AI/molecule-ai-workspace-template-hermes#32](https://github.com/Molecule-AI/molecule-ai-workspace-template-hermes/pull/32)
+- **Workspace template patch**: [Molecule-AI/molecule-ai-workspace-template-hermes#32](https://git.moleculesai.app/molecule-ai/molecule-ai-workspace-template-hermes/pull/32)
   — Dockerfile installs the patched fork + plugin into the hermes
   installer's venv; start.sh seeds `platforms.molecule-a2a` config
   stanza. Pre-demo deliberately install-only; adapter.py rewrite to
@@ -156,7 +156,7 @@ intermediate shim earns its complexity.
 **Status:** Template SHIPPED. Repo live at
 [`Molecule-AI/molecule-ai-workspace-template-codex`](https://git.moleculesai.app/molecule-ai/molecule-ai-workspace-template-codex)
 (14 files, 1411 LOC, 12/12 tests). molecule-core registration in
-[PR #2512](https://github.com/Molecule-AI/molecule-core/pull/2512).
+[PR #2512](https://git.moleculesai.app/molecule-ai/molecule-core/pull/2512).
 E2E with real A2A traffic remains.
 
 **Path:** Persistent `codex app-server` stdio JSON-RPC client

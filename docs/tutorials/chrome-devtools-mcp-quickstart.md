@@ -198,7 +198,7 @@ Lighthouse audit against staging.yourapp.com:
   FCP: 2.4s | LCP: 5.2s | CLS: 0.18 | TBT: 620ms
 
 Performance regression detected — opening GitHub issue.
-Issue: https://github.com/Molecule-AI/molecule-core/issues/1527
+Issue: https://git.moleculesai.app/molecule-ai/molecule-core/issues/1527
 Label: performance-regression | Assignees: @your-team
 ```
 

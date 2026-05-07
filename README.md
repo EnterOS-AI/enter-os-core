@@ -225,14 +225,14 @@ The result is not just “an agent that learns.” It is **an organization that 
 - runtime tiers
 - direct workspace inspection through terminal and files
 
-### SaaS (via [`molecule-controlplane`](https://github.com/Molecule-AI/molecule-controlplane))
+### SaaS (via [`molecule-controlplane`](https://git.moleculesai.app/molecule-ai/molecule-controlplane))
 
 - multi-tenant on AWS EC2 + Neon (per-tenant Postgres branch) + Cloudflare Tunnels (per-tenant, no public ports)
 - WorkOS AuthKit + Stripe Checkout + Customer Portal
 - AWS KMS envelope encryption (DB / Redis connection strings); AWS Secrets Manager for tenant bootstrap
 - `tenant_resources` audit table + 30-min boot-event-aware reconciler — every CF / AWS lifecycle event recorded, claim vs live state diffed
 
-### Bring your own Claude Code session (via [`molecule-mcp-claude-channel`](https://github.com/Molecule-AI/molecule-mcp-claude-channel))
+### Bring your own Claude Code session (via [`molecule-mcp-claude-channel`](https://git.moleculesai.app/molecule-ai/molecule-mcp-claude-channel))
 
 - Claude Code plugin that bridges Molecule A2A traffic into a local Claude Code session via MCP
 - subscribe to one or more workspaces; peer messages surface as conversation turns; replies route back through Molecule's A2A
@@ -330,7 +330,7 @@ Then open `http://localhost:3000`:
 
 The current `main` branch ships the core platform, Canvas v4 (warm-paper themed), Memory v2 (pgvector semantic recall), the typed-SSOT A2A response path (RFC #2967), **eight production adapters** (Claude Code, Hermes, Gemini CLI, LangGraph, DeepAgents, CrewAI, AutoGen, OpenClaw), skill lifecycle, and operational surfaces.
 
-The companion private repo [`molecule-controlplane`](https://github.com/Molecule-AI/molecule-controlplane) provides the SaaS surface — multi-tenant orchestration on EC2 + Neon + Cloudflare Tunnels, KMS envelope encryption, WorkOS auth, Stripe billing, and a `tenant_resources` audit table with a 30-min reconciler.
+The companion private repo [`molecule-controlplane`](https://git.moleculesai.app/molecule-ai/molecule-controlplane) provides the SaaS surface — multi-tenant orchestration on EC2 + Neon + Cloudflare Tunnels, KMS envelope encryption, WorkOS auth, Stripe billing, and a `tenant_resources` audit table with a 30-min reconciler.
 
 Adjacent runtime work such as **NemoClaw** remains branch-level until merged, and this README keeps that distinction explicit on purpose.
 

@@ -12,7 +12,7 @@ Your team is in Discord. Your AI agents are in Molecule AI. Until today, those t
 
 That's now one webhook URL.
 
-Molecule AI workspaces can now connect to Discord. Here's what shipped in [PR #656](https://github.com/Molecule-AI/molecule-core/pull/656).
+Molecule AI workspaces can now connect to Discord. Here's what shipped in [PR #656](https://git.moleculesai.app/molecule-ai/molecule-core/pull/656).
 
 ---
 
@@ -70,7 +70,7 @@ For inbound slash commands, point your Discord app's **Interactions Endpoint URL
 
 ## Security: Webhook Tokens Don't Appear in Logs
 
-Webhook URLs contain a token (`/webhooks/{id}/{token}`). If that token leaks into server logs, it's a rotation event. The Discord adapter is explicit about this: HTTP request errors are logged without the URL, and the adapter returns a generic error message. This was hardened in [PR #659](https://github.com/Molecule-AI/molecule-core/pull/659).
+Webhook URLs contain a token (`/webhooks/{id}/{token}`). If that token leaks into server logs, it's a rotation event. The Discord adapter is explicit about this: HTTP request errors are logged without the URL, and the adapter returns a generic error message. This was hardened in [PR #659](https://git.moleculesai.app/molecule-ai/molecule-core/pull/659).
 
 ---
 
@@ -97,4 +97,4 @@ Documentation: [Social Channels guide](/docs/agent-runtime/social-channels#disco
 
 ---
 
-*Discord adapter shipped in [PR #656](https://github.com/Molecule-AI/molecule-core/pull/656). Security hardening in [PR #659](https://github.com/Molecule-AI/molecule-core/pull/659). Molecule AI is open source — contributions welcome.*
+*Discord adapter shipped in [PR #656](https://git.moleculesai.app/molecule-ai/molecule-core/pull/656). Security hardening in [PR #659](https://git.moleculesai.app/molecule-ai/molecule-core/pull/659). Molecule AI is open source — contributions welcome.*

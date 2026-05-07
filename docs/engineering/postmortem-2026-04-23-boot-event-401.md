@@ -3,8 +3,8 @@
 **Date:** 2026-04-23
 **Severity:** High — every new SaaS tenant blocked
 **Detection path:** E2E Staging SaaS run 24848425822 failed at "tenant provisioning"; investigation of CP Railway logs surfaced the auth mismatch.
-**Status:** Fix pushed on [molecule-controlplane#238](https://github.com/Molecule-AI/molecule-controlplane/pull/238).
-**Related:** [issue #239](https://github.com/Molecule-AI/molecule-controlplane/issues/239) (Cloudflare DNS record quota), [testing-strategy.md](../engineering/testing-strategy.md)
+**Status:** Fix pushed on [molecule-controlplane#238](https://git.moleculesai.app/molecule-ai/molecule-controlplane/pull/238).
+**Related:** [issue #239](https://git.moleculesai.app/molecule-ai/molecule-controlplane/issues/239) (Cloudflare DNS record quota), [testing-strategy.md](../engineering/testing-strategy.md)
 
 ## Summary
 
@@ -35,7 +35,7 @@ The flow was:
 
 ### The commit that introduced the bug
 
-[molecule-controlplane#235](https://github.com/Molecule-AI/molecule-controlplane/pull/235) — "fix(provision): wait for tenant boot-event before falling back to canary". Merged 2026-04-22.
+[molecule-controlplane#235](https://git.moleculesai.app/molecule-ai/molecule-controlplane/pull/235) — "fix(provision): wait for tenant boot-event before falling back to canary". Merged 2026-04-22.
 
 Before #235, readiness was determined via a canary probe through Cloudflare's edge — which didn't need CP-side auth, so the INSERT ordering didn't matter. #235 made boot-events the primary readiness signal but didn't move the INSERT earlier. The race was latent before but became load-bearing after.
 
@@ -90,7 +90,7 @@ bootReady, _ := provisioner.WaitForTenantReady(ctx, h.db, org.ID, 4*time.Minute)
 h.db.ExecContext(ctx, `UPDATE org_instances SET status = 'running' WHERE org_id = $1`, org.ID)
 ```
 
-See [molecule-controlplane#238](https://github.com/Molecule-AI/molecule-controlplane/pull/238) for the full diff.
+See [molecule-controlplane#238](https://git.moleculesai.app/molecule-ai/molecule-controlplane/pull/238) for the full diff.
 
 ## Lessons
 
@@ -122,9 +122,9 @@ Early investigation blamed the hermes provider 401 bug (a separate, known issue 
 
 ## Follow-ups
 
-- [ ] Land [molecule-controlplane#238](https://github.com/Molecule-AI/molecule-controlplane/pull/238)
+- [ ] Land [molecule-controlplane#238](https://git.moleculesai.app/molecule-ai/molecule-controlplane/pull/238)
 - [ ] Redeploy staging-api, verify E2E goes green
 - [ ] Add CP integration test suite (see lesson #2)
 - [ ] Wire E2E failure → notification (see lesson #3)
 - [ ] Add invariant comment in `provisionTenant` (see lesson #4)
-- [ ] Cloudflare DNS quota cleanup — [molecule-controlplane#239](https://github.com/Molecule-AI/molecule-controlplane/issues/239)
+- [ ] Cloudflare DNS quota cleanup — [molecule-controlplane#239](https://git.moleculesai.app/molecule-ai/molecule-controlplane/issues/239)

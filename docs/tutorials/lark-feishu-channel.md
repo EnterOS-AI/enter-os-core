@@ -90,6 +90,6 @@ Molecule AI canvas without code changes.
 
 ## Related
 
-- PR #480: [feat(channels): Lark / Feishu channel adapter](https://github.com/Molecule-AI/molecule-core/pull/480)
+- PR #480: [feat(channels): Lark / Feishu channel adapter](https://git.moleculesai.app/molecule-ai/molecule-core/pull/480)
 - [Social channels architecture](../agent-runtime/social-channels.md)
 - [Channel adapter reference](../api-reference.md#channels)

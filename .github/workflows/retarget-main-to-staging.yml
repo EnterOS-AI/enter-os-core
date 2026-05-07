@@ -96,7 +96,7 @@ jobs:
             --body "$(cat <<'BODY'
           [retarget-bot] This PR was opened against `main` and has been retargeted to `staging` automatically.
 
-          **Why:** per [SHARED_RULES rule 8](https://github.com/Molecule-AI/molecule-ai-org-template-molecule-dev/blob/main/SHARED_RULES.md), all feature work targets `staging` first; the CEO promotes `staging → main` separately.
+          **Why:** per [SHARED_RULES rule 8](https://git.moleculesai.app/molecule-ai/molecule-ai-org-template-molecule-dev/blob/main/SHARED_RULES.md), all feature work targets `staging` first; the CEO promotes `staging → main` separately.
 
           **What changed:** just the base branch — no code change. CI will re-run against `staging`. If you get merge conflicts, rebase on `staging`.
 

@@ -176,9 +176,9 @@ What is on the roadmap for Phase 2d (not yet shipped):
 
 ## Related
 
-- PR #240: [Phase 2a — native Anthropic dispatch](https://github.com/Molecule-AI/molecule-core/pull/240)
-- PR #255: [Phase 2b — native Gemini dispatch](https://github.com/Molecule-AI/molecule-core/pull/255)
-- PR #267: [Phase 2c — multi-turn history on all paths](https://github.com/Molecule-AI/molecule-core/pull/267)
+- PR #240: [Phase 2a — native Anthropic dispatch](https://git.moleculesai.app/molecule-ai/molecule-core/pull/240)
+- PR #255: [Phase 2b — native Gemini dispatch](https://git.moleculesai.app/molecule-ai/molecule-core/pull/255)
+- PR #267: [Phase 2c — multi-turn history on all paths](https://git.moleculesai.app/molecule-ai/molecule-core/pull/267)
 - [Hermes adapter design](../adapters/hermes-adapter-design.md)
 - [Platform API reference](../api-reference.md)
-- Issue [#513](https://github.com/Molecule-AI/molecule-core/issues/513)
+- Issue [#513](https://git.moleculesai.app/molecule-ai/molecule-core/issues/513)

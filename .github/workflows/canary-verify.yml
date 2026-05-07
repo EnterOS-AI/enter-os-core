@@ -108,7 +108,7 @@ jobs:
               echo
               echo "One or more canary secrets are unset (\`CANARY_TENANT_URLS\`, \`CANARY_ADMIN_TOKENS\`, \`CANARY_CP_SHARED_SECRET\`)."
               echo "Phase 2 canary fleet has not been stood up yet —"
-              echo "see [canary-tenants.md](https://github.com/Molecule-AI/molecule-controlplane/blob/main/docs/canary-tenants.md)."
+              echo "see [canary-tenants.md](https://git.moleculesai.app/molecule-ai/molecule-controlplane/blob/main/docs/canary-tenants.md)."
               echo
               echo "**Skipped — promote-to-latest will NOT auto-fire.** Dispatch \`promote-latest.yml\` manually when ready."
             } >> "$GITHUB_STEP_SUMMARY"

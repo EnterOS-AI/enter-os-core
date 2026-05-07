@@ -376,7 +376,7 @@ hold:
    non-plugin-sourced server, which Claude Code rejects with
    `channel_enable requires a marketplace plugin`. Until the
    official `moleculesai/claude-code-plugin` marketplace lands
-   (tracking [#2936](https://github.com/Molecule-AI/molecule-core/issues/2936)),
+   (tracking [#2936](https://git.moleculesai.app/molecule-ai/molecule-core/issues/2936)),
    operators who want push must scaffold their own local marketplace
    under
    `~/.claude/marketplaces/molecule-local/` containing a
@@ -389,7 +389,7 @@ hold:
 Symptom of any condition failing: messages arrive but only via the
 poll path (every ~1–60s), not real-time. There's currently no
 diagnostic surfaced — `molecule-mcp doctor` (tracking
-[#2937](https://github.com/Molecule-AI/molecule-core/issues/2937)) is
+[#2937](https://git.moleculesai.app/molecule-ai/molecule-core/issues/2937)) is
 planned.
 
 If you don't need real-time push, the default poll path works

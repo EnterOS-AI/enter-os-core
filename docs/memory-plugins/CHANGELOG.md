@@ -101,7 +101,7 @@ incident-shaped.
 ## [v1.0.0] — initial release (RFC #2728, PRs #2729-#2742)
 
 Initial plugin contract + 11-PR rollout. See
-[issue #2728](https://github.com/Molecule-AI/molecule-core/issues/2728)
+[issue #2728](https://git.moleculesai.app/molecule-ai/molecule-core/issues/2728)
 for the full RFC.
 
 Endpoints: `/v1/health`, `/v1/namespaces/{name}` (PUT/PATCH/DELETE),

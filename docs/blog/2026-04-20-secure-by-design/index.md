@@ -27,7 +27,7 @@ The biggest user-facing change: every Molecule AI org can now mint named, revoca
 
 → [User guide: Organization API Keys](/docs/guides/org-api-keys.md)
 → [Architecture: Org API Keys](/docs/architecture/org-api-keys.md)
-→ PRs: [#1105](https://github.com/Molecule-AI/molecule-core/pull/1105), [#1107](https://github.com/Molecule-AI/molecule-core/pull/1107), [#1109](https://github.com/Molecule-AI/molecule-core/pull/1109), [#1110](https://github.com/Molecule-AI/molecule-core/pull/1110)
+→ PRs: [#1105](https://git.moleculesai.app/molecule-ai/molecule-core/pull/1105), [#1107](https://git.moleculesai.app/molecule-ai/molecule-core/pull/1107), [#1109](https://git.moleculesai.app/molecule-ai/molecule-core/pull/1109), [#1110](https://git.moleculesai.app/molecule-ai/molecule-core/pull/1110)
 
 ---
 
@@ -48,7 +48,7 @@ AdminAuth now accepts a session-verification tier that runs **before** the beare
 **Self-hosted / local dev:** `CP_UPSTREAM_URL` is unset → this feature is disabled, behaviour is unchanged.
 
 → [Guide: Same-Origin Canvas Fetches & Session Auth](/docs/guides/same-origin-canvas-fetches.md)
-→ PRs: [#1099](https://github.com/Molecule-AI/molecule-core/pull/1099), [#1100](https://github.com/Molecule-AI/molecule-core/pull/1100)
+→ PRs: [#1099](https://git.moleculesai.app/molecule-ai/molecule-core/pull/1099), [#1100](https://git.moleculesai.app/molecule-ai/molecule-core/pull/1100)
 
 ---
 
@@ -87,7 +87,7 @@ The proxy is **fail-closed**: only an explicit allowlist of paths (`/cp/auth/`, 
 This is also the structural fix for the lateral-movement risk that session auth introduced: without the allowlist, a tenant-authed browser user could have proxied `/cp/admin/*` requests upstream and exploited the fact that those endpoints accept WorkOS session cookies. The allowlist makes that impossible by construction.
 
 → [Guide: Same-Origin Canvas Fetches & Session Auth](/docs/guides/same-origin-canvas-fetches.md)
-→ PR: [#1095](https://github.com/Molecule-AI/molecule-core/pull/1095)
+→ PR: [#1095](https://git.moleculesai.app/molecule-ai/molecule-core/pull/1095)
 
 ---
 
@@ -99,7 +99,7 @@ The waitlist itself is a Canvas-administered list with email hashing in audit lo
 
 This is the operational surface that makes the above security work matter: the beta is invitation-only, credentials are scoped, and every admin action is auditable.
 
-→ Control plane PRs [#145](https://github.com/Molecule-AI/molecule-controlplane/pull/145), [#148](https://github.com/Molecule-AI/molecule-controlplane/pull/148), [#150](https://github.com/Molecule-AI/molecule-controlplane/pull/150)
+→ Control plane PRs [#145](https://git.moleculesai.app/molecule-ai/molecule-controlplane/pull/145), [#148](https://git.moleculesai.app/molecule-ai/molecule-controlplane/pull/148), [#150](https://git.moleculesai.app/molecule-ai/molecule-controlplane/pull/150)
 
 ---
 

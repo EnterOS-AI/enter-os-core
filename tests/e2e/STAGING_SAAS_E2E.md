@@ -105,5 +105,5 @@ Hard per-workflow timeouts (15–40 min) cap runaway cost. Three teardown layers
 
 ## Known gaps (tracked elsewhere)
 
-- [#1369](https://github.com/Molecule-AI/molecule-core/issues/1369): SaaS canvas Files / Terminal / Peers tabs — architecturally broken; whitelisted in the spec
+- [#1369](https://git.moleculesai.app/molecule-ai/molecule-core/issues/1369): SaaS canvas Files / Terminal / Peers tabs — architecturally broken; whitelisted in the spec
 - LLM-driven delegation (autonomous `delegate_task` tool use) — probabilistic, not in v1; proxy mechanics covered
