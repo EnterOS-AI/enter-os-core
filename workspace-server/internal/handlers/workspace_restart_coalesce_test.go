@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,6 +14,42 @@ import (
 // suite).
 func resetRestartStatesFor(workspaceID string) {
 	restartStates.Delete(workspaceID)
+}
+
+// drainCoalesceGoroutine spawns `coalesceRestart(wsID, cycle)` on a
+// goroutine that mirrors the real production caller shape
+// (`go h.RestartByID(...)` from a2a_proxy.go, a2a_proxy_helpers.go,
+// main.go), and registers a t.Cleanup that blocks until the goroutine
+// has TERMINATED — not just panicked-and-recovered, fully exited.
+//
+// This is the bleed-prevention contract for Class H (Task #170): no
+// test in this file may declare itself complete while a coalesceRestart
+// goroutine it spawned is still alive, because that goroutine could
+// otherwise wake up after the test's sqlmock has been closed and
+// either:
+//   - issue a stale INSERT that gets attributed to the next test's
+//     sqlmock connection — surfaces as
+//     "INSERT-not-expected for kind=DELEGATION_FAILED" / =WORKSPACE_PROVISION_FAILED
+//     in a neighbour test that doesn't itself touch coalesceRestart; or
+//   - hold a reference to the closed *sql.DB and panic on the next op.
+//
+// Implementation notes:
+//   - sync.WaitGroup must be Add()ed BEFORE the goroutine is spawned;
+//     Add inside the goroutine races with Wait.
+//   - t.Cleanup runs in LIFO order, so this composes safely with other
+//     cleanups (e.g. setupTestDB's mockDB.Close).
+//   - We don't bound the Wait with a timeout — if the goroutine
+//     genuinely deadlocks, the whole test process should hang and fail
+//     under -timeout. A timeout-then-orphan would mask the bleed.
+func drainCoalesceGoroutine(t *testing.T, wsID string, cycle func()) {
+	t.Helper()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		coalesceRestart(wsID, cycle)
+	}()
+	t.Cleanup(wg.Wait)
 }
 
 // TestCoalesceRestart_SingleCallRunsOneCycle is the baseline:
@@ -200,23 +237,141 @@ func TestCoalesceRestart_PanicInCycleClearsState(t *testing.T) {
 	const wsID = "test-coalesce-panic-recovery"
 	resetRestartStatesFor(wsID)
 
-	// First call's cycle panics. coalesceRestart's defer must swallow
-	// the panic so this test caller doesn't see it propagate up — that
-	// matches what the real production caller (`go h.RestartByID(...)`)
-	// gets: the goroutine survives, no process crash.
-	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("panic should NOT propagate out of coalesceRestart (would crash the platform process from a goroutine), got: %v", r)
+	// Spawn the panicking cycle on a goroutine via drainCoalesceGoroutine
+	// — this mirrors the real production callsite shape
+	// (`go h.RestartByID(...)` from a2a_proxy.go:584,
+	// a2a_proxy_helpers.go:197, main.go:213). The previous form called
+	// coalesceRestart synchronously, which neither exercised the
+	// goroutine-survival contract nor caught Class H bleed regressions
+	// where the panic-recovery goroutine outlives the test and pollutes
+	// the next test's sqlmock with INSERTs from runRestartCycle's
+	// LogActivity calls (kinds DELEGATION_FAILED / WORKSPACE_PROVISION_FAILED).
+	//
+	// drainCoalesceGoroutine registers a t.Cleanup that Wait()s for the
+	// goroutine to TERMINATE — not merely panic-and-recover — before
+	// the test ends.
+	drainCoalesceGoroutine(t, wsID, func() { panic("simulated cycle failure") })
+
+	// We need a mid-test barrier (not just the t.Cleanup-time barrier)
+	// so the second coalesceRestart below sees state.running=false. The
+	// goroutine clears state.running inside its deferred recover; poll
+	// the package-level restartStates map until that observable flip
+	// happens. Bound at 2s — longer = real bug.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		sv, ok := restartStates.Load(wsID)
+		if ok {
+			st := sv.(*restartState)
+			st.mu.Lock()
+			running := st.running
+			st.mu.Unlock()
+			if !running {
+				break
+			}
 		}
-	}()
-	coalesceRestart(wsID, func() { panic("simulated cycle failure") })
+		time.Sleep(time.Millisecond)
+	}
 
 	// Second call must run a fresh cycle. If running stayed true after
 	// the panic, this call would early-return without invoking cycle.
+	// Synchronous — no panic, so no goroutine to drain, and we want to
+	// assert ran.Load() immediately after.
 	var ran atomic.Bool
 	coalesceRestart(wsID, func() { ran.Store(true) })
 	if !ran.Load() {
 		t.Error("post-panic restart was blocked — running flag leaked, workspace permanently locked out")
+	}
+}
+
+// TestCoalesceRestart_DrainHelperWaitsForGoroutineExit is the Class H
+// regression guard for Task #170. It asserts the contract enforced by
+// drainCoalesceGoroutine: t.Cleanup blocks until the spawned
+// coalesceRestart goroutine has FULLY EXITED — not merely recovered
+// from panic. This is the contract that prevents stale LogActivity
+// INSERTs from a recovering goroutine bleeding into the next test's
+// sqlmock (the failure mode reported as "INSERT-not-expected for
+// kind=DELEGATION_FAILED" in TestPooledWithEICTunnel_PreservesFnErr).
+//
+// We use a deterministic bleed-shape probe rather than goroutine-count
+// arithmetic: the cycle blocks on a release channel for ~150ms — long
+// enough that without a Wait barrier, the outer sub-test would return
+// before the goroutine exited. We then verify the wg.Wait inside
+// drainCoalesceGoroutine actually delayed t.Run's completion: total
+// elapsed must be >= the block duration. Asserts exact-shape, not
+// substring (per saved-memory feedback_assert_exact_not_substring):
+// elapsed < blockFor would mean the cleanup didn't wait, which is the
+// exact bleed we're guarding against.
+//
+// We additionally panic from the cycle (after the block) to confirm
+// the helper waits past panic recovery, not just past cycle return.
+func TestCoalesceRestart_DrainHelperWaitsForGoroutineExit(t *testing.T) {
+	const blockFor = 150 * time.Millisecond
+	const wsID = "test-coalesce-drain-helper-contract"
+	resetRestartStatesFor(wsID)
+
+	// done is closed inside the cycle, AFTER the block + AFTER the
+	// panic (which the deferred recover in coalesceRestart catches).
+	// Actually: defer in cycle runs before panic propagates to the
+	// outer recover. Use defer to close.
+	exited := make(chan struct{})
+
+	subStart := time.Now()
+	t.Run("drain_under_subtest", func(st *testing.T) {
+		drainCoalesceGoroutine(st, wsID, func() {
+			defer close(exited)
+			time.Sleep(blockFor)
+			panic("contract-test panic-after-block")
+		})
+		// st.Cleanup runs here, before t.Run returns. wg.Wait must
+		// block until the goroutine has finished its panic recovery.
+	})
+	subElapsed := time.Since(subStart)
+
+	// Contract: the helper's wg.Wait MUST have blocked t.Run from
+	// returning until after the cycle's block + panic recovery.
+	if subElapsed < blockFor {
+		t.Fatalf(
+			"drainCoalesceGoroutine contract violated: t.Run returned in %v, "+
+				"but cycle blocks for %v. The Wait barrier is broken — a "+
+				"coalesceRestart goroutine can outlive its test's t.Cleanup "+
+				"and pollute neighbour-test sqlmock state (Class H bleed).",
+			subElapsed, blockFor,
+		)
+	}
+
+	// And the goroutine must have actually closed `exited` (i.e. ran
+	// the deferred close before panic propagated through coalesceRestart's
+	// recover). If exited is still open here, the goroutine never
+	// reached the close — meaning either the panic short-circuited the
+	// defer (Go runtime bug — won't happen) or the goroutine never
+	// ran at all (drainCoalesceGoroutine spawn shape regressed).
+	select {
+	case <-exited:
+		// Correct path.
+	default:
+		t.Fatal("cycle goroutine never reached its deferred close — panic-recovery contract regressed")
+	}
+
+	// Belt-and-suspenders: the post-recover state-clear must have
+	// flipped state.running back to false. If this fails, the panic
+	// path skipped the deferred state-clear in coalesceRestart.
+	sv, ok := restartStates.Load(wsID)
+	if !ok {
+		t.Fatal("restartStates entry missing for wsID after cycle — sync.Map regression")
+	}
+	st := sv.(*restartState)
+	st.mu.Lock()
+	running := st.running
+	st.mu.Unlock()
+	if running {
+		t.Error("state.running was not cleared after panic — sticky-running deadlock regressed")
+	}
+
+	// Reference runtime.NumGoroutine to keep the runtime import
+	// honest — also a useful smoke check that the goroutine count
+	// hasn't ballooned 10x while debugging this test.
+	if n := runtime.NumGoroutine(); n > 200 {
+		t.Logf("warning: NumGoroutine=%d after drain — high but not necessarily a leak", n)
 	}
 }
 
