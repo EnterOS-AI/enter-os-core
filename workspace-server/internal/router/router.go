@@ -11,13 +11,13 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/buildinfo"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/channels"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
-	"github.com/Molecule-AI/molecule-monorepo/platform/internal/messagestore"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/handlers"
-	"github.com/Molecule-AI/molecule-monorepo/platform/internal/pendinguploads"
 	memwiring "github.com/Molecule-AI/molecule-monorepo/platform/internal/memory/wiring"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/messagestore"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/metrics"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/middleware"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/pendinguploads"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/supervised"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/ws"
@@ -109,8 +109,8 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		now := time.Now()
 		for name, last := range snap {
 			out[name] = gin.H{
-				"last_tick_at":    last,
-				"seconds_ago":     int(now.Sub(last).Seconds()),
+				"last_tick_at": last,
+				"seconds_ago":  int(now.Sub(last).Seconds()),
 			}
 		}
 		c.JSON(200, gin.H{"subsystems": out})
@@ -599,8 +599,25 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		).Scan(&runtime)
 		return runtime, err
 	}
+	// Instance-id lookup powers the SaaS dispatch in install/uninstall:
+	// when a workspace is on the EC2-per-workspace backend (instance_id
+	// non-NULL) and there's no local Docker container to exec into, the
+	// pipeline pushes the staged plugin tarball to that EC2 over EIC SSH.
+	// Empty result means the workspace lives on the local-Docker backend
+	// (or hasn't been provisioned yet) and the handler falls back to its
+	// original Docker path. Same pattern templates.go and terminal.go use.
+	instanceIDLookup := func(workspaceID string) (string, error) {
+		var instanceID string
+		err := db.DB.QueryRowContext(
+			context.Background(),
+			`SELECT COALESCE(instance_id, '') FROM workspaces WHERE id = $1`,
+			workspaceID,
+		).Scan(&instanceID)
+		return instanceID, err
+	}
 	plgh := handlers.NewPluginsHandler(pluginsDir, dockerCli, wh.RestartByID).
-		WithRuntimeLookup(runtimeLookup)
+		WithRuntimeLookup(runtimeLookup).
+		WithInstanceIDLookup(instanceIDLookup)
 	r.GET("/plugins", plgh.ListRegistry)
 	r.GET("/plugins/sources", plgh.ListSources)
 	wsAuth.GET("/plugins", plgh.ListInstalled)

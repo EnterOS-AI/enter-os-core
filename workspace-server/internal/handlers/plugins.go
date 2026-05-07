@@ -23,6 +23,16 @@ import (
 // workspace-scoped filtering (handler falls back to unfiltered list).
 type RuntimeLookup func(workspaceID string) (string, error)
 
+// InstanceIDLookup resolves a workspace's EC2 instance_id by ID. Empty
+// string means the workspace is not on the SaaS (EC2-per-workspace)
+// backend — i.e. either local-Docker or pre-provision. The handler uses
+// this to dispatch plugin install/uninstall to the EIC SSH path
+// (template_files_eic.go primitive) when a workspace runs on its own EC2
+// and there's no local Docker container to exec into. A nil lookup keeps
+// the handler on the local-Docker code path only — same shape as the
+// pre-fix behaviour.
+type InstanceIDLookup func(workspaceID string) (string, error)
+
 // pluginSources is the contract PluginsHandler uses to talk to the
 // plugin source registry. Extracted as an interface (#1814) so tests can
 // substitute a stub without standing up the real *plugins.Registry +
@@ -46,10 +56,11 @@ var _ pluginSources = (*plugins.Registry)(nil)
 
 // PluginsHandler manages the plugin registry and per-workspace plugin installation.
 type PluginsHandler struct {
-	pluginsDir    string         // host path to plugins/ registry
-	docker        *client.Client // Docker client for container operations
-	restartFunc   func(string)   // auto-restart workspace after install/uninstall
-	runtimeLookup RuntimeLookup  // workspace_id → runtime (optional)
+	pluginsDir       string           // host path to plugins/ registry
+	docker           *client.Client   // Docker client for container operations
+	restartFunc      func(string)     // auto-restart workspace after install/uninstall
+	runtimeLookup    RuntimeLookup    // workspace_id → runtime (optional)
+	instanceIDLookup InstanceIDLookup // workspace_id → EC2 instance_id (optional)
 	// sources narrowed from `*plugins.Registry` to the pluginSources
 	// interface (#1814) so tests can substitute a stub. Production
 	// callers still pass *plugins.Registry, which satisfies the
@@ -87,6 +98,15 @@ func (h *PluginsHandler) WithSourceResolver(resolver plugins.SourceResolver) *Pl
 // router during wiring so tests don't need a real DB.
 func (h *PluginsHandler) WithRuntimeLookup(lookup RuntimeLookup) *PluginsHandler {
 	h.runtimeLookup = lookup
+	return h
+}
+
+// WithInstanceIDLookup installs a workspace → EC2 instance_id resolver.
+// Wired by the router so production hits a real DB; tests stub it. The
+// install/uninstall pipeline uses this to dispatch to the EIC SSH path
+// for SaaS workspaces (no local Docker container to exec into).
+func (h *PluginsHandler) WithInstanceIDLookup(lookup InstanceIDLookup) *PluginsHandler {
+	h.instanceIDLookup = lookup
 	return h
 }
 
