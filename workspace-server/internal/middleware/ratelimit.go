@@ -105,10 +105,11 @@ func (rl *RateLimiter) Middleware() gin.HandlerFunc {
 		// Tier-1b dev-mode hatch — same gate as AdminAuth / WorkspaceAuth /
 		// discovery. On a local single-user Docker setup the 600-req/min
 		// bucket fills fast: a 15-workspace canvas + activity polling +
-		// approvals polling + A2A overlay + initial hydration all share
-		// one IP bucket, so a minute of active use can trip 429 and blank
-		// the page. Gated by MOLECULE_ENV=development + empty ADMIN_TOKEN
-		// so SaaS production keeps the bucket.
+		// approvals polling + A2A overlay + initial hydration all land in
+		// one bucket (whichever keyFor returns — typically the dev user's
+		// IP or shared admin token), so a minute of active use can trip
+		// 429 and blank the page. Gated by MOLECULE_ENV=development +
+		// empty ADMIN_TOKEN so SaaS production keeps the bucket.
 		if isDevModeFailOpen() {
 			c.Header("X-RateLimit-Limit", "unlimited")
 			c.Next()
