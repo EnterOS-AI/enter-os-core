@@ -5,17 +5,19 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
-// RateLimiter implements a simple token bucket rate limiter per IP.
+// RateLimiter implements a token bucket rate limiter keyed by tenant
+// identity (org id, then bearer token, then client IP — see keyFor).
 type RateLimiter struct {
-	mu      sync.Mutex
-	buckets map[string]*bucket
-	rate    int           // tokens per interval
+	mu       sync.Mutex
+	buckets  map[string]*bucket
+	rate     int // tokens per interval
 	interval time.Duration
 }
 
@@ -42,9 +44,9 @@ func NewRateLimiter(rate int, interval time.Duration, ctx context.Context) *Rate
 			case <-ticker.C:
 				rl.mu.Lock()
 				cutoff := time.Now().Add(-10 * time.Minute)
-				for ip, b := range rl.buckets {
+				for k, b := range rl.buckets {
 					if b.lastReset.Before(cutoff) {
-						delete(rl.buckets, ip)
+						delete(rl.buckets, k)
 					}
 				}
 				rl.mu.Unlock()
@@ -54,29 +56,73 @@ func NewRateLimiter(rate int, interval time.Duration, ctx context.Context) *Rate
 	return rl
 }
 
-// Middleware returns a Gin middleware that rate limits by client IP.
+// keyFor returns the bucket identifier for this request. Priority:
+//
+//  1. X-Molecule-Org-Id header — when present (CP-routed SaaS traffic),
+//     isolates tenants from each other regardless of the upstream proxy IP
+//     they all share.
+//  2. SHA-256 of Authorization Bearer token — when present (per-workspace
+//     bearer, ADMIN_TOKEN, org-scoped API token). On a per-tenant Caddy
+//     box where the org-id header isn't attached, this still distinguishes
+//     distinct user sessions on the same egress IP.
+//  3. ClientIP() — anonymous probes, /health scrapes, registry boot
+//     signals (when SetTrustedProxies(nil) is in effect, this is the
+//     direct TCP RemoteAddr — fine for the probe surface, not fine as a
+//     primary key behind a proxy, hence the priority order above).
+//
+// Mixing these namespaces is fine because they never collide: org ids
+// are UUIDs ("org:..."), token hashes are 64-char hex ("tok:..."), IPs
+// contain dots/colons ("ip:...").
+//
+// Security note on X-Molecule-Org-Id spoofing: the rate limiter runs
+// BEFORE TenantGuard, so the org-id value here is unvalidated. A caller
+// reaching workspace-server directly could spoof the header to drain
+// another org's bucket. In production this surface is closed by the
+// CP/Caddy front: tenant SGs reject :8080 from the public internet, and
+// CP rewrites the header to the verified org. If a future deployment
+// exposes :8080 directly, validate the org-id (e.g. against
+// MOLECULE_ORG_ID) before keying on it, or move this middleware after
+// TenantGuard. The token-hash and IP fallbacks are unspoofable.
+//
+// Issue #59 — replaces the previous IP-only keying that silently
+// collapsed all canvas traffic into one bucket once #179 disabled
+// proxy-header trust. See the issue for the deployment-shape analysis.
+func (rl *RateLimiter) keyFor(c *gin.Context) string {
+	if orgID := strings.TrimSpace(c.GetHeader("X-Molecule-Org-Id")); orgID != "" {
+		return "org:" + orgID
+	}
+	if tok := bearerFromHeader(c.GetHeader("Authorization")); tok != "" {
+		return "tok:" + tokenKey(tok)
+	}
+	return "ip:" + c.ClientIP()
+}
+
+// Middleware returns a Gin middleware that rate limits per caller. The
+// caller-key derivation lives in keyFor — see that function's doc for
+// the priority list and rationale.
 func (rl *RateLimiter) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Tier-1b dev-mode hatch — same gate as AdminAuth / WorkspaceAuth /
 		// discovery. On a local single-user Docker setup the 600-req/min
 		// bucket fills fast: a 15-workspace canvas + activity polling +
-		// approvals polling + A2A overlay + initial hydration all share
-		// one IP bucket, so a minute of active use can trip 429 and blank
-		// the page. Gated by MOLECULE_ENV=development + empty ADMIN_TOKEN
-		// so SaaS production keeps the bucket.
+		// approvals polling + A2A overlay + initial hydration all land in
+		// one bucket (whichever keyFor returns — typically the dev user's
+		// IP or shared admin token), so a minute of active use can trip
+		// 429 and blank the page. Gated by MOLECULE_ENV=development +
+		// empty ADMIN_TOKEN so SaaS production keeps the bucket.
 		if isDevModeFailOpen() {
 			c.Header("X-RateLimit-Limit", "unlimited")
 			c.Next()
 			return
 		}
 
-		ip := c.ClientIP()
+		key := rl.keyFor(c)
 
 		rl.mu.Lock()
-		b, exists := rl.buckets[ip]
+		b, exists := rl.buckets[key]
 		if !exists {
 			b = &bucket{tokens: rl.rate, lastReset: time.Now()}
-			rl.buckets[ip] = b
+			rl.buckets[key] = b
 		}
 
 		// Reset tokens if interval has passed
