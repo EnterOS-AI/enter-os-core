@@ -60,8 +60,8 @@ permissions:
   packages: write
 
 env:
-  IMAGE_NAME: ghcr.io/molecule-ai/platform
-  TENANT_IMAGE_NAME: ghcr.io/molecule-ai/platform-tenant
+  IMAGE_NAME: 153263036946.dkr.ecr.us-east-2.amazonaws.com/molecule-ai/platform
+  TENANT_IMAGE_NAME: 153263036946.dkr.ecr.us-east-2.amazonaws.com/molecule-ai/platform-tenant
 
 jobs:
   build-and-push:
@@ -70,31 +70,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Checkout sibling plugin repo
-        # workspace-server/Dockerfile expects
-        # ./molecule-ai-plugin-github-app-auth at build-context root because
-        # the Go module has a `replace` directive pointing at /plugin inside
-        # the image. Pre-repo-split the plugin lived in the monorepo; the
-        # 2026-04-18 restructure moved it out but didn't add this clone step
-        # — which is why publish was failing after that restructure.
-        #
-        # Uses a fine-grained PAT (PLUGIN_REPO_PAT) because the plugin repo
-        # is private and the default GITHUB_TOKEN is scoped to THIS repo.
-        # The PAT needs Contents:Read on Molecule-AI/molecule-ai-plugin-
-        # github-app-auth. Falls back to the default token for the (rare)
-        # case where an operator made the plugin repo public.
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          repository: Molecule-AI/molecule-ai-plugin-github-app-auth
-          path: molecule-ai-plugin-github-app-auth
-          token: ${{ secrets.PLUGIN_REPO_PAT || secrets.GITHUB_TOKEN }}
+      # github-app-auth sibling-checkout removed 2026-05-07 (#157):
+      # plugin was dropped + workspace-server/Dockerfile no longer
+      # COPYs it.
 
-      - name: Log in to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+      - name: Configure AWS credentials for ECR
+        # GHCR was the pre-suspension target; the molecule-ai org on
+        # GitHub got swept 2026-05-06 and ghcr.io/molecule-ai/* is no
+        # longer reachable. Post-suspension target is the operator's
+        # ECR org (153263036946.dkr.ecr.us-east-2.amazonaws.com/
+        # molecule-ai/*), which already hosts platform-tenant +
+        # workspace-template-* + runner-base images. AWS creds come
+        # from the AWS_ACCESS_KEY_ID/SECRET secrets bound to the
+        # molecule-cp IAM user. Closes #161.
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-2
+
+      - name: Log in to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0

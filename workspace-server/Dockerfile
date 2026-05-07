@@ -5,15 +5,11 @@
 
 FROM golang:1.25-alpine AS builder
 WORKDIR /app
-# Plugin source for replace directive in go.mod
-COPY molecule-ai-plugin-github-app-auth/ /plugin/
 COPY workspace-server/go.mod workspace-server/go.sum ./
-# Add replace directives for Docker builds:
-# 1. Platform → plugin (plugin source at /plugin/)
-# 2. Plugin → platform (plugin's go.mod has a relative replace that doesn't
-#    work in Docker; fix it to point at /app where the platform source lives)
-RUN echo 'replace github.com/Molecule-AI/molecule-ai-plugin-github-app-auth => /plugin' >> go.mod
-RUN sed -i 's|replace github.com/Molecule-AI/molecule-monorepo/platform => .*|replace github.com/Molecule-AI/molecule-monorepo/platform => /app|' /plugin/go.mod
+# github-app-auth plugin removed 2026-05-07 (#157): per-agent Gitea
+# identities replaced the GitHub-App-installation token flow after the
+# 2026-05-06 suspension. Pre-removal this stage COPY'd the sibling
+# plugin repo + injected a `replace` directive; both are gone.
 RUN go mod download
 COPY workspace-server/ .
 # GIT_SHA mirror of Dockerfile.tenant — see that file for the rationale.
