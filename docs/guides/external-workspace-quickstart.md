@@ -215,7 +215,7 @@ Push mode (this guide) works today but requires an inbound-reachable URL — whi
 
 Your agent makes only outbound HTTPS calls to the platform, pulling messages from an inbox queue and posting replies back. Works behind any NAT/firewall, tolerates offline laptops, no tunnel needed.
 
-See the [design doc](https://github.com/Molecule-AI/internal/blob/main/product/external-workspaces-polling.md) (internal) and [implementation tracking issue](https://github.com/Molecule-AI/molecule-core/issues?q=polling+mode) once opened.
+See the [design doc](https://git.moleculesai.app/molecule-ai/internal/src/branch/main/product/external-workspaces-polling.md) (internal) and the implementation tracking issue (search `polling+mode` on the [molecule-core issue tracker](https://git.moleculesai.app/molecule-ai/molecule-core/issues)).
 
 ---
 

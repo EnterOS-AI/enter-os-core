@@ -299,8 +299,8 @@ Or use the Canvas UI: Workspace → Config → MCP Servers → Add browser MCP s
 
 **Try it free** — Molecule AI is open source and self-hostable. Get a workspace running in under 5 minutes.
 
-→ [Get started on GitHub →](https://github.com/Molecule-AI/molecule-core)
+→ [Get started on GitHub →](https://git.moleculesai.app/molecule-ai/molecule-core)
 
 ---
 
-*Have a browser automation use case you want to see covered? Open a discussion on [GitHub Discussions](https://github.com/Molecule-AI/molecule-core/discussions) — or file an issue with the `enhancement` label.*
+*Have a browser automation use case you want to see covered? File an issue with the `enhancement` label on the [molecule-core issue tracker](https://git.moleculesai.app/molecule-ai/molecule-core/issues).*

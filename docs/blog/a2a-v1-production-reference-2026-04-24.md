@@ -170,4 +170,4 @@ The `staging` branch is now on `a2a-sdk` 1.0.0. The `main` branch still carries 
 
 If you're running `a2a-sdk` 0.3.x and planning the 1.0.0 migration, this post is the reference. The four breaking changes are well-contained, the migration is a single PR, and the eight smoke scenarios above will tell you whether the upgrade is clean before you merge.
 
-Questions? The [A2A protocol spec](https://github.com/google-a2a/a2a-specification) is the authoritative source. For Molecule AI's production A2A implementation, see [External Agent Registration](https://docs.molecule.ai/docs/guides/external-agent-registration) or open an issue in the [molecule-core](https://github.com/Molecule-AI/molecule-core) repo.
+Questions? The [A2A protocol spec](https://github.com/google-a2a/a2a-specification) is the authoritative source. For Molecule AI's production A2A implementation, see [External Agent Registration](https://docs.molecule.ai/docs/guides/external-agent-registration) or open an issue in the [molecule-core](https://git.moleculesai.app/molecule-ai/molecule-core) repo.
