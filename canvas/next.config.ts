@@ -17,6 +17,24 @@ import { dirname, join } from "node:path";
 // update one heuristic. Production is unaffected: `output: "standalone"`
 // bakes resolved env into the build, and the marker file isn't shipped.
 loadMonorepoEnv();
+// Boot-time matched-pair guard for ADMIN_TOKEN / NEXT_PUBLIC_ADMIN_TOKEN.
+// When ADMIN_TOKEN is set on the workspace-server (server-side bearer
+// gate, wsauth_middleware.go ~L245), the canvas MUST send the matching
+// NEXT_PUBLIC_ADMIN_TOKEN as `Authorization: Bearer ...` on every API
+// call. If only one is set, every workspace API call 401s silently —
+// the canvas hydrates with empty data and the user sees a broken page
+// with no console hint about the auth-config mismatch.
+//
+// Pre-fix the matched-pair contract was descriptive only (a comment in
+// .env): future devs/agents could re-misconfigure with one of the two
+// unset and silently 401. Closes the post-PR-#174 self-review gap.
+//
+// Warn-only (not exit) — production canvas Docker images bake these
+// vars into the build at image-build time, and a missed pair there
+// would still emit the warning at runtime via the standalone server's
+// startup. Killing the process on misconfiguration would turn a
+// recoverable auth issue into a hard crashloop.
+checkAdminTokenPair();
 
 const nextConfig: NextConfig = {
   output: "standalone",
@@ -55,6 +73,43 @@ function loadMonorepoEnv() {
   console.log(
     `[next.config] loaded ${loaded} vars from ${envPath} (${skipped} already set in env)`,
   );
+}
+
+// Boot-time matched-pair guard. Runs after .env has been loaded so the
+// check sees the post-load state. The two env vars must be set or
+// unset together; one-without-the-other is the silent-401 footgun.
+//
+// Treats empty string ("") as unset. An explicitly-empty `KEY=` in
+// .env counts as set-to-empty in `process.env`, but for auth purposes
+// an empty bearer token is equivalent to no token — so both
+// `ADMIN_TOKEN=` and an unset ADMIN_TOKEN are equivalent relative to
+// the matched-pair invariant.
+//
+// Returns void; side effect is the console.error warning. Kept as a
+// separate function (exported) so a future test can reset env, call
+// this, and assert on captured stderr.
+export function checkAdminTokenPair(): void {
+  const serverSet = !!process.env.ADMIN_TOKEN;
+  const clientSet = !!process.env.NEXT_PUBLIC_ADMIN_TOKEN;
+  if (serverSet === clientSet) return;
+  // Distinct messages so the operator can tell which half is missing
+  // — the fix is symmetric (set the other one) but the diagnostic
+  // mentions which side is currently set so they don't have to grep.
+  if (serverSet && !clientSet) {
+    // eslint-disable-next-line no-console
+    console.error(
+      "[next.config] ADMIN_TOKEN is set but NEXT_PUBLIC_ADMIN_TOKEN is not — " +
+        "canvas will 401 against workspace-server because the bearer header " +
+        "is never attached. Set both to the same value, or unset both.",
+    );
+  } else {
+    // eslint-disable-next-line no-console
+    console.error(
+      "[next.config] NEXT_PUBLIC_ADMIN_TOKEN is set but ADMIN_TOKEN is not — " +
+        "workspace-server will reject the bearer because no AdminAuth gate " +
+        "is configured. Set both to the same value, or unset both.",
+    );
+  }
 }
 
 function findMonorepoRoot(start: string): string | null {
