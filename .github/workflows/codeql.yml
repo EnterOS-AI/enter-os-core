@@ -43,6 +43,9 @@ permissions:
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
+    # CodeQL set to advisory (non-blocking) on Gitea Actions — Hongming dec'''n 2026-05-07 (#156).
+    # Findings still emit as SARIF artifacts; failing CodeQL run does not block PR merge.
+    continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
