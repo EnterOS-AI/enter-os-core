@@ -102,6 +102,55 @@ jobs:
         run: |
           echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
+      # Pre-clone manifest deps before docker build (Task #173 fix).
+      #
+      # Why pre-clone: post-2026-05-06, every workspace-template-* repo on
+      # Gitea (codex, crewai, deepagents, gemini-cli, langgraph) plus all
+      # 7 org-template-* repos are private. The pre-fix Dockerfile.tenant
+      # ran `git clone` inside an in-image stage, which had no auth path
+      # — every CI build failed with "fatal: could not read Username for
+      # https://git.moleculesai.app". For weeks, every workspace-server
+      # rebuild required a manual operator-host push. Now we clone in the
+      # trusted CI context (where AUTO_SYNC_TOKEN is naturally available)
+      # and Dockerfile.tenant just COPYs from .tenant-bundle-deps/.
+      #
+      # Token shape: AUTO_SYNC_TOKEN is the devops-engineer persona PAT
+      # (see /etc/molecule-bootstrap/agent-secrets.env). Per saved memory
+      # `feedback_per_agent_gitea_identity_default`, every CI surface uses
+      # a per-persona token, never the founder PAT. clone-manifest.sh
+      # embeds it as basic-auth (oauth2:<token>) for the duration of the
+      # clones, then strips .git directories — the token never enters
+      # the resulting image.
+      #
+      # Idempotent: if a re-run finds populated dirs, clone-manifest.sh
+      # skips them; safe to retrigger via path-filter or workflow_dispatch.
+      - name: Pre-clone manifest deps
+        env:
+          MOLECULE_GITEA_TOKEN: ${{ secrets.AUTO_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MOLECULE_GITEA_TOKEN}" ]; then
+            echo "::error::AUTO_SYNC_TOKEN secret is empty — register the devops-engineer persona PAT in repo Actions secrets"
+            exit 1
+          fi
+          mkdir -p .tenant-bundle-deps
+          bash scripts/clone-manifest.sh \
+            manifest.json \
+            .tenant-bundle-deps/workspace-configs-templates \
+            .tenant-bundle-deps/org-templates \
+            .tenant-bundle-deps/plugins
+          # Sanity-check counts so a silent partial clone fails fast
+          # instead of producing a half-empty image.
+          ws_count=$(find .tenant-bundle-deps/workspace-configs-templates -mindepth 1 -maxdepth 1 -type d | wc -l)
+          org_count=$(find .tenant-bundle-deps/org-templates -mindepth 1 -maxdepth 1 -type d | wc -l)
+          plugins_count=$(find .tenant-bundle-deps/plugins -mindepth 1 -maxdepth 1 -type d | wc -l)
+          echo "Cloned: ws=$ws_count org=$org_count plugins=$plugins_count"
+          # Counts are derived from manifest.json (9 ws / 7 org / 21
+          # plugins as of 2026-05-07). If manifest.json grows but the
+          # clone step regresses silently, the find above caps at the
+          # actual disk state — but clone-manifest.sh's own EXPECTED vs
+          # CLONED check (line ~95) is the authoritative fail-fast.
+
       # Canary-gated release flow:
       #   - This step always publishes :staging-<sha> + :staging-latest.
       #   - On staging push, staging-CP picks up :staging-latest immediately

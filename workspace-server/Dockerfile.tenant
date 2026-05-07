@@ -3,14 +3,34 @@
 # Serves both the API (Go on :8080) and the UI (Node.js on :3000) in a
 # single container. Go reverse-proxies unknown routes to canvas.
 #
-# Templates are cloned from standalone GitHub repos at build time so the
-# monorepo doesn't need to carry them. The repos are public; no auth.
+# Templates + plugins are NOT cloned at build time. They are pre-cloned
+# in the trusted CI context (or operator host) by
+# `scripts/clone-manifest.sh` into `.tenant-bundle-deps/` and COPYed in.
+# The reason: post-2026-05-06, every workspace-template-* repo on Gitea
+# (codex, crewai, deepagents, gemini-cli, langgraph) plus all 7
+# org-template-* repos are private, so the Docker build can't `git clone`
+# from inside the build context — there's no auth path that doesn't leak
+# the Gitea token into an image layer. Pre-cloning keeps the token in
+# the CI environment only; the resulting image carries the cloned trees
+# with `.git` already stripped (see clone-manifest.sh).
 #
-# Build context: repo root.
+# Build context: repo root, with `.tenant-bundle-deps/` populated by:
+#
+#     MOLECULE_GITEA_TOKEN=<persona-PAT> scripts/clone-manifest.sh \
+#       manifest.json \
+#       .tenant-bundle-deps/workspace-configs-templates \
+#       .tenant-bundle-deps/org-templates \
+#       .tenant-bundle-deps/plugins
+#
+# In CI this happens in publish-workspace-server-image.yml's "Pre-clone
+# manifest deps" step (uses AUTO_SYNC_TOKEN = devops-engineer persona).
+# For a manual operator-host build, source the same token from
+# /etc/molecule-bootstrap/agent-secrets.env first.
 #
 #   docker buildx build --platform linux/amd64 \
 #     -f workspace-server/Dockerfile.tenant \
-#     -t registry.fly.io/molecule-tenant:latest \
+#     -t <ECR>/molecule-ai/platform-tenant:latest \
+#     --build-arg GIT_SHA=<sha> --build-arg NEXT_PUBLIC_PLATFORM_URL= \
 #     --push .
 
 # ── Stage 1: Go platform binary ──────────────────────────────────────
@@ -55,14 +75,7 @@ ENV NEXT_PUBLIC_PLATFORM_URL=$NEXT_PUBLIC_PLATFORM_URL
 ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
 RUN npm run build
 
-# ── Stage 3: Clone templates + plugins from manifest.json ─────────────
-FROM alpine:3.20 AS templates
-RUN apk add --no-cache git jq
-COPY manifest.json /manifest.json
-COPY scripts/clone-manifest.sh /scripts/clone-manifest.sh
-RUN chmod +x /scripts/clone-manifest.sh && /scripts/clone-manifest.sh /manifest.json /workspace-configs-templates /org-templates /plugins
-
-# ── Stage 4: Runtime ──────────────────────────────────────────────────
+# ── Stage 3: Runtime ──────────────────────────────────────────────────
 FROM node:20-alpine
 RUN apk add --no-cache ca-certificates git tzdata openssh-client aws-cli
 
@@ -87,10 +100,13 @@ COPY --from=go-builder /platform /platform
 COPY --from=go-builder /memory-plugin /memory-plugin
 COPY workspace-server/migrations /migrations
 
-# Templates + plugins (cloned from GitHub in stage 3)
-COPY --from=templates /workspace-configs-templates /workspace-configs-templates
-COPY --from=templates /org-templates /org-templates
-COPY --from=templates /plugins /plugins
+# Templates + plugins (pre-cloned by scripts/clone-manifest.sh in the
+# trusted CI / operator-host context, .git already stripped — see
+# .tenant-bundle-deps/ in the build context). The Gitea token used to
+# clone them never enters this image.
+COPY .tenant-bundle-deps/workspace-configs-templates /workspace-configs-templates
+COPY .tenant-bundle-deps/org-templates /org-templates
+COPY .tenant-bundle-deps/plugins /plugins
 
 # Canvas standalone
 WORKDIR /canvas

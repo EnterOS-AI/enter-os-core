@@ -6,6 +6,29 @@
 #   ./scripts/clone-manifest.sh <manifest.json> <ws-templates-dir> <org-templates-dir> <plugins-dir>
 #
 # Requires: git, jq (lighter than python3 — ~2MB vs ~50MB in Alpine)
+#
+# Auth (optional):
+#   When MOLECULE_GITEA_TOKEN is set, embed it as the basic-auth password so
+#   private Gitea repos clone successfully. When unset, clone anonymously
+#   (works only for repos that are public on git.moleculesai.app).
+#
+#   This is the path the publish-workspace-server-image.yml workflow uses:
+#   it injects AUTO_SYNC_TOKEN (devops-engineer persona PAT, repo:read on
+#   the molecule-ai org) so the in-CI pre-clone step succeeds for ALL
+#   manifest entries — including the 5 private workspace-template-* repos
+#   (codex, crewai, deepagents, gemini-cli, langgraph) and all 7
+#   org-template-* repos.
+#
+#   The token never enters the Docker image: this script runs in the
+#   trusted CI context BEFORE `docker buildx build`, populates
+#   .tenant-bundle-deps/, then `Dockerfile.tenant` COPYs from there with
+#   the .git directories already stripped (see line ~67 below).
+#
+#   For backward compatibility — and so a fresh clone works without
+#   secrets when (eventually) the workspace-template-* repos flip public —
+#   the unset path remains a plain anonymous HTTPS clone. That path will
+#   FAIL with "could not read Username" on private repos today; CI MUST
+#   set MOLECULE_GITEA_TOKEN.
 
 set -euo pipefail
 
@@ -52,11 +75,23 @@ clone_category() {
         # every manifest entry.
         repo_gitea="$(echo "$repo" | awk -F/ '{ printf "%s", tolower($1); for (i=2; i<=NF; i++) printf "/%s", $i; print "" }')"
 
-        echo "  cloning $repo_gitea -> $target_dir/$name (ref=$ref)"
-        if [ "$ref" = "main" ]; then
-            git clone --depth=1 -q "https://git.moleculesai.app/${repo_gitea}.git" "$target_dir/$name"
+        # Build the clone URL. When MOLECULE_GITEA_TOKEN is set (CI path)
+        # embed it as basic-auth so private repos succeed. The username
+        # part ("oauth2") is conventional and ignored by Gitea — only the
+        # token-as-password is verified.
+        if [ -n "${MOLECULE_GITEA_TOKEN:-}" ]; then
+            clone_url="https://oauth2:${MOLECULE_GITEA_TOKEN}@git.moleculesai.app/${repo_gitea}.git"
+            display_url="https://oauth2:***@git.moleculesai.app/${repo_gitea}.git"
         else
-            git clone --depth=1 -q --branch "$ref" "https://git.moleculesai.app/${repo_gitea}.git" "$target_dir/$name"
+            clone_url="https://git.moleculesai.app/${repo_gitea}.git"
+            display_url="$clone_url"
+        fi
+
+        echo "  cloning $display_url -> $target_dir/$name (ref=$ref)"
+        if [ "$ref" = "main" ]; then
+            git clone --depth=1 -q "$clone_url" "$target_dir/$name"
+        else
+            git clone --depth=1 -q --branch "$ref" "$clone_url" "$target_dir/$name"
         fi
         CLONED=$((CLONED + 1))
         i=$((i + 1))
