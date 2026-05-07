@@ -75,38 +75,32 @@ jobs:
       # plugin was dropped + workspace-server/Dockerfile no longer
       # COPYs it.
 
-      - name: Configure AWS credentials for ECR
-        # GHCR was the pre-suspension target; the molecule-ai org on
-        # GitHub got swept 2026-05-06 and ghcr.io/molecule-ai/* is no
-        # longer reachable. Post-suspension target is the operator's
-        # ECR org (153263036946.dkr.ecr.us-east-2.amazonaws.com/
-        # molecule-ai/*), which already hosts platform-tenant +
-        # workspace-template-* + runner-base images. AWS creds come
-        # from the AWS_ACCESS_KEY_ID/SECRET secrets bound to the
-        # molecule-cp IAM user. Closes #161.
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-2
-
-      - name: Log in to ECR
-        id: ecr-login
-        uses: aws-actions/amazon-ecr-login@v2
-
-      # docker/setup-buildx-action removed (Task #173, 2026-05-07).
-      # Reason: on Gitea Actions, neither buildx driver works for our
-      # mounted-docker-socket runner topology:
-      #   - docker-container driver: spawns a buildkit container that
-      #     doesn't share the host's ECR auth (401 Unauthorized on push)
-      #   - docker driver: delegates to the operator-host docker daemon,
-      #     which doesn't see the runner container's ECR auth either
-      # Plain `docker build` + `docker push` from the runner container
-      # works because both use the same docker socket + the runner's
-      # config.json (populated by `aws ecr get-login-password | docker
-      # login` in the next step). Buildx's value here was only multi-arch
-      # builds, but we only ship linux/amd64 tenant images, so the
-      # complexity isn't earning anything.
+      # ECR auth + buildx setup are now inline in each build step
+      # below (Task #173, 2026-05-07).
+      #
+      # Why moved inline: aws-actions/configure-aws-credentials@v4 +
+      # aws-actions/amazon-ecr-login@v2 + docker/setup-buildx-action
+      # all left auth state in places that the actual `docker push`
+      # couldn't see on Gitea Actions:
+      #   - The actions wrote to a step-scoped DOCKER_CONFIG path
+      #     that didn't survive into subsequent shell steps.
+      #   - Buildx couldn't bridge the runner container ↔
+      #     operator-host docker daemon auth gap (401 on the
+      #     docker-container driver, "no basic auth credentials"
+      #     with the action-driven login).
+      #
+      # Doing AWS+ECR auth inline (`aws ecr get-login-password |
+      # docker login`) in the same shell step as `docker build` +
+      # `docker push` is the operator-host manual approach, mapped
+      # 1:1 into CI. Auth state is guaranteed to live in the env that
+      # `docker push` actually runs from.
+      #
+      # Post-suspension target is the operator's ECR org
+      # (153263036946.dkr.ecr.us-east-2.amazonaws.com/molecule-ai/*),
+      # which already hosts platform-tenant + workspace-template-* +
+      # runner-base images. AWS creds come from the
+      # AWS_ACCESS_KEY_ID/SECRET secrets bound to the molecule-cp
+      # IAM user. Closes #161.
 
       - name: Compute tags
         id: tags
@@ -200,8 +194,17 @@ jobs:
           TAG_LATEST: staging-latest
           GIT_SHA: ${{ github.sha }}
           REPO: ${{ github.repository }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-2
         run: |
           set -euo pipefail
+          # ECR auth in-step so config.json is populated in the same
+          # shell env that runs `docker push`. ECR get-login-password
+          # tokens last 12h, plenty for a single-step build+push.
+          ECR_REGISTRY="${IMAGE_NAME%%/*}"
+          aws ecr get-login-password --region us-east-2 | \
+            docker login --username AWS --password-stdin "${ECR_REGISTRY}"
           docker build \
             --file ./workspace-server/Dockerfile \
             --build-arg GIT_SHA="${GIT_SHA}" \
@@ -232,8 +235,18 @@ jobs:
           TAG_LATEST: staging-latest
           GIT_SHA: ${{ github.sha }}
           REPO: ${{ github.repository }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-2
         run: |
           set -euo pipefail
+          # Re-login: the platform-image step's docker login wrote to
+          # the same config.json, so this is technically redundant — but
+          # making each push step self-contained keeps the workflow
+          # robust to step reordering / future extraction.
+          ECR_REGISTRY="${TENANT_IMAGE_NAME%%/*}"
+          aws ecr get-login-password --region us-east-2 | \
+            docker login --username AWS --password-stdin "${ECR_REGISTRY}"
           docker build \
             --file ./workspace-server/Dockerfile.tenant \
             --build-arg NEXT_PUBLIC_PLATFORM_URL= \
