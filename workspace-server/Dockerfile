@@ -1,7 +1,15 @@
-# Platform-only image (no canvas). Used by publish-platform-image workflow
-# for GHCR + Fly registry. Tenant image uses Dockerfile.tenant instead.
+# Platform-only image (no canvas). Used by publish-workspace-server-image
+# workflow for ECR. Tenant image uses Dockerfile.tenant instead.
 #
-# Build context: repo root.
+# Templates + plugins are pre-cloned by scripts/clone-manifest.sh (in CI
+# or on the operator host) into .tenant-bundle-deps/ — same pattern as
+# Dockerfile.tenant. See that file's header for the full rationale; the
+# short version is that post-2026-05-06 every workspace-template-* and
+# org-template-* repo on Gitea is private, so an in-image `git clone`
+# has no auth path that doesn't leak the Gitea token into a layer.
+#
+# Build context: repo root, with `.tenant-bundle-deps/` populated by the
+# workflow's "Pre-clone manifest deps" step (Task #173).
 
 FROM golang:1.25-alpine AS builder
 WORKDIR /app
@@ -26,21 +34,18 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags "-X github.com/Molecule-AI/molecule-monorepo/platform/internal/buildinfo.GitSHA=${GIT_SHA}" \
     -o /memory-plugin ./cmd/memory-plugin-postgres
 
-# Clone templates + plugins at build time from manifest.json
-FROM alpine:3.20 AS templates
-RUN apk add --no-cache git jq
-COPY manifest.json /manifest.json
-COPY scripts/clone-manifest.sh /scripts/clone-manifest.sh
-RUN chmod +x /scripts/clone-manifest.sh && /scripts/clone-manifest.sh /manifest.json /workspace-configs-templates /org-templates /plugins
-
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates git tzdata wget
 COPY --from=builder /platform /platform
 COPY --from=builder /memory-plugin /memory-plugin
 COPY workspace-server/migrations /migrations
-COPY --from=templates /workspace-configs-templates /workspace-configs-templates
-COPY --from=templates /org-templates /org-templates
-COPY --from=templates /plugins /plugins
+# Templates + plugins (pre-cloned by scripts/clone-manifest.sh in the
+# trusted CI / operator-host context, .git already stripped). The Gitea
+# token used to clone them never enters this image — same shape as
+# Dockerfile.tenant.
+COPY .tenant-bundle-deps/workspace-configs-templates /workspace-configs-templates
+COPY .tenant-bundle-deps/org-templates /org-templates
+COPY .tenant-bundle-deps/plugins /plugins
 # Non-root runtime with Docker socket access for workspace provisioning.
 RUN addgroup -g 1000 platform && adduser -u 1000 -G platform -s /bin/sh -D platform
 EXPOSE 8080
