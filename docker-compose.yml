@@ -212,8 +212,8 @@ services:
     #   docker compose pull canvas && docker compose up -d canvas
     # First-time local setup or testing unreleased changes — build from source:
     #   docker compose build canvas && docker compose up -d canvas
-    # Note: GHCR images are private — `docker login ghcr.io` required before pull.
-    image: ghcr.io/molecule-ai/canvas:latest
+    # Note: ECR images require AWS auth — `aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin 153263036946.dkr.ecr.us-east-2.amazonaws.com` before pull.
+    image: 153263036946.dkr.ecr.us-east-2.amazonaws.com/molecule-ai/canvas:latest
     build:
       context: ./canvas
       dockerfile: Dockerfile
