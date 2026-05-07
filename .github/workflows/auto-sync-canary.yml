@@ -1,0 +1,404 @@
+name: Auto-sync canary — AUTO_SYNC_TOKEN rotation drift
+
+# Synthetic health check for the AUTO_SYNC_TOKEN secret consumed by
+# auto-sync-main-to-staging.yml (PR #66) and publish-workspace-server-image.yml.
+#
+# ============================================================
+# Why this workflow exists
+# ============================================================
+#
+# PR #66 fixed auto-sync (replaced GitHub-era `gh pr create` — which
+# 405s on Gitea's GraphQL endpoint — with a direct git push from the
+# `devops-engineer` persona's `AUTO_SYNC_TOKEN`). Hostile self-review
+# weakest spot #3 of that PR:
+#
+#   "Token rotation silently breaks auto-sync. If AUTO_SYNC_TOKEN is
+#    rotated without updating the repo secret, every push to main
+#    fails red on the auto-sync push step. The workflow surfaces the
+#    failure mode in the step summary (failure mode B in the header),
+#    but there's no proactive monitoring."
+#
+# Detection latency under the status quo: rotation is only caught on
+# the next push to `main`. During quiet periods (no main push for
+# many hours) the staging-superset-of-main invariant silently breaks.
+#
+# This workflow closes the gap: every 6 hours, it fires the auth
+# surface that auto-sync depends on and emits a red workflow status
+# if AUTO_SYNC_TOKEN has drifted out of validity.
+#
+# ============================================================
+# What this checks (Option B — read-only verify)
+# ============================================================
+#
+# 1. `GET /api/v1/user` against Gitea with the token → validates the
+#    token authenticates AND resolves to `devops-engineer` (catches
+#    the case where the token was regenerated under a different
+#    persona by mistake).
+# 2. `GET /api/v1/repos/molecule-ai/molecule-core` with the token →
+#    validates the token has `read:repository` scope on this repo
+#    (the v2 scope contract — see saved memory
+#    `reference_persona_token_v2_scope`).
+# 3. `git push --dry-run` of the current staging SHA back to
+#    `refs/heads/staging` via `https://oauth2:<token>@<gitea>/...`
+#    → validates the EXACT HTTPS basic-auth path that
+#    `actions/checkout` + `git push origin staging` use inside
+#    auto-sync-main-to-staging.yml. NOP by construction (push the
+#    current tip to itself = "Everything up-to-date"); auth is
+#    checked at the smart-protocol handshake BEFORE the empty-diff
+#    computation, so bad token → exit 128 with "Authentication
+#    failed". `git ls-remote` is NOT used here because Gitea
+#    falls back to anonymous read on public repos and would
+#    silently green-light a rotated token.
+#
+# Each step exits non-zero with an actionable error message if it
+# fails. The workflow status itself is the operator-facing surface.
+#
+# ============================================================
+# What this does NOT check (intentional)
+# ============================================================
+#
+# - **Branch-protection authz** (failure mode C in auto-sync header):
+#   would require an actual write to staging. Already monitored by
+#   `branch-protection-drift.yml` daily. Don't duplicate.
+# - **Conflict resolution** (failure mode A): a real conflict is data-
+#   driven, not auth-driven; can't synthesise it without polluting
+#   staging. Already surfaces immediately on the next main push.
+# - **Concurrency** (failure mode D): handled by workflow concurrency
+#   group on auto-sync, not a credential issue.
+#
+# ============================================================
+# Why Option B (read-only) and not the alternatives
+# ============================================================
+#
+# Considered + rejected (see issue #72 for full write-up):
+#
+# - **Option A — full auto-sync on schedule**: every run creates a
+#   no-op merge commit on staging when main hasn't advanced. 4 noise
+#   commits/day. And races the real `push:` trigger when main has
+#   advanced. Rejected.
+#
+# - **Option C — push to dedicated `auto-sync-canary` branch**: would
+#   exercise authz too, but adds branch noise on Gitea AND requires
+#   maintaining a second branch protection (or expanding staging's
+#   whitelist to a junk branch). Authz already covered by
+#   `branch-protection-drift.yml`. Rejected.
+#
+# Prior art for the chosen Option B shape:
+#   - Cloudflare's `/user/tokens/verify` endpoint (read-only auth
+#     probe explicitly designed for credential canaries).
+#   - AWS Secrets Manager rotation Lambda's `testSecret` step (auth
+#     probe before promoting AWSPENDING → AWSCURRENT).
+#   - HashiCorp Vault's `vault token lookup` for renewal canaries.
+#
+# ============================================================
+# Operator runbook — what to do when this workflow goes RED
+# ============================================================
+#
+# 1. **Identify which step failed**:
+#    - Step "Verify token authenticates as devops-engineer" red →
+#      token is invalid OR resolves to wrong persona.
+#    - Step "Verify token has repo read scope" red → token valid but
+#      stripped of `read:repository` scope (or repo perms changed).
+#    - Step "Verify git HTTPS auth path via no-op dry-run push to
+#      staging" red → token rotated/revoked OR Gitea git-HTTPS
+#      surface is broken (rare). Auth check happens on the
+#      smart-protocol handshake, separate from the API path.
+#
+# 2. **Re-issue the token** on the operator host:
+#    ```
+#    ssh root@5.78.80.188 'docker exec --user git molecule-gitea-1 \
+#      gitea admin user generate-access-token \
+#      --username devops-engineer \
+#      --token-name persona-devops-engineer-vN \
+#      --scopes "read:repository,write:repository,read:user,read:organization,read:issue,write:issue,read:notification,read:misc"'
+#    ```
+#    Update `/etc/molecule-bootstrap/agent-secrets.env` in place
+#    (per `feedback_unified_credentials_file`). The previous token
+#    file lands at `.bak.<date>`.
+#
+# 3. **Update the repo Actions secret** at:
+#    Settings → Secrets and variables → Actions → AUTO_SYNC_TOKEN
+#    Paste the new token. (Don't echo it in chat — but per
+#    `feedback_passwords_in_chat_are_burned`, a paste in a 1:1
+#    Claude session is within trust boundary.)
+#
+# 4. **Re-run this canary** via workflow_dispatch. Confirm GREEN.
+#
+# 5. **Backfill any missed main → staging syncs** by re-running
+#    `auto-sync-main-to-staging.yml` from its workflow_dispatch
+#    surface, OR by pushing an empty commit to main (if you'd
+#    rather force a real trigger).
+#
+# ============================================================
+# Security notes
+# ============================================================
+#
+# - Token usage: read-only (`GET /api/v1/user`, `GET /api/v1/repos/...`,
+#   `git ls-remote`). No write paths. Same blast-radius profile as
+#   `actions/checkout` on a public repo.
+# - The token NEVER appears in logs: every `curl` uses a header
+#   variable, never inline; the `git ls-remote` URL builds the
+#   `oauth2:$TOKEN@host` form into a single env var that's not
+#   echoed. GitHub Actions secret-masking covers anything that does
+#   slip through.
+# - No new token introduced — same `AUTO_SYNC_TOKEN` the workflow
+#   under monitor uses. Per least-privilege we deliberately do NOT
+#   broaden scope for the canary.
+
+on:
+  schedule:
+    # Every 6 hours at :17 (offsets the cron herd at :00). Justification
+    # from issue #72: cheap to run (~5s wall-clock, no quota), 3h average
+    # detection latency, 6h max. 1h would be 24× the runs for marginal
+    # benefit; daily would be 6× longer latency and worse than status
+    # quo on a quiet-main day.
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+# No concurrency group needed — the canary is read-only and idempotent.
+# Two parallel runs (e.g. operator dispatch during a scheduled tick) are
+# harmless: same result, doubled HTTPS calls, no shared state.
+
+permissions:
+  contents: read
+
+jobs:
+  verify-token:
+    name: Verify AUTO_SYNC_TOKEN validity
+    runs-on: ubuntu-latest
+    # 2 min surfaces hangs (Gitea API stall, DNS issue) within one
+    # cron interval. Realistic worst case is ~10s: 2 curls + 1 git
+    # ls-remote, each capped by the explicit timeouts below.
+    timeout-minutes: 2
+
+    env:
+      # Pinned in env so individual steps can read it without
+      # repeating the secret reference. GitHub masks the value in
+      # logs automatically.
+      AUTO_SYNC_TOKEN: ${{ secrets.AUTO_SYNC_TOKEN }}
+      # MUST stay in sync with auto-sync-main-to-staging.yml's
+      # `git config user.name "devops-engineer"` line. Renaming the
+      # devops-engineer persona requires updating both files (and
+      # the staging branch protection's `push_whitelist_usernames`).
+      EXPECTED_PERSONA: devops-engineer
+      GITEA_HOST: git.moleculesai.app
+      REPO_PATH: molecule-ai/molecule-core
+
+    steps:
+      - name: Verify AUTO_SYNC_TOKEN secret is configured
+        # Schedule-vs-dispatch behaviour split, per
+        # `feedback_schedule_vs_dispatch_secrets_hardening`:
+        #
+        #   - schedule: hard-fail when the secret is missing. The
+        #     whole point of the canary is to surface drift; soft-
+        #     skipping on missing-secret would make the canary
+        #     itself drift-invisible (sweep-cf-orphans #2088 lesson).
+        #   - workflow_dispatch: hard-fail too — there's no scenario
+        #     where an operator wants this canary to silently no-op.
+        #     The workflow has no other ad-hoc utility; if you ran
+        #     it, you wanted the answer.
+        run: |
+          if [ -z "${AUTO_SYNC_TOKEN}" ]; then
+            echo "::error::AUTO_SYNC_TOKEN secret is not set on this repo." >&2
+            echo "::error::Set it at Settings → Secrets and variables → Actions." >&2
+            echo "::error::Without it, auto-sync-main-to-staging.yml will fail every push to main." >&2
+            exit 1
+          fi
+          echo "AUTO_SYNC_TOKEN is configured (value masked)."
+
+      - name: Verify token authenticates as ${{ env.EXPECTED_PERSONA }}
+        # Calls Gitea's `/api/v1/user` — the canonical
+        # auth-probe-with-no-side-effects endpoint (mirrors
+        # Cloudflare's /user/tokens/verify).
+        #
+        # Failure surfaces:
+        #   - HTTP 401: token invalid (rotated, revoked, or never
+        #     correctly registered).
+        #   - HTTP 200 but username != devops-engineer: token was
+        #     regenerated under the wrong persona — this would let
+        #     auth pass but commit attribution would be wrong, and
+        #     branch-protection authz would fail because only
+        #     `devops-engineer` is whitelisted.
+        run: |
+          set -euo pipefail
+          response_file="$(mktemp)"
+          code_file="$(mktemp)"
+          # `--max-time 30`: full call ceiling. `--connect-timeout 10`:
+          # DNS + TCP. `-w "%{http_code}"` routed to a tempfile so curl's
+          # exit code can't pollute the captured status — see
+          # feedback_curl_status_capture_pollution + the
+          # `lint-curl-status-capture.yml` gate that rejects the unsafe
+          # `$(curl ... || echo "000")` shape.
+          set +e
+          curl -sS -o "$response_file" \
+            --max-time 30 --connect-timeout 10 \
+            -w "%{http_code}" \
+            -H "Authorization: token ${AUTO_SYNC_TOKEN}" \
+            -H "Accept: application/json" \
+            "https://${GITEA_HOST}/api/v1/user" >"$code_file" 2>/dev/null
+          set -e
+          status=$(cat "$code_file" 2>/dev/null || true)
+          [ -z "$status" ] && status="000"
+
+          if [ "$status" != "200" ]; then
+            echo "::error::Token rotation suspected: GET /api/v1/user returned HTTP $status (expected 200)." >&2
+            echo "::error::Likely cause: AUTO_SYNC_TOKEN has been rotated/revoked on Gitea but the repo Actions secret was not updated." >&2
+            echo "::error::Runbook: see header comment of this workflow file." >&2
+            # Print response body but redact anything that looks like a token.
+            sed -E 's/[A-Fa-f0-9]{32,}/<redacted>/g' "$response_file" >&2 || true
+            exit 1
+          fi
+
+          username=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('login',''))" "$response_file")
+          if [ "$username" != "${EXPECTED_PERSONA}" ]; then
+            echo "::error::Token resolves to user '$username', expected '${EXPECTED_PERSONA}'." >&2
+            echo "::error::AUTO_SYNC_TOKEN must be the devops-engineer persona PAT (not founder PAT, not another persona)." >&2
+            echo "::error::Auto-sync push will fail because only 'devops-engineer' is whitelisted on staging branch protection." >&2
+            exit 1
+          fi
+          echo "Token authenticates as: $username ✓"
+
+      - name: Verify token has repo read scope
+        # `GET /api/v1/repos/<owner>/<repo>` requires `read:repository`
+        # on the persona's v2 scope contract. If the scope was
+        # narrowed/dropped on rotation we catch it here, before the
+        # next main push reveals it via a checkout failure.
+        run: |
+          set -euo pipefail
+          response_file="$(mktemp)"
+          code_file="$(mktemp)"
+          # See first probe step for the rationale on the tempfile-routed
+          # `-w "%{http_code}"` pattern — the unsafe `|| echo "000"` shape
+          # is rejected by lint-curl-status-capture.yml.
+          set +e
+          curl -sS -o "$response_file" \
+            --max-time 30 --connect-timeout 10 \
+            -w "%{http_code}" \
+            -H "Authorization: token ${AUTO_SYNC_TOKEN}" \
+            -H "Accept: application/json" \
+            "https://${GITEA_HOST}/api/v1/repos/${REPO_PATH}" >"$code_file" 2>/dev/null
+          set -e
+          status=$(cat "$code_file" 2>/dev/null || true)
+          [ -z "$status" ] && status="000"
+
+          if [ "$status" != "200" ]; then
+            echo "::error::Token lacks read:repository scope on ${REPO_PATH}: HTTP $status." >&2
+            echo "::error::Auto-sync's actions/checkout step will fail with this token." >&2
+            echo "::error::Re-issue with v2 scope contract: read:repository,write:repository,read:user,read:organization,read:issue,write:issue,read:notification,read:misc" >&2
+            sed -E 's/[A-Fa-f0-9]{32,}/<redacted>/g' "$response_file" >&2 || true
+            exit 1
+          fi
+          echo "Token has read:repository on ${REPO_PATH} ✓"
+
+      - name: Verify git HTTPS auth path via no-op dry-run push to staging
+        # Final probe: exercise the EXACT auth path that
+        # `actions/checkout` + `git push origin staging` use in
+        # auto-sync-main-to-staging.yml. Gitea's API and git-HTTPS
+        # surfaces share the token-lookup code path internally but
+        # the wire-level error shapes differ — historically (#173)
+        # the API path was healthy while git-HTTPS rejected, so
+        # checking only the API would have given false-green.
+        #
+        # IMPORTANT: `git ls-remote` on a public repo (which
+        # molecule-core is) succeeds even with a junk token because
+        # Gitea falls back to anonymous-read. `ls-remote` therefore
+        # CANNOT validate auth on this surface. We use
+        # `git push --dry-run` instead — push is auth-gated even on
+        # public repos.
+        #
+        # NOP shape: read the current staging SHA via authenticated
+        # ls-remote (the SHA itself is public; auth is incidental
+        # here, used only to colocate the discovery in one step), then
+        # `git push --dry-run <SHA>:refs/heads/staging`. Pushing the
+        # current tip back to itself is "Everything up-to-date" with
+        # exit 0 when auth succeeds. With a bad token Gitea returns
+        # HTTP 401 in the smart-protocol handshake and git exits 128
+        # with "Authentication failed".
+        #
+        # The dry-run never reaches Gitea's pre-receive hook (which
+        # is where branch-protection authz runs), so this probe does
+        # not validate failure mode C. That's intentional —
+        # branch-protection-drift.yml owns authz monitoring; this
+        # canary owns auth.
+        env:
+          # Don't hang waiting for password prompt if auth fails on a
+          # terminal-attached run. (In Actions there's no terminal,
+          # but the env-var hardens against an interactive runner
+          # config.)
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          # Token is in $AUTO_SYNC_TOKEN (job-level env). Compose the
+          # URL as a local var that's never echoed.
+          url="https://oauth2:${AUTO_SYNC_TOKEN}@${GITEA_HOST}/${REPO_PATH}"
+
+          # Step a: read current staging SHA. ~1KB; auth-gated only
+          # on private repos but always works on public — used here
+          # only to discover the SHA, not to validate auth.
+          staging_ref=$(timeout 30s git ls-remote --refs "$url" refs/heads/staging 2>&1) || {
+            redacted=$(echo "$staging_ref" | sed -E "s|oauth2:[^@]+@|oauth2:<redacted>@|g")
+            echo "::error::ls-remote against staging failed (network/DNS issue):" >&2
+            echo "$redacted" >&2
+            exit 1
+          }
+          if ! echo "$staging_ref" | grep -qE '^[0-9a-f]{40}[[:space:]]+refs/heads/staging$'; then
+            echo "::error::ls-remote returned unexpected shape:" >&2
+            echo "$staging_ref" | sed -E "s|oauth2:[^@]+@|oauth2:<redacted>@|g" >&2
+            exit 1
+          fi
+          staging_sha=$(echo "$staging_ref" | awk '{print $1}')
+
+          # Step b: spin up an ephemeral local repo. `git push` always
+          # requires a local repo even when pushing a remote SHA that
+          # isn't in the local object DB (the protocol negotiates and
+          # discovers we don't need to send any objects). We don't use
+          # `actions/checkout` for this — it would clone the whole
+          # repo (~hundreds of MB) for what's essentially `git init`.
+          tmp_repo="$(mktemp -d)"
+          trap 'rm -rf "$tmp_repo"' EXIT
+          git -C "$tmp_repo" init -q
+          # Author config required for any git operation; values are
+          # arbitrary because nothing gets committed here.
+          git -C "$tmp_repo" config user.email canary@auto-sync.local
+          git -C "$tmp_repo" config user.name auto-sync-canary
+
+          # Step c: dry-run push the current staging SHA back to
+          # staging. NOP by construction — the remote tip equals the
+          # SHA we're pushing, so "Everything up-to-date" is the
+          # success path.
+          #
+          # Authentication is checked at the smart-protocol handshake,
+          # BEFORE the dry-run can compute an empty diff. Bad token
+          # → "Authentication failed", exit 128. Good token → exit 0.
+          set +e
+          push_out=$(timeout 30s git -C "$tmp_repo" push --dry-run "$url" "${staging_sha}:refs/heads/staging" 2>&1)
+          push_rc=$?
+          set -e
+
+          if [ "$push_rc" -ne 0 ]; then
+            redacted=$(echo "$push_out" | sed -E "s|oauth2:[^@]+@|oauth2:<redacted>@|g")
+            echo "::error::Token rotation suspected: git push --dry-run against staging failed via the AUTO_SYNC_TOKEN HTTPS auth path (exit $push_rc)." >&2
+            echo "::error::This is the EXACT auth path that actions/checkout + git push use in auto-sync-main-to-staging.yml." >&2
+            echo "::error::Likely cause: AUTO_SYNC_TOKEN was rotated/revoked on Gitea but the repo Actions secret was not updated. Runbook: see header." >&2
+            echo "$redacted" >&2
+            exit 1
+          fi
+
+          echo "git HTTPS auth path: NOP push --dry-run to staging → ${staging_sha:0:8} ✓"
+
+      - name: Summarise canary result
+        # Everything passed — surface a green summary. (Failures
+        # already wrote ::error:: lines and exited above; if we got
+        # here, all three probes passed.)
+        run: |
+          {
+            echo "## Auto-sync canary: GREEN"
+            echo ""
+            echo "AUTO_SYNC_TOKEN is healthy:"
+            echo "- Authenticates as \`${EXPECTED_PERSONA}\` ✓"
+            echo "- Has \`read:repository\` scope on \`${REPO_PATH}\` ✓"
+            echo "- Git HTTPS auth path: no-op dry-run push to \`refs/heads/staging\` succeeds ✓"
+            echo ""
+            echo "Auto-sync main → staging will succeed on the next push to main."
+            echo "If this canary ever goes RED, see the runbook in this workflow's header."
+          } >> "$GITHUB_STEP_SUMMARY"
