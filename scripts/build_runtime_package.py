@@ -278,7 +278,7 @@ include = ["molecule_runtime*"]
 README_TEMPLATE = """\
 # molecule-ai-workspace-runtime
 
-Shared workspace runtime for [Molecule AI](https://github.com/Molecule-AI/molecule-core)
+Shared workspace runtime for [Molecule AI](https://git.moleculesai.app/molecule-ai/molecule-core)
 agent adapters. Installed by every workspace template image
 (`workspace-template-claude-code`, `-langgraph`, `-hermes`, etc.) to provide
 A2A delegation, heartbeat, memory, plugin loading, and skill management.
@@ -396,7 +396,7 @@ If you don't need real-time push, the default poll path works
 universally with no extra setup; both modes converge on the same
 `inbox_pop` ack so messages never duplicate.
 
-See [`docs/workspace-runtime-package.md`](https://github.com/Molecule-AI/molecule-core/blob/main/docs/workspace-runtime-package.md)
+See [`docs/workspace-runtime-package.md`](https://git.moleculesai.app/molecule-ai/molecule-core/src/branch/main/docs/workspace-runtime-package.md)
 for the publish flow and architecture.
 """
 
