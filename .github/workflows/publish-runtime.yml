@@ -319,15 +319,22 @@ jobs:
             exit 1
           fi
 
-          # 8 cascade-active workspace templates. codex was in the v1
-          # list but has no .github/workflows/publish-image.yml — never
-          # part of the cascade in practice; dropped here to match
-          # ground truth. Long-term goal: derive this list from
-          # manifest.json so it can't drift from E2E scope (RFC #388
-          # Phase-1 invariant).
+          # All 9 workspace templates declared in manifest.json. The list
+          # MUST stay aligned with manifest.json's workspace_templates —
+          # cascade-list-drift-gate.yml enforces this in CI per the
+          # codex-stuck-on-stale-runtime invariant from PR #2556.
+          # Long-term goal: derive this list from manifest.json so it
+          # can't drift even on a manifest edit (RFC #388 Phase-1).
+          #
+          # Per-template publish-image.yml presence is checked at
+          # cascade-time below: codex doesn't ship one today, so the
+          # cascade soft-skips it with an informational message rather
+          # than dropping it from this list (which would re-introduce
+          # the drift the gate exists to catch).
           GITEA_URL="${GITEA_URL:-https://git.moleculesai.app}"
-          TEMPLATES="claude-code hermes openclaw langgraph crewai autogen deepagents gemini-cli"
+          TEMPLATES="claude-code hermes openclaw codex langgraph crewai autogen deepagents gemini-cli"
           FAILED=""
+          SKIPPED=""
 
           # Configure git identity once. The persona owning DISPATCH_TOKEN
           # is the same identity that authored this commit on each
@@ -341,6 +348,24 @@ jobs:
           for tpl in $TEMPLATES; do
             REPO="molecule-ai/molecule-ai-workspace-template-$tpl"
             CLONE="$WORKDIR/$tpl"
+
+            # Pre-check: skip templates without a publish-image.yml.
+            # The cascade's job is to trip the template's on-push
+            # rebuild — if there's no rebuild workflow, pushing a
+            # .runtime-version commit is just noise on the target
+            # repo. Use the Gitea contents API (no clone required for
+            # the probe). 200 = present; 404 = absent.
+            HTTP=$(curl -sS -o /dev/null -w "%{http_code}" \
+              -H "Authorization: token $DISPATCH_TOKEN" \
+              "$GITEA_URL/api/v1/repos/$REPO/contents/.github/workflows/publish-image.yml")
+            if [ "$HTTP" = "404" ]; then
+              echo "↷ $tpl has no publish-image.yml — soft-skip (informational; manifest still tracks it)"
+              SKIPPED="$SKIPPED $tpl"
+              continue
+            fi
+            if [ "$HTTP" != "200" ]; then
+              echo "::warning::$tpl publish-image.yml probe returned HTTP $HTTP — proceeding anyway, push will surface the real failure if any"
+            fi
 
             # Use a per-template attempt loop so a transient race (e.g.
             # human pushing to the same template at the same instant)
@@ -404,4 +429,8 @@ jobs:
             echo "::error::PyPI publish succeeded; failed templates lag the new version. Re-run this workflow_dispatch with the same version to retry only the laggers (idempotent — already-cascaded templates skip)."
             exit 1
           fi
-          echo "Cascade complete: 8 templates pinned to $VERSION."
+          if [ -n "$SKIPPED" ]; then
+            echo "Cascade complete: pinned $VERSION on cascade-active templates. Soft-skipped (no publish-image.yml):$SKIPPED"
+          else
+            echo "Cascade complete: $VERSION pinned across all manifest workspace_templates."
+          fi
