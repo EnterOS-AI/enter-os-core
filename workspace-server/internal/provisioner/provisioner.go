@@ -765,6 +765,21 @@ func ApplyTierConfig(hostCfg *container.HostConfig, cfg WorkspaceConfig, configM
 
 // CopyTemplateToContainer copies files from a host directory into /configs in the container.
 func (p *Provisioner) CopyTemplateToContainer(ctx context.Context, containerID, templatePath string) error {
+	// Resolve symlinks at the root before walking. filepath.Walk does
+	// NOT follow a symlink that IS the root — it Lstats the path, sees
+	// a symlink (non-directory), and emits exactly one entry without
+	// descending. With cross-repo composition (parent template's
+	// dev-lead → ../sibling-repo/dev-lead/, see internal#77), the
+	// caller routinely passes a symlink as templatePath. Without this
+	// resolution the workspace's /configs/ mount lands empty.
+	//
+	// Security: templatePath has already passed resolveInsideRoot's
+	// path-string check at the call site — the trust boundary is the
+	// operator-side /org-templates/ filesystem layout, not this
+	// resolution step.
+	if resolved, err := filepath.EvalSymlinks(templatePath); err == nil {
+		templatePath = resolved
+	}
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 

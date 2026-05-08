@@ -1,8 +1,11 @@
 package handlers
 
 import (
+	"archive/tar"
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -96,5 +99,151 @@ func TestLocalE2E_DevDepartmentExtraction(t *testing.T) {
 		if !found[want] {
 			t.Errorf("missing expected workspace %q", want)
 		}
+	}
+}
+
+// Stage-2 of the local e2e: prove every resolved workspace's `files_dir`
+// path actually consumes correctly through the rest of the import chain.
+// resolveYAMLIncludes returning a populated OrgTemplate is necessary but
+// not sufficient — `POST /org/import` then does:
+//
+//   1. resolveInsideRoot(orgBaseDir, ws.FilesDir) → must return a path
+//      that exists and stat-resolves to a directory (org_import.go:313-317).
+//   2. CopyTemplateToContainer(ctx, containerID, templatePath) → walks
+//      the dir with filepath.Walk and tars its contents into the
+//      workspace's /configs/ mount (provisioner.go:766-820).
+//
+// This stage-2 test exercises both #1 and #2 against every workspace in
+// the resolved tree, mimicking what the platform does post-include-
+// resolution. Catches: files_dir paths that don't resolve through the
+// symlink, paths that exist but are empty (silently produces empty
+// /configs/), or filepath.Walk failing to descend through cross-repo
+// symlink boundaries.
+func TestLocalE2E_FilesDirConsumption(t *testing.T) {
+	parent := "/tmp/local-e2e-deploy/molecule-dev"
+	if _, err := os.Stat(filepath.Join(parent, "org.yaml")); err != nil {
+		t.Skipf("local-e2e fixture not present at %s: %v", parent, err)
+	}
+
+	orgYAML, err := os.ReadFile(filepath.Join(parent, "org.yaml"))
+	if err != nil {
+		t.Fatalf("read org.yaml: %v", err)
+	}
+	expanded, err := resolveYAMLIncludes(orgYAML, parent)
+	if err != nil {
+		t.Fatalf("resolveYAMLIncludes: %v", err)
+	}
+	var tmpl OrgTemplate
+	if err := yaml.Unmarshal(expanded, &tmpl); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// Flatten every workspace — including children, grandchildren, etc.
+	flat := []OrgWorkspace{}
+	var walk func([]OrgWorkspace)
+	walk = func(ws []OrgWorkspace) {
+		for _, w := range ws {
+			flat = append(flat, w)
+			walk(w.Children)
+		}
+	}
+	walk(tmpl.Workspaces)
+
+	checked := 0
+	for _, w := range flat {
+		if w.FilesDir == "" {
+			continue // workspace declared inline (no files_dir) — skip
+		}
+		checked++
+		t.Run(w.Name+"/"+w.FilesDir, func(t *testing.T) {
+			// Step 1: resolveInsideRoot returns a path that's-inside-root.
+			abs, err := resolveInsideRoot(parent, w.FilesDir)
+			if err != nil {
+				t.Fatalf("resolveInsideRoot(%q, %q): %v", parent, w.FilesDir, err)
+			}
+			info, err := os.Stat(abs)
+			if err != nil {
+				t.Fatalf("stat %q (resolved from files_dir %q): %v", abs, w.FilesDir, err)
+			}
+			if !info.IsDir() {
+				t.Fatalf("files_dir %q resolved to %q which is not a directory", w.FilesDir, abs)
+			}
+
+			// Step 2: walk the dir like CopyTemplateToContainer does.
+			// Mirror the platform's symlink-resolution at the root —
+			// filepath.Walk doesn't descend into a symlink leaf, so
+			// CopyTemplateToContainer (provisioner.go) calls
+			// EvalSymlinks on templatePath first. Replicate exactly.
+			if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+				abs = resolved
+			}
+			var buf bytes.Buffer
+			tw := tar.NewWriter(&buf)
+			fileCount := 0
+			fileNames := []string{}
+			err = filepath.Walk(abs, func(path string, info os.FileInfo, err error) error {
+				if err != nil {
+					return err
+				}
+				rel, err := filepath.Rel(abs, path)
+				if err != nil {
+					return err
+				}
+				if rel == "." {
+					return nil
+				}
+				header, _ := tar.FileInfoHeader(info, "")
+				header.Name = rel
+				if err := tw.WriteHeader(header); err != nil {
+					return err
+				}
+				if !info.IsDir() {
+					fileCount++
+					fileNames = append(fileNames, rel)
+					data, err := os.ReadFile(path)
+					if err != nil {
+						return err
+					}
+					header.Size = int64(len(data))
+					tw.Write(data)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("filepath.Walk %q (mimics CopyTemplateToContainer): %v", abs, err)
+			}
+			tw.Close()
+
+			if fileCount == 0 {
+				t.Errorf("files_dir %q at %q is empty — CopyTemplateToContainer would produce empty /configs/",
+					w.FilesDir, abs)
+			}
+
+			// Sanity: every workspace folder should have AT LEAST one of
+			// {workspace.yaml, system-prompt.md, initial-prompt.md} —
+			// these are the markers a workspace folder is recognizable
+			// as a workspace (mirrors validator's WORKSPACE_FOLDER_MARKERS).
+			markers := []string{"workspace.yaml", "system-prompt.md", "initial-prompt.md"}
+			hasMarker := false
+			for _, name := range fileNames {
+				for _, m := range markers {
+					if name == m || strings.HasSuffix(name, "/"+m) {
+						hasMarker = true
+						break
+					}
+				}
+				if hasMarker {
+					break
+				}
+			}
+			if !hasMarker {
+				t.Errorf("files_dir %q at %q has %d files but none of the workspace markers %v — found: %v",
+					w.FilesDir, abs, fileCount, markers, fileNames)
+			}
+		})
+	}
+	t.Logf("checked %d workspaces with files_dir", checked)
+	if checked < 25 {
+		t.Errorf("expected ~28 workspaces with files_dir (post-atomization); only saw %d", checked)
 	}
 }
