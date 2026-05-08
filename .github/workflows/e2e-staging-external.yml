@@ -32,7 +32,7 @@ name: E2E Staging External Runtime
 
 on:
   push:
-    branches: [staging, main]
+    branches: [main]
     paths:
       - 'workspace-server/internal/handlers/workspace.go'
       - 'workspace-server/internal/handlers/registry.go'
@@ -44,7 +44,7 @@ on:
       - 'tests/e2e/test_staging_external_runtime.sh'
       - '.github/workflows/e2e-staging-external.yml'
   pull_request:
-    branches: [staging, main]
+    branches: [main]
     paths:
       - 'workspace-server/internal/handlers/workspace.go'
       - 'workspace-server/internal/handlers/registry.go'
