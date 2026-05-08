@@ -1,0 +1,43 @@
+# docker-compose.dev.yml — overlay over docker-compose.yml for local dev
+# with air-driven live reload of the platform (workspace-server) service.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#   (or `make dev` shorthand from repo root)
+#
+# What this overlay changes vs docker-compose.yml alone:
+#   - Platform service uses workspace-server/Dockerfile.dev (air on top of
+#     golang:1.25-alpine) instead of the multi-stage prod Dockerfile.
+#   - Platform service bind-mounts the host's workspace-server/ source
+#     into /app/workspace-server so air sees source edits live.
+#   - Other services (postgres, redis, langfuse, etc.) inherit unchanged
+#     from docker-compose.yml.
+#
+# What stays the same:
+#   - All env vars, volumes, depends_on, healthchecks from docker-compose.yml.
+#   - Network topology + ports.
+#   - Postgres/Redis as service containers (no in-process replacements).
+
+services:
+  platform:
+    build:
+      context: .
+      dockerfile: workspace-server/Dockerfile.dev
+    # Rebind source: edits under host's workspace-server/ propagate live.
+    # The named volume on go-build-cache speeds up first build per container.
+    volumes:
+      - ./workspace-server:/app/workspace-server
+      - go-build-cache:/root/.cache/go-build
+      - go-mod-cache:/go/pkg/mod
+    # Air signals the running binary on rebuild; ensure shell stops cleanly.
+    init: true
+    # Mark the service as dev-mode so the platform can short-circuit any
+    # behavior that's incompatible with hot-reload (e.g. background
+    # cron-style watchers that don't survive process restart). No-op
+    # today; reserved for future flag use.
+    environment:
+      MOLECULE_DEV_HOT_RELOAD: "1"
+
+volumes:
+  go-build-cache:
+  go-mod-cache:

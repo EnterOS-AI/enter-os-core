@@ -443,10 +443,18 @@ func (h *OrgHandler) createWorkspaceTree(ws OrgWorkspace, parentID *string, absX
 			configFiles["system-prompt.md"] = []byte(ws.SystemPrompt)
 		}
 
-		// Inject secrets from .env files as workspace secrets.
-		// Resolution: workspace .env → org root .env (workspace overrides org root).
+		// Inject secrets from persona env + .env files as workspace secrets.
+		// Resolution (later overrides earlier):
+		//   0. Persona env (per-role bootstrap creds; only when ws.Role is set
+		//      and the operator-host bootstrap dir ships a matching file)
+		//   1. Org root .env (shared defaults)
+		//   2. Workspace-specific .env (per-workspace overrides)
 		// Each line: KEY=VALUE → stored as encrypted workspace secret.
 		envVars := map[string]string{}
+		// 0. Persona env (lowest precedence; injects the role's Gitea identity:
+		//    GITEA_USER, GITEA_TOKEN, GITEA_TOKEN_SCOPES, GITEA_USER_EMAIL,
+		//    GITEA_SSH_KEY_PATH). Workspace and org .env can override.
+		loadPersonaEnvFile(ws.Role, envVars)
 		if orgBaseDir != "" {
 			// 1. Org root .env (shared defaults)
 			parseEnvFile(filepath.Join(orgBaseDir, ".env"), envVars)

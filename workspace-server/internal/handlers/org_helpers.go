@@ -6,6 +6,7 @@ package handlers
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -100,6 +101,56 @@ func loadWorkspaceEnv(orgBaseDir, filesDir string) map[string]string {
 		parseEnvFile(filepath.Join(orgBaseDir, filesDir, ".env"), envVars)
 	}
 	return envVars
+}
+
+// loadPersonaEnvFile merges per-role persona credentials into out. The file
+// lives at $MOLECULE_PERSONA_ROOT/<role>/env (default
+// /etc/molecule-bootstrap/personas) and is populated by the operator-host
+// bootstrap kit — one persona per dev-tree role, each carrying the role's
+// Gitea identity (GITEA_USER, GITEA_TOKEN, GITEA_TOKEN_SCOPES,
+// GITEA_USER_EMAIL, GITEA_SSH_KEY_PATH).
+//
+// Lower precedence than the org and workspace .env files: callers should
+// invoke this BEFORE parseEnvFile on those, so a workspace .env can
+// override a persona-default value when needed.
+//
+// Silent no-op when role is empty, when the role name fails the safe-segment
+// check, or when the env file does not exist (workspaces without a role —
+// or running on hosts that don't ship the bootstrap dir — keep their old
+// behavior).
+func loadPersonaEnvFile(role string, out map[string]string) {
+	if !isSafeRoleName(role) {
+		if role != "" {
+			log.Printf("Org import: refusing persona env load for unsafe role name %q", role)
+		}
+		return
+	}
+	root := os.Getenv("MOLECULE_PERSONA_ROOT")
+	if root == "" {
+		root = "/etc/molecule-bootstrap/personas"
+	}
+	parseEnvFile(filepath.Join(root, role, "env"), out)
+}
+
+// isSafeRoleName accepts a single path segment of [A-Za-z0-9_-]+. Rejects
+// empty, ".", "..", and anything containing a path separator — even though
+// the construct is admin-only, defense-in-depth keeps the persona dir
+// shape invariant: one flat directory per role, no climbing out.
+func isSafeRoleName(s string) bool {
+	if s == "" || s == "." || s == ".." {
+		return false
+	}
+	for _, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= 'A' && c <= 'Z':
+		case c >= '0' && c <= '9':
+		case c == '-' || c == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // parseEnvFile reads a .env file and adds KEY=VALUE pairs to the map.
