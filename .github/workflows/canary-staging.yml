@@ -20,6 +20,19 @@ on:
     # a few minutes under load — that's fine for a canary.
     - cron: '*/30 * * * *'
   workflow_dispatch:
+    inputs:
+      keep_on_failure:
+        description: >-
+          Skip teardown when the canary fails (debugging only). The
+          tenant org + EC2 + CF tunnel + DNS stay alive so an operator
+          can SSM into the workspace EC2 and capture docker logs of the
+          failing claude-code container. REMEMBER to manually delete
+          via DELETE /cp/admin/tenants/<slug> when done so the org
+          doesn't accumulate cost. Only honored on workflow_dispatch;
+          cron runs always tear down (we don't want unattended cron
+          to leak resources).
+        type: boolean
+        default: false
 
 # Serialise with the full-SaaS workflow so they don't contend for the
 # same org-create quota on staging. Different group key from
@@ -80,6 +93,14 @@ jobs:
       # is "Token Plan only" but cheap-per-token and fast.
       E2E_MODEL_SLUG: MiniMax-M2.7-highspeed
       E2E_RUN_ID: "canary-${{ github.run_id }}"
+      # Debug-only: when an operator dispatches with keep_on_failure=true,
+      # the canary script's E2E_KEEP_ORG=1 path skips teardown so the
+      # tenant org + EC2 stay alive for SSM-based log capture. Cron runs
+      # never set this (the input only exists on workflow_dispatch) so
+      # unattended cron always tears down. See molecule-core#129
+      # failure mode #1 — capturing the actual exception requires
+      # docker logs from the live container.
+      E2E_KEEP_ORG: ${{ github.event.inputs.keep_on_failure == 'true' && '1' || '0' }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
