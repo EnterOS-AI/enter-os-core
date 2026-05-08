@@ -12,6 +12,59 @@ name: E2E API Smoke Test
 # spending CI cycles. See the in-job comment on the `e2e-api` job for
 # why this is one job (not two-jobs-sharing-name) and the 2026-04-29
 # PR #2264 incident that drove the consolidation.
+#
+# Parallel-safety (Class B Hongming-owned CICD red sweep, 2026-05-08)
+# -------------------------------------------------------------------
+# Same substrate hazard as PR #98 (handlers-postgres-integration). Our
+# Gitea act_runner runs with `container.network: host` (operator host
+# `/opt/molecule/runners/config.yaml`), which means:
+#
+#   * Two concurrent runs both try to bind their `-p 15432:5432` /
+#     `-p 16379:6379` host ports — the second postgres/redis FATALs
+#     with `Address in use` and `docker run` returns exit 125 with
+#     `Conflict. The container name "/molecule-ci-postgres" is already
+#     in use by container ...`. Verified in run a7/2727 on 2026-05-07.
+#   * The fixed container names `molecule-ci-postgres` / `-redis` (the
+#     pre-fix shape) collide on name AS WELL AS port. The cleanup-with-
+#     `docker rm -f` at the start of the second job KILLS the first
+#     job's still-running postgres/redis.
+#
+# Fix shape (mirrors PR #98's bridge-net pattern, adapted because
+# platform-server is a Go binary on the host, not a containerised
+# step):
+#
+#   1. Unique container names per run:
+#         pg-e2e-api-${RUN_ID}-${RUN_ATTEMPT}
+#         redis-e2e-api-${RUN_ID}-${RUN_ATTEMPT}
+#      `${RUN_ID}-${RUN_ATTEMPT}` is unique even across reruns of the
+#      same run_id.
+#   2. Ephemeral host port per run (`-p 0:5432`), then read the actual
+#      bound port via `docker port` and export DATABASE_URL/REDIS_URL
+#      pointing at it. No fixed host-port → no port collision.
+#   3. `127.0.0.1` (NOT `localhost`) in URLs — IPv6 first-resolve was
+#      the original flake fixed in #92 and the script's still IPv6-
+#      enabled.
+#   4. `if: always()` cleanup so containers don't leak when test steps
+#      fail.
+#
+# Issue #94 items #2 + #3 (also fixed here):
+#   * Pre-pull `alpine:latest` so the platform-server's provisioner
+#     (`internal/handlers/container_files.go`) can stand up its
+#     ephemeral token-write helper without a daemon.io round-trip.
+#   * Create `molecule-monorepo-net` bridge network if missing so the
+#     provisioner's container.HostConfig {NetworkMode: ...} attach
+#     succeeds.
+# Item #1 (timeouts) — evidence on recent runs (77/3191, ae/4270, 0e/
+# 2318) shows Postgres ready in 3s, Redis in 1s, Platform in 1s when
+# they DO come up. Timeouts are not the bottleneck; not bumped.
+#
+# Item explicitly NOT fixed here: failing test `Status back online`
+# fails because the platform's langgraph workspace template image
+# (ghcr.io/molecule-ai/workspace-template-langgraph:latest) returns
+# 403 Forbidden post-2026-05-06 GitHub org suspension. That is a
+# template-registry resolution issue (ADR-002 / local-build mode) and
+# belongs in a separate change that touches workspace-server, not
+# this workflow file.
 
 on:
   push:
@@ -78,11 +131,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      DATABASE_URL: postgres://dev:dev@localhost:15432/molecule?sslmode=disable
-      REDIS_URL: redis://localhost:16379
+      # Unique per-run container names so concurrent runs on the host-
+      # network act_runner don't collide on name OR port.
+      # `${RUN_ID}-${RUN_ATTEMPT}` stays unique across reruns of the
+      # same run_id. PORT is set later (after docker port lookup) since
+      # we let Docker assign an ephemeral host port.
+      PG_CONTAINER: pg-e2e-api-${{ github.run_id }}-${{ github.run_attempt }}
+      REDIS_CONTAINER: redis-e2e-api-${{ github.run_id }}-${{ github.run_attempt }}
       PORT: "8080"
-      PG_CONTAINER: molecule-ci-postgres
-      REDIS_CONTAINER: molecule-ci-redis
     steps:
       - name: No-op pass (paths filter excluded this commit)
         if: needs.detect-changes.outputs.api != 'true'
@@ -97,11 +153,53 @@ jobs:
           go-version: 'stable'
           cache: true
           cache-dependency-path: workspace-server/go.sum
+      - name: Pre-pull alpine + ensure provisioner network (Issue #94 items #2 + #3)
+        if: needs.detect-changes.outputs.api == 'true'
+        run: |
+          # Provisioner uses alpine:latest for ephemeral token-write
+          # containers (workspace-server/internal/handlers/container_files.go).
+          # Pre-pull so the first provision in test_api.sh doesn't race
+          # the daemon's pull cache. Idempotent — `docker pull` is a no-op
+          # when the image is already present.
+          docker pull alpine:latest >/dev/null
+          # Provisioner attaches workspace containers to
+          # molecule-monorepo-net (workspace-server/internal/provisioner/
+          # provisioner.go::DefaultNetwork). The bridge already exists on
+          # the operator host's docker daemon — `network create` is
+          # idempotent via `|| true`.
+          docker network create molecule-monorepo-net >/dev/null 2>&1 || true
+          echo "alpine:latest pre-pulled; molecule-monorepo-net ensured."
       - name: Start Postgres (docker)
         if: needs.detect-changes.outputs.api == 'true'
         run: |
+          # Defensive cleanup — only matches THIS run's container name,
+          # so it cannot kill a sibling run's postgres. (Pre-fix the
+          # name was static and this rm hit other runs' containers.)
           docker rm -f "$PG_CONTAINER" 2>/dev/null || true
-          docker run -d --name "$PG_CONTAINER" -e POSTGRES_USER=dev -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=molecule -p 15432:5432 postgres:16
+          # `-p 0:5432` requests an ephemeral host port; we read it back
+          # below and export DATABASE_URL.
+          docker run -d --name "$PG_CONTAINER" \
+            -e POSTGRES_USER=dev -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=molecule \
+            -p 0:5432 postgres:16 >/dev/null
+          # Resolve the host-side port assignment. `docker port` prints
+          # `0.0.0.0:NNNN` (and on host-net runners may also print an
+          # IPv6 line — take the first IPv4 line).
+          PG_PORT=$(docker port "$PG_CONTAINER" 5432/tcp | awk -F: '/^0\.0\.0\.0:/ {print $2; exit}')
+          if [ -z "$PG_PORT" ]; then
+            # Fallback: any first line. Some Docker versions print only
+            # one line.
+            PG_PORT=$(docker port "$PG_CONTAINER" 5432/tcp | head -1 | awk -F: '{print $NF}')
+          fi
+          if [ -z "$PG_PORT" ]; then
+            echo "::error::Could not resolve host port for $PG_CONTAINER"
+            docker port "$PG_CONTAINER" 5432/tcp || true
+            docker logs "$PG_CONTAINER" || true
+            exit 1
+          fi
+          # 127.0.0.1 (NOT localhost) — IPv6 first-resolve flake (#92).
+          echo "PG_PORT=${PG_PORT}" >> "$GITHUB_ENV"
+          echo "DATABASE_URL=postgres://dev:dev@127.0.0.1:${PG_PORT}/molecule?sslmode=disable" >> "$GITHUB_ENV"
+          echo "Postgres host port: ${PG_PORT}"
           for i in $(seq 1 30); do
             if docker exec "$PG_CONTAINER" pg_isready -U dev >/dev/null 2>&1; then
               echo "Postgres ready after ${i}s"
@@ -116,7 +214,20 @@ jobs:
         if: needs.detect-changes.outputs.api == 'true'
         run: |
           docker rm -f "$REDIS_CONTAINER" 2>/dev/null || true
-          docker run -d --name "$REDIS_CONTAINER" -p 16379:6379 redis:7
+          docker run -d --name "$REDIS_CONTAINER" -p 0:6379 redis:7 >/dev/null
+          REDIS_PORT=$(docker port "$REDIS_CONTAINER" 6379/tcp | awk -F: '/^0\.0\.0\.0:/ {print $2; exit}')
+          if [ -z "$REDIS_PORT" ]; then
+            REDIS_PORT=$(docker port "$REDIS_CONTAINER" 6379/tcp | head -1 | awk -F: '{print $NF}')
+          fi
+          if [ -z "$REDIS_PORT" ]; then
+            echo "::error::Could not resolve host port for $REDIS_CONTAINER"
+            docker port "$REDIS_CONTAINER" 6379/tcp || true
+            docker logs "$REDIS_CONTAINER" || true
+            exit 1
+          fi
+          echo "REDIS_PORT=${REDIS_PORT}" >> "$GITHUB_ENV"
+          echo "REDIS_URL=redis://127.0.0.1:${REDIS_PORT}" >> "$GITHUB_ENV"
+          echo "Redis host port: ${REDIS_PORT}"
           for i in $(seq 1 15); do
             if docker exec "$REDIS_CONTAINER" redis-cli ping 2>/dev/null | grep -q PONG; then
               echo "Redis ready after ${i}s"
@@ -135,13 +246,15 @@ jobs:
         if: needs.detect-changes.outputs.api == 'true'
         working-directory: workspace-server
         run: |
+          # DATABASE_URL + REDIS_URL exported by the start-postgres /
+          # start-redis steps point at this run's per-run host ports.
           ./platform-server > platform.log 2>&1 &
           echo $! > platform.pid
       - name: Wait for /health
         if: needs.detect-changes.outputs.api == 'true'
         run: |
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:8080/health > /dev/null; then
+            if curl -sf http://127.0.0.1:8080/health > /dev/null; then
               echo "Platform up after ${i}s"
               exit 0
             fi
@@ -185,6 +298,9 @@ jobs:
             kill "$(cat workspace-server/platform.pid)" 2>/dev/null || true
           fi
       - name: Stop service containers
+        # always() so containers don't leak when test steps fail. The
+        # cleanup is best-effort: if the container is already gone
+        # (e.g. concurrent rerun race), don't fail the job.
         if: always() && needs.detect-changes.outputs.api == 'true'
         run: |
           docker rm -f "$PG_CONTAINER" 2>/dev/null || true
