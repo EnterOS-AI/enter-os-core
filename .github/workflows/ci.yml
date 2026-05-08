@@ -235,7 +235,13 @@ jobs:
         run: npx vitest run --coverage
       - name: Upload coverage summary as artifact
         if: needs.changes.outputs.canvas == 'true' && always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        # Pinned to v3 for Gitea act_runner v0.6 compatibility — v4+ uses
+        # the GHES 3.10+ artifact protocol that Gitea 1.22.x does NOT
+        # implement, surfacing as `GHESNotSupportedError: @actions/artifact
+        # v2.0.0+, upload-artifact@v4+ and download-artifact@v4+ are not
+        # currently supported on GHES`. Drop this pin when Gitea ships
+        # the v4 protocol (tracked: post-Gitea-1.23 followup).
+        uses: actions/upload-artifact@c6a366c94c3e0affe28c06c8df20a878f24da3cf # v3.2.2
         with:
           name: canvas-coverage-${{ github.run_id }}
           path: canvas/coverage/
