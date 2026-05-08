@@ -15,8 +15,14 @@
 
 FROM golang:1.25-alpine
 
-# air + git (for go mod) + ca-certs (for TLS) + tzdata (for time-zone DB).
-RUN apk add --no-cache git ca-certificates tzdata wget \
+# air + git (for go mod) + ca-certs (for TLS) + tzdata (for time-zone DB)
+# + docker-cli + docker-cli-buildx so the platform binary can shell out to
+# /var/run/docker.sock (bind-mounted from host) for local-build provisioning.
+# docker-cli alone is insufficient: alpine's docker-cli enables BuildKit by
+# default but ships without buildx, producing
+# `ERROR: BuildKit is enabled but the buildx component is missing or broken`
+# on every `docker build`. docker-cli-buildx provides the buildx subcommand.
+RUN apk add --no-cache git ca-certificates tzdata wget docker-cli docker-cli-buildx \
  && go install github.com/air-verse/air@latest
 
 WORKDIR /app/workspace-server

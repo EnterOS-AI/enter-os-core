@@ -453,8 +453,25 @@ func (h *OrgHandler) createWorkspaceTree(ws OrgWorkspace, parentID *string, absX
 		envVars := map[string]string{}
 		// 0. Persona env (lowest precedence; injects the role's Gitea identity:
 		//    GITEA_USER, GITEA_TOKEN, GITEA_TOKEN_SCOPES, GITEA_USER_EMAIL,
-		//    GITEA_SSH_KEY_PATH). Workspace and org .env can override.
-		loadPersonaEnvFile(ws.Role, envVars)
+		//    GITEA_SSH_KEY_PATH, plus MODEL_PROVIDER/MODEL and the LLM auth
+		//    token like CLAUDE_CODE_OAUTH_TOKEN or MINIMAX_API_KEY).
+		//    Workspace and org .env can override.
+		//
+		// Use ws.FilesDir as the persona-dir lookup key, NOT ws.Role. In the
+		// dev-tree org.yaml shape, `role:` carries the multi-line descriptive
+		// text the agent reads from its prompt ("Engineering planning and
+		// team coordination — leads Core Platform, Controlplane, ..."), while
+		// `files_dir:` holds the short slug (`core-lead`, `dev-lead`, etc.)
+		// matching `~/.molecule-ai/personas/<files_dir>/env`
+		// (bind-mounted to `/etc/molecule-bootstrap/personas/<files_dir>/env`).
+		//
+		// Pre-fix, this passed `ws.Role` whose multi-word content failed
+		// isSafeRoleName silently, so every imported workspace booted with
+		// zero persona-env rows in workspace_secrets — no ANTHROPIC /
+		// CLAUDE_CODE auth in the container env. The claude_agent_sdk
+		// then wedged on `query.initialize()` with a 60s control-request
+		// timeout (caught 2026-05-08 right after dev-only org/import).
+		loadPersonaEnvFile(ws.FilesDir, envVars)
 		if orgBaseDir != "" {
 			// 1. Org root .env (shared defaults)
 			parseEnvFile(filepath.Join(orgBaseDir, ".env"), envVars)
