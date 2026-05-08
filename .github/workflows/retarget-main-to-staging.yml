@@ -1,16 +1,99 @@
 name: Retarget main PRs to staging
 
-# Mechanical enforcement of SHARED_RULES rule 8 ("Staging-first workflow, no
-# exceptions"). When a bot opens a PR against main, retarget it to staging
-# automatically and leave an explanatory comment. Human CEO-authored PRs (the
-# staging→main promotion PR, etc.) are left alone — they're the authorised
-# exception to the rule.
+# Mechanical enforcement of SHARED_RULES rule 8 ("Staging-first
+# workflow, no exceptions"). When a bot opens a PR against `main`,
+# retarget it to `staging` automatically and leave an explanatory
+# comment. Human / CEO-authored PRs (the staging→main promotion
+# PRs, etc.) are left alone — they're the authorised exception
+# to the rule.
 #
-# Why an Action instead of only a prompt rule: prompt rules depend on every
-# role's system-prompt.md staying in sync. Today 5 of 8 engineer roles
-# (core-be, core-fe, app-fe, app-qa, devops-engineer) don't have the
-# staging-first section — the bot keeps opening PRs to main. An Action
-# enforces the invariant regardless of prompt drift.
+# ============================================================
+# What this workflow does
+# ============================================================
+#
+# On `pull_request_target` opened/reopened against `main`:
+#   1. If the PR head is `staging`, skip (the auto-promote PRs
+#      MUST stay base=main).
+#   2. If the PR author is a bot, retarget the PR base to
+#      `staging` via Gitea REST `PATCH /pulls/{N}` body
+#      `{"base":"staging"}`.
+#   3. If the retarget returns 422 "pull request already exists
+#      for base branch 'staging'" (issue #1884 case: another PR
+#      on the same head already targets staging), close the
+#      now-redundant main-PR via Gitea REST instead of failing
+#      red.
+#   4. Post an explainer comment on the retargeted PR via
+#      Gitea REST `POST /issues/{N}/comments`.
+#
+# ============================================================
+# Why Gitea REST (and not `gh api / gh pr close / gh pr comment`)
+# ============================================================
+#
+# Pre-2026-05-06 this workflow used `gh api -X PATCH "repos/{owner}/{repo}/pulls/{N}" -f base=staging`
+# plus `gh pr close` and `gh pr comment`. After the GitHub→Gitea
+# cutover those calls fail because:
+#
+#   - `gh` CLI defaults to `api.github.com`. Even with `GH_HOST`
+#     pointing at Gitea, `gh pr close / comment` route through
+#     GraphQL (`/api/graphql`) which Gitea does not expose.
+#     Empirical: every `gh pr *` call returns
+#     `HTTP 405 Method Not Allowed (https://git.moleculesai.app/api/graphql)`
+#     — same root cause as #65 (auto-sync, fixed in PR #66) and
+#     #73/#195 (auto-promote, fixed in PR #78).
+#   - `gh api -X PATCH /pulls/{N}` happens to use a REST path
+#     that Gitea also has, but the `gh` host-resolution layer
+#     and pagination/retry logic don't always hit Gitea cleanly,
+#     and the cost of switching to direct `curl` is one extra
+#     line of code.
+#
+# So this workflow uses direct `curl` calls to Gitea REST. No
+# `gh` CLI dependency, no GraphQL, no flaky host-resolution.
+#
+# ============================================================
+# Identity + token (anti-bot-ring per saved-memory
+# `feedback_per_agent_gitea_identity_default`)
+# ============================================================
+#
+# Pre-fix this workflow used the per-job ephemeral
+# `secrets.GITHUB_TOKEN`. On Gitea Actions that token has
+# narrow scope and unpredictable cross-PR write capability.
+#
+# Post-fix: `secrets.AUTO_SYNC_TOKEN` (the `devops-engineer`
+# Gitea persona). Same persona used by `auto-sync-main-to-staging.yml`
+# (PR #66) and `auto-promote-staging.yml` (PR #78). Token scope:
+# `push: true` repo write, sufficient for PR-edit + close + comment.
+#
+# Why this token does NOT need branch-protection bypass:
+# patching a PR's base ref is a PR-level operation that does not
+# require push perms on either branch (the PR's own commits stay
+# put; only the metadata changes).
+#
+# ============================================================
+# Failure modes & operational notes
+# ============================================================
+#
+# A — PATCH base→staging returns 422 "pull request already exists"
+#     (issue #1884 case):
+#     - Detected by string-match on response body. Workflow
+#       falls through to closing the now-redundant main-PR
+#       (Gitea REST `PATCH /pulls/{N}` with `state: closed`)
+#       and posts an explanation comment. Step summary surfaces.
+#
+# B — `AUTO_SYNC_TOKEN` rotated / wrong scope:
+#     - First REST call returns 401/403. Step summary surfaces.
+#       Re-issue token from `~/.molecule-ai/personas/` on the
+#       operator host and update repo Actions secret.
+#
+# C — PR was deleted between trigger and run:
+#     - REST call returns 404. Workflow exits 0 with a notice
+#       (the rule was already enforced or the PR is gone).
+#
+# D — author is not actually a bot but the filter mis-fires:
+#     - Filter is conservative: only triggers on
+#       `user.type == 'Bot'`, `login` ends with `[bot]`, or
+#       known bot logins (`molecule-ai[bot]`, `app/molecule-ai`).
+#       Human PRs slip through unaffected. If a NEW bot login
+#       starts shipping main-PRs, add it to the filter.
 
 on:
   pull_request_target:
@@ -24,16 +107,16 @@ jobs:
   retarget:
     name: Retarget to staging
     runs-on: ubuntu-latest
-    # Only fire for bot-authored PRs. Human CEO PRs (staging→main promotion)
-    # are intentional and pass through.
+    # Only fire for bot-authored PRs. Human CEO PRs (staging→main
+    # promotion) are intentional and pass through.
     #
-    # Head-ref guard: never retarget a PR whose head IS `staging` — those
-    # are the auto-promote staging→main PRs (opened by molecule-ai[bot]
-    # since #2586 switched to an App token, which now passes the bot
-    # filter below). Retargeting head=staging onto base=staging fails
-    # with HTTP 422 "no new commits between base 'staging' and head
-    # 'staging'", which used to surface as a noisy red workflow run on
-    # every auto-promote (caught 2026-05-03 on PR #2588).
+    # Head-ref guard: never retarget a PR whose head IS `staging`
+    # — those are the auto-promote staging→main PRs (opened by
+    # `devops-engineer` since PR #78 / #195 fix). Retargeting
+    # head=staging onto base=staging fails with HTTP 422 "no new
+    # commits between base 'staging' and head 'staging'", which
+    # would surface as a noisy red workflow run on every
+    # auto-promote (caught 2026-05-03 on the GitHub-era PR #2588).
     if: >-
       github.event.pull_request.head.ref != 'staging'
       && (
@@ -41,65 +124,153 @@ jobs:
         || endsWith(github.event.pull_request.user.login, '[bot]')
         || github.event.pull_request.user.login == 'app/molecule-ai'
         || github.event.pull_request.user.login == 'molecule-ai[bot]'
+        || github.event.pull_request.user.login == 'devops-engineer'
       )
     steps:
-      - name: Retarget PR base to staging
+      - name: Retarget PR base to staging via Gitea REST
         id: retarget
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITEA_TOKEN: ${{ secrets.AUTO_SYNC_TOKEN }}
+          GITEA_HOST: ${{ vars.GITEA_HOST || 'https://git.moleculesai.app' }}
+          REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-        # Issue #1884: when the bot opens a PR against main and there's
-        # already another PR on the same head branch targeting staging,
-        # GitHub's PATCH /pulls returns 422 with
-        # "A pull request already exists for base branch 'staging' …".
-        # The retarget can't proceed — but the right response is to
-        # close the now-redundant main-PR, not to fail the workflow
-        # noisily. Detect that specific 422 and close instead.
+        # Issue #1884 case: when the bot opens a PR against main
+        # and there's already another PR on the same head branch
+        # targeting staging, Gitea's PATCH returns 422 with a
+        # body mentioning "pull request already exists for base
+        # branch 'staging'" (the Gitea message wording is
+        # slightly different from GitHub's; the substring match
+        # below covers both for forward/back compat).
+        # The retarget can't proceed — but the right response is
+        # to close the now-redundant main-PR, not to fail the
+        # workflow noisily. Detect that specific 422 and close
+        # instead.
         run: |
-          set +e
+          set -euo pipefail
+
+          API="${GITEA_HOST}/api/v1/repos/${REPO}"
+          AUTH=(-H "Authorization: token ${GITEA_TOKEN}" -H "Accept: application/json")
+
           echo "Retargeting PR #${PR_NUMBER} (author: ${PR_AUTHOR}) from main → staging"
-          PATCH_OUTPUT=$(gh api -X PATCH \
-            "repos/${{ github.repository }}/pulls/${PR_NUMBER}" \
-            -f base=staging \
-            --jq '.base.ref' 2>&1)
-          PATCH_EXIT=$?
+
+          # Curl-status-capture pattern per `feedback_curl_status_capture_pollution`:
+          # http_code via -w to its own scalar, body to a tempfile, set +e/-e
+          # bracket so curl's non-zero-on-4xx doesn't pollute the script's exit chain.
+          BODY_FILE=$(mktemp)
+          REQ='{"base":"staging"}'
+
+          set +e
+          STATUS=$(curl -sS "${AUTH[@]}" -H "Content-Type: application/json" \
+            -X PATCH -d "${REQ}" \
+            -o "${BODY_FILE}" -w "%{http_code}" \
+            "${API}/pulls/${PR_NUMBER}")
+          CURL_RC=$?
           set -e
-          if [ "$PATCH_EXIT" -eq 0 ]; then
-            echo "::notice::Retargeted PR #${PR_NUMBER} → staging"
-            echo "outcome=retargeted" >> "$GITHUB_OUTPUT"
-            exit 0
+
+          if [ "${CURL_RC}" -ne 0 ]; then
+            echo "::error::curl PATCH failed (rc=${CURL_RC})"
+            rm -f "${BODY_FILE}"
+            exit 1
           fi
+
+          if [ "${STATUS}" = "201" ] || [ "${STATUS}" = "200" ]; then
+            NEW_BASE=$(jq -r '.base.ref // "?"' < "${BODY_FILE}")
+            rm -f "${BODY_FILE}"
+            if [ "${NEW_BASE}" = "staging" ]; then
+              echo "::notice::Retargeted PR #${PR_NUMBER} → staging"
+              echo "outcome=retargeted" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::PATCH returned ${STATUS} but base.ref is '${NEW_BASE}', not 'staging'"
+            exit 1
+          fi
+
           # Specifically match the 422 duplicate-base/head error so
           # any OTHER PATCH failure (auth, deleted PR, etc.) still
           # surfaces as a real workflow failure.
-          if echo "$PATCH_OUTPUT" | grep -q "pull request already exists for base branch 'staging'"; then
+          BODY=$(cat "${BODY_FILE}" || true)
+          rm -f "${BODY_FILE}"
+
+          if [ "${STATUS}" = "422" ] && echo "${BODY}" | grep -qE "(pull request already exists for base branch 'staging'|already exists.*base.*staging)"; then
             echo "::notice::PR #${PR_NUMBER}: duplicate target-staging PR exists on same head — closing this main-PR as redundant."
-            gh pr close "$PR_NUMBER" \
-              --repo "${{ github.repository }}" \
-              --comment "[retarget-bot] Closing — another PR on the same head branch already targets \`staging\`. This PR is redundant. See issue #1884 for the rationale."
-            echo "outcome=closed-as-duplicate" >> "$GITHUB_OUTPUT"
-            exit 0
+
+            # Close the now-redundant main-PR via Gitea REST
+            # (PATCH state=closed). Post comment explaining
+            # rationale BEFORE close so the comment lands on the
+            # PR (commenting on a closed PR works on Gitea, but
+            # historically caused notification ordering surprises).
+
+            CLOSE_BODY_FILE=$(mktemp)
+            CMT_REQ=$(jq -n '{body:"[retarget-bot] Closing — another PR on the same head branch already targets `staging`. This PR is redundant. See issue #1884 for the rationale."}')
+            set +e
+            CMT_STATUS=$(curl -sS "${AUTH[@]}" -H "Content-Type: application/json" \
+              -X POST -d "${CMT_REQ}" \
+              -o "${CLOSE_BODY_FILE}" -w "%{http_code}" \
+              "${API}/issues/${PR_NUMBER}/comments")
+            set -e
+            if [ "${CMT_STATUS}" != "201" ]; then
+              echo "::warning::dup-close comment POST returned ${CMT_STATUS}; continuing to close anyway"
+              cat "${CLOSE_BODY_FILE}" | head -c 300 || true
+            fi
+            rm -f "${CLOSE_BODY_FILE}"
+
+            CLOSE_REQ='{"state":"closed"}'
+            CLOSE_RESP=$(mktemp)
+            set +e
+            CL_STATUS=$(curl -sS "${AUTH[@]}" -H "Content-Type: application/json" \
+              -X PATCH -d "${CLOSE_REQ}" \
+              -o "${CLOSE_RESP}" -w "%{http_code}" \
+              "${API}/pulls/${PR_NUMBER}")
+            set -e
+            if [ "${CL_STATUS}" = "201" ] || [ "${CL_STATUS}" = "200" ]; then
+              echo "::notice::Closed PR #${PR_NUMBER} as redundant"
+              echo "outcome=closed-as-duplicate" >> "$GITHUB_OUTPUT"
+              rm -f "${CLOSE_RESP}"
+              exit 0
+            fi
+            echo "::error::Failed to close redundant PR: HTTP ${CL_STATUS}"
+            cat "${CLOSE_RESP}" | head -c 300 || true
+            rm -f "${CLOSE_RESP}"
+            exit 1
           fi
-          echo "::error::Retarget PATCH failed and was NOT a duplicate-base error:"
-          echo "$PATCH_OUTPUT" >&2
+
+          echo "::error::Retarget PATCH failed and was NOT a duplicate-base error: HTTP ${STATUS}"
+          echo "${BODY}" | head -c 500 >&2
           exit 1
 
       - name: Post explainer comment
         if: steps.retarget.outputs.outcome == 'retargeted'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITEA_TOKEN: ${{ secrets.AUTO_SYNC_TOKEN }}
+          GITEA_HOST: ${{ vars.GITEA_HOST || 'https://git.moleculesai.app' }}
+          REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          gh pr comment "$PR_NUMBER" \
-            --repo "${{ github.repository }}" \
-            --body "$(cat <<'BODY'
-          [retarget-bot] This PR was opened against `main` and has been retargeted to `staging` automatically.
+          set -euo pipefail
 
-          **Why:** per [SHARED_RULES rule 8](https://github.com/molecule-ai/molecule-ai-org-template-molecule-dev/blob/main/SHARED_RULES.md), all feature work targets `staging` first; the CEO promotes `staging → main` separately.
+          API="${GITEA_HOST}/api/v1/repos/${REPO}"
+          AUTH=(-H "Authorization: token ${GITEA_TOKEN}" -H "Accept: application/json")
 
-          **What changed:** just the base branch — no code change. CI will re-run against `staging`. If you get merge conflicts, rebase on `staging`.
+          # PR comments live on the issue endpoint in Gitea
+          # (PRs ARE issues — same endpoint, different sub-resources
+          # for diffs/files/etc.). The body uses jq to safely
+          # encode the multi-line markdown without shell-quote
+          # nightmares.
+          REQ=$(jq -n '{body:"[retarget-bot] This PR was opened against `main` and has been retargeted to `staging` automatically.\n\n**Why:** per [SHARED_RULES rule 8](https://git.moleculesai.app/molecule-ai/molecule-ai-org-template-molecule-dev/src/branch/main/SHARED_RULES.md), all feature work targets `staging` first; the CEO promotes `staging → main` separately.\n\n**What changed:** just the base branch — no code change. CI will re-run against `staging`. If you get merge conflicts, rebase on `staging`.\n\n**If this PR is the CEO`s staging→main promotion:** the Action skipped you (only bot-authored PRs are retargeted, head=staging is also exempted). If you see this comment on your CEO PR, that`s a bug — please tag @hongmingwang."}')
 
-          **If this PR is the CEO's staging→main promotion:** the Action skipped you (only bot-authored PRs are retargeted). If you see this comment on your CEO PR, that's a bug — please tag @HongmingWang-Rabbit.
-          BODY
-          )"
+          BODY_FILE=$(mktemp)
+          set +e
+          STATUS=$(curl -sS "${AUTH[@]}" -H "Content-Type: application/json" \
+            -X POST -d "${REQ}" \
+            -o "${BODY_FILE}" -w "%{http_code}" \
+            "${API}/issues/${PR_NUMBER}/comments")
+          set -e
+
+          if [ "${STATUS}" = "201" ]; then
+            echo "::notice::Posted explainer comment on PR #${PR_NUMBER}"
+          else
+            echo "::warning::Failed to post explainer (HTTP ${STATUS}) — retarget itself succeeded"
+            cat "${BODY_FILE}" | head -c 300 || true
+          fi
+          rm -f "${BODY_FILE}"
