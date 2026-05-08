@@ -91,6 +91,14 @@ func (h *PluginsHandler) Install(c *gin.Context) {
 		return
 	}
 
+	// Record the install in workspace_plugins (core#113 — version-subscription
+	// foundation). Best-effort: DB write failure is logged but doesn't fail
+	// the install — the plugin IS in the container; surfacing a 500 here
+	// would mislead the caller about the install state.
+	if err := recordWorkspacePluginInstall(ctx, workspaceID, result.PluginName, result.Source.Raw(), req.Track); err != nil {
+		log.Printf("Plugin install: failed to record %s for %s in workspace_plugins: %v (install succeeded; tracking row missing)", result.PluginName, workspaceID, err)
+	}
+
 	log.Printf("Plugin install: %s via %s → workspace %s (restarting)", result.PluginName, result.Source.Scheme, workspaceID)
 	c.JSON(http.StatusOK, gin.H{
 		"status": "installed",

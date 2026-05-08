@@ -114,6 +114,15 @@ type installRequest struct {
 	// When present, resolveAndStage verifies the fetched content matches
 	// before allowing the install to proceed (SAFE-T1102 supply-chain hardening).
 	SHA256 string `json:"sha256,omitempty"`
+	// Track is the version-subscription mode for this install (core#113):
+	//   "none"        — no auto-update tracking (default)
+	//   "tag:vX.Y.Z"  — track a specific version tag
+	//   "tag:latest"  — track latest tag, drift on every new tag
+	//   "sha:<full>"  — pinned, no drift ever
+	// The drift detector (separate component, follow-up) reads
+	// workspace_plugins rows where tracked_ref != 'none' and queues
+	// updates when upstream resolves to a different SHA.
+	Track string `json:"track,omitempty"`
 }
 
 // stageResult bundles the outputs of resolveAndStage for the caller.
