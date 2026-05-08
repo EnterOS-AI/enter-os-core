@@ -276,6 +276,15 @@ func (h *PluginsHandler) resolveAndStage(ctx context.Context, req installRequest
 // using NewPluginsHandler without a DB; production wires it in router.go.
 func (h *PluginsHandler) deliverToContainer(ctx context.Context, workspaceID string, r *stageResult) error {
 	if containerName := h.findRunningContainer(ctx, workspaceID); containerName != "" {
+		// Hot-reload classifier (molecule-core#112) — decide BEFORE the
+		// install whether this update can skip restartFunc. SKILL.md
+		// content changes are filesystem-visible to Claude Code on the
+		// next Skill invocation; hooks / settings.json / plugin.yaml /
+		// added-or-removed files need a container restart.
+		// Classifier reads live tree from container; on any read error
+		// it returns kindCold so we never hot-reload speculatively.
+		kind, _ := h.classifyInstallChanges(ctx, containerName, r.StagedDir, r.PluginName)
+
 		// Atomic stage→snapshot→swap→marker (molecule-core#114).
 		// Replaces the prior single docker.CopyToContainer write that
 		// left a partially-extracted tree on mid-install failure with
@@ -290,7 +299,11 @@ func (h *PluginsHandler) deliverToContainer(ctx context.Context, workspaceID str
 			"chown", "-R", "1000:1000", "/configs/plugins/" + r.PluginName,
 		})
 		if h.restartFunc != nil {
-			go h.restartFunc(workspaceID)
+			if kind == classifyKindSkillContentOnly {
+				log.Printf("Plugin install: %s → workspace %s — SKILL-content-only update, SKIPPING restart", r.PluginName, workspaceID)
+			} else {
+				go h.restartFunc(workspaceID)
+			}
 		}
 		return nil
 	}
