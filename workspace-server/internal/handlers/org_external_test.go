@@ -243,11 +243,11 @@ func TestResolveExternalMapping_MissingRequiredFields(t *testing.T) {
 	}
 }
 
-// TestRewriteFilesDirAndIncludes: verify the path-rewrite walker
+// TestRewriteFilesDir: verify the path-rewrite walker
 // prefixes files_dir scalars. !include scalars are NOT rewritten —
 // they resolve relative to their containing file's dir, which post-
 // fetch is naturally inside the cache.
-func TestRewriteFilesDirAndIncludes(t *testing.T) {
+func TestRewriteFilesDir(t *testing.T) {
 	src := `name: Foo
 files_dir: dev-lead
 children:
@@ -260,7 +260,7 @@ inner:
 	if err := yaml.Unmarshal([]byte(src), &n); err != nil {
 		t.Fatal(err)
 	}
-	rewriteFilesDirAndIncludes(&n, ".external-cache/foo/bar")
+	rewriteFilesDir(&n, ".external-cache/foo/bar")
 
 	out, err := yaml.Marshal(&n)
 	if err != nil {
@@ -280,9 +280,9 @@ inner:
 	}
 }
 
-// TestRewriteFilesDirAndIncludes_Idempotent: re-running the rewriter
+// TestRewriteFilesDir_Idempotent: re-running the rewriter
 // on already-prefixed files_dir doesn't double-prefix.
-func TestRewriteFilesDirAndIncludes_Idempotent(t *testing.T) {
+func TestRewriteFilesDir_Idempotent(t *testing.T) {
 	src := `files_dir: .external-cache/foo/bar/dev-lead
 inner:
   files_dir: .external-cache/foo/bar/dev-lead/sub
@@ -291,7 +291,7 @@ inner:
 	if err := yaml.Unmarshal([]byte(src), &n); err != nil {
 		t.Fatal(err)
 	}
-	rewriteFilesDirAndIncludes(&n, ".external-cache/foo/bar")
+	rewriteFilesDir(&n, ".external-cache/foo/bar")
 
 	out, _ := yaml.Marshal(&n)
 	got := string(out)

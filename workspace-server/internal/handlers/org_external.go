@@ -2,8 +2,6 @@ package handlers
 
 import (
 	"context"
-	"crypto/sha1"
-	"encoding/hex"
 	"fmt"
 	"net/url"
 	"os"
@@ -149,6 +147,11 @@ func resolveExternalMapping(n *yaml.Node, currentDir, rootDir string, visited ma
 	if !safeRefPattern.MatchString(ref.Ref) {
 		return fmt.Errorf("!external at line %d: ref %q contains disallowed characters", n.Line, ref.Ref)
 	}
+	// Defense-in-depth: even though git itself rejects refs containing
+	// `..`, the regex above currently allows them. Reject explicitly.
+	if strings.Contains(ref.Ref, "..") {
+		return fmt.Errorf("!external at line %d: ref %q must not contain '..'", n.Line, ref.Ref)
+	}
 	if strings.Contains(ref.Path, "..") || strings.HasPrefix(ref.Path, "/") {
 		return fmt.Errorf("!external at line %d: path %q must be relative-and-down-only", n.Line, ref.Path)
 	}
@@ -225,7 +228,7 @@ func resolveExternalMapping(n *yaml.Node, currentDir, rootDir string, visited ma
 	if err != nil {
 		return fmt.Errorf("!external at line %d: cannot compute cache prefix: %w", n.Line, err)
 	}
-	rewriteFilesDirAndIncludes(root, cachePrefix)
+	rewriteFilesDir(root, cachePrefix)
 
 	// Replace the !external mapping with the resolved content in-place.
 	*n = *root
@@ -235,19 +238,20 @@ func resolveExternalMapping(n *yaml.Node, currentDir, rootDir string, visited ma
 	return nil
 }
 
-// rewriteFilesDirAndIncludes walks the yaml node tree and prepends
-// cachePrefix to every files_dir scalar value. Idempotent: if a
-// files_dir value already starts with the prefix, no-op.
+// rewriteFilesDir walks the yaml node tree and prepends cachePrefix to
+// every files_dir scalar value. Idempotent: if a files_dir value already
+// starts with the prefix, no-op.
 //
-// !include paths are NOT rewritten. They resolve relative to their
-// containing file's directory (subDir in expandNode), and after fetch
-// that directory IS inside the cache, so relative paths Just Work
-// without any rewrite. Rewriting them would double-prefix.
+// !include paths are intentionally NOT rewritten. They resolve relative
+// to their containing file's directory (subDir in expandNode), and after
+// fetch that directory IS inside the cache, so relative !include paths
+// Just Work without any rewrite. Rewriting them would double-prefix on
+// recursive resolution.
 //
 // files_dir DOES need rewriting because it's consumed at workspace-
 // provisioning time relative to orgBaseDir (the parent template's root),
 // not relative to the workspace.yaml's containing dir.
-func rewriteFilesDirAndIncludes(n *yaml.Node, cachePrefix string) {
+func rewriteFilesDir(n *yaml.Node, cachePrefix string) {
 	if n == nil {
 		return
 	}
@@ -262,7 +266,7 @@ func rewriteFilesDirAndIncludes(n *yaml.Node, cachePrefix string) {
 		}
 	}
 	for _, child := range n.Content {
-		rewriteFilesDirAndIncludes(child, cachePrefix)
+		rewriteFilesDir(child, cachePrefix)
 	}
 }
 
@@ -280,53 +284,110 @@ func safeRepoCacheDir(host, repoPath string) string {
 // clone the repo at ref into the cache dir. Cache key includes the
 // resolved SHA, so different SHAs of the same ref get different cache
 // dirs (no overwrite).
+//
+// Token handling — important for security. The auth token never enters
+// the clone URL (and therefore never lands in the cloned repo's
+// .git/config) and never appears in returned errors. We use git's
+// `http.extraHeader` config option (passed via `-c`), which sends an
+// Authorization header per-request without persisting it. The token is
+// briefly visible in the `git` process's argv (so other local users
+// with the same uid could see it via `ps`), which is the same exposure
+// it has via the env var that supplied it.
+//
+// Cache validity uses a `.complete` marker written after a successful
+// clone+rename. Cache-hit checks for the marker, not just the dir
+// existence — a partially-written cache (clone failed mid-way, or a
+// concurrent caller wrote a half-baked cache dir) is treated as cache
+// miss and re-fetched cleanly.
 type gitFetcher struct{}
 
+// cacheCompleteMarker is the filename written after a successful clone.
+// Cache-hit requires this marker; without it, the cache dir is treated
+// as partially-written and re-fetched.
+const cacheCompleteMarker = ".complete"
+
 // Fetch resolves ref → SHA via `git ls-remote`, then `git clone --depth=1`
-// if the cache dir is missing. Auth via MOLECULE_GITEA_TOKEN injected
-// into the URL.
+// if the cache dir is missing or incomplete. Auth via MOLECULE_GITEA_TOKEN
+// injected via http.extraHeader (never via URL).
 func (g *gitFetcher) Fetch(ctx context.Context, rootDir, host, repoPath, ref string) (string, string, error) {
 	cacheRoot := filepath.Join(rootDir, externalCacheDirName, safeRepoCacheDir(host, repoPath))
 	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
 		return "", "", fmt.Errorf("mkdir cache root: %w", err)
 	}
 
-	cloneURL := buildAuthedURL(host, repoPath)
+	cloneURL := buildExternalCloneURL(host, repoPath)
+	gitArgs := func(extra ...string) []string {
+		args := authConfigArgs()
+		return append(args, extra...)
+	}
 
 	// 1. Resolve ref → SHA (so cache dir is content-addressable).
-	sha, err := g.resolveRefToSHA(ctx, cloneURL, ref)
+	sha, err := g.resolveRefToSHA(ctx, cloneURL, ref, gitArgs)
 	if err != nil {
-		return "", "", fmt.Errorf("ls-remote: %w", err)
+		return "", "", fmt.Errorf("ls-remote: %s", redactToken(err.Error()))
 	}
 
 	cacheDir := filepath.Join(cacheRoot, sha)
-	if _, statErr := os.Stat(filepath.Join(cacheDir, ".git")); statErr == nil {
-		// Cache hit.
+	// Cache-hit requires the .complete marker AND the .git dir.
+	// Without the marker, cache is partially-written → treat as miss.
+	if isCacheComplete(cacheDir) {
 		return cacheDir, sha, nil
 	}
 
-	// 2. Clone.
-	tmpDir := cacheDir + ".tmp." + shortHash(time.Now().String())
-	cmd := exec.CommandContext(ctx, "git", "clone", "--quiet", "--depth=1", "-b", ref, cloneURL, tmpDir)
+	// Cache miss or partially-written — clean any stale cacheDir before
+	// cloning (a previous broken attempt would otherwise block rename).
+	os.RemoveAll(cacheDir)
+
+	// 2. Clone into a sibling tmp dir; atomic rename on success.
+	tmpDir, err := os.MkdirTemp(cacheRoot, sha+".tmp.")
+	if err != nil {
+		return "", "", fmt.Errorf("mkdir tmp: %w", err)
+	}
+	// MkdirTemp creates the dir; git clone refuses to clone into a
+	// non-empty dir. Remove + recreate empty.
+	os.RemoveAll(tmpDir)
+	cloneAndConfig := append(gitArgs("clone", "--quiet", "--depth=1", "-b", ref, cloneURL, tmpDir))
+	cmd := exec.CommandContext(ctx, "git", cloneAndConfig...)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		os.RemoveAll(tmpDir)
-		return "", "", fmt.Errorf("git clone: %w: %s", err, strings.TrimSpace(string(out)))
+		return "", "", fmt.Errorf("git clone: %w: %s", err, redactToken(strings.TrimSpace(string(out))))
 	}
-	// Atomic rename to final cache path.
-	if err := os.Rename(tmpDir, cacheDir); err != nil {
-		// Race: another import beat us to it. The other party's content
-		// is at the same SHA, so it's equivalent. Cleanup our tmp.
+
+	// Write the .complete marker BEFORE the rename. If rename succeeds,
+	// the marker is in place. If rename loses the race (concurrent
+	// fetcher won), our tmp gets cleaned up and we trust the winner.
+	if err := os.WriteFile(filepath.Join(tmpDir, cacheCompleteMarker), []byte(time.Now().UTC().Format(time.RFC3339)), 0o644); err != nil {
 		os.RemoveAll(tmpDir)
-		if _, statErr := os.Stat(filepath.Join(cacheDir, ".git")); statErr != nil {
-			return "", "", fmt.Errorf("rename clone to cache: %w", err)
+		return "", "", fmt.Errorf("write complete marker: %w", err)
+	}
+
+	if err := os.Rename(tmpDir, cacheDir); err != nil {
+		// Race: another import beat us. Validate THEIR cache, accept it.
+		os.RemoveAll(tmpDir)
+		if isCacheComplete(cacheDir) {
+			return cacheDir, sha, nil
 		}
+		return "", "", fmt.Errorf("rename clone to cache (and winner's cache is incomplete): %w", err)
 	}
 	return cacheDir, sha, nil
 }
 
-func (g *gitFetcher) resolveRefToSHA(ctx context.Context, cloneURL, ref string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "ls-remote", cloneURL, ref)
+// isCacheComplete reports whether cacheDir contains both the cloned
+// repo (.git) and the .complete marker. Treats partial state as miss.
+func isCacheComplete(cacheDir string) bool {
+	if _, err := os.Stat(filepath.Join(cacheDir, ".git")); err != nil {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(cacheDir, cacheCompleteMarker)); err != nil {
+		return false
+	}
+	return true
+}
+
+func (g *gitFetcher) resolveRefToSHA(ctx context.Context, cloneURL, ref string, gitArgs func(...string) []string) (string, error) {
+	args := gitArgs("ls-remote", cloneURL, ref)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.Output()
 	if err != nil {
@@ -345,16 +406,34 @@ func (g *gitFetcher) resolveRefToSHA(ctx context.Context, cloneURL, ref string) 
 	return line, nil
 }
 
-func buildAuthedURL(host, repoPath string) string {
-	token := os.Getenv("MOLECULE_GITEA_TOKEN")
+// buildExternalCloneURL constructs the clone URL WITHOUT auth in userinfo.
+// Auth is layered on via authConfigArgs's http.extraHeader.
+func buildExternalCloneURL(host, repoPath string) string {
 	u := url.URL{Scheme: "https", Host: host, Path: "/" + repoPath + ".git"}
-	if token != "" {
-		u.User = url.UserPassword("oauth2", token)
-	}
 	return u.String()
 }
 
-func shortHash(s string) string {
-	h := sha1.Sum([]byte(s))
-	return hex.EncodeToString(h[:4])
+// authConfigArgs returns the `-c http.extraHeader=Authorization: token X`
+// args to pass to git, OR an empty slice if no token is set. The token
+// goes into the request headers (not the URL or .git/config), so it
+// doesn't persist on disk and doesn't appear in clone error output.
+func authConfigArgs() []string {
+	token := os.Getenv("MOLECULE_GITEA_TOKEN")
+	if token == "" {
+		return nil
+	}
+	return []string{"-c", "http.extraHeader=Authorization: token " + token}
 }
+
+// redactToken scrubs the auth token from a string before it's logged
+// or returned in an error. Belt-and-braces: with the http.extraHeader
+// approach the token shouldn't appear in git's output, but if some
+// future git version or libcurl debug mode emits it, this catches it.
+func redactToken(s string) string {
+	token := os.Getenv("MOLECULE_GITEA_TOKEN")
+	if token == "" || len(token) < 8 {
+		return s
+	}
+	return strings.ReplaceAll(s, token, "<redacted-token>")
+}
+

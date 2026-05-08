@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -290,6 +289,91 @@ func TestGitFetcher_DirectFetch_CacheHit(t *testing.T) {
 	if _, err := os.Stat(stamp); err != nil {
 		t.Errorf("cache hit not honored — stamp file disappeared: %v", err)
 	}
+}
 
-	_ = fmt.Sprint
+// TestGitFetcher_RejectsRefWithDoubleDot: defense-in-depth on ref input.
+// safeRefPattern allows '.' as a regex character, so ".." would match
+// without an explicit deny. Verify it's rejected even though git itself
+// would also reject the resulting clone.
+func TestGitFetcher_RejectsRefWithDoubleDot(t *testing.T) {
+	rootDir := t.TempDir()
+	src := []byte(`workspaces:
+  - !external
+    repo: molecule-ai/x
+    ref: foo..bar
+    path: x.yaml
+`)
+	_, err := resolveYAMLIncludes(src, rootDir)
+	if err == nil {
+		t.Fatalf("expected '..' rejection")
+	}
+	if !strings.Contains(err.Error(), "..") {
+		t.Errorf("expected '..' in error; got %v", err)
+	}
+}
+
+// TestGitFetcher_CacheValidatedByCompleteMarker: a partially-written
+// cache (the .git dir exists but no .complete marker) is treated as
+// cache-miss and re-fetched. Catches the broken-cache-permanence bug.
+func TestGitFetcher_CacheValidatedByCompleteMarker(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not found: %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	fixtures := t.TempDir()
+	barePath := filepath.Join(fixtures, "test.git")
+	workPath := filepath.Join(fixtures, "w")
+	mustGit(t, "", "init", "--bare", "-b", "main", barePath)
+	mustGit(t, "", "clone", barePath, workPath)
+	mustGit(t, workPath, "config", "user.email", "t@e")
+	mustGit(t, workPath, "config", "user.name", "T")
+	mustWriteFile(t, filepath.Join(workPath, "good.txt"), "from-network")
+	mustGit(t, workPath, "add", ".")
+	mustGit(t, workPath, "commit", "-m", "seed")
+	mustGit(t, workPath, "push", "origin", "main")
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "url."+barePath+".insteadOf")
+	t.Setenv("GIT_CONFIG_VALUE_0", "https://git.moleculesai.app/molecule-ai/marker-test.git")
+
+	rootDir := t.TempDir()
+	g := &gitFetcher{}
+
+	// First fetch — populates the cache (creates .complete marker).
+	cacheDir1, _, err := g.Fetch(context.Background(), rootDir, "git.moleculesai.app", "molecule-ai/marker-test", "main")
+	if err != nil {
+		t.Fatalf("first Fetch: %v", err)
+	}
+	marker := filepath.Join(cacheDir1, cacheCompleteMarker)
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("first fetch should have written .complete marker: %v", err)
+	}
+
+	// Now simulate a partial cache: delete the marker but leave .git
+	// in place. The next Fetch should treat this as cache-miss and
+	// re-fetch (NOT silently use the partial cache).
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	// Drop a sentinel file the second fetch will clobber if it re-fetches.
+	sentinel := filepath.Join(cacheDir1, "_should_be_clobbered")
+	if err := os.WriteFile(sentinel, []byte("partial"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cacheDir2, _, err := g.Fetch(context.Background(), rootDir, "git.moleculesai.app", "molecule-ai/marker-test", "main")
+	if err != nil {
+		t.Fatalf("second Fetch: %v", err)
+	}
+	if cacheDir1 != cacheDir2 {
+		t.Errorf("cache dirs differ across fetches: %q vs %q", cacheDir1, cacheDir2)
+	}
+	if _, err := os.Stat(filepath.Join(cacheDir2, cacheCompleteMarker)); err != nil {
+		t.Errorf("re-fetch should have re-written .complete marker: %v", err)
+	}
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Errorf("sentinel still present — re-fetch did NOT clobber partial cache")
+	}
 }
