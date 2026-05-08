@@ -21,6 +21,45 @@ export interface RequestOptions {
   timeoutMs?: number;
 }
 
+/**
+ * Build the platform auth header set used by every authenticated fetch
+ * from the canvas. Returns a fresh object so callers can mutate (e.g.
+ * append `Content-Type` for JSON requests, omit it for FormData).
+ *
+ * SaaS cross-origin shape:
+ *  - `X-Molecule-Org-Slug` — derived from `window.location.hostname`
+ *    by `getTenantSlug()`. Control plane uses it for fly-replay
+ *    routing. Empty on localhost / non-tenant hosts — safe to omit.
+ *  - `Authorization: Bearer <token>` — `NEXT_PUBLIC_ADMIN_TOKEN` baked
+ *    into the canvas build (see canvas/Dockerfile L8/L11). Required by
+ *    the workspace-server when `ADMIN_TOKEN` is set on the server side
+ *    (Tier-2b AdminAuth gate, wsauth_middleware.go ~L245). Empty when
+ *    no admin token was provisioned — the Tier-1 session-cookie path
+ *    handles that case via `credentials:"include"`.
+ *
+ * Why a shared helper: the two-line "read env, attach bearer; read
+ * slug, attach header" pattern was duplicated across `request()` and
+ * 7 raw-fetch callsites (chat uploads/download + 5 Attachment*
+ * components) before this consolidation. A new poller or raw fetch
+ * that forgets one of the two headers silently 401s against
+ * workspace-server when ADMIN_TOKEN is set — the exact bug shape
+ * called out in #178 / closes the post-#176 self-review gap.
+ *
+ * Callers that want JSON Content-Type should spread this and add it
+ * themselves; FormData callers should NOT add Content-Type (the
+ * browser sets the multipart boundary). Centralizing the auth pair
+ * but leaving Content-Type up to the caller is the minimum viable
+ * shared shape.
+ */
+export function platformAuthHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {};
+  const slug = getTenantSlug();
+  if (slug) headers["X-Molecule-Org-Slug"] = slug;
+  const adminToken = process.env.NEXT_PUBLIC_ADMIN_TOKEN;
+  if (adminToken) headers["Authorization"] = `Bearer ${adminToken}`;
+  return headers;
+}
+
 async function request<T>(
   method: string,
   path: string,
@@ -28,17 +67,16 @@ async function request<T>(
   retryCount = 0,
   options?: RequestOptions,
 ): Promise<T> {
-  // SaaS cross-origin shape:
-  //  - X-Molecule-Org-Slug: derived from window.location.hostname by
-  //    getTenantSlug(). Control plane uses it for fly-replay routing.
-  //    Empty on localhost / non-tenant hosts — safe to omit.
-  //  - credentials:"include": sends the session cookie cross-origin.
-  //    Cookie's Domain=.moleculesai.app attribute + cp's CORS allow this.
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  // JSON-bodied request — Content-Type is JSON. Auth pair comes from
+  // the shared helper; see its doc comment for the SaaS-shape rationale.
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...platformAuthHeaders(),
+  };
+  // Re-read slug locally for the 401 handler below — `headers` already
+  // has it, but the 401 branch needs the bare value to gate the
+  // session-probe + redirect logic on tenant context.
   const slug = getTenantSlug();
-  if (slug) headers["X-Molecule-Org-Slug"] = slug;
-  const adminToken = process.env.NEXT_PUBLIC_ADMIN_TOKEN;
-  if (adminToken) headers["Authorization"] = `Bearer ${adminToken}`;
 
   const res = await fetch(`${PLATFORM_URL}${path}`, {
     method,

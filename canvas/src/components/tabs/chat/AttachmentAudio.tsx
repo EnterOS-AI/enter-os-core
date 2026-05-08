@@ -9,6 +9,7 @@
 // AttachmentLightbox).
 
 import { useState, useEffect, useRef } from "react";
+import { platformAuthHeaders } from "@/lib/api";
 import type { ChatAttachment } from "./types";
 import { isPlatformAttachment, resolveAttachmentHref } from "./uploads";
 import { AttachmentChip } from "./AttachmentViews";
@@ -43,13 +44,8 @@ export function AttachmentAudio({ workspaceId, attachment, onDownload, tone }: P
     void (async () => {
       try {
         const href = resolveAttachmentHref(workspaceId, attachment.uri);
-        const headers: Record<string, string> = {};
-        const adminToken = process.env.NEXT_PUBLIC_ADMIN_TOKEN;
-        if (adminToken) headers["Authorization"] = `Bearer ${adminToken}`;
-        const slug = getTenantSlug();
-        if (slug) headers["X-Molecule-Org-Slug"] = slug;
         const res = await fetch(href, {
-          headers,
+          headers: platformAuthHeaders(),
           credentials: "include",
           signal: AbortSignal.timeout(60_000),
         });
@@ -116,9 +112,5 @@ export function AttachmentAudio({ workspaceId, attachment, onDownload, tone }: P
   );
 }
 
-function getTenantSlug(): string | null {
-  if (typeof window === "undefined") return null;
-  const host = window.location.hostname;
-  const m = host.match(/^([^.]+)\.moleculesai\.app$/);
-  return m ? m[1] : null;
-}
+// Local getTenantSlug() removed — auth-header construction now goes
+// through platformAuthHeaders() from @/lib/api (#178).

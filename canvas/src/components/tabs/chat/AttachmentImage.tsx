@@ -35,6 +35,7 @@
 //   downscale via canvas, but defer that to v2.
 
 import { useState, useEffect, useRef } from "react";
+import { platformAuthHeaders } from "@/lib/api";
 import type { ChatAttachment } from "./types";
 import { isPlatformAttachment, resolveAttachmentHref } from "./uploads";
 import { AttachmentLightbox } from "./AttachmentLightbox";
@@ -75,22 +76,14 @@ export function AttachmentImage({ workspaceId, attachment, onDownload, tone }: P
     }
 
     // Platform-auth path: identical to downloadChatFile but we keep
-    // the blob (don't trigger a Save-As). Use the same headers it does
-    // by going through it indirectly — no, downloadChatFile triggers a
-    // Save-As. Need a separate fetch.
+    // the blob (don't trigger a Save-As). Auth headers come from the
+    // shared `platformAuthHeaders()` helper — one source of truth for
+    // every authenticated raw fetch in the canvas (#178).
     void (async () => {
       try {
         const href = resolveAttachmentHref(workspaceId, attachment.uri);
-        const headers: Record<string, string> = {};
-        // Read the same env var downloadChatFile reads — single source
-        // of truth would be cleaner; refactor opportunity for PR-2 if
-        // we add the same path to AttachmentVideo.
-        const adminToken = process.env.NEXT_PUBLIC_ADMIN_TOKEN;
-        if (adminToken) headers["Authorization"] = `Bearer ${adminToken}`;
-        const slug = getTenantSlug();
-        if (slug) headers["X-Molecule-Org-Slug"] = slug;
         const res = await fetch(href, {
-          headers,
+          headers: platformAuthHeaders(),
           credentials: "include",
           signal: AbortSignal.timeout(30_000),
         });
@@ -184,15 +177,7 @@ export function AttachmentImage({ workspaceId, attachment, onDownload, tone }: P
   );
 }
 
-// Internal helper — duplicated from uploads.ts (it's not exported
-// there). Kept local so this component doesn't reach into private
-// surface; if AttachmentVideo / AttachmentPDF in PR-2/PR-3 also need
-// it, lift to an exported helper at that point (the third-caller
-// rule).
-function getTenantSlug(): string | null {
-  if (typeof window === "undefined") return null;
-  const host = window.location.hostname;
-  // Tenant subdomain shape: <slug>.moleculesai.app
-  const m = host.match(/^([^.]+)\.moleculesai\.app$/);
-  return m ? m[1] : null;
-}
+// Local getTenantSlug() removed — auth-header construction now goes
+// through platformAuthHeaders() from @/lib/api which uses the canonical
+// getTenantSlug() from @/lib/tenant. This eliminates the duplicate
+// hostname-regex + the duplicate bearer-token-attach pattern (#178).

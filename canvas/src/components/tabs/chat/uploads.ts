@@ -1,12 +1,16 @@
-import { PLATFORM_URL } from "@/lib/api";
-import { getTenantSlug } from "@/lib/tenant";
+import { PLATFORM_URL, platformAuthHeaders } from "@/lib/api";
 import type { ChatAttachment } from "./types";
 
 /** Chat attachments are intentionally uploaded via a direct fetch()
  *  instead of the `api.post` helper — `api.post` JSON-stringifies the
- *  body, which would 500 on a Blob. Mirrors the header plumbing
- *  (tenant slug, admin token, credentials) so SaaS + self-hosted
- *  callers work the same way. */
+ *  body, which would 500 on a Blob. Auth headers (tenant slug, admin
+ *  token, credentials) come from `platformAuthHeaders()` — the same
+ *  helper `request()` uses, so a missing bearer surfaces as a single
+ *  fix site instead of N copies. We deliberately do NOT set
+ *  Content-Type so the browser writes the multipart boundary into the
+ *  header; setting it manually would yield a multipart body the server
+ *  can't parse. See lib/api.ts platformAuthHeaders() for the full
+ *  rationale on why this pair must stay matched. */
 export async function uploadChatFiles(
   workspaceId: string,
   files: File[],
@@ -16,18 +20,12 @@ export async function uploadChatFiles(
   const form = new FormData();
   for (const f of files) form.append("files", f, f.name);
 
-  const headers: Record<string, string> = {};
-  const slug = getTenantSlug();
-  if (slug) headers["X-Molecule-Org-Slug"] = slug;
-  const adminToken = process.env.NEXT_PUBLIC_ADMIN_TOKEN;
-  if (adminToken) headers["Authorization"] = `Bearer ${adminToken}`;
-
   // Uploads legitimately take a while on cold cache (tar write +
   // docker cp into the container). 60s is comfortable for the 25MB/
   // 50MB caps the server enforces.
   const res = await fetch(`${PLATFORM_URL}/workspaces/${workspaceId}/chat/uploads`, {
     method: "POST",
-    headers,
+    headers: platformAuthHeaders(),
     body: form,
     credentials: "include",
     signal: AbortSignal.timeout(60_000),
@@ -143,14 +141,8 @@ export async function downloadChatFile(
     return;
   }
 
-  const headers: Record<string, string> = {};
-  const slug = getTenantSlug();
-  if (slug) headers["X-Molecule-Org-Slug"] = slug;
-  const adminToken = process.env.NEXT_PUBLIC_ADMIN_TOKEN;
-  if (adminToken) headers["Authorization"] = `Bearer ${adminToken}`;
-
   const res = await fetch(href, {
-    headers,
+    headers: platformAuthHeaders(),
     credentials: "include",
     signal: AbortSignal.timeout(60_000),
   });

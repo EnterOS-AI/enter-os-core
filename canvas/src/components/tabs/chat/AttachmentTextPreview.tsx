@@ -26,6 +26,7 @@
 // to download the full file.
 
 import { useState, useEffect } from "react";
+import { platformAuthHeaders } from "@/lib/api";
 import type { ChatAttachment } from "./types";
 import { isPlatformAttachment, resolveAttachmentHref } from "./uploads";
 import { AttachmentChip } from "./AttachmentViews";
@@ -57,13 +58,13 @@ export function AttachmentTextPreview({ workspaceId, attachment, onDownload, ton
     void (async () => {
       try {
         const href = resolveAttachmentHref(workspaceId, attachment.uri);
-        const headers: Record<string, string> = {};
-        if (isPlatformAttachment(attachment.uri)) {
-          const adminToken = process.env.NEXT_PUBLIC_ADMIN_TOKEN;
-          if (adminToken) headers["Authorization"] = `Bearer ${adminToken}`;
-          const slug = getTenantSlug();
-          if (slug) headers["X-Molecule-Org-Slug"] = slug;
-        }
+        // Only attach platform auth headers for in-platform URIs —
+        // off-platform URLs (HTTP/HTTPS attachments) MUST NOT receive
+        // our bearer token (it would leak the admin token to a third
+        // party). The branch is preserved with the new shared helper.
+        const headers: Record<string, string> = isPlatformAttachment(attachment.uri)
+          ? platformAuthHeaders()
+          : {};
         const res = await fetch(href, {
           headers,
           credentials: "include",
@@ -182,9 +183,5 @@ export function AttachmentTextPreview({ workspaceId, attachment, onDownload, ton
   );
 }
 
-function getTenantSlug(): string | null {
-  if (typeof window === "undefined") return null;
-  const host = window.location.hostname;
-  const m = host.match(/^([^.]+)\.moleculesai\.app$/);
-  return m ? m[1] : null;
-}
+// Local getTenantSlug() removed — auth-header construction now goes
+// through platformAuthHeaders() from @/lib/api (#178).
