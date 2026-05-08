@@ -36,7 +36,7 @@ on:
   workflow_run:
     workflows: ['publish-workspace-server-image']
     types: [completed]
-    branches: [staging]
+    branches: [main]
   workflow_dispatch:
     inputs:
       target_tag:

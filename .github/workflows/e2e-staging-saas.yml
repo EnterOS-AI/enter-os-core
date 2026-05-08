@@ -20,13 +20,12 @@ name: E2E Staging SaaS (full lifecycle)
 #     via the same paths watcher that e2e-api.yml uses)
 
 on:
-  # Fire on staging push too — previously this only ran on main, which
-  # meant the most thorough end-to-end test caught regressions AFTER
-  # they shipped to staging (and then to the auto-promote PR). Running
-  # on staging push catches them BEFORE the staging→main promotion
-  # opens, so a green canary into auto-promote is more meaningful.
+  # Trunk-based (Phase 3 of internal#81): main is the only branch.
+  # Previously this fired on staging push too because staging was a
+  # superset of main and ran the gate ahead of auto-promote; with no
+  # staging branch, main is where E2E gates the deploy.
   push:
-    branches: [staging, main]
+    branches: [main]
     paths:
       - 'workspace-server/internal/handlers/registry.go'
       - 'workspace-server/internal/handlers/workspace_provision.go'
@@ -36,7 +35,7 @@ on:
       - 'tests/e2e/test_staging_full_saas.sh'
       - '.github/workflows/e2e-staging-saas.yml'
   pull_request:
-    branches: [staging, main]
+    branches: [main]
     paths:
       - 'workspace-server/internal/handlers/registry.go'
       - 'workspace-server/internal/handlers/workspace_provision.go'

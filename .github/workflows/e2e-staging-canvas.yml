@@ -22,9 +22,9 @@ on:
   # spending CI cycles. See e2e-api.yml for the rationale on why this
   # is a single job rather than two-jobs-sharing-name.
   push:
-    branches: [main, staging]
+    branches: [main]
   pull_request:
-    branches: [main, staging]
+    branches: [main]
   workflow_dispatch:
   schedule:
     # Weekly on Sunday 08:00 UTC — catches Chrome / Playwright / Next.js
