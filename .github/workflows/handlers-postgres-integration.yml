@@ -14,12 +14,42 @@ name: Handlers Postgres Integration
 # self-review caught it took 2 minutes to set up and would have caught
 # the bug at PR-time.
 #
-# This job spins a Postgres service container, applies the migration,
-# and runs `go test -tags=integration` against a live DB. Required
-# check on staging branch protection — backend handler PRs cannot
-# merge without a real-DB regression gate.
+# Why this workflow does NOT use `services: postgres:` (Class B fix)
+# ------------------------------------------------------------------
+# Our act_runner config has `container.network: host` (operator host
+# /opt/molecule/runners/config.yaml), which act_runner applies to BOTH
+# the job container AND every service container. With host-net, two
+# concurrent runs of this workflow both try to bind 0.0.0.0:5432 — the
+# second postgres FATALs with `could not create any TCP/IP sockets:
+# Address in use`, and Docker auto-removes it (act_runner sets
+# AutoRemove:true on service containers). By the time the migrations
+# step runs `psql`, the postgres container is gone, hence
+# `Connection refused` then `failed to remove container: No such
+# container` at cleanup time.
 #
-# Cost: ~30s job (postgres pull from GH cache + go build + 4 tests).
+# Per-job `container.network` override is silently ignored by
+# act_runner — `--network and --net in the options will be ignored.`
+# appears in the runner log. Documented constraint.
+#
+# So we sidestep `services:` entirely. The job container still uses
+# host-net (inherited from runner config; required for cache server
+# discovery on the bridge IP 172.18.0.17:42631). We launch a sibling
+# postgres on the existing `molecule-monorepo-net` bridge with a
+# UNIQUE name per run — `pg-handlers-${RUN_ID}-${RUN_ATTEMPT}` — and
+# read its bridge IP via `docker inspect`. A host-net job container
+# can reach a bridge-net container directly via the bridge IP (verified
+# manually on operator host 2026-05-08).
+#
+# Trade-offs vs. the original `services:` shape:
+#   + No host-port collision; N parallel runs share the bridge cleanly
+#   + `if: always()` cleanup runs even on test-step failure
+#   - One more step in the workflow (+~3 lines)
+#   - Requires `molecule-monorepo-net` to exist on the operator host
+#     (it does; declared in docker-compose.yml + docker-compose.infra.yml)
+#
+# Class B Hongming-owned CICD red sweep, 2026-05-08.
+#
+# Cost: ~30s job (postgres pull from cache + go build + 4 tests).
 
 on:
   push:
@@ -59,20 +89,14 @@ jobs:
     name: Handlers Postgres Integration
     needs: detect-changes
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:15-alpine
-        env:
-          POSTGRES_PASSWORD: test
-          POSTGRES_DB: molecule
-        ports:
-          - 5432:5432
-        # GHA spins this with --health-cmd built in for postgres images.
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+    env:
+      # Unique name per run so concurrent jobs don't collide on the
+      # bridge network. ${RUN_ID}-${RUN_ATTEMPT} is unique even across
+      # workflow_dispatch reruns of the same run_id.
+      PG_NAME: pg-handlers-${{ github.run_id }}-${{ github.run_attempt }}
+      # Bridge network already exists on the operator host (declared
+      # in docker-compose.yml + docker-compose.infra.yml).
+      PG_NETWORK: molecule-monorepo-net
     defaults:
       run:
         working-directory: workspace-server
@@ -90,15 +114,56 @@ jobs:
           go-version: 'stable'
 
       - if: needs.detect-changes.outputs.handlers == 'true'
+        name: Start sibling Postgres on bridge network
+        working-directory: .
+        run: |
+          # Sanity: the bridge network must exist on the operator host.
+          # Hard-fail loud if it doesn't — easier to spot than a silent
+          # auto-create that diverges from the rest of the stack.
+          if ! docker network inspect "${PG_NETWORK}" >/dev/null 2>&1; then
+            echo "::error::Bridge network '${PG_NETWORK}' missing on operator host. Re-run docker-compose.infra.yml or check ops handbook."
+            exit 1
+          fi
+
+          # If a stale container with the same name exists (rerun on
+          # the same run_id), wipe it first.
+          docker rm -f "${PG_NAME}" >/dev/null 2>&1 || true
+
+          docker run -d \
+            --name "${PG_NAME}" \
+            --network "${PG_NETWORK}" \
+            --health-cmd "pg_isready -U postgres" \
+            --health-interval 5s \
+            --health-timeout 5s \
+            --health-retries 10 \
+            -e POSTGRES_PASSWORD=test \
+            -e POSTGRES_DB=molecule \
+            postgres:15-alpine >/dev/null
+
+          # Read back the bridge IP. Always present immediately after
+          # `docker run -d` for bridge networks.
+          PG_HOST=$(docker inspect "${PG_NAME}" \
+            --format "{{(index .NetworkSettings.Networks \"${PG_NETWORK}\").IPAddress}}")
+          if [ -z "${PG_HOST}" ]; then
+            echo "::error::Could not resolve PG_HOST for ${PG_NAME} on ${PG_NETWORK}"
+            docker logs "${PG_NAME}" || true
+            exit 1
+          fi
+          echo "PG_HOST=${PG_HOST}" >> "$GITHUB_ENV"
+          echo "INTEGRATION_DB_URL=postgres://postgres:test@${PG_HOST}:5432/molecule?sslmode=disable" >> "$GITHUB_ENV"
+          echo "Started ${PG_NAME} at ${PG_HOST}:5432"
+
+      - if: needs.detect-changes.outputs.handlers == 'true'
         name: Apply migrations to Postgres service
         env:
           PGPASSWORD: test
         run: |
-          # Wait for postgres to actually accept connections (the
-          # GHA --health-cmd is best-effort but psql can still race).
+          # Wait for postgres to actually accept connections. Docker's
+          # health-cmd handles container-side readiness, but the wire
+          # to the bridge IP is best-tested with pg_isready directly.
           for i in {1..15}; do
-            if pg_isready -h 127.0.0.1 -p 5432 -U postgres -q; then break; fi
-            echo "waiting for postgres..."; sleep 2
+            if pg_isready -h "${PG_HOST}" -p 5432 -U postgres -q; then break; fi
+            echo "waiting for postgres at ${PG_HOST}:5432..."; sleep 2
           done
 
           # Apply every .up.sql in lexicographic order with
@@ -131,7 +196,7 @@ jobs:
           # not fine once a cross-table atomicity test came in.
           set +e
           for migration in $(ls migrations/*.sql 2>/dev/null | grep -v '\.down\.sql$' | sort); do
-            if psql -h 127.0.0.1 -U postgres -d molecule -v ON_ERROR_STOP=1 \
+            if psql -h "${PG_HOST}" -U postgres -d molecule -v ON_ERROR_STOP=1 \
                   -f "$migration" >/dev/null 2>&1; then
               echo "✓ $(basename "$migration")"
             else
@@ -145,7 +210,7 @@ jobs:
           # fail if any didn't land — that would be a real regression we
           # want loud.
           for tbl in delegations workspaces activity_logs pending_uploads; do
-            if ! psql -h 127.0.0.1 -U postgres -d molecule -tA \
+            if ! psql -h "${PG_HOST}" -U postgres -d molecule -tA \
                 -c "SELECT 1 FROM information_schema.tables WHERE table_name = '$tbl'" \
                 | grep -q 1; then
               echo "::error::$tbl table missing after migration replay — handler integration tests would be meaningless"
@@ -156,23 +221,32 @@ jobs:
 
       - if: needs.detect-changes.outputs.handlers == 'true'
         name: Run integration tests
-        env:
-          # 127.0.0.1, NOT localhost. On Gitea / act_runner the runner host
-          # has IPv6 enabled, so `localhost` resolves to `::1` first, and
-          # the Postgres service container only listens on IPv4 → lib/pq's
-          # first dial hits ECONNREFUSED. The migration step uses psql -h
-          # localhost which falls back to IPv4 cleanly, so the flake hides
-          # there and surfaces only at test time. Pinning IPv4 makes the
-          # whole job deterministic. (Issue #88, item 3.)
-          INTEGRATION_DB_URL: postgres://postgres:test@127.0.0.1:5432/molecule?sslmode=disable
         run: |
+          # INTEGRATION_DB_URL is exported by the start-postgres step;
+          # points at the per-run bridge IP, not 127.0.0.1, so concurrent
+          # workflow runs don't fight over a host-net 5432 port.
           go test -tags=integration -timeout 5m -v ./internal/handlers/ -run "^TestIntegration_"
 
-      - if: needs.detect-changes.outputs.handlers == 'true' && failure()
+      - if: failure() && needs.detect-changes.outputs.handlers == 'true'
         name: Diagnostic dump on failure
         env:
           PGPASSWORD: test
         run: |
-          echo "::group::delegations table state"
-          psql -h 127.0.0.1 -U postgres -d molecule -c "SELECT * FROM delegations LIMIT 50;" || true
+          echo "::group::postgres container status"
+          docker ps -a --filter "name=${PG_NAME}" --format '{{.Status}} {{.Names}}' || true
+          docker logs "${PG_NAME}" 2>&1 | tail -50 || true
           echo "::endgroup::"
+          echo "::group::delegations table state"
+          psql -h "${PG_HOST}" -U postgres -d molecule -c "SELECT * FROM delegations LIMIT 50;" || true
+          echo "::endgroup::"
+
+      - if: always() && needs.detect-changes.outputs.handlers == 'true'
+        name: Stop sibling Postgres
+        working-directory: .
+        run: |
+          # always() so containers don't leak when migrations or tests
+          # fail. The cleanup is best-effort: if the container is
+          # already gone (e.g. concurrent rerun race), don't fail the job.
+          docker rm -f "${PG_NAME}" >/dev/null 2>&1 || true
+          echo "Cleaned up ${PG_NAME}"
+
