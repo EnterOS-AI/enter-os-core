@@ -1,0 +1,49 @@
+# air.toml — live-reload config for local docker-compose dev mode.
+#
+# Active when the platform service runs from workspace-server/Dockerfile.dev
+# (selected via docker-compose.dev.yml overlay). In production, the regular
+# Dockerfile builds a static binary; air is dev-only.
+#
+# Reference: https://github.com/air-verse/air
+
+root = "."
+testdata_dir = "testdata"
+tmp_dir = "tmp"
+
+[build]
+  # Same build invocation as Dockerfile's builder stage minus the
+  # CGO_ENABLED=0 toggle (CGO ok in dev for richer race detector output).
+  cmd = "go build -o ./tmp/server ./cmd/server"
+  bin = "tmp/server"
+  full_bin = ""
+  args_bin = []
+  # Watch every .go and .yaml file under workspace-server/.
+  include_ext = ["go", "yaml", "tmpl"]
+  # Don't watch tests, build artifacts, vendored deps, or migration .sql
+  # (migrations need a clean DB anyway — handled by docker-compose down/up).
+  exclude_dir = ["assets", "tmp", "vendor", "testdata", "node_modules"]
+  exclude_file = []
+  # _test.go and *_mock.go shouldn't trigger a rebuild — saves cycles.
+  exclude_regex = ["_test\\.go$", "_mock\\.go$"]
+  exclude_unchanged = true
+  follow_symlink = false
+  log = "build-errors.log"
+  # Kill running binary 1s before starting new one.
+  kill_delay = "1s"
+  send_interrupt = true
+  stop_on_error = true
+  # Debounce: wait this long after last change before triggering rebuild.
+  delay = 500
+
+[log]
+  time = false
+
+[color]
+  main = "magenta"
+  watcher = "cyan"
+  build = "yellow"
+  runner = "green"
+
+[misc]
+  # Don't keep the tmp/ dir around between runs.
+  clean_on_exit = true
