@@ -97,7 +97,7 @@ jobs:
           # Wait for postgres to actually accept connections (the
           # GHA --health-cmd is best-effort but psql can still race).
           for i in {1..15}; do
-            if pg_isready -h localhost -p 5432 -U postgres -q; then break; fi
+            if pg_isready -h 127.0.0.1 -p 5432 -U postgres -q; then break; fi
             echo "waiting for postgres..."; sleep 2
           done
 
@@ -131,7 +131,7 @@ jobs:
           # not fine once a cross-table atomicity test came in.
           set +e
           for migration in $(ls migrations/*.sql 2>/dev/null | grep -v '\.down\.sql$' | sort); do
-            if psql -h localhost -U postgres -d molecule -v ON_ERROR_STOP=1 \
+            if psql -h 127.0.0.1 -U postgres -d molecule -v ON_ERROR_STOP=1 \
                   -f "$migration" >/dev/null 2>&1; then
               echo "✓ $(basename "$migration")"
             else
@@ -145,7 +145,7 @@ jobs:
           # fail if any didn't land — that would be a real regression we
           # want loud.
           for tbl in delegations workspaces activity_logs pending_uploads; do
-            if ! psql -h localhost -U postgres -d molecule -tA \
+            if ! psql -h 127.0.0.1 -U postgres -d molecule -tA \
                 -c "SELECT 1 FROM information_schema.tables WHERE table_name = '$tbl'" \
                 | grep -q 1; then
               echo "::error::$tbl table missing after migration replay — handler integration tests would be meaningless"
@@ -157,7 +157,14 @@ jobs:
       - if: needs.detect-changes.outputs.handlers == 'true'
         name: Run integration tests
         env:
-          INTEGRATION_DB_URL: postgres://postgres:test@localhost:5432/molecule?sslmode=disable
+          # 127.0.0.1, NOT localhost. On Gitea / act_runner the runner host
+          # has IPv6 enabled, so `localhost` resolves to `::1` first, and
+          # the Postgres service container only listens on IPv4 → lib/pq's
+          # first dial hits ECONNREFUSED. The migration step uses psql -h
+          # localhost which falls back to IPv4 cleanly, so the flake hides
+          # there and surfaces only at test time. Pinning IPv4 makes the
+          # whole job deterministic. (Issue #88, item 3.)
+          INTEGRATION_DB_URL: postgres://postgres:test@127.0.0.1:5432/molecule?sslmode=disable
         run: |
           go test -tags=integration -timeout 5m -v ./internal/handlers/ -run "^TestIntegration_"
 
@@ -167,5 +174,5 @@ jobs:
           PGPASSWORD: test
         run: |
           echo "::group::delegations table state"
-          psql -h localhost -U postgres -d molecule -c "SELECT * FROM delegations LIMIT 50;" || true
+          psql -h 127.0.0.1 -U postgres -d molecule -c "SELECT * FROM delegations LIMIT 50;" || true
           echo "::endgroup::"

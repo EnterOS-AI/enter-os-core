@@ -167,15 +167,26 @@ services:
   # Production shape: same single CF tunnel front-doors every tenant
   # subdomain — the Host header carries the tenant identity, not the
   # routing destination. Local cf-proxy mirrors this exactly.
+  #
+  # nginx.conf delivery: built into a custom image via cf-proxy/Dockerfile
+  # (a thin nginx:1.27-alpine + COPY). NOT a bind mount and NOT a
+  # compose `configs:` block, both of which break under Gitea's
+  # act_runner: the runner talks to the OUTER docker daemon over the
+  # host socket, and runc resolves bind sources on the outer host
+  # filesystem, where `/workspace/.../tests/harness/cf-proxy/nginx.conf`
+  # is invisible. Compose `configs:` falls back to bind mounts without
+  # swarm, so it hits the same gap. A build context, by contrast, is
+  # uploaded to the daemon as a tarball at build time — no bind. See
+  # issue #88 item 2.
   cf-proxy:
-    image: nginx:1.27-alpine
+    build:
+      context: ./cf-proxy
+      dockerfile: Dockerfile
     depends_on:
       tenant-alpha:
         condition: service_healthy
       tenant-beta:
         condition: service_healthy
-    volumes:
-      - ./cf-proxy/nginx.conf:/etc/nginx/nginx.conf:ro
     # Bind to 127.0.0.1 only — hardcoded ADMIN_TOKENs make 0.0.0.0
     # exposure unsafe even on a local network.
     ports:

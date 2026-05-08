@@ -19,9 +19,15 @@ Exit codes:
     0  — no collisions
     1  — collision detected; output names the conflicting PR(s) for the author
 
-Designed to run from a GitHub Actions PR check. Reads PR metadata via the
-GitHub CLI (gh) which is preinstalled on ubuntu-latest runners. Runs in
-under 10s against a typical PR.
+Designed to run from a Gitea Actions PR check. Reads PR metadata via direct
+HTTP calls to Gitea's REST API (`/api/v1/`), which on the molecule-ai fleet
+lives at https://git.moleculesai.app. Runs in under 10s against a typical PR.
+
+Post-2026-05-06 (Gitea migration, issue #75): the previous version called
+the GitHub CLI (``gh pr list``, ``gh pr diff``). On Gitea those calls hit
+either the GraphQL endpoint (HTTP 405) or /api/v3 (HTTP 404). This module
+now talks to /api/v1 directly via urllib so it works against any Gitea
+host without a `gh` install or extra dependencies.
 """
 
 from __future__ import annotations
@@ -31,10 +37,68 @@ import os
 import re
 import subprocess
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 MIGRATIONS_DIR = "workspace-server/migrations"
 MIGRATION_FILE_RE = re.compile(r"^(\d+)_[^/]+\.(up|down)\.sql$")
+
+
+def _gitea_api_url() -> str:
+    """Resolve the Gitea API base URL.
+
+    act_runner forwards github.server_url as GITHUB_SERVER_URL; for the
+    molecule-ai fleet that's https://git.moleculesai.app. Append /api/v1
+    to get the REST root. Override directly via GITEA_API_URL for tests
+    or non-default hosts.
+    """
+    env_override = os.environ.get("GITEA_API_URL", "").rstrip("/")
+    if env_override:
+        return env_override
+    server = os.environ.get("GITHUB_SERVER_URL", "https://git.moleculesai.app").rstrip("/")
+    return f"{server}/api/v1"
+
+
+def _gitea_token() -> str:
+    """Resolve the Gitea token from env. GITEA_TOKEN wins; falls back
+    to GITHUB_TOKEN (set by act_runner) and GH_TOKEN (operator habit
+    from the GitHub era)."""
+    return (
+        os.environ.get("GITEA_TOKEN")
+        or os.environ.get("GITHUB_TOKEN")
+        or os.environ.get("GH_TOKEN")
+        or ""
+    )
+
+
+def _gitea_get(path: str, params: dict[str, str] | None = None) -> bytes | None:
+    """GET against /api/v1; returns response body or None on HTTP error.
+
+    Errors return None (not raise) because callers handle missing data
+    by emitting an actionable workflow message rather than crashing the
+    PR check on a transient API blip.
+    """
+    base = _gitea_api_url()
+    qs = ""
+    if params:
+        qs = "?" + urllib.parse.urlencode(params)
+    url = f"{base}/{path.lstrip('/')}{qs}"
+    req = urllib.request.Request(url)
+    token = _gitea_token()
+    if token:
+        req.add_header("Authorization", f"token {token}")
+    req.add_header("Accept", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:  # noqa: S310
+            return resp.read()
+    except urllib.error.HTTPError as e:
+        sys.stderr.write(f"Gitea API HTTP {e.code} on {path}: {e.reason}\n")
+        return None
+    except (urllib.error.URLError, TimeoutError) as e:
+        sys.stderr.write(f"Gitea API network error on {path}: {e}\n")
+        return None
 
 
 def run(cmd: list[str], check: bool = True) -> str:
@@ -96,32 +160,49 @@ def open_prs_with_migration_prefix(
     repo: str, prefix: int, exclude_pr: int
 ) -> list[dict]:
     """Return open PRs (other than `exclude_pr`) that add a migration with
-    `prefix`. Uses `gh pr diff` per PR — we only need to walk PRs that are
-    actually in flight, so the cost is bounded by open-PR count.
+    `prefix`. Walks open PRs via Gitea's `/repos/{owner}/{repo}/pulls` and
+    pulls each one's changed-file list via `/pulls/{n}/files`. The cost is
+    bounded by open-PR count, which is small (<100) on this repo. The
+    return shape mimics the GitHub CLI's `--json number,headRefName`:
+    ``[{"number": int, "headRefName": str}, ...]``.
     """
-    out = run([
-        "gh", "pr", "list", "--repo", repo, "--state", "open",
-        "--json", "number,headRefName", "--limit", "100",
-    ])
-    prs = json.loads(out)
+    body = _gitea_get(
+        f"repos/{repo}/pulls",
+        {"state": "open", "limit": "50"},
+    )
+    if body is None:
+        # Best-effort: a transient Gitea blip shouldn't fail the PR
+        # check (the base-branch collision check runs locally and is
+        # the more common failure mode).
+        return []
+    prs = json.loads(body)
     matches: list[dict] = []
     for pr in prs:
         num = pr["number"]
         if num == exclude_pr:
             continue
-        try:
-            files = run([
-                "gh", "pr", "diff", str(num), "--repo", repo, "--name-only",
-            ], check=False)
-        except Exception:  # noqa: BLE001
+        # Gitea returns the head ref under .head.ref (REST shape);
+        # GitHub CLI's --json headRefName flattens it. Normalize on
+        # the way out so callers see the historical shape.
+        head_ref_name = (pr.get("head") or {}).get("ref", "")
+        files_body = _gitea_get(f"repos/{repo}/pulls/{num}/files", {"limit": "100"})
+        if files_body is None:
             continue
-        for raw in files.splitlines():
+        try:
+            files = json.loads(files_body)
+        except json.JSONDecodeError:
+            continue
+        for f in files:
+            # Gitea's /pulls/{n}/files returns objects with `.filename`
+            # (same as GitHub's REST). Older Gitea versions emit
+            # `.name` instead — handle both.
+            raw = f.get("filename") or f.get("name") or ""
             path = Path(raw.strip())
             if not path.name:
                 continue
             m = MIGRATION_FILE_RE.match(path.name)
             if m and int(m.group(1)) == prefix:
-                matches.append(pr)
+                matches.append({"number": num, "headRefName": head_ref_name})
                 break
     return matches
 
@@ -138,7 +219,10 @@ def main() -> int:
     pr_number = int(pr_number_env)
     base_ref = os.environ.get("BASE_REF", "origin/staging")
     head_ref = os.environ.get("HEAD_REF", "HEAD")
-    repo = os.environ.get("GITHUB_REPOSITORY", "Molecule-AI/molecule-core")
+    # Default kept lowercase to match the Gitea-canonical org name
+    # (post-2026-05-06 migration). Tests + workflow context override
+    # via GITHUB_REPOSITORY which act_runner sets per-run.
+    repo = os.environ.get("GITHUB_REPOSITORY", "molecule-ai/molecule-core")
 
     added = migrations_in_diff(base_ref, head_ref)
     if not added:

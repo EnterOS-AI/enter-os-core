@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { api } from "@/lib/api";
 import { ConversationTraceModal } from "@/components/ConversationTraceModal";
+import { useSocketEvent } from "@/hooks/useSocketEvent";
 import { type ActivityEntry } from "@/types/activity";
 import { useWorkspaceName } from "@/hooks/useWorkspaceName";
 import { inferA2AErrorHint } from "./chat/a2aErrorHint";
@@ -48,6 +49,15 @@ export function ActivityTab({ workspaceId }: Props) {
   const [traceOpen, setTraceOpen] = useState(false);
   const resolveName = useWorkspaceName();
 
+  // Refs let the WS handler read the latest filter / autoRefresh
+  // selection without re-subscribing on every state change. The bus
+  // listener is registered exactly once per mount via useSocketEvent's
+  // ref-internal pattern; subscriber-side filtering reads from these.
+  const filterRef = useRef(filter);
+  filterRef.current = filter;
+  const autoRefreshRef = useRef(autoRefresh);
+  autoRefreshRef.current = autoRefresh;
+
   const loadActivities = useCallback(async () => {
     try {
       const typeParam = filter !== "all" ? `?type=${filter}` : "";
@@ -66,11 +76,58 @@ export function ActivityTab({ workspaceId }: Props) {
     loadActivities();
   }, [loadActivities]);
 
-  useEffect(() => {
-    if (!autoRefresh) return;
-    const interval = setInterval(loadActivities, 5000);
-    return () => clearInterval(interval);
-  }, [loadActivities, autoRefresh]);
+  // Live-update path (issue #61 stage 3, replaces the 5s setInterval).
+  // ACTIVITY_LOGGED events from this workspace prepend to the rendered
+  // list — dedup by id so a server-side update + a poll reply don't
+  // double-render the same row.
+  //
+  // Honours the user's autoRefresh toggle: when paused, live updates
+  // are dropped until the user re-enables Live (or hits Refresh, which
+  // re-bootstraps via loadActivities).
+  //
+  // Filter awareness: matches the server-side `?type=<filter>`
+  // semantics so the panel doesn't show rows the user excluded.
+  useSocketEvent((msg) => {
+    if (!autoRefreshRef.current) return;
+    if (msg.event !== "ACTIVITY_LOGGED") return;
+    if (msg.workspace_id !== workspaceId) return;
+
+    const p = (msg.payload || {}) as Record<string, unknown>;
+    const activityType = (p.activity_type as string) || "";
+
+    const f = filterRef.current;
+    if (f !== "all" && activityType !== f) return;
+
+    const entry: ActivityEntry = {
+      id:
+        (p.id as string) ||
+        `ws-push-${msg.timestamp || Date.now()}-${msg.workspace_id}`,
+      workspace_id: msg.workspace_id,
+      activity_type: activityType,
+      source_id: (p.source_id as string | null) ?? null,
+      target_id: (p.target_id as string | null) ?? null,
+      method: (p.method as string | null) ?? null,
+      summary: (p.summary as string | null) ?? null,
+      request_body: (p.request_body as Record<string, unknown> | null) ?? null,
+      response_body:
+        (p.response_body as Record<string, unknown> | null) ?? null,
+      duration_ms: (p.duration_ms as number | null) ?? null,
+      status: (p.status as string) || "ok",
+      error_detail: (p.error_detail as string | null) ?? null,
+      created_at:
+        (p.created_at as string) ||
+        msg.timestamp ||
+        new Date().toISOString(),
+    };
+
+    setActivities((prev) => {
+      // Dedup by id — a row that arrived via the bootstrap fetch and
+      // also fires ACTIVITY_LOGGED from a delayed server-side hook
+      // must render exactly once.
+      if (prev.some((e) => e.id === entry.id)) return prev;
+      return [entry, ...prev];
+    });
+  });
 
   return (
     <div className="flex flex-col h-full">
