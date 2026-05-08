@@ -1,7 +1,11 @@
 FROM node:22-alpine AS builder
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm install
+# `npm ci` (not `install`) for lockfile-exact reproducibility.
+# `--include=optional` ensures the platform-specific @tailwindcss/oxide
+# native binary lands — without it, postcss fails with "Cannot read
+# properties of undefined (reading 'All')" at build time.
+RUN npm ci --include=optional
 COPY . .
 ARG NEXT_PUBLIC_PLATFORM_URL=http://localhost:8080
 ARG NEXT_PUBLIC_WS_URL=ws://localhost:8080/ws

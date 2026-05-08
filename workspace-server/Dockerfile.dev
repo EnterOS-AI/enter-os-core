@@ -31,7 +31,7 @@ RUN go mod download
 # block) so the Dockerfile doesn't need to COPY it. air watches the
 # bind-mounted dir for changes.
 
-ENV CGO_ENABLED=1
+ENV CGO_ENABLED=0
 ENV GOFLAGS="-buildvcs=false"
 
 # Run air with the .air.toml in the bind-mounted source dir.

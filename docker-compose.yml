@@ -13,6 +13,7 @@ services:
       - pgdata:/var/lib/postgresql/data
     networks:
       - molecule-monorepo-net
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dev}"]
       interval: 2s
@@ -50,6 +51,7 @@ services:
       - redisdata:/data
     networks:
       - molecule-monorepo-net
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
@@ -126,6 +128,10 @@ services:
       REDIS_URL: redis://redis:6379
       PORT: "${PLATFORM_PORT:-8080}"
       PLATFORM_URL: "http://platform:${PLATFORM_PORT:-8080}"
+      # Container network namespace is already isolated; "all interfaces"
+      # inside the container = the bridge interface only. The fail-open
+      # default (127.0.0.1) would block host-to-container access.
+      BIND_ADDR: "${BIND_ADDR:-0.0.0.0}"
       # Default MOLECULE_ENV=development so the WorkspaceAuth / AdminAuth
       # middleware fail-open path activates when ADMIN_TOKEN is unset —
       # otherwise the canvas (which runs without a bearer in pure local
@@ -212,8 +218,11 @@ services:
       - "${PLATFORM_PUBLISH_PORT:-8080}:${PLATFORM_PORT:-8080}"
     networks:
       - molecule-monorepo-net
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:${PLATFORM_PORT:-8080}/health || exit 1"]
+      # Plain GET — `--spider` would issue HEAD, which returns 404 because
+      # /health is registered as GET only.
+      test: ["CMD-SHELL", "wget -qO /dev/null --tries=1 http://localhost:${PLATFORM_PORT:-8080}/health || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -251,7 +260,7 @@ services:
     networks:
       - molecule-monorepo-net
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:${CANVAS_PORT:-3000} || exit 1"]
+      test: ["CMD-SHELL", "wget -qO /dev/null --tries=1 http://127.0.0.1:${CANVAS_PORT:-3000} || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10

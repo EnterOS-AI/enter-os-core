@@ -1,2 +1,5 @@
 # The compiled binary, not the cmd/server package.
 /server
+
+# air live-reload build cache (Dockerfile.dev + docker-compose.dev.yml).
+/tmp/
