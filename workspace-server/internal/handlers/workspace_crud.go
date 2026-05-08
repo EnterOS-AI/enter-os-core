@@ -543,6 +543,103 @@ func (h *WorkspaceHandler) Delete(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "removed", "cascade_deleted": len(descendantIDs)})
 }
 
+// CascadeDelete performs the cascade-removal sequence used by the HTTP
+// DELETE handler and by OrgImport's reconcile mode: walk descendants, mark
+// self+descendants 'removed' first (#73 race guard), stop containers / EC2s,
+// remove volumes, revoke tokens, disable schedules, broadcast events.
+//
+// Idempotent against already-removed rows (the descendant CTE and all UPDATE
+// guards skip status='removed'). Returns the number of cascaded descendants
+// (not including id itself) and any per-workspace stop errors so callers can
+// surface a retryable failure instead of a silent-leak.
+//
+// Caller is responsible for the children-confirmation gate (the HTTP handler
+// returns 409 when children exist + ?confirm=true is missing); this helper
+// always cascades.
+func (h *WorkspaceHandler) CascadeDelete(ctx context.Context, id string) (int, []error, error) {
+	if err := validateWorkspaceID(id); err != nil {
+		return 0, nil, err
+	}
+
+	descendantIDs := []string{}
+	descRows, err := db.DB.QueryContext(ctx, `
+		WITH RECURSIVE descendants AS (
+			SELECT id FROM workspaces WHERE parent_id = $1 AND status != 'removed'
+			UNION ALL
+			SELECT w.id FROM workspaces w JOIN descendants d ON w.parent_id = d.id WHERE w.status != 'removed'
+		)
+		SELECT id FROM descendants
+	`, id)
+	if err != nil {
+		return 0, nil, fmt.Errorf("descendant query: %w", err)
+	}
+	for descRows.Next() {
+		var descID string
+		if descRows.Scan(&descID) == nil {
+			descendantIDs = append(descendantIDs, descID)
+		}
+	}
+	descRows.Close()
+
+	allIDs := append([]string{id}, descendantIDs...)
+
+	if _, err := db.DB.ExecContext(ctx,
+		`UPDATE workspaces SET status = $1, updated_at = now() WHERE id = ANY($2::uuid[])`,
+		models.StatusRemoved, pq.Array(allIDs)); err != nil {
+		log.Printf("CascadeDelete status update for %s: %v", id, err)
+	}
+	if _, err := db.DB.ExecContext(ctx,
+		`DELETE FROM canvas_layouts WHERE workspace_id = ANY($1::uuid[])`,
+		pq.Array(allIDs)); err != nil {
+		log.Printf("CascadeDelete canvas_layouts for %s: %v", id, err)
+	}
+	if _, err := db.DB.ExecContext(ctx,
+		`UPDATE workspace_auth_tokens SET revoked_at = now()
+		 WHERE workspace_id = ANY($1::uuid[]) AND revoked_at IS NULL`,
+		pq.Array(allIDs)); err != nil {
+		log.Printf("CascadeDelete token revocation for %s: %v", id, err)
+	}
+	if _, err := db.DB.ExecContext(ctx,
+		`UPDATE workspace_schedules SET enabled = false, updated_at = now()
+		 WHERE workspace_id = ANY($1::uuid[]) AND enabled = true`,
+		pq.Array(allIDs)); err != nil {
+		log.Printf("CascadeDelete schedule disable for %s: %v", id, err)
+	}
+
+	cleanupCtx, cleanupCancel := context.WithTimeout(
+		context.WithoutCancel(ctx), 30*time.Second)
+	defer cleanupCancel()
+
+	var stopErrs []error
+	stopAndRemove := func(wsID string) {
+		if err := h.StopWorkspaceAuto(cleanupCtx, wsID); err != nil {
+			log.Printf("CascadeDelete %s stop failed: %v — leaving cleanup for orphan sweeper", wsID, err)
+			stopErrs = append(stopErrs, fmt.Errorf("stop %s: %w", wsID, err))
+			return
+		}
+		if h.provisioner != nil {
+			if err := h.provisioner.RemoveVolume(cleanupCtx, wsID); err != nil {
+				log.Printf("CascadeDelete %s volume removal warning: %v", wsID, err)
+			}
+		}
+	}
+
+	for _, descID := range descendantIDs {
+		stopAndRemove(descID)
+		db.ClearWorkspaceKeys(cleanupCtx, descID)
+		restartStates.Delete(descID)
+		h.broadcaster.RecordAndBroadcast(cleanupCtx, string(events.EventWorkspaceRemoved), descID, map[string]interface{}{})
+	}
+	stopAndRemove(id)
+	db.ClearWorkspaceKeys(cleanupCtx, id)
+	restartStates.Delete(id)
+	h.broadcaster.RecordAndBroadcast(cleanupCtx, string(events.EventWorkspaceRemoved), id, map[string]interface{}{
+		"cascade_deleted": len(descendantIDs),
+	})
+
+	return len(descendantIDs), stopErrs, nil
+}
+
 // validateWorkspaceID returns an error when id is not a valid UUID.
 // #687: prevents 500s from Postgres when a garbage string (e.g. ../../etc/passwd)
 // is passed as the :id path parameter.
