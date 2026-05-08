@@ -276,7 +276,13 @@ func (h *PluginsHandler) resolveAndStage(ctx context.Context, req installRequest
 // using NewPluginsHandler without a DB; production wires it in router.go.
 func (h *PluginsHandler) deliverToContainer(ctx context.Context, workspaceID string, r *stageResult) error {
 	if containerName := h.findRunningContainer(ctx, workspaceID); containerName != "" {
-		if err := h.copyPluginToContainer(ctx, containerName, r.StagedDir, r.PluginName); err != nil {
+		// Atomic stage→snapshot→swap→marker (molecule-core#114).
+		// Replaces the prior single docker.CopyToContainer write that
+		// left a partially-extracted tree on mid-install failure with
+		// no rollback path. atomicCopyToContainer writes a .complete
+		// marker as the last step; workspace-side plugin loaders should
+		// refuse to load a plugin dir without it.
+		if err := h.atomicCopyToContainer(ctx, containerName, r.StagedDir, r.PluginName); err != nil {
 			log.Printf("Plugin install: failed to copy %s to %s: %v", r.PluginName, workspaceID, err)
 			return newHTTPErr(http.StatusInternalServerError, gin.H{"error": "failed to copy plugin to container"})
 		}
