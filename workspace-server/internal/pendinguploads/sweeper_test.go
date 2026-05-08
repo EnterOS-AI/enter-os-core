@@ -207,20 +207,25 @@ func TestStartSweeper_TransientErrorDoesNotCrashLoop(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 50ms ticker so the second cycle fires quickly enough for the test.
-	// We re-export SweepInterval as a const, but tests use the public
-	// StartSweeper that takes its own interval — wait, the public
-	// StartSweeper signature uses the package-level SweepInterval. Hmm,
-	// this means the test takes ~5 minutes. Let me reconsider.
-	//
-	// (We patch the test below to just look at the immediate-sweep call
-	// + an error path, since the immediate call is enough to prove the
-	// "error doesn't crash" contract — the loop continues afterward
-	// regardless of timing.)
+	// Capture metric baseline so we can wait for the error counter to
+	// settle before returning — otherwise this test's leaked metric
+	// write races with the next test's metricDelta() baseline read and
+	// causes a non-deterministic +1 leak (manifests as
+	// TestStartSweeper_RecordsMetricsOnSuccess: "error counter delta=1,
+	// want 0"). cycleDone fires inside the fake's Sweep defer, BEFORE
+	// sweepOnce records the error metric — so cancel() right after
+	// waitForCycle is too early.
+	_, _, deltaError := metricDelta(t)
+
 	go pendinguploads.StartSweeper(ctx, store, time.Hour)
 
 	// Wait for the first (errored) cycle.
 	store.waitForCycle(t, 1, 2*time.Second)
+	// Wait for the goroutine to record the error metric. After this
+	// returns, sweepOnce has fully completed and a subsequent cancel()
+	// stops the loop on the next select pass with no in-flight metric
+	// writes outstanding.
+	waitForMetricDelta(t, deltaError, 1, 2*time.Second)
 	// Cancel — the goroutine returns cleanly, proving the error path
 	// didn't crash the loop. Without this fix the goroutine would have
 	// either panicked (process abort visible at exit) or stuck (this
