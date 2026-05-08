@@ -13,12 +13,15 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/channels"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
 	"github.com/gin-gonic/gin"
+	"github.com/lib/pq"
 	"gopkg.in/yaml.v3"
 )
 
@@ -568,11 +571,30 @@ func (h *OrgHandler) Import(c *gin.Context) {
 	var body struct {
 		Dir      string      `json:"dir"`      // org template directory name
 		Template OrgTemplate `json:"template"` // or inline template
+		// Mode controls cleanup behavior of pre-existing workspaces:
+		//   ""        / "merge"     — additive (default; current behavior).
+		//                              Existing workspaces matched by
+		//                              (parent_id, name) are skipped; nothing
+		//                              outside the new tree is touched.
+		//   "reconcile"             — additive + cleanup. After import, any
+		//                              online workspace whose name matches an
+		//                              imported workspace's name but whose id
+		//                              isn't in the import result set is
+		//                              cascade-deleted. Catches "previous
+		//                              import survived a re-import" zombies
+		//                              (the 20:13→21:17 dev-tree case).
+		Mode string `json:"mode"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
+	importStart := time.Now()
+	emitOrgEvent(c.Request.Context(), "org.import.started", map[string]any{
+		"name": body.Template.Name,
+		"dir":  body.Dir,
+		"mode": body.Mode,
+	})
 
 	var tmpl OrgTemplate
 	var orgBaseDir string // base directory for files_dir resolution
@@ -718,18 +740,171 @@ func (h *OrgHandler) Import(c *gin.Context) {
 		}
 	}
 
+	// Reconcile mode: prune workspaces present from a previous import that
+	// share a name with the new tree but are NOT in the new result set.
+	// Catches the additive-import bug where re-running /org/import with a
+	// changed tree shape (different parent_id for the same role name) leaves
+	// the prior workspace online — visible to the canvas, consuming
+	// containers, and looking like a duplicate. Default mode "" / "merge"
+	// preserves the old additive behavior.
+	reconcileRemovedCount := 0
+	reconcileSkipped := 0
+	reconcileErrs := []string{}
+	if body.Mode == "reconcile" && createErr == nil {
+		ctx := c.Request.Context()
+		importedNames := []string{}
+		walkOrgWorkspaceNames(tmpl.Workspaces, &importedNames)
+
+		importedIDs := make([]string, 0, len(results))
+		for _, r := range results {
+			if id, ok := r["id"].(string); ok && id != "" {
+				importedIDs = append(importedIDs, id)
+			}
+		}
+
+		// Empty-set guards: if the import didn't produce any names or any
+		// IDs, skip — querying with empty arrays would either match
+		// nothing (harmless) or, worse, match every workspace if a future
+		// query rewrite drops the IN clause. Belt-and-suspenders.
+		if len(importedNames) > 0 && len(importedIDs) > 0 {
+			rows, err := db.DB.QueryContext(ctx, `
+				SELECT id FROM workspaces
+				WHERE name = ANY($1::text[])
+				  AND id != ALL($2::uuid[])
+				  AND status != 'removed'
+			`, pq.Array(importedNames), pq.Array(importedIDs))
+			if err != nil {
+				log.Printf("Org import reconcile: orphan query failed: %v", err)
+				reconcileErrs = append(reconcileErrs, fmt.Sprintf("orphan query: %v", err))
+			} else {
+				orphanIDs := []string{}
+				for rows.Next() {
+					var orphanID string
+					if rows.Scan(&orphanID) == nil {
+						orphanIDs = append(orphanIDs, orphanID)
+					}
+				}
+				rows.Close()
+
+				for _, oid := range orphanIDs {
+					cascadeCount, stopErrs, err := h.workspace.CascadeDelete(ctx, oid)
+					if err != nil {
+						log.Printf("Org import reconcile: CascadeDelete(%s) failed: %v", oid, err)
+						reconcileErrs = append(reconcileErrs, fmt.Sprintf("delete %s: %v", oid, err))
+						reconcileSkipped++
+						continue
+					}
+					reconcileRemovedCount += 1 + cascadeCount
+					if len(stopErrs) > 0 {
+						log.Printf("Org import reconcile: %s had %d stop errors (orphan sweeper will retry)", oid, len(stopErrs))
+					}
+				}
+				log.Printf("Org import reconcile: %d orphans removed (%d cascade descendants), %d skipped", len(orphanIDs), reconcileRemovedCount-len(orphanIDs), reconcileSkipped)
+			}
+		}
+	}
+
 	status := http.StatusCreated
 	resp := gin.H{
 		"org":        tmpl.Name,
 		"workspaces": results,
 		"count":      len(results),
 	}
+	if body.Mode == "reconcile" {
+		resp["mode"] = "reconcile"
+		resp["reconcile_removed_count"] = reconcileRemovedCount
+		if len(reconcileErrs) > 0 {
+			resp["reconcile_errors"] = reconcileErrs
+		}
+	}
 	if createErr != nil {
 		status = http.StatusMultiStatus
 		resp["error"] = createErr.Error()
 	}
 
-	log.Printf("Org import: %s — %d workspaces created", tmpl.Name, len(results))
+	// results contains both freshly-created AND lookupExistingChild skips
+	// (entries with "skipped":true). Splitting the count here so the audit
+	// row reflects "what changed" vs "what was already there" — telemetry
+	// readers shouldn't need to grep stdout to tell an idempotent re-run
+	// apart from a fresh-create.
+	createdCount, skippedCount := 0, 0
+	for _, r := range results {
+		if skipped, _ := r["skipped"].(bool); skipped {
+			skippedCount++
+		} else {
+			createdCount++
+		}
+	}
+	log.Printf("Org import: %s — %d created, %d skipped, %d reconciled",
+		tmpl.Name, createdCount, skippedCount, reconcileRemovedCount)
+	emitOrgEvent(c.Request.Context(), "org.import.completed", map[string]any{
+		"name":                    tmpl.Name,
+		"dir":                     body.Dir,
+		"mode":                    body.Mode,
+		"created_count":           createdCount,
+		"skipped_count":           skippedCount,
+		"reconcile_removed_count": reconcileRemovedCount,
+		"reconcile_errors":        len(reconcileErrs),
+		"duration_ms":             time.Since(importStart).Milliseconds(),
+		"create_error":            errString(createErr),
+	})
 	c.JSON(status, resp)
+}
+
+// walkOrgWorkspaceNames collects every Name in the tree (in any order) into
+// names. Used by reconcile to detect orphan workspaces — workspaces with the
+// same role name as a freshly-imported one but a different id, surviving from
+// a prior import.
+func walkOrgWorkspaceNames(workspaces []OrgWorkspace, names *[]string) {
+	for _, w := range workspaces {
+		// spawning:false subtrees are still part of the imported tree
+		// from a logical-tree perspective — DON'T skip the recursion,
+		// or reconcile would orphan the rest of the subtree on every
+		// re-import where spawning is toggled. Names of skipped
+		// workspaces remain registered so reconcile won't double-create
+		// them when spawning flips back to true.
+		if w.Name != "" {
+			*names = append(*names, w.Name)
+		}
+		walkOrgWorkspaceNames(w.Children, names)
+	}
+}
+
+// emitOrgEvent records an org-lifecycle event in structure_events so the
+// import history is queryable independent of stdout log retention. Errors
+// are logged and swallowed — never block the request path on telemetry.
+//
+// Event-type taxonomy (extend by appending; never rename):
+//
+//	org.import.started        — handler entered, request body parsed
+//	org.import.completed      — handler exiting (success or partial)
+//	org.import.failed         — handler exiting with an unrecoverable error
+//
+// payload fields are documented at each call site.
+func emitOrgEvent(ctx context.Context, eventType string, payload map[string]any) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("emitOrgEvent: marshal %s payload failed: %v", eventType, err)
+		return
+	}
+	if _, err := db.DB.ExecContext(ctx, `
+		INSERT INTO structure_events (event_type, payload, created_at)
+		VALUES ($1, $2, now())
+	`, eventType, payloadJSON); err != nil {
+		log.Printf("emitOrgEvent: insert %s failed: %v", eventType, err)
+	}
+}
+
+// errString returns "" for a nil error, err.Error() otherwise. Lets us put
+// nullable error strings in event payloads without checking for nil at every
+// call site.
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
