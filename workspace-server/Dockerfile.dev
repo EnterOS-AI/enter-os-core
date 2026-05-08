@@ -1,0 +1,38 @@
+# Dockerfile.dev — local-development image with air-driven live reload.
+#
+# Selected by docker-compose.dev.yml (overlay over docker-compose.yml).
+# Production stays on workspace-server/Dockerfile (static binary, no air).
+#
+# Workflow:
+#   1. docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#   2. Edit any .go file under workspace-server/
+#   3. air detects, rebuilds, kills old binary, starts new one (~3-5s)
+#   4. No `docker compose up --build` needed
+#
+# Templates + plugins are NOT pre-cloned here — air-mode assumes the
+# developer's filesystem has the workspace-configs-templates/ + plugins/
+# dirs available, mounted at runtime via docker-compose.dev.yml.
+
+FROM golang:1.25-alpine
+
+# air + git (for go mod) + ca-certs (for TLS) + tzdata (for time-zone DB).
+RUN apk add --no-cache git ca-certificates tzdata wget \
+ && go install github.com/air-verse/air@latest
+
+WORKDIR /app/workspace-server
+
+# Pre-fetch deps so the first `air` rebuild on a fresh container is fast.
+# These are bind-mount-overridden at runtime, so the COPY here is just
+# to warm the module cache.
+COPY workspace-server/go.mod workspace-server/go.sum ./
+RUN go mod download
+
+# Source is bind-mounted at runtime (see docker-compose.dev.yml volumes
+# block) so the Dockerfile doesn't need to COPY it. air watches the
+# bind-mounted dir for changes.
+
+ENV CGO_ENABLED=1
+ENV GOFLAGS="-buildvcs=false"
+
+# Run air with the .air.toml in the bind-mounted source dir.
+CMD ["air", "-c", ".air.toml"]
