@@ -282,42 +282,33 @@ jobs:
           echo "::error::Refusing to fan out cascade against stale or corrupt PyPI surfaces."
           exit 1
 
-      - name: Fan out repository_dispatch
+      - name: Fan out via push to .runtime-version
         env:
-          # Fine-grained PAT with `actions:write` on the 8 template repos.
-          # GITHUB_TOKEN can't fire dispatches across repos — needs an explicit
-          # token. Stored as a repo secret; rotate per the standard schedule.
-          DISPATCH_TOKEN: ${{ secrets.TEMPLATE_DISPATCH_TOKEN }}
-          # Single source of truth: the publish job's output, which handles
-          # tag/manual-input/auto-bump uniformly. The previous fallback
-          # (`steps.version.outputs.version` from inside the cascade job)
-          # was a dead reference — different job, no shared step scope.
+          # Gitea PAT with write:repository scope on the 8 cascade-active
+          # template repos. Used here for `git push` (NOT for an API
+          # dispatch — Gitea 1.22.6 has no repository_dispatch endpoint;
+          # empirically verified across 6 candidate paths in molecule-
+          # core#20 issuecomment-913). The push trips each template's
+          # existing `on: push: branches: [main]` trigger on
+          # publish-image.yml, which then reads the updated
+          # .runtime-version via its resolve-version job.
+          DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
           RUNTIME_VERSION: ${{ needs.publish.outputs.version }}
         run: |
           set +e   # don't abort on a single repo failure — collect them all
-          # Schedule-vs-dispatch behaviour split (hardened 2026-04-28
-          # after the sweep-cf-orphans soft-skip incident — same class
-          # of bug):
-          #
-          # The earlier "skipping cascade. templates will pick up the
-          # new version on their own next rebuild" message was wrong —
-          # templates only build on this dispatch trigger; without it
-          # they stay pinned to whatever runtime version they last saw.
-          # A silent skip here means "PyPI is current, templates are
-          # not" and the gap is invisible until someone notices a
-          # template still on the old version weeks later.
-          #
-          #   - push                → exit 1 (red CI surfaces the gap)
-          #   - workflow_dispatch   → exit 0 with a warning (operator
-          #                           ran this ad-hoc; let them rerun
-          #                           after fixing the secret)
+
+          # Soft-skip on workflow_dispatch when the token is missing
+          # (operator ad-hoc test); hard-fail on push so unattended
+          # publishes can't silently skip the cascade. Same shape as
+          # the original v1, intentional split per the schedule-vs-
+          # dispatch hardening 2026-04-28.
           if [ -z "$DISPATCH_TOKEN" ]; then
             if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-              echo "::warning::TEMPLATE_DISPATCH_TOKEN secret not set — skipping cascade."
+              echo "::warning::DISPATCH_TOKEN secret not set — skipping cascade."
               echo "::warning::set it at Settings → Secrets and Variables → Actions, then rerun. Templates will stay on the prior runtime version until either this token is set or each template is rebuilt manually."
               exit 0
             fi
-            echo "::error::TEMPLATE_DISPATCH_TOKEN secret missing — cascade cannot fan out."
+            echo "::error::DISPATCH_TOKEN secret missing — cascade cannot fan out."
             echo "::error::PyPI was published, but the 8 template repos will NOT pick up the new version until this token is restored and a republish dispatches the cascade."
             echo "::error::set it at Settings → Secrets and Variables → Actions; then re-trigger publish-runtime via workflow_dispatch."
             exit 1
@@ -327,37 +318,119 @@ jobs:
             echo "::error::publish job did not expose a version output — cascade cannot fan out"
             exit 1
           fi
-          # All 9 active workspace template repos. The PR #2536 pruning
-          # ("deprecated, no shipping images") was empirically wrong:
-          # continuous-synth-e2e.yml defaults to langgraph as its primary
-          # canary (line 44), and every excluded template had successful
-          # publish-image runs as of 2026-05-03 — none were dormant.
-          # Symptom of the prune: today's a2a-sdk strict-mode fix
-          # (#2566 / commit e1628c4) cascaded to 4 templates but never
-          # reached langgraph, so the synth-E2E correctly canary'd a fix
-          # that had landed but not deployed. Re-added the 5 templates.
-          # Long-term: derive this list from manifest.json so cascade
-          # scope can't drift from E2E scope — tracked in RFC #388 as a
-          # Phase-1 invariant.
+
+          # All 9 workspace templates declared in manifest.json. The list
+          # MUST stay aligned with manifest.json's workspace_templates —
+          # cascade-list-drift-gate.yml enforces this in CI per the
+          # codex-stuck-on-stale-runtime invariant from PR #2556.
+          # Long-term goal: derive this list from manifest.json so it
+          # can't drift even on a manifest edit (RFC #388 Phase-1).
+          #
+          # Per-template publish-image.yml presence is checked at
+          # cascade-time below: codex doesn't ship one today, so the
+          # cascade soft-skips it with an informational message rather
+          # than dropping it from this list (which would re-introduce
+          # the drift the gate exists to catch).
+          GITEA_URL="${GITEA_URL:-https://git.moleculesai.app}"
           TEMPLATES="claude-code hermes openclaw codex langgraph crewai autogen deepagents gemini-cli"
           FAILED=""
+          SKIPPED=""
+
+          # Configure git identity once. The persona owning DISPATCH_TOKEN
+          # is the same identity that authored this commit on each
+          # template; using a generic "publish-runtime cascade" co-author
+          # trailer in the message keeps the audit trail honest about the
+          # workflow-driven origin.
+          git config --global user.name  "publish-runtime cascade"
+          git config --global user.email "publish-runtime@moleculesai.app"
+
+          WORKDIR="$(mktemp -d)"
           for tpl in $TEMPLATES; do
             REPO="molecule-ai/molecule-ai-workspace-template-$tpl"
-            STATUS=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" \
-              -X POST "https://api.github.com/repos/$REPO/dispatches" \
-              -H "Authorization: Bearer $DISPATCH_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              -d "{\"event_type\":\"runtime-published\",\"client_payload\":{\"runtime_version\":\"$VERSION\"}}")
-            if [ "$STATUS" = "204" ]; then
-              echo "✓ dispatched $tpl ($VERSION)"
-            else
-              echo "::warning::✗ failed to dispatch $tpl: HTTP $STATUS — $(cat /tmp/dispatch.out)"
+            CLONE="$WORKDIR/$tpl"
+
+            # Pre-check: skip templates without a publish-image.yml.
+            # The cascade's job is to trip the template's on-push
+            # rebuild — if there's no rebuild workflow, pushing a
+            # .runtime-version commit is just noise on the target
+            # repo. Use the Gitea contents API (no clone required for
+            # the probe). 200 = present; 404 = absent.
+            HTTP=$(curl -sS -o /dev/null -w "%{http_code}" \
+              -H "Authorization: token $DISPATCH_TOKEN" \
+              "$GITEA_URL/api/v1/repos/$REPO/contents/.github/workflows/publish-image.yml")
+            if [ "$HTTP" = "404" ]; then
+              echo "↷ $tpl has no publish-image.yml — soft-skip (informational; manifest still tracks it)"
+              SKIPPED="$SKIPPED $tpl"
+              continue
+            fi
+            if [ "$HTTP" != "200" ]; then
+              echo "::warning::$tpl publish-image.yml probe returned HTTP $HTTP — proceeding anyway, push will surface the real failure if any"
+            fi
+
+            # Use a per-template attempt loop so a transient race (e.g.
+            # human pushing to the same template at the same instant)
+            # doesn't lose the cascade. Bounded retries (3) — beyond
+            # that we surface the failure and let the operator retry.
+            attempt=0
+            success=false
+            while [ $attempt -lt 3 ]; do
+              attempt=$((attempt + 1))
+              rm -rf "$CLONE"
+              if ! git clone --depth=1 \
+                  "https://x-access-token:${DISPATCH_TOKEN}@${GITEA_URL#https://}/$REPO.git" \
+                  "$CLONE" >/tmp/clone.log 2>&1; then
+                echo "::warning::clone $tpl attempt $attempt failed: $(tail -n3 /tmp/clone.log)"
+                sleep 2
+                continue
+              fi
+
+              cd "$CLONE"
+              echo "$VERSION" > .runtime-version
+
+              # Idempotency guard: if the file already matches, this
+              # publish is a re-run for a version already cascaded.
+              # Don't push a no-op commit (would spuriously re-trip the
+              # template's on-push and rebuild for nothing).
+              if git diff --quiet -- .runtime-version; then
+                echo "✓ $tpl already at $VERSION — no commit needed (idempotent)"
+                success=true
+                cd - >/dev/null
+                break
+              fi
+
+              git add .runtime-version
+              git commit -m "chore: pin runtime to $VERSION (publish-runtime cascade)" \
+                -m "Co-Authored-By: publish-runtime cascade <publish-runtime@moleculesai.app>" \
+                >/dev/null
+
+              if git push origin HEAD:main >/tmp/push.log 2>&1; then
+                echo "✓ $tpl pushed $VERSION on attempt $attempt"
+                success=true
+                cd - >/dev/null
+                break
+              fi
+
+              # Likely a non-fast-forward — pull-rebase and retry.
+              # Don't force-push: that would silently overwrite a racing
+              # human/cascade commit.
+              echo "::warning::push $tpl attempt $attempt failed, pull-rebasing: $(tail -n3 /tmp/push.log)"
+              git pull --rebase origin main >/tmp/rebase.log 2>&1 || true
+              cd - >/dev/null
+            done
+
+            if [ "$success" != "true" ]; then
               FAILED="$FAILED $tpl"
             fi
           done
+          rm -rf "$WORKDIR"
+
           if [ -n "$FAILED" ]; then
-            echo "::warning::Cascade incomplete. Failed templates:$FAILED"
-            # Don't fail the whole job — PyPI publish already succeeded;
-            # operators can retry the failed templates manually.
+            echo "::error::Cascade incomplete after 3 retries each. Failed templates:$FAILED"
+            echo "::error::PyPI publish succeeded; failed templates lag the new version. Re-run this workflow_dispatch with the same version to retry only the laggers (idempotent — already-cascaded templates skip)."
+            exit 1
+          fi
+          if [ -n "$SKIPPED" ]; then
+            echo "Cascade complete: pinned $VERSION on cascade-active templates. Soft-skipped (no publish-image.yml):$SKIPPED"
+          else
+            echo "Cascade complete: $VERSION pinned across all manifest workspace_templates."
           fi

@@ -100,6 +100,13 @@ func (h *PluginsHandler) Install(c *gin.Context) {
 }
 
 // Uninstall handles DELETE /workspaces/:id/plugins/:name — removes a plugin.
+//
+// Dispatch order mirrors Install's deliverToContainer:
+//
+//  1. Local Docker container up → exec rm -rf via existing helpers.
+//  2. SaaS workspace (instance_id set) → ssh sudo rm -rf via EIC.
+//  3. external runtime → 422 (caller manages its own plugin dir).
+//  4. Neither → 503.
 func (h *PluginsHandler) Uninstall(c *gin.Context) {
 	workspaceID := c.Param("id")
 	pluginName := c.Param("name")
@@ -120,12 +127,24 @@ func (h *PluginsHandler) Uninstall(c *gin.Context) {
 		return
 	}
 
-	containerName := h.findRunningContainer(ctx, workspaceID)
-	if containerName == "" {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "workspace container not running"})
+	if containerName := h.findRunningContainer(ctx, workspaceID); containerName != "" {
+		h.uninstallViaDocker(ctx, c, workspaceID, pluginName, containerName)
 		return
 	}
 
+	if instanceID, runtime := h.lookupSaaSDispatch(workspaceID); instanceID != "" {
+		h.uninstallViaEIC(ctx, c, workspaceID, pluginName, instanceID, runtime)
+		return
+	}
+
+	c.JSON(http.StatusServiceUnavailable, gin.H{"error": "workspace container not running"})
+}
+
+// uninstallViaDocker holds the historical Docker-exec uninstall flow.
+// Extracted out of Uninstall so the new SaaS dispatch reads cleanly and
+// the two backend bodies are visibly symmetric (same steps, different
+// transport).
+func (h *PluginsHandler) uninstallViaDocker(ctx context.Context, c *gin.Context, workspaceID, pluginName, containerName string) {
 	// Read the plugin's manifest BEFORE deletion to learn which skill dirs
 	// it owns, so we can clean them out of /configs/skills/ and avoid the
 	// auto-restart re-mounting them. Issue #106.
@@ -171,6 +190,61 @@ func (h *PluginsHandler) Uninstall(c *gin.Context) {
 	}
 
 	log.Printf("Plugin uninstall: %s from workspace %s (restarting)", pluginName, workspaceID)
+	c.JSON(http.StatusOK, gin.H{
+		"status": "uninstalled",
+		"plugin": pluginName,
+	})
+}
+
+// uninstallViaEIC removes a plugin from a SaaS workspace EC2 over SSH.
+// Symmetric with uninstallViaDocker:
+//
+//   - Read manifest (best-effort, missing plugin.yaml = no skills to clean).
+//   - Skip CLAUDE.md awk-strip for now: that file lives at
+//     <runtime-config-prefix>/CLAUDE.md on the host and the same awk script
+//     would work over ssh, but the file is rewritten on workspace restart
+//     by the runtime adapter anyway, so the marker either stays harmless
+//     or gets dropped on the next install/restart cycle. Tracked as
+//     follow-up; not a regression vs the docker path's semantics here.
+//   - rm -rf the plugin dir.
+//   - Trigger restart.
+//
+// We intentionally don't try to remove /configs/skills/<skill> entries
+// over ssh because the same /configs is bind-mounted into the runtime
+// container; the agent's own start-up adapter rewrites that tree from
+// the live plugin set, so a stale skill dir for an uninstalled plugin
+// is cleaned up at restart. The docker path removes them eagerly only
+// because docker-exec is cheap. We can mirror that later if a real bug
+// surfaces, but adding two extra ssh round-trips per uninstall today
+// would be churn for no behavioural win.
+func (h *PluginsHandler) uninstallViaEIC(ctx context.Context, c *gin.Context, workspaceID, pluginName, instanceID, runtime string) {
+	// Read manifest first (best-effort) — we don't currently use the
+	// skills list on the SaaS path (see comment above), but reading it
+	// keeps the parsing path warm and lets log lines distinguish "we
+	// deleted a real plugin" from "user asked us to delete something
+	// that wasn't there." Errors here are swallowed: missing manifest
+	// must not block uninstall.
+	if data, err := readPluginManifestViaEIC(ctx, instanceID, runtime, pluginName); err == nil && len(data) > 0 {
+		info := parseManifestYAML(pluginName, data)
+		if len(info.Skills) > 0 {
+			log.Printf("Plugin uninstall: %s declared skills=%v (left to runtime restart to clean)", pluginName, info.Skills)
+		}
+	}
+
+	if err := uninstallPluginViaEIC(ctx, instanceID, runtime, pluginName); err != nil {
+		log.Printf("Plugin uninstall: EIC rm failed for %s on %s: %v", pluginName, workspaceID, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to remove plugin from workspace EC2"})
+		return
+	}
+
+	if h.restartFunc != nil {
+		go func() {
+			time.Sleep(2 * time.Second)
+			h.restartFunc(workspaceID)
+		}()
+	}
+
+	log.Printf("Plugin uninstall: %s from workspace %s (restarting via SaaS path)", pluginName, workspaceID)
 	c.JSON(http.StatusOK, gin.H{
 		"status": "uninstalled",
 		"plugin": pluginName,

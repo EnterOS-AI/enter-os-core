@@ -22,7 +22,7 @@ development workflow, conventions, and how to get your changes merged.
 
 ```bash
 # Clone the repo
-git clone https://github.com/Molecule-AI/molecule-core.git
+git clone https://git.moleculesai.app/molecule-ai/molecule-core.git
 cd molecule-core
 
 # Install git hooks
@@ -57,7 +57,7 @@ See `CLAUDE.md` for a full list of environment variables and their purposes.
 
 This repo is scoped to **code** (canvas, workspace, workspace-server, related
 infra). Public content (blog posts, marketing copy, OG images, SEO briefs,
-DevRel demos) lives in [`Molecule-AI/docs`](https://github.com/Molecule-AI/docs).
+DevRel demos) lives in [`Molecule-AI/docs`](https://git.moleculesai.app/molecule-ai/docs).
 The `Block forbidden paths` CI gate fails any PR that writes to `marketing/`
 or other removed paths — open against `Molecule-AI/docs` instead.
 
@@ -110,7 +110,7 @@ causing a render loop when any node position changed.
 
 1. **Repo-wide:** "Automatically delete head branches" is on. Once a PR merges, the branch is deleted server-side. Any subsequent `git push` to that branch fails with `remote rejected — no such branch`.
 
-2. **CI:** the `pr-guards` workflow (calling [molecule-ci `disable-auto-merge-on-push`](https://github.com/Molecule-AI/molecule-ci/blob/main/.github/workflows/disable-auto-merge-on-push.yml)) fires on every push to an open PR. If auto-merge was already enabled, it's disabled and a comment is posted. You must explicitly re-enable after verifying the new commit.
+2. **CI:** the `pr-guards` workflow (calling [molecule-ci `disable-auto-merge-on-push`](https://git.moleculesai.app/molecule-ai/molecule-ci/src/branch/main/.github/workflows/disable-auto-merge-on-push.yml)) fires on every push to an open PR. If auto-merge was already enabled, it's disabled and a comment is posted. You must explicitly re-enable after verifying the new commit.
 
 **Workflow rules that follow from the guards:**
 - Push **all** commits before running `gh pr merge --auto`.
@@ -180,9 +180,9 @@ and run CI manually.
 Code in this repo lands in molecule-core. Some related runtime artifacts
 live in their own repos:
 
-- [`Molecule-AI/molecule-ai-workspace-runtime`](https://github.com/Molecule-AI/molecule-ai-workspace-runtime) — Python adapter SDK (`molecule_runtime`) that runs inside containerized Molecule workspaces. Bridges Claude Code SDK / hermes / langgraph / etc. → A2A queue.
-- [`Molecule-AI/molecule-sdk-python`](https://github.com/Molecule-AI/molecule-sdk-python) — `A2AServer` + `RemoteAgentClient` for external agents that register over the public `/registry/register` flow.
-- [`Molecule-AI/molecule-mcp-claude-channel`](https://github.com/Molecule-AI/molecule-mcp-claude-channel) — Claude Code channel plugin. Bridges A2A traffic into a running Claude Code session via MCP `notifications/claude/channel`. Polling-based (no tunnel required); install with `claude --channels plugin:molecule@Molecule-AI/molecule-mcp-claude-channel`.
+- [`Molecule-AI/molecule-ai-workspace-runtime`](https://git.moleculesai.app/molecule-ai/molecule-ai-workspace-runtime) — Python adapter SDK (`molecule_runtime`) that runs inside containerized Molecule workspaces. Bridges Claude Code SDK / hermes / langgraph / etc. → A2A queue.
+- [`Molecule-AI/molecule-sdk-python`](https://git.moleculesai.app/molecule-ai/molecule-sdk-python) — `A2AServer` + `RemoteAgentClient` for external agents that register over the public `/registry/register` flow.
+- [`Molecule-AI/molecule-mcp-claude-channel`](https://git.moleculesai.app/molecule-ai/molecule-mcp-claude-channel) — Claude Code channel plugin. Bridges A2A traffic into a running Claude Code session via MCP `notifications/claude/channel`. Polling-based (no tunnel required); install with `claude --channels plugin:molecule@Molecule-AI/molecule-mcp-claude-channel`.
 
 When extending the **A2A surface** in molecule-core (`workspace-server/internal/handlers/a2a_proxy.go` etc.), consider whether the change has a downstream impact on the runtime SDK or the channel plugin — they're versioned independently but share the wire shape.
 

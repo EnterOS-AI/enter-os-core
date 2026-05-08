@@ -103,9 +103,9 @@ A bad test:
 
 ## Related
 
-- [Issue #1821](https://github.com/Molecule-AI/molecule-core/issues/1821) — policy tracking issue
-- [Issue #1815](https://github.com/Molecule-AI/molecule-core/issues/1815) — Canvas coverage instrumentation
-- [Issue #1818](https://github.com/Molecule-AI/molecule-core/issues/1818) — Python pytest-cov
-- [Issue #1814](https://github.com/Molecule-AI/molecule-core/issues/1814) — workspace_provision_test.go unblock
-- [Issue #1816](https://github.com/Molecule-AI/molecule-core/issues/1816) — tokens.go coverage
-- [Issue #1819](https://github.com/Molecule-AI/molecule-core/issues/1819) — wsauth_middleware coverage
+- [Issue #1821](https://git.moleculesai.app/molecule-ai/molecule-core/issues/1821) — policy tracking issue
+- [Issue #1815](https://git.moleculesai.app/molecule-ai/molecule-core/issues/1815) — Canvas coverage instrumentation
+- [Issue #1818](https://git.moleculesai.app/molecule-ai/molecule-core/issues/1818) — Python pytest-cov
+- [Issue #1814](https://git.moleculesai.app/molecule-ai/molecule-core/issues/1814) — workspace_provision_test.go unblock
+- [Issue #1816](https://git.moleculesai.app/molecule-ai/molecule-core/issues/1816) — tokens.go coverage
+- [Issue #1819](https://git.moleculesai.app/molecule-ai/molecule-core/issues/1819) — wsauth_middleware coverage

@@ -1,5 +1,7 @@
 # Production-shape local harness
 
+<!-- Retrigger Harness Replays after Class G #168 + clone-manifest fix (#42). -->
+
 The harness brings up the SaaS tenant topology on localhost using the
 same `Dockerfile.tenant` image that ships to production. Tests target
 the cf-proxy on `http://localhost:8080` and pass the tenant identity

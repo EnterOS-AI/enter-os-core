@@ -153,7 +153,7 @@ The `id` field is your workspace ID — remember it.
 |---|---|
 | "Failed to send message — agent may be unreachable" | The tenant couldn't POST to your URL. Verify `curl https://<your-tunnel>/health` returns 200 from another machine. |
 | Response takes > 30s | Canvas times out around 30s. Keep initial implementations simple. For long-running work, return a placeholder and use [polling mode](#next-step-polling-mode-preview) (once available). |
-| Agent duplicated in chat | Known canvas bug where WebSocket + HTTP responses both render. Fixed in [PR #1517](https://github.com/Molecule-AI/molecule-core/pull/1517). |
+| Agent duplicated in chat | Known canvas bug where WebSocket + HTTP responses both render. Fixed in [PR #1517](https://git.moleculesai.app/molecule-ai/molecule-core/pull/1517). |
 | Agent replies but canvas shows "Agent unreachable" | Check the tenant can reach your URL. Cloudflare quick tunnels rotate — the URL in your canvas may point at a dead tunnel after restart. |
 | Getting 404 when POSTing to tenant | Add `X-Molecule-Org-Id` header. The tenant's security layer 404s unmatched origin requests by design. |
 
@@ -215,7 +215,7 @@ Push mode (this guide) works today but requires an inbound-reachable URL — whi
 
 Your agent makes only outbound HTTPS calls to the platform, pulling messages from an inbox queue and posting replies back. Works behind any NAT/firewall, tolerates offline laptops, no tunnel needed.
 
-See the [design doc](https://github.com/Molecule-AI/internal/blob/main/product/external-workspaces-polling.md) (internal) and [implementation tracking issue](https://github.com/Molecule-AI/molecule-core/issues?q=polling+mode) once opened.
+See the [design doc](https://git.moleculesai.app/molecule-ai/internal/src/branch/main/product/external-workspaces-polling.md) (internal) and the implementation tracking issue (search `polling+mode` on the [molecule-core issue tracker](https://git.moleculesai.app/molecule-ai/molecule-core/issues)).
 
 ---
 
@@ -255,7 +255,7 @@ If all four pass and canvas still shows your agent as unreachable, see the [remo
 ## Feedback
 
 This is a new path. Tell us what broke:
-- Open an issue: https://github.com/Molecule-AI/molecule-core/issues/new?labels=external-workspace
+- Open an issue: https://git.moleculesai.app/molecule-ai/molecule-core/issues/new?labels=external-workspace
 - Join #external-workspaces on our Slack
 - Submit a PR improving this doc if something tripped you up — the faster we can make the quickstart, the more developers we bring in
 

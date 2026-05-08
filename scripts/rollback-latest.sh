@@ -1,9 +1,10 @@
 #!/bin/bash
-# rollback-latest.sh — moves the :latest tag on ghcr.io/molecule-ai/platform
-# (and the matching tenant image) back to a prior :staging-<sha> digest
-# without rebuilding anything. Prod tenants auto-pull :latest every 5
-# min, so this is the fast path when a canary-verified image turns out
-# to have a runtime regression that canary didn't catch.
+# rollback-latest.sh — moves the :latest tag on the platform image
+# (and the matching tenant image) on AWS ECR back to a prior
+# :staging-<sha> digest without rebuilding anything. Prod tenants
+# auto-pull :latest every 5 min, so this is the fast path when a
+# canary-verified image turns out to have a runtime regression that
+# canary didn't catch.
 #
 # Usage:
 #   scripts/rollback-latest.sh <sha>
@@ -12,12 +13,14 @@
 # Prereqs:
 #   - crane on $PATH (brew install crane OR download from
 #     https://github.com/google/go-containerregistry/releases)
-#   - GHCR token exported as GITHUB_TOKEN with write:packages scope
+#   - aws CLI authenticated for region us-east-2 with ECR pull/push
+#     access to the molecule-ai/platform + platform-tenant repositories.
+#     `aws sts get-caller-identity` should succeed.
 #
 # What it does (per image — platform + tenant):
-#   crane digest ghcr.io/…:<sha>         # verify the target sha exists
-#   crane tag    ghcr.io/…:<sha> latest  # retag remotely, single API call
-#   crane digest ghcr.io/…:latest        # confirm the move
+#   crane digest <ecr>:<sha>         # verify the target sha exists
+#   crane tag    <ecr>:<sha> latest  # retag remotely, single API call
+#   crane digest <ecr>:latest        # confirm the move
 #
 # Exit codes: 0 = both retagged, 1 = tag missing / crane error, 2 = bad args.
 
@@ -30,21 +33,23 @@ if [ "${1:-}" = "" ]; then
 fi
 
 TARGET_SHA="$1"
-PLATFORM=ghcr.io/molecule-ai/platform
-TENANT=ghcr.io/molecule-ai/platform-tenant
+ECR_HOST=153263036946.dkr.ecr.us-east-2.amazonaws.com
+PLATFORM=$ECR_HOST/molecule-ai/platform
+TENANT=$ECR_HOST/molecule-ai/platform-tenant
 
 if ! command -v crane >/dev/null; then
   echo "ERROR: crane not installed. brew install crane" >&2
   exit 1
 fi
-if [ -z "${GITHUB_TOKEN:-}" ]; then
-  echo "ERROR: GITHUB_TOKEN unset. export it with write:packages scope." >&2
+if ! command -v aws >/dev/null; then
+  echo "ERROR: aws CLI not installed. brew install awscli" >&2
   exit 1
 fi
 
-# Log in once. crane stores creds in a config file keyed by registry;
-# re-running is cheap.
-printf '%s\n' "$GITHUB_TOKEN" | crane auth login ghcr.io -u "${GITHUB_ACTOR:-$(whoami)}" --password-stdin >/dev/null
+# Log in once. ECR auth is via short-lived password from `aws ecr
+# get-login-password`. crane stores creds in a config file keyed by
+# registry; re-running is cheap.
+aws ecr get-login-password --region us-east-2 | crane auth login "$ECR_HOST" -u AWS --password-stdin >/dev/null
 
 roll() {
   local image="$1"

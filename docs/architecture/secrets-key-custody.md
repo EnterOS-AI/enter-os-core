@@ -79,7 +79,7 @@ For SOC2 / ISO 27001 / customer security questionnaires:
 
 ## Pointers
 
-- KMS envelope code: [`molecule-controlplane/internal/crypto/kms.go`](https://github.com/Molecule-AI/molecule-controlplane/blob/main/internal/crypto/kms.go)
-- Static-key fallback: [`molecule-controlplane/internal/crypto/aes.go`](https://github.com/Molecule-AI/molecule-controlplane/blob/main/internal/crypto/aes.go)
+- KMS envelope code: [`molecule-controlplane/internal/crypto/kms.go`](https://git.moleculesai.app/molecule-ai/molecule-controlplane/src/branch/main/internal/crypto/kms.go)
+- Static-key fallback: [`molecule-controlplane/internal/crypto/aes.go`](https://git.moleculesai.app/molecule-ai/molecule-controlplane/src/branch/main/internal/crypto/aes.go)
 - Tenant secrets handler: [`workspace-server/internal/crypto/aes.go`](../../workspace-server/internal/crypto/aes.go)
 - Tenant secrets schema: [database-schema.md](./database-schema.md#workspace_secrets)

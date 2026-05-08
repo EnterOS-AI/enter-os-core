@@ -13,7 +13,6 @@ import { AttachmentPreview } from "./chat/AttachmentPreview";
 import { extractFilesFromTask } from "./chat/message-parser";
 import { AgentCommsPanel } from "./chat/AgentCommsPanel";
 import { appendActivityLine } from "./chat/activityLog";
-import { activityRowToMessages, type ActivityRowForHydration } from "./chat/historyHydration";
 import { runtimeDisplayName } from "@/lib/runtime-names";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 
@@ -50,38 +49,12 @@ interface A2AResponse {
   };
 }
 
-/** Detect activity-log rows that the workspace's own runtime fired
- *  against itself but were misclassified as canvas-source. The proper
- *  fix is the X-Workspace-ID header from `self_source_headers()` in
- *  workspace/platform_auth.py, which makes the platform record
- *  source_id = workspace_id. But three failure modes still leak a
- *  self-message into "My Chat":
- *
- *    1. Historical rows already in the DB with source_id=NULL.
- *    2. Workspace containers running pre-fix heartbeat.py / main.py
- *       (the fix only takes effect after an image rebuild + redeploy).
- *    3. Future internal triggers added without the helper.
- *
- *  This client-side filter recognises the heartbeat trigger by its
- *  exact prefix — the heartbeat assembles
- *
- *    "Delegation results are ready. Review them and take appropriate
- *     action:\n" + summary_lines + report_instruction
- *
- *  in workspace/heartbeat.py. The prefix is template-fixed so a
- *  string match is reliable. If the heartbeat copy ever changes,
- *  update this constant in the same commit.
- *
- *  This is a backstop, not the primary defence — the X-Workspace-ID
- *  header is. Filtering content is fragile to copy edits, so keep
- *  the list narrow. */
-const INTERNAL_SELF_MESSAGE_PREFIXES = [
-  "Delegation results are ready. Review them and take appropriate action",
-];
-
-function isInternalSelfMessage(text: string): boolean {
-  return INTERNAL_SELF_MESSAGE_PREFIXES.some((p) => text.startsWith(p));
-}
+// Internal-self-message filtering moved server-side in RFC #2945
+// PR-C/D — the platform's /chat-history endpoint applies the
+// IsInternalSelfMessage predicate before returning rows, so the
+// client no longer needs the local backstop on the history path.
+// The proper fix is still X-Workspace-ID header (source_id=workspace_id);
+// the platform-side prefix filter handles the residual cases.
 
 // extractReplyText pulls the agent's text reply out of an A2A response.
 // Concatenates ALL text parts (joined with "\n") rather than returning
@@ -134,8 +107,19 @@ const INITIAL_HISTORY_LIMIT = 10;
 const OLDER_HISTORY_BATCH = 20;
 
 /**
- * Load chat history from the activity_logs database via the platform API.
- * Uses source=canvas to only get user-initiated messages (not agent-to-agent).
+ * Load chat history from the platform's typed /chat-history endpoint.
+ *
+ * Server-side rendering of activity_logs rows into ChatMessage shape
+ * lives in workspace-server/internal/messagestore/postgres_store.go
+ * (RFC #2945 PR-C/D). The server already applies the canvas-source
+ * filter, the internal-self-message predicate, the role decision
+ * (status=error vs agent-error prefix → system), and the v0/v1
+ * file-shape extraction. Canvas just renders what it receives.
+ *
+ * Wire shape (mirrors ChatMessage exactly, no per-row mapping needed):
+ *
+ *   GET /workspaces/:id/chat-history?limit=N&before_ts=T
+ *   200 → {"messages": ChatMessage[], "reached_end": boolean}
  *
  * Pagination:
  *  - Pass `limit` to bound the page size (newest-first from server).
@@ -143,10 +127,10 @@ const OLDER_HISTORY_BATCH = 20;
  *    timestamp. Combined with limit, this yields the next-older page
  *    when scrolling backward through history.
  *
- * `reachedEnd` is true when the server returned fewer rows than asked
- * for — caller uses this to disable further older-batch fetches.
- * (Counts row-level returns, not chat-bubble count: each row may
- * produce 1-2 bubbles.)
+ * `reachedEnd` is propagated from the server. The server computes it
+ * by comparing rowCount vs limit so a partial last page is correctly
+ * detected even when the row→bubble fan-out is non-1:1 (each row
+ * produces 1-2 bubbles).
  */
 async function loadMessagesFromDB(
   workspaceId: string,
@@ -154,25 +138,23 @@ async function loadMessagesFromDB(
   beforeTs?: string,
 ): Promise<{ messages: ChatMessage[]; error: string | null; reachedEnd: boolean }> {
   try {
-    const params = new URLSearchParams({
-      type: "a2a_receive",
-      source: "canvas",
-      limit: String(limit),
-    });
+    const params = new URLSearchParams({ limit: String(limit) });
     if (beforeTs) params.set("before_ts", beforeTs);
-    const activities = await api.get<ActivityRowForHydration[]>(
-      `/workspaces/${workspaceId}/activity?${params.toString()}`,
+    const resp = await api.get<{ messages: ChatMessage[]; reached_end: boolean }>(
+      `/workspaces/${workspaceId}/chat-history?${params.toString()}`,
     );
 
-    const messages: ChatMessage[] = [];
-    // Activities are newest-first, reverse for chronological order.
-    // Per-row mapping lives in chat/historyHydration.ts so it can be
-    // unit-tested without spinning up the full ChatTab component
-    // (regression cover for the timestamp-collapse bug).
-    for (const a of [...activities].reverse()) {
-      messages.push(...activityRowToMessages(a, isInternalSelfMessage));
-    }
-    return { messages, error: null, reachedEnd: activities.length < limit };
+    // Server emits oldest-first within the page (RFC #2945 PR-C-2
+    // post-fix: server reverses row-aware before returning so the
+    // wire is display-ready). Canvas appends/prepends without
+    // reordering — this avoids the pair-flip bug a naive flat
+    // reverse causes when each row produces a (user, agent) pair
+    // with the same timestamp.
+    return {
+      messages: resp.messages ?? [],
+      error: null,
+      reachedEnd: resp.reached_end,
+    };
   } catch (err) {
     return {
       messages: [],

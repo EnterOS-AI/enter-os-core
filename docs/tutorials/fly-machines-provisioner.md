@@ -85,8 +85,8 @@ Fly Machines start in milliseconds and run in 35+ regions. Provisioning agent wo
 
 ## Related
 
-- PR #501: [feat(platform): Fly Machines provisioner](https://github.com/Molecule-AI/molecule-core/pull/501)
-- PR #481: [feat(ci): deploy to Fly after image push](https://github.com/Molecule-AI/molecule-core/pull/481)
+- PR #501: [feat(platform): Fly Machines provisioner](https://git.moleculesai.app/molecule-ai/molecule-core/pull/501)
+- PR #481: [feat(ci): deploy to Fly after image push](https://git.moleculesai.app/molecule-ai/molecule-core/pull/481)
 - [Fly Machines API docs](https://fly.io/docs/machines/api/)
 - [Platform API reference](../api-reference.md)
-- Issue [#525](https://github.com/Molecule-AI/molecule-core/issues/525)
+- Issue [#525](https://git.moleculesai.app/molecule-ai/molecule-core/issues/525)

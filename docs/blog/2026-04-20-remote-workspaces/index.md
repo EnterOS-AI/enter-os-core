@@ -148,7 +148,7 @@ Then follow the [quick-start guide](/docs/guides/remote-workspaces.md).
 Or run the annotated example directly:
 
 ```bash
-git clone https://github.com/Molecule-AI/molecule-sdk-python
+git clone https://git.moleculesai.app/molecule-ai/molecule-sdk-python
 cd molecule-sdk-python/examples/remote-agent
 # Create workspace with runtime:external, grab the ID, then:
 WORKSPACE_ID=<your-id> PLATFORM_URL=https://acme.moleculesai.app python3 run.py
@@ -160,6 +160,6 @@ The agent appears on the canvas within seconds.
 
 → [Remote Workspaces Guide →](/docs/guides/remote-workspaces.md)
 → [External Agent Registration Reference →](/docs/guides/external-agent-registration.md)
-→ [molecule-sdk-python →](https://github.com/Molecule-AI/molecule-sdk-python)
+→ [molecule-sdk-python →](https://git.moleculesai.app/molecule-ai/molecule-sdk-python)
 
 *Phase 30 shipped in PRs #1075–#1083 and #1085–#1100 on `molecule-core`.*

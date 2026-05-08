@@ -110,8 +110,53 @@ func (s *PostgresMessageStore) List(ctx context.Context, workspaceID string, opt
 		return nil, false, err
 	}
 
+	// Wire order: oldest-first within the page so canvas (and any
+	// future client) can render chronologically without per-pair
+	// reordering. The SQL is `ORDER BY created_at DESC LIMIT N` for
+	// pagination correctness, and activityRowToChatMessages emits
+	// [user, agent] within a row — so a naive client-side flat-reverse
+	// would swap the pair (agent before user at the same timestamp).
+	// Reversing ROW-AWARE here keeps the wire shape display-ready.
+	//
+	// Algorithm: group consecutive same-timestamp messages into row
+	// chunks (1-2 messages each), reverse the chunk order, flatten.
+	// Within-row [user, agent] order is preserved. Single-message
+	// rows (no agent reply yet, or attachments-only) collapse to
+	// 1-element chunks and still reverse correctly.
+	messages = reverseRowChunks(messages)
+
 	reachedEnd := rowCount < opts.Limit
 	return messages, reachedEnd, nil
+}
+
+// reverseRowChunks groups msgs by adjacent same-Timestamp runs and
+// reverses the run order, preserving within-run order. Pairs of
+// (user, agent) emitted by activityRowToChatMessages share a
+// timestamp, so this keeps each pair internally ordered while
+// reversing the row sequence.
+func reverseRowChunks(msgs []ChatMessage) []ChatMessage {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	var chunks [][]ChatMessage
+	cur := []ChatMessage{msgs[0]}
+	for i := 1; i < len(msgs); i++ {
+		if msgs[i].Timestamp == cur[len(cur)-1].Timestamp {
+			cur = append(cur, msgs[i])
+		} else {
+			chunks = append(chunks, cur)
+			cur = []ChatMessage{msgs[i]}
+		}
+	}
+	chunks = append(chunks, cur)
+	for i, j := 0, len(chunks)-1; i < j; i, j = i+1, j-1 {
+		chunks[i], chunks[j] = chunks[j], chunks[i]
+	}
+	out := make([]ChatMessage, 0, len(msgs))
+	for _, chunk := range chunks {
+		out = append(out, chunk...)
+	}
+	return out
 }
 
 // queryActivityRows is split from List so unit tests can exercise the

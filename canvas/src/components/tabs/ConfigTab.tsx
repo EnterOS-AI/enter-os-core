@@ -21,20 +21,39 @@ interface Props {
 // --- Agent Card Section ---
 
 function AgentCardSection({ workspaceId }: { workspaceId: string }) {
-  const [card, setCard] = useState<Record<string, unknown> | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Initial card value comes from the canvas store — node.data.agentCard
+  // is hydrated by the platform stream when the workspace appears in the
+  // graph, so reading it here avoids a duplicate `GET /workspaces/${id}`
+  // (the parent ConfigTab.loadConfig already fetches workspace metadata,
+  // and refetching here adds a serialised RTT to the panel-open path —
+  // contributed to the ~20s detail-panel load reported in core#11).
+  // Local state still tracks the edited/saved value so the editor flow
+  // is unchanged.
+  const storeCard = useCanvasStore((s) => {
+    // Defensive against test mocks that omit `nodes` (some test files
+    // stub the store with a minimal shape). In production `nodes` is
+    // always an array — empty or not — so the optional chaining only
+    // matters for the test path.
+    const node = s.nodes?.find?.((n) => n.id === workspaceId);
+    return (node?.data.agentCard as
+      | Record<string, unknown>
+      | null
+      | undefined) ?? null;
+  });
+  const [card, setCard] = useState<Record<string, unknown> | null>(storeCard);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
 
+  // If the store updates while this section is mounted (another tab
+  // pushed an update via the platform event stream), reflect that —
+  // unless the user is mid-edit, in which case we don't clobber their
+  // unsaved draft.
   useEffect(() => {
-    api.get<Record<string, unknown>>(`/workspaces/${workspaceId}`)
-      .then((ws) => setCard((ws.agent_card as Record<string, unknown>) || null))
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [workspaceId]);
+    if (!editing) setCard(storeCard);
+  }, [storeCard, editing]);
 
   const handleSave = async () => {
     setError(null);
@@ -53,9 +72,7 @@ function AgentCardSection({ workspaceId }: { workspaceId: string }) {
 
   return (
     <Section title="Agent Card" defaultOpen={false}>
-      {loading ? (
-        <div className="text-[10px] text-ink-soft">Loading...</div>
-      ) : editing ? (
+      {editing ? (
         <div className="space-y-2">
           <textarea
             aria-label="Agent card JSON editor"
@@ -221,46 +238,50 @@ export function ConfigTab({ workspaceId }: Props) {
     setLoading(true);
     setError(null);
 
-    // ALWAYS load workspace metadata first (runtime + model). These are the
-    // source of truth regardless of whether the runtime uses our config.yaml
-    // template. Without this the form falls back to empty/default values on
-    // a hermes workspace (which doesn't use our template), creating the
-    // appearance that the saved runtime is unset — and worse, clicking Save
-    // would silently flip `runtime` from `hermes` back to the dropdown
-    // default `LangGraph`. See GH #1894.
-    let wsMetadataRuntime = "";
-    let wsMetadataModel = "";
-    let wsMetadataTier: number | null = null;
-    try {
-      const ws = await api.get<{ runtime?: string; tier?: number }>(`/workspaces/${workspaceId}`);
-      wsMetadataRuntime = (ws.runtime || "").trim();
-      if (typeof ws.tier === "number") wsMetadataTier = ws.tier;
-    } catch { /* fall back to config.yaml */ }
-    try {
-      const m = await api.get<{ model?: string }>(`/workspaces/${workspaceId}/model`);
-      wsMetadataModel = (m.model || "").trim();
-    } catch { /* non-fatal */ }
+    // Load workspace metadata (runtime + model + provider) in parallel.
+    // These are independent GETs against three workspace-server endpoints
+    // and used to be awaited serially — for SaaS workspaces each call
+    // round-trips through an EIC SSH tunnel, so the previous serial
+    // pattern stacked 3-5s of tunnel-setup latency per call (core#11).
+    // Promise.all overlaps them; the per-call cost stays the same but
+    // wall time drops to max() instead of sum().
+    //
+    // Each leg has its own .catch handler that yields a sentinel value,
+    // matching the previous semantics:
+    //   - /workspaces/${id}: required source-of-truth for runtime+tier;
+    //     fall back to YAML if the GET fails (rare, network-class only).
+    //   - /workspaces/${id}/model: non-fatal; empty model lets the form
+    //     fall through to YAML runtime_config.model.
+    //   - /workspaces/${id}/provider: non-fatal; old workspace-servers
+    //     return 404, in which case provider="" and Save skips the PUT.
+    //
+    // See GH #1894 for the workspace-row-as-source-of-truth rationale
+    // that motivated splitting from a single config.yaml read.
+    const [wsRes, modelRes, providerRes] = await Promise.all([
+      api.get<{ runtime?: string; tier?: number }>(`/workspaces/${workspaceId}`)
+        .catch(() => ({} as { runtime?: string; tier?: number })),
+      api.get<{ model?: string }>(`/workspaces/${workspaceId}/model`)
+        .catch(() => ({} as { model?: string })),
+      api.get<{ provider?: string }>(`/workspaces/${workspaceId}/provider`)
+        .catch(() => null),
+    ]);
+    const wsMetadataRuntime = (wsRes.runtime || "").trim();
+    const wsMetadataModel = (modelRes.model || "").trim();
+    const wsMetadataTier: number | null =
+      typeof wsRes.tier === "number" ? wsRes.tier : null;
+    if (providerRes !== null) {
+      const loadedProvider = (providerRes.provider || "").trim();
+      setProvider(loadedProvider);
+      setOriginalProvider(loadedProvider);
+    } else {
+      setProvider("");
+      setOriginalProvider("");
+    }
     // originalModel is set further down once the YAML has been parsed —
     // we want it to reflect what the form ACTUALLY rendered, which may
     // be the YAML's runtime_config.model fallback when MODEL_PROVIDER
     // is empty. Setting it here from wsMetadataModel alone would be
     // wrong for hermes/pre-#240 workspaces.
-
-    // Load explicit provider override (Option B PR-5). Endpoint returns
-    // {provider: "", source: "default"} when no override is set, so the
-    // empty string is the legitimate "auto-derive" signal — don't treat
-    // it as a load error. Non-fatal: an older workspace-server that
-    // predates PR-2 returns 404 here; the form falls back to "" and
-    // Save just won't PUT the provider field.
-    try {
-      const p = await api.get<{ provider?: string }>(`/workspaces/${workspaceId}/provider`);
-      const loadedProvider = (p.provider || "").trim();
-      setProvider(loadedProvider);
-      setOriginalProvider(loadedProvider);
-    } catch {
-      setProvider("");
-      setOriginalProvider("");
-    }
 
     // Skip the config.yaml fetch entirely for runtimes that manage
     // their own config (external, hermes, etc.) — they don't have a

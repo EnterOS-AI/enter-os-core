@@ -138,5 +138,5 @@ If you see any of these, don't try to "clean it up in place" — **cherry-pick o
 
 ## Related
 
-- [Issue #1822](https://github.com/Molecule-AI/molecule-core/issues/1822) — backend parity drift tracker (example of docs that have to stay current)
+- [Issue #1822](https://git.moleculesai.app/molecule-ai/molecule-core/issues/1822) — backend parity drift tracker (example of docs that have to stay current)
 - [Postmortem: CP boot-event 401](./postmortem-2026-04-23-boot-event-401.md) — caught before shipping because a reviewer could read the diff

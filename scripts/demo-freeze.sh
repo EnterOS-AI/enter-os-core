@@ -10,11 +10,11 @@
 #           → PyPI auto-bumps molecule-ai-workspace-runtime patch version
 #           → repository_dispatch fans out to 8 workspace-template-* repos
 #           → each template repo rebuilds and re-tags
-#             ghcr.io/molecule-ai/workspace-template-<runtime>:latest
+#             153263036946.dkr.ecr.us-east-2.amazonaws.com/molecule-ai/workspace-template-<runtime>:latest
 #
 #   PATH 2: any merge to a workspace-template-* repo's main branch
 #           → that repo's publish-image.yml fires
-#           → ghcr.io/molecule-ai/workspace-template-<runtime>:latest
+#           → 153263036946.dkr.ecr.us-east-2.amazonaws.com/molecule-ai/workspace-template-<runtime>:latest
 #             gets re-tagged
 #
 #   provisioner.go:296 RuntimeImages[runtime] reads `:latest` at every

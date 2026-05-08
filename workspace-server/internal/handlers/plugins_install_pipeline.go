@@ -261,22 +261,74 @@ func (h *PluginsHandler) resolveAndStage(ctx context.Context, req installRequest
 // deliverToContainer copies the staged plugin dir into the workspace
 // container, chowns it for the agent user, and triggers a restart.
 // Returns a typed *httpErr on failure; nil on success.
+//
+// Dispatch order:
+//
+//  1. Local Docker container is up → tar+CopyToContainer (historical path).
+//  2. SaaS workspace (instance_id set) → push via EIC SSH to the EC2's
+//     bind-mounted /configs/plugins/<name>/. Closes the 🔴 docker-only
+//     row in docs/architecture/backends.md by routing through the same
+//     primitive Files API uses (template_files_eic.go).
+//  3. Neither wired → 503. True "no backend" case (dev box without
+//     Docker AND without an instance_id row).
+//
+// The SaaS branch is gated on h.instanceIDLookup so unit tests can keep
+// using NewPluginsHandler without a DB; production wires it in router.go.
 func (h *PluginsHandler) deliverToContainer(ctx context.Context, workspaceID string, r *stageResult) error {
-	containerName := h.findRunningContainer(ctx, workspaceID)
-	if containerName == "" {
-		return newHTTPErr(http.StatusServiceUnavailable, gin.H{"error": "workspace container not running"})
+	if containerName := h.findRunningContainer(ctx, workspaceID); containerName != "" {
+		if err := h.copyPluginToContainer(ctx, containerName, r.StagedDir, r.PluginName); err != nil {
+			log.Printf("Plugin install: failed to copy %s to %s: %v", r.PluginName, workspaceID, err)
+			return newHTTPErr(http.StatusInternalServerError, gin.H{"error": "failed to copy plugin to container"})
+		}
+		h.execAsRoot(ctx, containerName, []string{
+			"chown", "-R", "1000:1000", "/configs/plugins/" + r.PluginName,
+		})
+		if h.restartFunc != nil {
+			go h.restartFunc(workspaceID)
+		}
+		return nil
 	}
-	if err := h.copyPluginToContainer(ctx, containerName, r.StagedDir, r.PluginName); err != nil {
-		log.Printf("Plugin install: failed to copy %s to %s: %v", r.PluginName, workspaceID, err)
-		return newHTTPErr(http.StatusInternalServerError, gin.H{"error": "failed to copy plugin to container"})
+
+	if instanceID, runtime := h.lookupSaaSDispatch(workspaceID); instanceID != "" {
+		if err := installPluginViaEIC(ctx, instanceID, runtime, r.PluginName, r.StagedDir); err != nil {
+			log.Printf("Plugin install: EIC push failed for %s → %s: %v", r.PluginName, workspaceID, err)
+			return newHTTPErr(http.StatusBadGateway, gin.H{
+				"error": "failed to deliver plugin to workspace EC2",
+			})
+		}
+		if h.restartFunc != nil {
+			go h.restartFunc(workspaceID)
+		}
+		return nil
 	}
-	h.execAsRoot(ctx, containerName, []string{
-		"chown", "-R", "1000:1000", "/configs/plugins/" + r.PluginName,
-	})
-	if h.restartFunc != nil {
-		go h.restartFunc(workspaceID)
+
+	return newHTTPErr(http.StatusServiceUnavailable, gin.H{"error": "workspace container not running"})
+}
+
+// lookupSaaSDispatch returns (instance_id, runtime) for SaaS dispatch, or
+// ("", "") when the lookups aren't wired or the workspace isn't on the
+// EC2 backend. Errors from the lookups are logged-and-swallowed: failing
+// open here just means the caller falls through to the 503 path it would
+// have returned without us, never to a wrong action against the wrong
+// instance.
+func (h *PluginsHandler) lookupSaaSDispatch(workspaceID string) (instanceID, runtime string) {
+	if h.instanceIDLookup == nil {
+		return "", ""
 	}
-	return nil
+	id, err := h.instanceIDLookup(workspaceID)
+	if err != nil {
+		log.Printf("Plugin install: instance_id lookup failed for %s: %v", workspaceID, err)
+		return "", ""
+	}
+	if id == "" {
+		return "", ""
+	}
+	if h.runtimeLookup != nil {
+		if rt, rterr := h.runtimeLookup(workspaceID); rterr == nil {
+			runtime = rt
+		}
+	}
+	return id, runtime
 }
 
 // readPluginSkillsFromContainer reads /configs/plugins/<name>/plugin.yaml

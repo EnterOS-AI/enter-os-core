@@ -68,22 +68,19 @@ clone_category() {
             continue
         fi
 
-        # Post-2026-05-06 GitHub-org-suspension: clone from Gitea instead.
-        # manifest.json paths still read "Molecule-AI/..." (the historic
-        # github.com slug); Gitea lowercases the org part to "molecule-ai/".
-        # Lowercase the org segment on the fly so we don't need to rewrite
-        # every manifest entry.
-        repo_gitea="$(echo "$repo" | awk -F/ '{ printf "%s", tolower($1); for (i=2; i<=NF; i++) printf "/%s", $i; print "" }')"
-
         # Build the clone URL. When MOLECULE_GITEA_TOKEN is set (CI path)
         # embed it as basic-auth so private repos succeed. The username
         # part ("oauth2") is conventional and ignored by Gitea — only the
         # token-as-password is verified.
+        #
+        # manifest.json was migrated to lowercase org slugs on
+        # 2026-05-07 (post-suspension reconciliation), so we use $repo
+        # verbatim — no on-the-fly tolower transform needed.
         if [ -n "${MOLECULE_GITEA_TOKEN:-}" ]; then
-            clone_url="https://oauth2:${MOLECULE_GITEA_TOKEN}@git.moleculesai.app/${repo_gitea}.git"
-            display_url="https://oauth2:***@git.moleculesai.app/${repo_gitea}.git"
+            clone_url="https://oauth2:${MOLECULE_GITEA_TOKEN}@git.moleculesai.app/${repo}.git"
+            display_url="https://oauth2:***@git.moleculesai.app/${repo}.git"
         else
-            clone_url="https://git.moleculesai.app/${repo_gitea}.git"
+            clone_url="https://git.moleculesai.app/${repo}.git"
             display_url="$clone_url"
         fi
 

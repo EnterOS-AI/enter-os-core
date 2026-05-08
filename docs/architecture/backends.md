@@ -2,7 +2,7 @@
 
 **Status:** living document — update when you ship a feature that touches one backend.
 **Owner:** workspace-server + controlplane teams.
-**Last audit:** 2026-05-05 (Claude agent — `provisionWorkspaceAuto` / `StopWorkspaceAuto` / `HasProvisioner` SoT pattern landed in PRs #2811 + #2824).
+**Last audit:** 2026-05-07 (plugin install/uninstall closed for EC2 backend via EIC SSH push to the bind-mounted `/configs/plugins/<name>/`, mirroring the Files API PR #1702 pattern).
 
 ## Why this exists
 
@@ -54,7 +54,7 @@ For "do we have any backend?", use `HasProvisioner()`, never bare `h.provisioner
 | **Files API** | | | | |
 | List / Read / Write / Replace / Delete | `container_files.go`, `template_import.go` | `docker exec` + tar `CopyToContainer` | SSH via EIC tunnel (PR #1702) | ✅ parity as of 2026-04-22 (previously docker-only) |
 | **Plugins** | | | | |
-| Install / uninstall / list | `plugins_install.go` | `deliverToContainer()` + volume rm | **gap — no live plugin delivery** | 🔴 **docker-only** |
+| Install / uninstall / list | `plugins_install.go` + `plugins_install_eic.go` | `deliverToContainer()` → exec+`CopyToContainer` on local container | `instance_id` set → EIC SSH push of the staged tarball into the EC2's bind-mounted `/configs/plugins/<name>/` (per `workspaceFilePathPrefix`), `chown 1000:1000`, restart | ✅ parity |
 | **Terminal (WebSocket)** | | | | |
 | Dispatch | `terminal.go:90-105` | `instance_id=""` → `handleLocalConnect` → `docker attach` | `instance_id` set → `handleRemoteConnect` → EIC SSH + `docker exec` | ✅ parity (different implementations, same UX) |
 | **A2A proxy** | | | | |

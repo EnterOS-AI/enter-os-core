@@ -37,7 +37,7 @@ CANONICAL_FILE = Path(".github/workflows/secret-scan.yml")
 CONSUMERS: list[tuple[str, str]] = [
     (
         "molecule-ai-workspace-runtime/molecule_runtime/scripts/pre-commit-checks.sh",
-        "https://raw.githubusercontent.com/Molecule-AI/molecule-ai-workspace-runtime/main/molecule_runtime/scripts/pre-commit-checks.sh",
+        "https://git.moleculesai.app/molecule-ai/molecule-ai-workspace-runtime/raw/branch/main/molecule_runtime/scripts/pre-commit-checks.sh",
     ),
 ]
 

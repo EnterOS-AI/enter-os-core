@@ -51,7 +51,7 @@ log "pulling latest images for: ${RUNTIMES[*]}"
 PULLED=()
 FAILED=()
 for rt in "${RUNTIMES[@]}"; do
-  IMG="ghcr.io/molecule-ai/workspace-template-$rt:latest"
+  IMG="153263036946.dkr.ecr.us-east-2.amazonaws.com/molecule-ai/workspace-template-$rt:latest"
   if docker pull "$IMG" >/dev/null 2>&1; then
     log "  ✓ $rt"
     PULLED+=("$rt")

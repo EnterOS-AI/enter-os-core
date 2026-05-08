@@ -278,7 +278,7 @@ include = ["molecule_runtime*"]
 README_TEMPLATE = """\
 # molecule-ai-workspace-runtime
 
-Shared workspace runtime for [Molecule AI](https://github.com/Molecule-AI/molecule-core)
+Shared workspace runtime for [Molecule AI](https://git.moleculesai.app/molecule-ai/molecule-core)
 agent adapters. Installed by every workspace template image
 (`workspace-template-claude-code`, `-langgraph`, `-hermes`, etc.) to provide
 A2A delegation, heartbeat, memory, plugin loading, and skill management.
@@ -376,7 +376,7 @@ hold:
    non-plugin-sourced server, which Claude Code rejects with
    `channel_enable requires a marketplace plugin`. Until the
    official `moleculesai/claude-code-plugin` marketplace lands
-   (tracking [#2936](https://github.com/Molecule-AI/molecule-core/issues/2936)),
+   (tracking [#2936](https://git.moleculesai.app/molecule-ai/molecule-core/issues/2936)),
    operators who want push must scaffold their own local marketplace
    under
    `~/.claude/marketplaces/molecule-local/` containing a
@@ -389,14 +389,14 @@ hold:
 Symptom of any condition failing: messages arrive but only via the
 poll path (every ~1–60s), not real-time. There's currently no
 diagnostic surfaced — `molecule-mcp doctor` (tracking
-[#2937](https://github.com/Molecule-AI/molecule-core/issues/2937)) is
+[#2937](https://git.moleculesai.app/molecule-ai/molecule-core/issues/2937)) is
 planned.
 
 If you don't need real-time push, the default poll path works
 universally with no extra setup; both modes converge on the same
 `inbox_pop` ack so messages never duplicate.
 
-See [`docs/workspace-runtime-package.md`](https://github.com/Molecule-AI/molecule-core/blob/main/docs/workspace-runtime-package.md)
+See [`docs/workspace-runtime-package.md`](https://git.moleculesai.app/molecule-ai/molecule-core/src/branch/main/docs/workspace-runtime-package.md)
 for the publish flow and architecture.
 """
 

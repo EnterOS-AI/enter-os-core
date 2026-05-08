@@ -2,7 +2,7 @@
 # build-all.sh — Rebuild base image and optionally adapter images.
 #
 # NOTE: Adapters have been extracted to standalone template repos:
-#   https://github.com/Molecule-AI/molecule-ai-workspace-template-<runtime>
+#   https://git.moleculesai.app/molecule-ai/molecule-ai-workspace-template-<runtime>
 #
 # This script now only builds the base image from workspace/Dockerfile.
 # Each adapter repo has its own Dockerfile that installs molecule-ai-workspace-runtime

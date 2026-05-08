@@ -1,14 +1,25 @@
 name: pr-guards
 
-# Thin caller that delegates to the molecule-ci reusable guard. Today
-# the guard is just "disable auto-merge when a new commit is pushed
-# after auto-merge was enabled" — added 2026-04-27 after PR #2174
-# auto-merged with only its first commit because the second commit
-# was pushed after the merge queue had locked the PR's SHA.
+# PR-time guards. Today the only guard is "disable auto-merge when a
+# new commit is pushed after auto-merge was enabled" — added 2026-04-27
+# after PR #2174 auto-merged with only its first commit because the
+# second commit was pushed after the merge queue had locked the PR's
+# SHA.
 #
-# When more PR-time guards land in molecule-ci, add them here as
-# additional jobs that share the same pull_request:synchronize
-# trigger.
+# Why this is inlined (not delegated to molecule-ci's reusable
+# workflow): the reusable workflow uses `gh pr merge --disable-auto`,
+# which calls GitHub's GraphQL API. Gitea has no GraphQL endpoint and
+# returns HTTP 405 on /api/graphql, so the job failed on every Gitea
+# PR push since the 2026-05-06 migration. Gitea also has no `--auto`
+# merge primitive that this job could be acting on, so the right
+# behaviour on Gitea is "no-op + green status" — not a 405.
+#
+# Inlining (vs. an `if:` on the `uses:` line) keeps the job ALWAYS
+# running, which matters for branch protection: required-check names
+# need a job that emits SUCCESS terminal state, not SKIPPED. See
+# `feedback_branch_protection_check_name_parity` and `feedback_pr_merge_safety_guards`.
+#
+# Issue #88 item 1.
 
 on:
   pull_request:
@@ -19,4 +30,34 @@ permissions:
 
 jobs:
   disable-auto-merge-on-push:
-    uses: molecule-ai/molecule-ci/.github/workflows/disable-auto-merge-on-push.yml@main
+    runs-on: ubuntu-latest
+    steps:
+      # Detect Gitea Actions. act_runner sets GITEA_ACTIONS=true in the
+      # step env on every job. Belt-and-suspenders: also check the repo
+      # url's host, which is independent of any runner-side env config
+      # (covers a future Gitea host where the env var is forgotten).
+      - name: Detect runner host
+        id: host
+        run: |
+          if [[ "${GITEA_ACTIONS:-}" == "true" ]] || [[ "${{ github.server_url }}" == *moleculesai.app* ]] || [[ "${{ github.event.repository.html_url }}" == *moleculesai.app* ]]; then
+            echo "is_gitea=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Gitea Actions detected — auto-merge gating is not applicable here (Gitea has no --auto merge primitive). Job will no-op."
+          else
+            echo "is_gitea=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Disable auto-merge (GitHub only)
+        if: steps.host.outputs.is_gitea != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          NEW_SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          gh pr merge "$PR" --disable-auto -R "$REPO" || true
+          gh pr comment "$PR" -R "$REPO" --body "🔒 Auto-merge disabled — new commit (\`${NEW_SHA:0:7}\`) pushed after auto-merge was enabled. The merge queue locks SHAs at entry, so subsequent pushes can race. Verify the new commit and re-enable with \`gh pr merge --auto\`."
+
+      - name: Gitea no-op
+        if: steps.host.outputs.is_gitea == 'true'
+        run: echo "Gitea Actions — auto-merge gating not applicable; no-op (job intentionally green so branch protection's required-check name lands SUCCESS)."

@@ -249,6 +249,19 @@ func main() {
 		})
 	}
 
+	// CP-mode orphan sweeper — SaaS counterpart to the Docker sweeper
+	// above. Re-issues cpProv.Stop for any workspace at status='removed'
+	// with a non-NULL instance_id, healing the deprovision split-write
+	// race documented in #2989: tenant marks status='removed' BEFORE
+	// calling CP DELETE, so a transient CP failure leaves the EC2
+	// running with no retry path. cpProv.Stop is idempotent against
+	// already-terminated instances; on success we clear instance_id.
+	if cpProv != nil {
+		go supervised.RunWithRecover(ctx, "cp-orphan-sweeper", func(c context.Context) {
+			registry.StartCPOrphanSweeper(c, cpProv)
+		})
+	}
+
 	// Pending-uploads GC sweep — deletes acked rows past their retention
 	// window plus unacked rows past expires_at. Without this the
 	// pending_uploads table grows unbounded; even with the 24h hard TTL,

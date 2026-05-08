@@ -11,7 +11,7 @@ There are three related scripts; pick the right one:
 |---|---|---|
 | `measure-coordinator-task-bounds.sh` | **Canonical** v1 harness for the RFC #2251 / Issue 4 reproduction. Provisions a PM coordinator + Researcher child via `claude-code-default` + `langgraph` templates, sends a synthesis-heavy A2A kickoff, observes elapsed time + activity trace. | OSS-shape platform — localhost or any `/workspaces`-shaped endpoint. Has tenant/admin-token guards for non-localhost runs. |
 | `measure-coordinator-task-bounds-runner.sh` | Generalised runner for the same measurement contract but with **arbitrary template + secret + model combinations** (Hermes/MiniMax, etc.). Useful for cross-runtime variants without modifying the canonical harness. | Same as above (local or SaaS via `MODE=saas`). |
-| `measure-coordinator-task-bounds.sh` (in [molecule-controlplane](https://github.com/Molecule-AI/molecule-controlplane)) | **Production-shape** variant that bootstraps a real staging tenant via `POST /cp/admin/orgs`, then runs the same measurement against `<slug>.staging.moleculesai.app`. | Staging controlplane only — refuses to run against production. |
+| `measure-coordinator-task-bounds.sh` (in [molecule-controlplane](https://git.moleculesai.app/molecule-ai/molecule-controlplane)) | **Production-shape** variant that bootstraps a real staging tenant via `POST /cp/admin/orgs`, then runs the same measurement against `<slug>.staging.moleculesai.app`. | Staging controlplane only — refuses to run against production. |
 
 See `reference_harness_pair_pattern` (auto-memory) for when to use which
 and the cross-repo design rationale.

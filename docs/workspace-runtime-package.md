@@ -98,14 +98,14 @@ Each of the 8 adapter template repos contains:
 
 | Adapter | Repo |
 |---------|------|
-| claude-code | https://github.com/Molecule-AI/molecule-ai-workspace-template-claude-code |
-| langgraph | https://github.com/Molecule-AI/molecule-ai-workspace-template-langgraph |
-| crewai | https://github.com/Molecule-AI/molecule-ai-workspace-template-crewai |
-| autogen | https://github.com/Molecule-AI/molecule-ai-workspace-template-autogen |
-| deepagents | https://github.com/Molecule-AI/molecule-ai-workspace-template-deepagents |
-| hermes | https://github.com/Molecule-AI/molecule-ai-workspace-template-hermes |
-| gemini-cli | https://github.com/Molecule-AI/molecule-ai-workspace-template-gemini-cli |
-| openclaw | https://github.com/Molecule-AI/molecule-ai-workspace-template-openclaw |
+| claude-code | https://git.moleculesai.app/molecule-ai/molecule-ai-workspace-template-claude-code |
+| langgraph | https://git.moleculesai.app/molecule-ai/molecule-ai-workspace-template-langgraph |
+| crewai | https://git.moleculesai.app/molecule-ai/molecule-ai-workspace-template-crewai |
+| autogen | https://git.moleculesai.app/molecule-ai/molecule-ai-workspace-template-autogen |
+| deepagents | https://git.moleculesai.app/molecule-ai/molecule-ai-workspace-template-deepagents |
+| hermes | https://git.moleculesai.app/molecule-ai/molecule-ai-workspace-template-hermes |
+| gemini-cli | https://git.moleculesai.app/molecule-ai/molecule-ai-workspace-template-gemini-cli |
+| openclaw | https://git.moleculesai.app/molecule-ai/molecule-ai-workspace-template-openclaw |
 
 ## Adapter discovery (ADAPTER_MODULE)
 
@@ -244,7 +244,7 @@ correctness before pushing a `runtime-v*` tag.
 ## Writing a new adapter
 
 Use the GitHub template repo
-[`Molecule-AI/molecule-ai-workspace-template-starter`](https://github.com/Molecule-AI/molecule-ai-workspace-template-starter)
+[`molecule-ai/molecule-ai-workspace-template-starter`](https://git.moleculesai.app/molecule-ai/molecule-ai-workspace-template-starter) (note: the starter repo did not survive the 2026-05-06 GitHub-org-suspension migration; recreation tracked at internal#41)
 — it ships with the canonical Dockerfile + adapter.py skeleton + config.yaml
 schema + the `repository_dispatch: [runtime-published]` cascade receiver
 already wired up. No follow-up setup PR required.
@@ -256,7 +256,7 @@ gh repo create Molecule-AI/molecule-ai-workspace-template-<runtime> \
   --public \
   --description "Molecule AI workspace template: <runtime>"
 
-git clone https://github.com/Molecule-AI/molecule-ai-workspace-template-<runtime>
+git clone https://git.moleculesai.app/molecule-ai/molecule-ai-workspace-template-<runtime>.git
 cd molecule-ai-workspace-template-<runtime>
 ```
 
@@ -286,7 +286,7 @@ After `git push`:
 If the canonical shape changes (e.g. `config.yaml` schema gets a new field,
 the `BaseAdapter` interface adds a method, the reusable CI workflow
 signature changes), update the
-[starter](https://github.com/Molecule-AI/molecule-ai-workspace-template-starter)
+[starter](https://git.moleculesai.app/molecule-ai/molecule-ai-workspace-template-starter) (recreation pending — see note above)
 **first**. Existing templates can either migrate at their own pace or be
 touched in a coordinated cleanup PR. Either way, future templates pick up
 the new shape from day one.

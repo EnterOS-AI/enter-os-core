@@ -160,11 +160,11 @@ not expose.
 | `molecule-skill-update-docs` | `[claude_code]` | `[claude_code, hermes]` |
 
 Companion PRs:
-- [molecule-ai-plugin-ecc#2](https://github.com/Molecule-AI/molecule-ai-plugin-ecc/pull/2)
-- [molecule-ai-plugin-superpowers#2](https://github.com/Molecule-AI/molecule-ai-plugin-superpowers/pull/2)
-- [molecule-ai-plugin-molecule-dev#2](https://github.com/Molecule-AI/molecule-ai-plugin-molecule-dev/pull/2)
-- [molecule-ai-plugin-molecule-skill-cron-learnings#2](https://github.com/Molecule-AI/molecule-ai-plugin-molecule-skill-cron-learnings/pull/2)
-- [molecule-ai-plugin-molecule-skill-update-docs#2](https://github.com/Molecule-AI/molecule-ai-plugin-molecule-skill-update-docs/pull/2)
+- [molecule-ai-plugin-ecc#2](https://git.moleculesai.app/molecule-ai/molecule-ai-plugin-ecc/pull/2)
+- [molecule-ai-plugin-superpowers#2](https://git.moleculesai.app/molecule-ai/molecule-ai-plugin-superpowers/pull/2)
+- [molecule-ai-plugin-molecule-dev#2](https://git.moleculesai.app/molecule-ai/molecule-ai-plugin-molecule-dev/pull/2)
+- [molecule-ai-plugin-molecule-skill-cron-learnings#2](https://git.moleculesai.app/molecule-ai/molecule-ai-plugin-molecule-skill-cron-learnings/pull/2)
+- [molecule-ai-plugin-molecule-skill-update-docs#2](https://git.moleculesai.app/molecule-ai/molecule-ai-plugin-molecule-skill-update-docs/pull/2)
 
 Security note: Security Auditor was offline at time of change. Self-assessed
 as non-security-impacting — adding `hermes` to a string list in `plugin.yaml`

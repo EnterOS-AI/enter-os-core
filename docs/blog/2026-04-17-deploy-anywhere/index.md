@@ -10,7 +10,7 @@ tags: [platform, fly.io, deployment, infrastructure]
 
 Your infrastructure choice just got decoupled from your agent platform choice. Molecule AI now ships three production-ready workspace backends — `docker`, `flyio`, and `controlplane` — and switching between them takes a single environment variable. Your agent code, model choices, and workspace topology stay exactly the same.
 
-This post covers what shipped in [PR #501](https://github.com/Molecule-AI/molecule-core/pull/501) (Fly Machines provisioner) and [PR #503](https://github.com/Molecule-AI/molecule-core/pull/503) (control plane provisioner), and which backend fits your situation.
+This post covers what shipped in [PR #501](https://git.moleculesai.app/molecule-ai/molecule-core/pull/501) (Fly Machines provisioner) and [PR #503](https://git.moleculesai.app/molecule-ai/molecule-core/pull/503) (control plane provisioner), and which backend fits your situation.
 
 ## Before: One Deployment Model for Every Use Case
 
@@ -107,4 +107,4 @@ No changes to agent code, tool definitions, or orchestration logic. Swap `CONTAI
 
 ---
 
-*[PR #501](https://github.com/Molecule-AI/molecule-core/pull/501) (Fly Machines provisioner) and [PR #503](https://github.com/Molecule-AI/molecule-core/pull/503) (control plane provisioner) are both merged to `main`. Molecule AI is open source — contributions welcome.*
+*[PR #501](https://git.moleculesai.app/molecule-ai/molecule-core/pull/501) (Fly Machines provisioner) and [PR #503](https://git.moleculesai.app/molecule-ai/molecule-core/pull/503) (control plane provisioner) are both merged to `main`. Molecule AI is open source — contributions welcome.*

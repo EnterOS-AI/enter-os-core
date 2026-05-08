@@ -61,6 +61,6 @@ The real power surfaces when you mix runtimes on the same Molecule AI tenant. Yo
 
 ## Related
 
-- PR #379: [feat(adapters): add gemini-cli runtime adapter](https://github.com/Molecule-AI/molecule-core/pull/379)
+- PR #379: [feat(adapters): add gemini-cli runtime adapter](https://git.moleculesai.app/molecule-ai/molecule-core/pull/379)
 - [Multi-provider Hermes docs](../architecture/hermes.md)
 - [Workspace runtimes reference](../reference/runtimes.md)

@@ -18,7 +18,7 @@
 #
 # Or inline via curl:
 #
-#     bash <(curl -fsSL https://raw.githubusercontent.com/Molecule-AI/molecule-core/main/tools/check-template-parity.sh) \
+#     bash <(curl -fsSL https://git.moleculesai.app/molecule-ai/molecule-core/raw/branch/main/tools/check-template-parity.sh) \
 #          install.sh start.sh
 #
 # Exit codes:
