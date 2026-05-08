@@ -589,12 +589,6 @@ func (h *OrgHandler) Import(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
-	importStart := time.Now()
-	emitOrgEvent(c.Request.Context(), "org.import.started", map[string]any{
-		"name": body.Template.Name,
-		"dir":  body.Dir,
-		"mode": body.Mode,
-	})
 
 	var tmpl OrgTemplate
 	var orgBaseDir string // base directory for files_dir resolution
@@ -634,6 +628,19 @@ func (h *OrgHandler) Import(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "provide 'dir' or 'template'"})
 		return
 	}
+
+	// Emit started AFTER the YAML is loaded so payload.name carries the
+	// resolved template name (was: empty when caller passed `dir` instead
+	// of inline `template`). Pre-parse error paths above return without
+	// emitting — semantically "we couldn't even start an import" — so
+	// every started event is guaranteed a paired completed/failed below
+	// (no orphan started rows in structure_events).
+	importStart := time.Now()
+	emitOrgEvent(c.Request.Context(), "org.import.started", map[string]any{
+		"name": tmpl.Name,
+		"dir":  body.Dir,
+		"mode": body.Mode,
+	})
 
 	// Required-env preflight — refuses import when any required_env is
 	// missing from global_secrets. No bypass: the prior `force: true`
