@@ -320,6 +320,26 @@ func (p *Provisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string, e
 
 	image := selectImage(cfg)
 
+	// Local-build mode (issue #63 / Task #194): when MOLECULE_IMAGE_REGISTRY
+	// is unset, the OSS contributor path skips the registry pull entirely
+	// and instead clones the workspace-template-<runtime> repo from Gitea
+	// + `docker build`s it locally. Replace the placeholder image ref with
+	// the SHA-pinned tag of the freshly-built image before ContainerCreate.
+	//
+	// Pinned overrides (cfg.Image set, e.g. via runtime_image_pins for
+	// production thin-AMI launches) bypass this path — they pin a digest
+	// the operator chose explicitly.
+	if cfg.Image == "" && cfg.Runtime != "" {
+		if src := Resolve(); src.Mode == RegistryModeLocal {
+			builtTag, buildErr := ensureLocalImageHook(ctx, cfg.Runtime)
+			if buildErr != nil {
+				return "", fmt.Errorf("local-build mode: ensure image for runtime %q: %w", cfg.Runtime, buildErr)
+			}
+			image = builtTag
+			log.Printf("Provisioner: local-build mode → using locally-built image %s for runtime %s", image, cfg.Runtime)
+		}
+	}
+
 	containerCfg := &container.Config{
 		Image:  image,
 		Env:    env,

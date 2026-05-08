@@ -57,17 +57,42 @@ jobs:
         id: bump
         if: steps.skip.outputs.skip != 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          # Gitea-shape token (act_runner forwards GITHUB_TOKEN as a
+          # short-lived per-run secret with read access to this repo).
+          # We hit `/api/v1/repos/.../pulls?state=closed` directly
+          # because `gh pr list` calls Gitea's GraphQL endpoint, which
+          # returns HTTP 405 (issue #75 / post-#66 sweep).
+          GITEA_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          GITEA_API_URL: ${{ github.server_url }}/api/v1
+          PUSH_SHA: ${{ github.sha }}
         run: |
-          # The merged PR for this push commit. `gh pr list --search` finds
-          # closed PRs whose merge commit matches; we take the first.
-          PR=$(gh pr list --state merged --search "${{ github.sha }}" --json number,labels --jq '.[0]' 2>/dev/null || echo "")
+          # Find the merged PR whose merge_commit_sha matches this push.
+          # Gitea's `/repos/{owner}/{repo}/pulls?state=closed` returns
+          # PRs sorted newest-first; we paginate up to 50 and jq-filter
+          # on `merge_commit_sha == PUSH_SHA`. Bounded — auto-tag fires
+          # per push to main, so the matching PR is always among the
+          # most recent closures. 50 is comfortably more than the
+          # ~10-20 staging→main promotes that close in any reasonable
+          # window.
+          set -euo pipefail
+          PRS_JSON=$(curl --fail-with-body -sS \
+            -H "Authorization: token ${GITEA_TOKEN}" \
+            -H "Accept: application/json" \
+            "${GITEA_API_URL}/repos/${REPO}/pulls?state=closed&sort=newest&limit=50" \
+            2>/dev/null || echo "[]")
+          PR=$(printf '%s' "$PRS_JSON" \
+            | jq -c --arg sha "$PUSH_SHA" \
+                '[.[] | select(.merged_at != null and .merge_commit_sha == $sha)] | .[0] // empty')
           if [ -z "$PR" ] || [ "$PR" = "null" ]; then
-            echo "No merged PR found for ${{ github.sha }} — defaulting to patch bump."
+            echo "No merged PR found for ${PUSH_SHA} — defaulting to patch bump."
             echo "kind=patch" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          LABELS=$(echo "$PR" | jq -r '.labels[].name')
+          # Gitea returns labels under `.labels[].name`, same shape as
+          # GitHub's REST. The previous `gh pr list --json number,labels`
+          # output was identical; jq filter unchanged.
+          LABELS=$(printf '%s' "$PR" | jq -r '.labels[]?.name // empty')
           if echo "$LABELS" | grep -qx 'release:major'; then
             echo "kind=major" >> "$GITHUB_OUTPUT"
           elif echo "$LABELS" | grep -qx 'release:minor'; then

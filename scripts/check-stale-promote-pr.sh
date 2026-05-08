@@ -17,12 +17,23 @@
 #
 # Used by .github/workflows/auto-promote-stale-alarm.yml. Logic lives
 # here (not inline in the workflow YAML) so we can:
-#   - Unit-test it with a stubbed `gh` (see test-check-stale-promote-pr.sh)
+#   - Unit-test it with a fixture (see test-check-stale-promote-pr.sh)
 #   - Run it ad-hoc by an operator: `scripts/check-stale-promote-pr.sh`
 #   - Reuse the same surface in any sibling workflow that needs the same
 #     check (SSOT — one detector, many callers).
 #
-# Requires: `gh` CLI, `jq`. `GH_TOKEN` env in the workflow context.
+# Requires: `curl`, `jq`. `GITEA_TOKEN` (or `GITHUB_TOKEN` / `GH_TOKEN`
+# for back-compat) in the workflow context. Reads `GITHUB_SERVER_URL`
+# / `GITEA_API_URL` for the Gitea base, defaulting to
+# https://git.moleculesai.app/api/v1.
+#
+# Post-2026-05-06 (Gitea migration, issue #75): the previous version
+# called `gh pr list/view/comment`, all of which hit GitHub.com's
+# GraphQL or /api/v3 REST shapes. Gitea exposes /api/v1/ only (no
+# GraphQL → 405, no /api/v3 → 404). So this script now talks to the
+# Gitea v1 API directly via curl. The fixture-driven unit tests are
+# unchanged — they bypass the live fetch via PR_FIXTURE and still pass
+# the historical (GitHub-shape) JSON which `detect_stale` consumes.
 
 set -euo pipefail
 
@@ -36,20 +47,32 @@ set -euo pipefail
 # alarming. Override via env for tests + edge ops.
 STALE_HOURS="${STALE_HOURS:-4}"
 
-# Repo defaults to the current `gh` context. Tests pass --repo explicitly.
+# Repo defaults to GITHUB_REPOSITORY (act_runner sets this in workflow
+# context). Tests pass --repo explicitly.
 REPO="${GITHUB_REPOSITORY:-}"
 
 # Whether to post a comment to the PR. Off by default to avoid noise on
 # manual ad-hoc runs; the cron workflow turns it on.
 POST_COMMENT="${POST_COMMENT:-false}"
 
-# Where to read the open-PR JSON from. Empty = call `gh` live. Tests
+# Where to read the open-PR JSON from. Empty = call Gitea live. Tests
 # point this at a fixture file.
 PR_FIXTURE="${PR_FIXTURE:-}"
 
 # Where to read "now" from. Empty = real clock. Tests freeze time so
 # the staleness math is deterministic.
 NOW_OVERRIDE="${NOW_OVERRIDE:-}"
+
+# Gitea API base. act_runner forwards github.server_url as
+# GITHUB_SERVER_URL; for the molecule-ai fleet that's
+# https://git.moleculesai.app. Append /api/v1 to get the REST root.
+# Override directly via GITEA_API_URL for tests / non-default hosts.
+GITEA_API_URL="${GITEA_API_URL:-${GITHUB_SERVER_URL:-https://git.moleculesai.app}/api/v1}"
+
+# Token. Workflow context sets GITHUB_TOKEN; we accept GITEA_TOKEN as
+# the explicit name and GH_TOKEN for back-compat with operator habits
+# from the GitHub era. First non-empty wins.
+GITEA_TOKEN="${GITEA_TOKEN:-${GITHUB_TOKEN:-${GH_TOKEN:-}}}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -83,7 +106,7 @@ now_epoch() {
   fi
 }
 
-# Parse RFC3339 timestamps the way GitHub emits them (e.g.
+# Parse RFC3339 timestamps the way Gitea / GitHub emit them (e.g.
 # "2026-05-05T23:15:00Z"). gnu-date uses -d, bsd-date uses -j -f. Cover
 # both because the workflow runs on ubuntu-latest (gnu) but operators
 # may run this script on macOS (bsd).
@@ -106,14 +129,100 @@ to_epoch() {
 # Fetch open auto-promote PRs
 # -----------------------------------------------------------------------------
 
+# Gitea v1 returns PRs with the canonical Gitea shape (number, title,
+# created_at, html_url, mergeable, state). The previous GitHub-CLI
+# version returned a derived `mergeStateStatus` / `reviewDecision`
+# pair which only GitHub computes — Gitea doesn't expose them
+# natively. Rebuild equivalents:
+#
+#   mergeStateStatus = BLOCKED  ↔ Gitea: state==open AND mergeable==true
+#                                  AND no APPROVED review yet
+#                                  (i.e. branch protection is gating
+#                                  the auto-merge pending an approval)
+#   reviewDecision   = REVIEW_REQUIRED  ↔ Gitea: 0 APPROVED reviews
+#
+# This mirrors the SAME silent-block failure mode the GitHub version
+# detected: auto-merge armed, branch protection requires 1 review,
+# nobody's approved yet.
+#
+# Implementation: pull the open PR list base=main, then for each PR
+# pull /pulls/{n}/reviews and synthesize the GitHub-shape JSON the
+# rest of the script + the test fixtures consume.
 fetch_prs() {
   if [ -n "$PR_FIXTURE" ]; then
     cat "$PR_FIXTURE"
     return 0
   fi
-  gh pr list --repo "$REPO" \
-    --base main --head staging --state open \
-    --json number,title,createdAt,mergeStateStatus,reviewDecision,url
+  if [ -z "$GITEA_TOKEN" ]; then
+    echo "::error::GITEA_TOKEN / GITHUB_TOKEN unset — cannot fetch PRs from $GITEA_API_URL" >&2
+    return 1
+  fi
+  local prs_json
+  prs_json="$(curl --fail-with-body -sS \
+    -H "Authorization: token ${GITEA_TOKEN}" \
+    -H "Accept: application/json" \
+    "${GITEA_API_URL}/repos/${REPO}/pulls?state=open&base=main&limit=50" \
+    2>/dev/null)" || {
+    echo "::error::Failed to fetch PRs from ${GITEA_API_URL}/repos/${REPO}/pulls" >&2
+    return 1
+  }
+
+  # Filter to head=staging (the auto-promote shape) and synthesize
+  # mergeStateStatus + reviewDecision per PR. Approval count via
+  # /pulls/{n}/reviews. Errors fall through to 0-approvals (treated
+  # as REVIEW_REQUIRED) preserving the existing "fail-safe — alarm if
+  # uncertain" semantic.
+  local synthesized="[]"
+  while IFS= read -r pr; do
+    [ -z "$pr" ] && continue
+    [ "$pr" = "null" ] && continue
+    local num
+    num="$(printf '%s' "$pr" | jq -r '.number')"
+    [ -z "$num" ] && continue
+    [ "$num" = "null" ] && continue
+    local approved_count
+    approved_count="$(curl --fail-with-body -sS \
+      -H "Authorization: token ${GITEA_TOKEN}" \
+      -H "Accept: application/json" \
+      "${GITEA_API_URL}/repos/${REPO}/pulls/${num}/reviews" 2>/dev/null \
+      | jq '[.[] | select(.state == "APPROVED" and (.dismissed // false) == false)] | length' \
+      2>/dev/null || echo 0)"
+    local mergeable
+    mergeable="$(printf '%s' "$pr" | jq -r '.mergeable')"
+    local merge_state="UNKNOWN"
+    local review_decision="REVIEW_REQUIRED"
+    if [ "$mergeable" = "true" ]; then
+      if [ "$approved_count" -ge 1 ]; then
+        merge_state="CLEAN"
+        review_decision="APPROVED"
+      else
+        # mergeable but no approving review — exactly the wedge state
+        # the alarm targets.
+        merge_state="BLOCKED"
+        review_decision="REVIEW_REQUIRED"
+      fi
+    else
+      # not mergeable (conflicts, behind, failed checks) — different
+      # failure mode, the author owns the fix; the alarm doesn't fire.
+      merge_state="DIRTY"
+      review_decision="REVIEW_REQUIRED"
+    fi
+    synthesized="$(printf '%s' "$synthesized" \
+      | jq -c --argjson pr "$pr" \
+              --arg ms "$merge_state" \
+              --arg rd "$review_decision" \
+              '. + [{
+                 number: $pr.number,
+                 title: $pr.title,
+                 createdAt: $pr.created_at,
+                 mergeStateStatus: $ms,
+                 reviewDecision: $rd,
+                 url: $pr.html_url
+              }]')"
+  done < <(printf '%s' "$prs_json" \
+    | jq -c '.[] | select(.head.ref == "staging")' 2>/dev/null)
+
+  printf '%s\n' "$synthesized"
 }
 
 # -----------------------------------------------------------------------------
@@ -171,18 +280,40 @@ post_comment() {
   if [ "$POST_COMMENT" != "true" ]; then
     return 0
   fi
+  if [ -z "$GITEA_TOKEN" ]; then
+    echo "::warning::GITEA_TOKEN unset — cannot post stale-alarm comment on PR #$pr_num" >&2
+    return 0
+  fi
   # Idempotency: only one alarm comment per PR. Look for the marker
-  # string in existing comments before posting a new one.
+  # string in existing comments before posting a new one. Gitea's
+  # /repos/{owner}/{repo}/issues/{n}/comments returns the same shape
+  # for issues + PRs (PRs are issues internally on Gitea, same as
+  # GitHub's REST).
   local existing
-  existing="$(gh pr view "$pr_num" --repo "$REPO" --json comments \
-    --jq '.comments[] | select(.body | test("scripts/check-stale-promote-pr.sh per issue #2975")) | .databaseId' \
+  existing="$(curl --fail-with-body -sS \
+    -H "Authorization: token ${GITEA_TOKEN}" \
+    -H "Accept: application/json" \
+    "${GITEA_API_URL}/repos/${REPO}/issues/${pr_num}/comments?limit=50" 2>/dev/null \
+    | jq -r '.[] | select(.body | test("scripts/check-stale-promote-pr.sh per issue #2975")) | .id' \
     | head -n1)"
   if [ -n "$existing" ]; then
     echo "::notice::PR #$pr_num already has a stale-alarm comment ($existing) — not re-posting"
     return 0
   fi
-  comment_body "$age_h" | gh pr comment "$pr_num" --repo "$REPO" --body-file -
-  echo "::notice::Posted stale-alarm comment on PR #$pr_num (age=${age_h}h)"
+  local body
+  body="$(comment_body "$age_h")"
+  if curl --fail-with-body -sS \
+      -X POST \
+      -H "Authorization: token ${GITEA_TOKEN}" \
+      -H "Accept: application/json" \
+      -H "Content-Type: application/json" \
+      "${GITEA_API_URL}/repos/${REPO}/issues/${pr_num}/comments" \
+      -d "$(jq -nc --arg b "$body" '{body: $b}')" \
+      >/dev/null 2>&1; then
+    echo "::notice::Posted stale-alarm comment on PR #$pr_num (age=${age_h}h)"
+  else
+    echo "::warning::Failed to POST stale-alarm comment on PR #$pr_num" >&2
+  fi
 }
 
 # -----------------------------------------------------------------------------

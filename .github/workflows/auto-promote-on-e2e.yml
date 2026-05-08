@@ -154,30 +154,71 @@ jobs:
             exit 0
           fi
 
-          # Upstream is publish-workspace-server-image. Check E2E state.
-          # The jq filter must defend against TWO empty cases that gh
-          # CLI emits indistinguishably:
-          #   1. gh exits non-zero (network blip, auth issue) → handled
-          #      by the `|| echo "none/none"` fallback below.
-          #   2. gh exits zero but returns `[]` (no E2E run on this
-          #      main SHA — the common case for canvas-only / cmd-only
-          #      / sweep-only changes whose paths don't trigger E2E).
-          #      Without `(.[0] // {})`, jq sees `null` and emits
-          #      "null/none" — which the case statement below has no
-          #      branch for, so it falls into *) → exit 1.
-          # Surfaced 2026-04-30 the first time the App-token chain
-          # (#2389) actually fired auto-promote-on-e2e from a publish
-          # upstream — every prior run was E2E-upstream which
-          # short-circuits before this gate.
-          RESULT=$(gh run list \
-            --repo "$REPO" \
-            --workflow e2e-staging-saas.yml \
-            --branch main \
-            --commit "$SHA" \
-            --limit 1 \
-            --json status,conclusion \
-            --jq '(.[0] // {}) | "\(.status // "none")/\(.conclusion // "none")"' \
-            2>/dev/null || echo "none/none")
+          # Upstream is publish-workspace-server-image. Check E2E state
+          # for the same SHA via Gitea's commit-status API.
+          #
+          # GitHub-era this was `gh run list --workflow=X --commit=SHA
+          # --json status,conclusion` returning either `[]` (no run on
+          # this SHA) or `[{status, conclusion}]` (the run's state).
+          # Gitea has NO workflow-runs API at all — `/api/v1/repos/.../
+          # actions/runs` returns 404 (verified 2026-05-07, issue #75).
+          # However Gitea Actions DOES emit a commit status per workflow
+          # job, with `context = "<Workflow Name> / <Job Name> (<event>)"`,
+          # which is exactly what we need: each E2E run leg becomes one
+          # status row on the SHA, and the aggregate state encodes the
+          # run's outcome.
+          #
+          # Mapping:
+          #   0 matched contexts          → "none/none"      (E2E paths-
+          #                                                    filtered
+          #                                                    out — same
+          #                                                    semantic
+          #                                                    as before)
+          #   any context = pending       → "in_progress/none" (defer)
+          #   any context = error|failure → "completed/failure" (abort)
+          #   all contexts = success      → "completed/success" (proceed)
+          #
+          # The "completed/cancelled" and "completed/timed_out" buckets
+          # don't have direct Gitea analogs (Gitea statuses are
+          # success / failure / error / pending / warning). Per-SHA
+          # concurrency cancellation surfaces as `error` on Gitea, which
+          # we map to "completed/failure" rather than "completed/cancelled"
+          # — losing the soft-defer semantic of the cancelled bucket on
+          # this fleet. Tradeoff: the staleness alarm (auto-promote-stale-
+          # alarm.yml) still catches a stuck :latest within 4h, and a
+          # legitimate cancel is rare enough that aborting + manual
+          # re-dispatch is acceptable. If we measure cancel frequency
+          # > 1/week, revisit by reading the run-step-summary text via
+          # a follow-up script.
+          #
+          # Network or auth blips collapse to "none/none" via the curl
+          # `|| true` fallback, matching the pre-Gitea behaviour where
+          # an empty list also degenerated to none/none.
+          GITEA_API_URL="${GITHUB_SERVER_URL:-https://git.moleculesai.app}/api/v1"
+          STATUSES_JSON=$(curl --fail-with-body -sS \
+            -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/json" \
+            "${GITEA_API_URL}/repos/${REPO}/commits/${SHA}/statuses?limit=100" \
+            2>/dev/null || echo "[]")
+          RESULT=$(printf '%s' "$STATUSES_JSON" | jq -r '
+            # Filter to E2E Staging SaaS (full lifecycle) statuses.
+            # Match by leading workflow-name prefix so the "<job>
+            # (<event>)" tail is irrelevant. Gitea emits the workflow
+            # name verbatim from the YAML `name:` field.
+            [.[] | select(.context | startswith("E2E Staging SaaS (full lifecycle) /"))] as $rows
+            | if ($rows | length) == 0 then
+                "none/none"
+              elif any($rows[]; .status == "pending") then
+                "in_progress/none"
+              elif any($rows[]; .status == "failure" or .status == "error") then
+                "completed/failure"
+              elif all($rows[]; .status == "success") then
+                "completed/success"
+              else
+                # Mixed / unknown — fall through to *) bucket below.
+                "completed/" + ($rows[0].status // "unknown")
+              end
+          ' 2>/dev/null || echo "none/none")
 
           echo "E2E Staging SaaS for ${SHA:0:7}: $RESULT"
 
@@ -199,16 +240,13 @@ jobs:
               exit 1
               ;;
             completed/cancelled)
-              # cancelled ≠ failure. Per-SHA concurrency cancels older E2E
-              # runs when a newer push lands (memory:
-              # feedback_concurrency_group_per_sha) — the newer SHA will
-              # have its own E2E + promote chain. Treat the same as
-              # in_progress: defer without aborting, let the next E2E run
-              # promote when it lands.
-              #
-              # Caught 2026-05-05 02:03 on sha 31f9a5e — auto-promote
-              # blocked the whole chain because this case fell through to
-              # exit 1 instead of clean defer.
+              # GitHub-era only: cancelled ≠ failure. Gitea statuses
+              # don't expose a "cancelled" state — a per-SHA concurrency
+              # cancellation surfaces as `failure` or `error` on Gitea
+              # and is now handled by the failure branch above. This
+              # arm is kept for backwards compatibility / dual-host
+              # operation (if we ever add a non-Gitea fallback) but
+              # under the post-#75 flow it's unreachable.
               echo "proceed=false" >> "$GITHUB_OUTPUT"
               {
                 echo "## ⏭ Auto-promote deferred — E2E Staging SaaS was cancelled"
