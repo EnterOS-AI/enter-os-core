@@ -1,5 +1,5 @@
 {
-  "_comment": "Pin refs to release tags for reproducible builds. 'main' is OK while all repos are internal.",
+  "_comment": "OSS surface registry — every repo listed here MUST be public on git.moleculesai.app. Layer-3 customer/private templates are NOT registered here; they are handled at provision-time via the per-tenant credential resolver (see internal#102 RFC). 'main' refs are pinned to tags before broad rollout.",
   "version": 1,
   "plugins": [
     {"name": "browser-automation", "repo": "molecule-ai/molecule-ai-plugin-browser-automation", "ref": "main"},
@@ -40,7 +40,6 @@
     {"name": "free-beats-all", "repo": "molecule-ai/molecule-ai-org-template-free-beats-all", "ref": "main"},
     {"name": "medo-smoke", "repo": "molecule-ai/molecule-ai-org-template-medo-smoke", "ref": "main"},
     {"name": "molecule-worker-gemini", "repo": "molecule-ai/molecule-ai-org-template-molecule-worker-gemini", "ref": "main"},
-    {"name": "reno-stars", "repo": "molecule-ai/molecule-ai-org-template-reno-stars", "ref": "main"},
     {"name": "ux-ab-lab", "repo": "molecule-ai/molecule-ai-org-template-ux-ab-lab", "ref": "main"},
     {"name": "mock-bigorg", "repo": "molecule-ai/molecule-ai-org-template-mock-bigorg", "ref": "main"}
   ]

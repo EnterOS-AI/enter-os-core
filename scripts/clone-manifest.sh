@@ -8,27 +8,24 @@
 # Requires: git, jq (lighter than python3 — ~2MB vs ~50MB in Alpine)
 #
 # Auth (optional):
-#   When MOLECULE_GITEA_TOKEN is set, embed it as the basic-auth password so
-#   private Gitea repos clone successfully. When unset, clone anonymously
-#   (works only for repos that are public on git.moleculesai.app).
+#   Post-2026-05-08 (#192): every repo in manifest.json is public on
+#   git.moleculesai.app. Anonymous clone works for the entire registered
+#   set. The OSS-surface contract is recorded in manifest.json's _comment
+#   — Layer-3 customer/private templates (e.g. reno-stars) are NOT in the
+#   manifest; they are handled at provision-time via the per-tenant
+#   credential resolver (internal#102 RFC).
 #
-#   This is the path the publish-workspace-server-image.yml workflow uses:
-#   it injects AUTO_SYNC_TOKEN (devops-engineer persona PAT, repo:read on
-#   the molecule-ai org) so the in-CI pre-clone step succeeds for ALL
-#   manifest entries — including the 5 private workspace-template-* repos
-#   (codex, crewai, deepagents, gemini-cli, langgraph) and all 7
-#   org-template-* repos.
+#   MOLECULE_GITEA_TOKEN is therefore optional today. Kept supported for
+#   two reasons: (a) historical CI configs that still inject
+#   AUTO_SYNC_TOKEN remain harmless, (b) reserved for the case where a
+#   private internal-only template is later registered via a ci-readonly
+#   team grant — review must explicitly sign off on that, since it
+#   violates the public-OSS-surface contract.
 #
-#   The token never enters the Docker image: this script runs in the
-#   trusted CI context BEFORE `docker buildx build`, populates
+#   The token (when set) never enters the Docker image: this script runs
+#   in the trusted CI context BEFORE `docker buildx build`, populates
 #   .tenant-bundle-deps/, then `Dockerfile.tenant` COPYs from there with
 #   the .git directories already stripped (see line ~67 below).
-#
-#   For backward compatibility — and so a fresh clone works without
-#   secrets when (eventually) the workspace-template-* repos flip public —
-#   the unset path remains a plain anonymous HTTPS clone. That path will
-#   FAIL with "could not read Username" on private repos today; CI MUST
-#   set MOLECULE_GITEA_TOKEN.
 
 set -euo pipefail
 
