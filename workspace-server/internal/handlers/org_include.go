@@ -76,6 +76,12 @@ func expandNode(n *yaml.Node, currentDir, rootDir string, visited map[string]boo
 		return resolveIncludeScalar(n, currentDir, rootDir, visited, depth)
 	}
 
+	// `!external`-tagged mapping: gitops cross-repo subtree composition.
+	// See org_external.go (internal#77 / task #222).
+	if n.Kind == yaml.MappingNode && n.Tag == "!external" {
+		return resolveExternalMapping(n, currentDir, rootDir, visited, depth)
+	}
+
 	for _, child := range n.Content {
 		if err := expandNode(child, currentDir, rootDir, visited, depth); err != nil {
 			return err
