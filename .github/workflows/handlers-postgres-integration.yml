@@ -249,3 +249,4 @@ jobs:
           # already gone (e.g. concurrent rerun race), don't fail the job.
           docker rm -f "${PG_NAME}" >/dev/null 2>&1 || true
           echo "Cleaned up ${PG_NAME}"
+
