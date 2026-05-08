@@ -715,14 +715,30 @@ func deriveProviderFromModelSlug(model string) string {
 // payload.Model at boot), this is a no-op — no harm in the switch
 // being empty for those cases.
 func applyRuntimeModelEnv(envVars map[string]string, runtime, model string) {
-	// Fall back to the MODEL_PROVIDER workspace secret when the caller
-	// didn't pass one explicitly. This is the path that "Save+Restart"
-	// hits — Restart builds its payload from the workspaces row (no model
-	// column there) so payload.Model is always empty, but the user's
-	// canvas selection was stored as MODEL_PROVIDER via PUT /model and
-	// is already loaded into envVars here. Without this fallback hermes
-	// silently boots with the template default and errors "No LLM
-	// provider configured" even though the user picked a valid model.
+	// Resolution order (priority high → low):
+	//   1. payload.Model (caller passed the canvas-picked model id verbatim)
+	//   2. envVars["MODEL"]  (workspace_secret persisted by /org/import via
+	//      the persona env file — MODEL=MiniMax-M2.7-highspeed etc.)
+	//   3. envVars["MODEL_PROVIDER"] (legacy: this secret was historically a
+	//      *model id* set by canvas Save+Restart's PUT /model; on the
+	//      post-2026-05-08 persona-env convention it's a *provider slug*
+	//      (e.g. "minimax") which is NOT a valid model id, so this fallback
+	//      only fires when MODEL is absent.)
+	//
+	// Pre-fix bug: this function unconditionally OVERWROTE envVars["MODEL"]
+	// with the MODEL_PROVIDER slug (when payload.Model was empty), wiping
+	// the operator's explicit per-persona MODEL secret on every restart.
+	// Symptom: a workspace whose persona env said
+	// MODEL=MiniMax-M2.7-highspeed booted fine on first /org/import (the
+	// envVars map was populated direct from the env file), then on the
+	// next Restart the workspace_secrets-derived MODEL got clobbered by
+	// MODEL_PROVIDER="minimax" — the literal slug, not a valid model id —
+	// and the workspace template's adapter routed to providers[0]
+	// (anthropic-oauth) and wedged at SDK initialize. Caught 2026-05-08
+	// during Phase 4 verification of template-claude-code PR #9.
+	if model == "" {
+		model = envVars["MODEL"]
+	}
 	if model == "" {
 		model = envVars["MODEL_PROVIDER"]
 	}

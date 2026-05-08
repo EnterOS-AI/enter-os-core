@@ -724,3 +724,68 @@ func TestApplyRuntimeModelEnv_SetsUniversalMODELForAllRuntimes(t *testing.T) {
 		})
 	}
 }
+
+// TestApplyRuntimeModelEnv_PersonaEnvMODELSecretPreserved locks in the
+// 2026-05-08 fix that prevents the MODEL_PROVIDER-as-slug fallback from
+// silently overwriting a per-persona MODEL workspace_secret on restart.
+//
+// Pre-fix bug recurrence guard: when the persona env file (loaded into
+// workspace_secrets at /org/import time) declares both MODEL=<id> and
+// MODEL_PROVIDER=<slug>, the restart path used to overwrite envVars["MODEL"]
+// with the MODEL_PROVIDER slug because applyRuntimeModelEnv'\''s
+// payload.Model fallback consulted MODEL_PROVIDER first. Symptom: dev-tree
+// workspaces booted fine on first /org/import, then on next restart the
+// model id became literal "minimax" and the workspace template'\''s adapter
+// failed to match any registry prefix, fell through to anthropic-oauth,
+// and wedged at SDK initialize. Caught during Phase 4 verification of
+// template-claude-code PR #9.
+func TestApplyRuntimeModelEnv_PersonaEnvMODELSecretPreserved(t *testing.T) {
+	cases := []struct {
+		name      string
+		envMODEL  string
+		envMP     string
+		wantMODEL string
+	}{
+		{
+			name:      "MODEL secret wins over MODEL_PROVIDER slug (persona-env shape on restart)",
+			envMODEL:  "MiniMax-M2.7-highspeed",
+			envMP:     "minimax",
+			wantMODEL: "MiniMax-M2.7-highspeed",
+		},
+		{
+			name:      "MODEL secret wins even when same as MODEL_PROVIDER",
+			envMODEL:  "opus",
+			envMP:     "claude-code",
+			wantMODEL: "opus",
+		},
+		{
+			name:      "MODEL absent → fall back to MODEL_PROVIDER (legacy canvas Save+Restart shape)",
+			envMODEL:  "",
+			envMP:     "MiniMax-M2.7",
+			wantMODEL: "MiniMax-M2.7",
+		},
+		{
+			name:      "Both absent → no MODEL set",
+			envMODEL:  "",
+			envMP:     "",
+			wantMODEL: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			envVars := map[string]string{}
+			if tc.envMODEL != "" {
+				envVars["MODEL"] = tc.envMODEL
+			}
+			if tc.envMP != "" {
+				envVars["MODEL_PROVIDER"] = tc.envMP
+			}
+			// payload.Model is empty (the restart case)
+			applyRuntimeModelEnv(envVars, "claude-code", "")
+			if got := envVars["MODEL"]; got != tc.wantMODEL {
+				t.Errorf("MODEL = %q, want %q (envMODEL=%q envMP=%q)",
+					got, tc.wantMODEL, tc.envMODEL, tc.envMP)
+			}
+		})
+	}
+}
