@@ -26,6 +26,14 @@ func TestExtended_WorkspaceDelete(t *testing.T) {
 		WithArgs(wsDelID).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}))
 
+	// CascadeDelete walks descendants unconditionally (the 0-children
+	// optimization in the old inline path was dropped during the
+	// CascadeDelete extraction — descendant CTE returns 0 rows here,
+	// same end state, one extra cheap query).
+	mock.ExpectQuery("WITH RECURSIVE descendants").
+		WithArgs(wsDelID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
 	// #73: batch UPDATE happens BEFORE any container teardown.
 	// Uses ANY($1::uuid[]) even with a single ID for consistency.
 	mock.ExpectExec("UPDATE workspaces SET status =").

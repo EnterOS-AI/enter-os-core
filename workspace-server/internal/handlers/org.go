@@ -787,14 +787,14 @@ func (h *OrgHandler) Import(c *gin.Context) {
 				rows.Close()
 
 				for _, oid := range orphanIDs {
-					cascadeCount, stopErrs, err := h.workspace.CascadeDelete(ctx, oid)
+					descendantIDs, stopErrs, err := h.workspace.CascadeDelete(ctx, oid)
 					if err != nil {
 						log.Printf("Org import reconcile: CascadeDelete(%s) failed: %v", oid, err)
 						reconcileErrs = append(reconcileErrs, fmt.Sprintf("delete %s: %v", oid, err))
 						reconcileSkipped++
 						continue
 					}
-					reconcileRemovedCount += 1 + cascadeCount
+					reconcileRemovedCount += 1 + len(descendantIDs)
 					if len(stopErrs) > 0 {
 						log.Printf("Org import reconcile: %s had %d stop errors (orphan sweeper will retry)", oid, len(stopErrs))
 					}

@@ -813,6 +813,12 @@ func TestWorkspaceDelete_DisablesSchedules(t *testing.T) {
 		WithArgs(wsID).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}))
 
+	// CascadeDelete walks descendants unconditionally — 0-children case
+	// returns 0 rows here.
+	mock.ExpectQuery("WITH RECURSIVE descendants").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
 	// Mark workspace as removed
 	mock.ExpectExec("UPDATE workspaces SET status =").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -934,6 +940,12 @@ func TestWorkspaceDelete_ScheduleDisableOnlyTargetsDeletedWorkspace(t *testing.T
 	mock.ExpectQuery("SELECT id, name FROM workspaces WHERE parent_id").
 		WithArgs(wsA).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}))
+
+	// CascadeDelete walks descendants unconditionally — 0-children case
+	// returns 0 rows here.
+	mock.ExpectQuery("WITH RECURSIVE descendants").
+		WithArgs(wsA).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
 	// Mark only workspace A as removed
 	mock.ExpectExec("UPDATE workspaces SET status =").
