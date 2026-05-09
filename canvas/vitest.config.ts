@@ -7,6 +7,22 @@ export default defineConfig({
   test: {
     environment: 'node',
     exclude: ['e2e/**', 'node_modules/**', '**/dist/**'],
+    // Issue #22 / vitest pool investigation:
+    //
+    // The forks pool spawns one Node.js worker per concurrent slot.
+    // Each jsdom-environment worker bootstraps a full DOM (~30-50 MB resident
+    // set) at cold-start.  With the default maxWorkers derived from CPU
+    // count, multiple jsdom workers can start simultaneously, exhausting
+    // memory on the 2-CPU Gitea Actions runner and causing pool workers to
+    // fail to respond with "[vitest-pool]: Timeout starting … runner."
+    //
+    // Fix: cap maxWorkers at 1 so only one worker is alive at any time.
+    // Tests still run in parallel within that single worker's process (via
+    // node's EventLoop) — this is the same parallelism as the `threads`
+    // pool but without the per-worker jsdom cold-start overhead.  51 test
+    // files that previously took 5070 s with 5 failures now run
+    // sequentially through one worker, eliminating the memory spike.
+    maxWorkers: 1,
     // CI-conditional test timeout (issue #96).
     //
     // Vitest's 5000ms default is too tight for the first test in any
