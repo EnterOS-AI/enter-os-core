@@ -490,7 +490,14 @@ func (h *WorkspaceHandler) proxyA2ARequest(ctx context.Context, workspaceID stri
 		if logActivity && deliveryConfirmed {
 			h.logA2ASuccess(ctx, workspaceID, callerID, body, respBody, a2aMethod, resp.StatusCode, durationMs)
 		}
-		return 0, nil, &proxyA2AError{
+		// Preserve the actual HTTP status code and any body bytes already read.
+		// Previously this returned (0, nil, error) which discarded both.
+		// Preserving them allows executeDelegation's new condition
+		//   proxyErr != nil && len(respBody) > 0 && status >= 200 && status < 300
+		// to correctly route delivery-confirmed responses (where the agent completed
+		// the work but the TCP connection dropped before the full body was received)
+		// to success instead of failure (#159).
+		return resp.StatusCode, respBody, &proxyA2AError{
 			Status: http.StatusBadGateway,
 			Response: gin.H{
 				"error":              "failed to read agent response",

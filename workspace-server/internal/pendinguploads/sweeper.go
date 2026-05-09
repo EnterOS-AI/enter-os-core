@@ -66,15 +66,21 @@ const sweepDeadline = 30 * time.Second
 // to exercise the ticker-driven sweep path without burning real wall-
 // clock time.
 func StartSweeper(ctx context.Context, storage Storage, ackRetention time.Duration) {
-	startSweeperWithInterval(ctx, storage, ackRetention, SweepInterval)
+	startSweeperWithInterval(ctx, storage, ackRetention, SweepInterval, nil)
 }
 
 // startSweeperWithInterval is the test-friendly variant of StartSweeper
 // — same loop, but the cadence is caller-specified. Production code
 // should use StartSweeper to keep the SweepInterval constant pinned.
-func startSweeperWithInterval(ctx context.Context, storage Storage, ackRetention, interval time.Duration) {
+// If done is non-nil it is closed exactly once when the loop exits,
+// allowing tests to wait for the goroutine to fully terminate before
+// asserting on shared metric counters (issue #86).
+func startSweeperWithInterval(ctx context.Context, storage Storage, ackRetention, interval time.Duration, done chan struct{}) {
 	if storage == nil {
 		log.Println("pendinguploads sweeper: storage is nil — sweeper disabled")
+		if done != nil {
+			close(done)
+		}
 		return
 	}
 	if ackRetention == 0 {
@@ -86,6 +92,12 @@ func startSweeperWithInterval(ctx context.Context, storage Storage, ackRetention
 	)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	defer func() {
+		log.Println("pendinguploads sweeper: shutdown")
+		if done != nil {
+			close(done)
+		}
+	}()
 	// Run once immediately so a platform restart cleans up any rows
 	// that became eligible while we were down — don't make the
 	// operator wait 5 minutes for the first sweep.
@@ -93,9 +105,16 @@ func startSweeperWithInterval(ctx context.Context, storage Storage, ackRetention
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("pendinguploads sweeper: shutdown")
 			return
 		case <-ticker.C:
+			// Guard: ctx may have been cancelled between the ticker firing
+			// and this case being selected (MPMC channel; close-to-ready race).
+			// Calling sweepOnce with an already-cancelled ctx would increment
+			// the error counter on shutdown — polluting the next test's
+			// baseline (issue #86 full-suite failure).
+			if ctx.Err() != nil {
+				continue
+			}
 			sweepOnce(ctx, storage, ackRetention)
 		}
 	}
