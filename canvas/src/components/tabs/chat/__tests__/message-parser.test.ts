@@ -209,6 +209,43 @@ describe("extractResponseText", () => {
     };
     expect(extractResponseText(body)).toBe("Summary\nDetail block one\nDetail block two");
   });
+
+  // Regression: delegation.go stores response_body as
+  // {"text": "...", "delegation_id": "..."} — no "result" wrapper.
+  // Without body.text handling, extractResponseText returns "" for
+  // delegate_result rows, causing the error UI to fire even when the
+  // delegation succeeded (issue #159).
+  it("extracts from body.text (delegation response_body shape)", () => {
+    const body = {
+      text: "PR #149: tier-check fails NO REVIEWS (author needs engineers/managers/ceo approval)",
+      delegation_id: "delg_01jx8q4n3k",
+    };
+    expect(extractResponseText(body)).toBe(
+      "PR #149: tier-check fails NO REVIEWS (author needs engineers/managers/ceo approval)"
+    );
+  });
+
+  it("prefers body.result over body.text when both present", () => {
+    const body = {
+      result: { parts: [{ kind: "text", text: "A2A result wins" }] },
+      text: "Delegation text",
+    };
+    // result path is checked first; A2A wins when both present.
+    expect(extractResponseText(body)).toBe("A2A result wins");
+  });
+
+  it("returns empty string when body.text is empty string", () => {
+    expect(extractResponseText({ text: "" })).toBe("");
+  });
+
+  it("extracts from body.response_preview (DELEGATION_COMPLETE WS event shape)", () => {
+    const body = {
+      response_preview: "PR #149: tier-check fails NO REVIEWS (author needs engineers/managers/ceo approval)",
+    };
+    expect(extractResponseText(body)).toBe(
+      "PR #149: tier-check fails NO REVIEWS (author needs engineers/managers/ceo approval)"
+    );
+  });
 });
 
 describe("extractTextsFromParts", () => {

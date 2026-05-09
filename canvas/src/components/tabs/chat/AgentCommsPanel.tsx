@@ -513,7 +513,20 @@ function GroupedCommsView({
       />
       <div className="flex-1 overflow-y-auto p-3 space-y-2">
         {visible.map((msg) =>
-          msg.status === "error" ? (
+          // Only render the error UI when there is NO usable response
+          // content. A "error" status from the platform means the HTTP
+          // transport layer had a problem — but the agent response text
+          // may have arrived and been stored in response_body.text.
+          // Delegation results set responseText via extractResponseText
+          // once that function learned to parse body.text, so checking
+          // !msg.responseText here correctly identifies "no actual reply
+          // was received" vs. "reply arrived but status=error".
+          //
+          // Without this guard, successful delegation results were
+          // rendered as error banners, PMs saw "restart" prompts and
+          // restarted working agents, and retry storms formed as the
+          // platform re-delivered the same completed work (issue #159).
+          msg.status === "error" && !msg.responseText ? (
             <ErrorMessage key={msg.id} msg={msg} />
           ) : (
             <NormalMessage key={msg.id} msg={msg} />
