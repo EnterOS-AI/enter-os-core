@@ -268,10 +268,11 @@ molecule-mcp = "molecule_runtime.mcp_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["molecule_runtime*"]
+include = ["molecule_runtime*", "plugins_registry*"]
 
 [tool.setuptools.package-data]
 "molecule_runtime" = ["py.typed"]
+"plugins_registry" = ["py.typed"]
 """
 
 
@@ -472,6 +473,18 @@ def main() -> int:
 
     py_files = copy_tree_filtered(src, pkg_dir)
     print(f"[build] copied {len(py_files)} .py files")
+
+    # Install plugins_registry/ at the wheel TOP LEVEL so that plugin adapter
+    # code (workspace-template-*) can use bare `from plugins_registry import ...`.
+    # The molecule-runtime package (molecule_runtime/) also ships it at
+    # molecule_runtime/plugins_registry/ (satisfies the rewritten
+    # `from molecule_runtime.plugins_registry import ...` in adapter_base.py).
+    # Both copies coexist: they serve different import namespaces.
+    plugins_src = src / "plugins_registry"
+    plugins_dst = out / "plugins_registry"
+    if plugins_src.is_dir():
+        shutil.copytree(plugins_src, plugins_dst)
+        print(f"[build] installed plugins_registry/ at top level (bare-import shim)")
 
     # Ensure top-level package marker exists. workspace/ doesn't have one
     # (it's not a package in monorepo), but the published artifact must.
