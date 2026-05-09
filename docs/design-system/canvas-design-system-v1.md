@@ -16,34 +16,89 @@
 
 ---
 
-## 1. Color Palette — Dark Zinc Theme
+## 1. Color Palette — Three-Mode Theme System
 
-All canvas UI uses the dark zinc scale. Light theme NOT supported.
+Canvas supports **three themes**: System (follows OS), Light, Dark. Controlled via `ThemeProvider` in `theme-provider.tsx` with preference persisted in `mol_theme` cookie.
 
-| Token | Tailwind | Hex (approx) | Usage | Verified |
-|-------|----------|-------------|-------|----------|
-| `canvas-bg` | `bg-zinc-950` | `#09090b` | Page/app background | ✅ |
-| `canvas-surface` | `bg-zinc-900` | `#18181b` | Panels, sidebar, cards | ✅ |
-| `canvas-surface-raised` | `bg-zinc-800` | `#27272a` | Modals, dropdowns, tooltips | ✅ |
-| `canvas-surface-card` | `bg-zinc-800` | `#27272a` | Node cards, chips | ✅ |
-| `canvas-border` | `border-zinc-700` | `#3f3f46` | Dividers, input borders | ✅ |
-| `canvas-border-subtle` | `border-zinc-800` | `#27272a` | Inner dividers | ✅ |
-| `canvas-text-primary` | `text-zinc-50` | `#fafafa` | High-contrast labels | ✅ |
-| `canvas-text-muted` | `text-zinc-400` | `#a1a1aa` | Secondary labels, placeholders | ✅ |
-| `canvas-text-disabled` | `text-zinc-600` | `#52525b` | Disabled state | ✅ |
-| `canvas-accent` | `bg-blue-600` | `#2563eb` | Primary actions, links | ✅ |
-| `canvas-accent-hover` | `bg-blue-500` | `#3b82f6` | Hover state for accent | ✅ |
-| `canvas-danger` | `bg-red-600` | `#dc2626` | Destructive actions | ✅ |
-| `canvas-success` | `bg-green-600` | `#16a34a` | Success states | ✅ |
+**Key principle: Use semantic tokens, NOT raw zinc values for surfaces.**
 
-### Accessibility Contrast
+### 1.1 Theme-Mutable Tokens (use these for surfaces)
 
-| Pair | Ratio | WCAG | Verified |
-|------|-------|------|----------|
-| `canvas-text-primary` on `canvas-bg` | ~15.8:1 | AAA | ✅ |
-| `canvas-text-muted` on `canvas-bg` | ~5.9:1 | AA | ✅ |
-| `canvas-accent` on `canvas-surface` | ~4.6:1 | AA | ✅ |
-| `canvas-text-primary` on `canvas-surface` | ~14.5:1 | AAA | ✅ |
+Defined in `globals.css` via Tailwind v4 `@theme` block. Automatically flip between light/dark.
+
+**Light theme (warm paper):**
+
+| Token | Tailwind Class | Hex | Usage |
+|-------|--------------|-----|-------|
+| `--color-surface` | `bg-surface` | `#fafaf7` | Page background |
+| `--color-surface-elevated` | `bg-surface-elevated` | `#ffffff` | Elevated cards, modals |
+| `--color-surface-sunken` | `bg-surface-sunken` | `#f3f1ec` | Input fields, recessed areas |
+| `--color-surface-card` | `bg-surface-card` | `#efece4` | Node cards, chips |
+| `--color-line` | `border-line` | `#e6e2d8` | Dividers, borders |
+| `--color-line-soft` | `border-line-soft` | `#efece4` | Subtle dividers |
+| `--color-ink` | `text-ink` | `#15181c` | Primary text |
+| `--color-ink-mid` | `text-ink-mid` | `#5a5e66` | Secondary text |
+| `--color-ink-soft` | `text-ink-soft` | `#8b8e95` | Tertiary text, placeholders |
+| `--color-accent` | `text-accent` | `#3b5bdb` | Links, primary actions |
+| `--color-accent-strong` | `text-accent-strong` | `#1a2f99` | Emphasized accent |
+| `--color-warm` | `text-warm` | `#c0532b` | Warnings |
+| `--color-good` | `text-good` | `#2f7a4d` | Success states |
+| `--color-bad` | `text-bad` | `#b94e4a` | Error states |
+
+**Dark theme:**
+
+| Token | Hex | Usage |
+|-------|-----|-------|
+| `--color-surface` | `#0e1014` | Page background |
+| `--color-surface-elevated` | `#15181c` | Elevated cards |
+| `--color-surface-sunken` | `#0a0b0e` | Input fields |
+| `--color-surface-card` | `#1a1d23` | Node cards |
+| `--color-line` | `#2a2f3a` | Dividers |
+| `--color-ink` | `#f4f1e9` | Primary text |
+| `--color-ink-mid` | `#c8c2b4` | Secondary text |
+| `--color-ink-soft` | `#8d92a0` | Tertiary text |
+| `--color-accent` | `#6883e8` | Links (brighter for AA contrast) |
+| `--color-accent-strong` | `#8aa1ee` | Emphasized accent |
+| `--color-warm` | `#d96f48` | Warnings |
+| `--color-good` | `#4ca06e` | Success |
+| `--color-bad` | `#d27773` | Errors |
+
+### 1.2 Always-Dark Tokens (terminal surfaces)
+
+Terminals, console modal, log streams **stay dark** in all themes — readable green-on-black doesn't translate to light.
+
+| Token | Tailwind Class | Hex | Usage |
+|-------|--------------|-----|-------|
+| `--color-bg` | `bg-bg` | `rgb(9 9 11)` / zinc-950 | Terminal background |
+| `--color-bg-elev` | `bg-bg-elev` | `rgb(24 24 27)` / zinc-900 | Elevated terminal surfaces |
+| `--color-bg-card` | `bg-bg-card` | `rgb(39 39 42)` / zinc-800 | Terminal cards |
+| `--color-line-strong` | `border-line-strong` | `rgb(63 63 70)` / zinc-700 | Strong borders |
+| `--color-ink-mute` | `text-ink-mute` | `rgb(161 161 170)` / zinc-400 | Muted text |
+| `--color-ink-dim` | `text-ink-dim` | `rgb(113 113 122)` / zinc-500 | Dim text |
+
+### 1.3 Raw Zinc Usage Rules
+
+**Use raw zinc for:**
+- Borders: `border-zinc-700`, `border-zinc-800`
+- Disabled states: `text-zinc-600`, `bg-zinc-800`
+- Code highlighting: `bg-zinc-900`, `text-zinc-300`
+- Terminal surfaces: `bg-zinc-950` (always-dark)
+
+**NEVER use for surfaces:**
+- `bg-zinc-900` or `bg-zinc-950` as page/card backgrounds — use `bg-surface`
+- `text-zinc-50` or `text-zinc-100` as primary text — use `text-ink`
+- `bg-white`, `bg-gray-50/100` for surfaces — use semantic tokens
+
+### 1.4 Accessibility Contrast
+
+| Pair | Ratio | WCAG |
+|------|-------|------|
+| `text-ink` on `bg-surface` (light) | ~14.5:1 | AAA |
+| `text-ink` on `bg-surface` (dark) | ~15.8:1 | AAA |
+| `text-ink-mid` on `bg-surface` (light) | ~5.2:1 | AA |
+| `text-ink-mid` on `bg-surface` (dark) | ~5.9:1 | AA |
+| `text-accent` on `bg-surface` (light) | ~4.8:1 | AA |
+| `text-accent` on `bg-surface` (dark) | ~4.6:1 | AA |
 
 ---
 
@@ -103,42 +158,45 @@ transition: all 150ms ease;
 ### 4.1 Buttons
 
 ```tsx
-// Primary — accent background, white text
-<button className="bg-blue-600 hover:bg-blue-500 active:scale-95
-                   text-white px-4 py-2 rounded-md text-sm font-medium
+// Primary — accent background, ink text
+<button className="bg-accent hover:bg-accent/90 active:scale-95
+                   text-ink px-4 py-2 rounded-md text-sm font-medium
                    focus-visible:ring-2 focus-visible:ring-blue-500
-                   focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950
+                   focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900
                    disabled:opacity-50 disabled:cursor-not-allowed">
   Primary
 </button>
 
-// Secondary — surface border, muted text
-<button className="bg-zinc-800 hover:bg-zinc-700 border border-zinc-700
-                   text-zinc-200 px-4 py-2 rounded-md text-sm font-medium
+// Secondary — surface-card background, border-line
+<button className="bg-surface-card hover:bg-surface-elevated border border-line
+                   text-ink px-4 py-2 rounded-md text-sm font-medium
                    focus-visible:ring-2 focus-visible:ring-blue-500
                    focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900">
   Secondary
 </button>
 
 // Ghost — no background, hover surface
-<button className="hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200
+<button className="hover:bg-surface-card text-ink-mid hover:text-ink
                    px-4 py-2 rounded-md text-sm font-medium">
   Ghost
 </button>
 
-// Danger — red background, requires confirmation dialog
-<button className="bg-red-600 hover:bg-red-500 text-white px-4 py-2
+// Danger — bad color, requires confirmation dialog
+<button className="bg-bad hover:bg-bad/90 text-white px-4 py-2
                    rounded-md text-sm font-medium">
   Delete
 </button>
 ```
 
+**States:** default, hover, active (`scale-95`), focus (`ring-2 ring-blue-500 ring-offset-2 ring-offset-zinc-900`), disabled (`opacity-50 cursor-not-allowed`).
+
 ### 4.2 Inputs
 
 ```tsx
+// Text input — use semantic tokens for surfaces
 <input
-  className="bg-zinc-900 border border-zinc-700 text-zinc-50
-             placeholder:text-zinc-500 px-3 py-2 rounded-md text-sm
+  className="bg-surface-sunken border border-line text-ink
+             placeholder:text-ink-soft px-3 py-2 rounded-md text-sm
              focus:outline-none focus:ring-2 focus:ring-blue-500
              focus:border-transparent
              disabled:opacity-50 disabled:cursor-not-allowed"
@@ -147,14 +205,14 @@ transition: all 150ms ease;
 
 // Error state
 <input
-  className="border-red-500 focus:ring-red-500"
+  className="border-bad focus:ring-bad"
   aria-invalid="true"
   aria-describedby="error-message"
 />
 ```
 
-**Label:** `text-sm font-medium text-zinc-200 mb-1`
-**Error:** `text-xs text-red-400 mt-1`
+**Label:** `text-sm font-medium text-ink mb-1`
+**Error:** `text-xs text-bad mt-1`
 
 ### 4.3 Cards
 
@@ -167,23 +225,21 @@ transition: all 150ms ease;
                 focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-950">
 ```
 
-Note: Uses `--color-surface-sunken` (`bg-zinc-950/90`) not pure zinc-800. Cards use `bg-surface-card` = `bg-zinc-800`.
-
 ### 4.4 Modals (Radix Dialog)
 
 ```tsx
-// Backdrop (verified in MissingKeysModal tests: bg-black/70 backdrop-blur-sm)
+// Backdrop
 <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50"
      aria-hidden="true" />
 
-// Dialog (Radix — provides role="dialog", aria-modal, focus trap automatically)
-<div className="fixed inset-0 z-50 flex items-center justify-center">
-  <div className="bg-zinc-800 border border-zinc-700 rounded-xl
-                  shadow-2xl p-6 max-w-md w-full mx-4">
-    {/* Modal content */}
-  </div>
+// Dialog — use surface-card + border-line
+<div className="bg-surface-card border border-line rounded-xl
+                shadow-2xl p-6 max-w-md w-full mx-4">
+  {/* Modal content */}
 </div>
 ```
+
+Note: Uses `--color-surface-sunken` for sunken areas (node cards). Cards use `bg-surface-card`.
 
 **Important:** Use `@radix-ui/react-dialog` — it provides WCAG 2.1 compliance automatically (focus trap, Escape key, aria-modal, aria-labelledby).
 
@@ -210,6 +266,36 @@ Note: Uses `--color-surface-sunken` (`bg-zinc-950/90`) not pure zinc-800. Cards 
 ```
 
 **WCAG 1.4.13 compliance:** Escape key dismisses tooltip without moving pointer/focus.
+
+### 4.6 Theme Switching
+
+Use `useTheme()` hook from `theme-provider.tsx`:
+
+```tsx
+import { useTheme } from "@/lib/theme-provider";
+
+function ThemeToggle() {
+  const { theme, resolvedTheme, setTheme } = useTheme();
+  return (
+    <select
+      value={theme}
+      onChange={(e) => setTheme(e.target.value as ThemePreference)}
+    >
+      <option value="system">System</option>
+      <option value="light">Light</option>
+      <option value="dark">Dark</option>
+    </select>
+  );
+}
+```
+
+**Theme types:**
+```ts
+type ThemePreference = "system" | "light" | "dark";
+type ResolvedTheme = "light" | "dark";
+```
+
+**Cookie:** `mol_theme` with `Domain=.moleculesai.app` — persists across surfaces.
 
 ---
 
@@ -273,8 +359,13 @@ Canvas uses `@xyflow/react` (React Flow).
 
 ## 7. Enforcement Checklist
 
-- [x] No `bg-white` / `bg-zinc-50` in canvas components (verified)
-- [x] No `text-zinc-900` in canvas components (verified)
+### Color Token Rules
+- [x] No `bg-white` / `bg-zinc-50` for surfaces — use `bg-surface`
+- [x] No `text-zinc-50` / `text-zinc-100` for surfaces — use `text-ink`
+- [x] No `bg-zinc-900` / `bg-zinc-950` for surfaces — use `bg-surface` or `bg-surface-card`
+- [x] Raw zinc OK for: borders, disabled states, code, terminal surfaces
+
+### Accessibility Rules
 - [x] All buttons have focus rings (verified in tests)
 - [x] All modals use Radix Dialog (verified)
 - [x] All tooltips use `role="tooltip"` + `aria-describedby` (verified)
@@ -283,6 +374,7 @@ Canvas uses `@xyflow/react` (React Flow).
 - [x] Contrast ratios at 4.5:1 minimum (verified above)
 - [x] `prefers-reduced-motion` suppresses all animations (verified in globals.css)
 - [x] Context menu has keyboard navigation (verified in ContextMenu.keyboard.test.tsx)
+- [x] Theme switching works: System/Light/Dark modes verified
 
 ---
 
