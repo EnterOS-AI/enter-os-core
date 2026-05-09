@@ -25,6 +25,35 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/registry"
 	"github.com/google/uuid"
 )
+// insertMCPDelegationRow writes a delegation activity row so the canvas
+// Agent Comms tab can show the task text for MCP-initiated delegations.
+// Mirrors insertDelegationRow (delegation.go) for the MCP tool path.
+func insertMCPDelegationRow(ctx context.Context, db *sql.DB, workspaceID, targetID, delegationID, task string) error {
+	taskJSON, _ := json.Marshal(map[string]interface{}{
+		"task":          task,
+		"delegation_id": delegationID,
+	})
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO activity_logs (workspace_id, activity_type, method, source_id, target_id, summary, request_body, status)
+		VALUES ($1, 'delegation', 'delegate', $2, $3, $4, $5::jsonb, 'pending')
+	`, workspaceID, workspaceID, targetID, "Delegating to "+targetID, string(taskJSON))
+	return err
+}
+
+// updateMCPDelegationStatus updates a delegation activity row's status.
+// Mirrors updateDelegationStatus (delegation.go) for the MCP tool path.
+func updateMCPDelegationStatus(ctx context.Context, db *sql.DB, workspaceID, delegationID, status, errorDetail string) {
+	if _, err := db.ExecContext(ctx, `
+		UPDATE activity_logs
+		SET status = $1, error_detail = CASE WHEN $2 = '' THEN error_detail ELSE $2 END
+		WHERE workspace_id = $3
+		  AND method = 'delegate'
+		  AND request_body->>'delegation_id' = $4
+	`, status, errorDetail, workspaceID, delegationID); err != nil {
+		log.Printf("MCP Delegation %s: status update failed: %v", delegationID, err)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tool implementations
 // ─────────────────────────────────────────────────────────────────────────────
@@ -154,6 +183,13 @@ func (h *MCPHandler) toolDelegateTask(ctx context.Context, callerID string, args
 		return "", fmt.Errorf("workspace %s is not authorised to communicate with %s", callerID, targetID)
 	}
 
+	// Issue #158: write delegation row so canvas Agent Comms tab shows the task text.
+	delegationID := uuid.New().String()
+	if err := insertMCPDelegationRow(ctx, h.database, callerID, targetID, delegationID, task); err != nil {
+		log.Printf("MCP delegate_task: failed to record delegation row: %v", err)
+		// Non-fatal: still make the A2A call even if activity log write fails.
+	}
+
 	agentURL, err := mcpResolveURL(ctx, h.database, targetID)
 	if err != nil {
 		return "", err
@@ -197,9 +233,15 @@ func (h *MCPHandler) toolDelegateTask(ctx context.Context, callerID string, args
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
+		updateMCPDelegationStatus(ctx, h.database, callerID, delegationID, "failed", err.Error())
 		return "", fmt.Errorf("A2A call failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	// A 200/500 from the peer still means the call was dispatched — only
+	// network errors are truly "failed". Status 'dispatched' is correct for
+	// any HTTP response (peer's A2A layer handles the actual processing).
+	updateMCPDelegationStatus(ctx, h.database, callerID, delegationID, "dispatched", "")
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
@@ -223,7 +265,16 @@ func (h *MCPHandler) toolDelegateTaskAsync(ctx context.Context, callerID string,
 		return "", fmt.Errorf("workspace %s is not authorised to communicate with %s", callerID, targetID)
 	}
 
-	taskID := uuid.New().String()
+	delegationID := uuid.New().String()
+
+	// Issue #158: write delegation row so canvas Agent Comms tab shows the task text.
+	// Insert with 'dispatched' status since the goroutine won't update it.
+	if err := insertMCPDelegationRow(ctx, h.database, callerID, targetID, delegationID, task); err != nil {
+		log.Printf("MCP delegate_task_async: failed to record delegation row: %v", err)
+		// Non-fatal: still fire the A2A call.
+	} else {
+		updateMCPDelegationStatus(ctx, h.database, callerID, delegationID, "dispatched", "")
+	}
 
 	// Fire and forget in a detached goroutine. Use a background context so
 	// the call is not cancelled when the HTTP request completes.
@@ -244,7 +295,7 @@ func (h *MCPHandler) toolDelegateTaskAsync(ctx context.Context, callerID string,
 
 		a2aBody, _ := json.Marshal(map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      taskID,
+			"id":      delegationID,
 			"method":  "message/send",
 			"params": map[string]interface{}{
 				"message": map[string]interface{}{
@@ -273,7 +324,7 @@ func (h *MCPHandler) toolDelegateTaskAsync(ctx context.Context, callerID string,
 		_, _ = io.Copy(io.Discard, resp.Body)
 	}()
 
-	return fmt.Sprintf(`{"task_id":%q,"status":"dispatched","target_id":%q}`, taskID, targetID), nil
+	return fmt.Sprintf(`{"task_id":%q,"status":"dispatched","target_id":%q}`, delegationID, targetID), nil
 }
 
 func (h *MCPHandler) toolCheckTaskStatus(ctx context.Context, callerID string, args map[string]interface{}) (string, error) {

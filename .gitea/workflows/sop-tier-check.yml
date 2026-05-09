@@ -1,0 +1,81 @@
+# sop-tier-check — canonical Gitea Actions workflow for §SOP-6 enforcement.
+#
+# Logic lives in `.gitea/scripts/sop-tier-check.sh` (extracted 2026-05-09
+# from the previous inline-bash version). The script is the single source
+# of truth; this workflow file just sets env + invokes it.
+#
+# Copy BOTH files (`.gitea/workflows/sop-tier-check.yml` +
+# `.gitea/scripts/sop-tier-check.sh`) into any repo that wants the
+# §SOP-6 PR gate enforced. Pair with branch protection on the protected
+# branch:
+#   required_status_checks:    ["sop-tier-check / tier-check (pull_request)"]
+#   required_approving_reviews: 1
+#   approving_review_teams:    ["ceo", "managers", "engineers"]
+#
+# Tier → eligible-team mapping (mirror of dev-sop §SOP-6):
+#   tier:low    → engineers, managers, ceo
+#   tier:medium → managers, ceo
+#   tier:high   → ceo
+#
+# Force-merge: Owners-team override remains available out-of-band via
+# the Gitea merge API; force-merge writes `incident.force_merge` to
+# `structure_events` per §Persistent structured logging gate (Phase 3).
+#
+# Set `SOP_DEBUG: '1'` in the env block to enable per-API-call diagnostic
+# lines — useful when diagnosing token-scope or team-id-resolution
+# issues. Default off.
+
+name: sop-tier-check
+
+# SECURITY: triggers MUST use `pull_request_target`, not `pull_request`.
+# `pull_request_target` loads the workflow definition from the BASE
+# branch (i.e. `main`), not the PR's HEAD. With `pull_request`, anyone
+# with write access to a feature branch could rewrite this file in
+# their PR to dump SOP_TIER_CHECK_TOKEN (org-read scope) to logs and
+# exfiltrate it. Verified 2026-05-09 against Gitea 1.22.6 —
+# `pull_request_target` (added in Gitea 1.21 via go-gitea/gitea#25229)
+# is the documented mitigation.
+#
+# This workflow does NOT call `actions/checkout` of PR HEAD code, so no
+# untrusted code is ever executed in the runner — we only HTTP-call the
+# Gitea API. If a future change adds a checkout step, it MUST pin to
+# `${{ github.event.pull_request.base.sha }}` (NOT `head.sha`) to keep
+# the trust boundary.
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
+  pull_request_review:
+    types: [submitted, dismissed, edited]
+
+jobs:
+  tier-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check out base branch (for the script)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # Pin to base.sha — pull_request_target's protection only
+          # works if we never check out PR HEAD. Same SHA the workflow
+          # itself was loaded from.
+          ref: ${{ github.event.pull_request.base.sha }}
+      - name: Verify tier label + reviewer team membership
+        env:
+          # SOP_TIER_CHECK_TOKEN is the org-level secret for the
+          # sop-tier-bot PAT (read:organization,read:user,read:issue,
+          # read:repository). Stored at the org level
+          # (/api/v1/orgs/molecule-ai/actions/secrets) so per-repo
+          # configuration is unnecessary — every repo in the org
+          # picks it up automatically.
+          # Falls back to GITHUB_TOKEN with a clear error if missing.
+          GITEA_TOKEN: ${{ secrets.SOP_TIER_CHECK_TOKEN || secrets.GITHUB_TOKEN }}
+          GITEA_HOST: git.moleculesai.app
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          # Set to '1' for diagnostic per-API-call output. Off by default
+          # so production logs aren't noisy.
+          SOP_DEBUG: '0'
+        run: bash .gitea/scripts/sop-tier-check.sh
