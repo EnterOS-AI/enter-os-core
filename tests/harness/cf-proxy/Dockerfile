@@ -9,6 +9,6 @@
 # not active, so it hits the same gap. A build-time COPY uploads the file
 # as part of the docker build context — the daemon receives the tarball
 # directly and never bind-mounts. See issue #88 item 2.
-FROM nginx:1.27-alpine
+FROM nginx:1.27-alpine@sha256:62223d644fa234c3a1cc785ee14242ec47a77364226f1c811d2f669f96dc2ac8
 
 COPY nginx.conf /etc/nginx/nginx.conf
