@@ -165,6 +165,13 @@ interface CanvasState {
    *  this so a drag that pushed a child past the parent edge commits
    *  the parent grow on release (commit-on-release pattern). */
   growParentsToFitChildren: () => void;
+  /** Move a selected node by (dx, dy) in canvas space. Used by keyboard
+   *  arrow-key shortcuts so keyboard users can reposition nodes without a
+   *  mouse. Persists the new position to the backend and skips the
+   *  grow-parents pass that onNodesChange runs on every drag tick
+   *  (avoids the "edge-chase" flicker that commit-on-release is meant to
+   *  prevent). */
+  moveNode: (nodeId: string, dx: number, dy: number) => void;
   /** Re-layout a parent's children to the default 2-column grid. Used
    *  by the "Arrange children" context-menu command so users can rescue
    *  out-of-bounds children on demand — topology no longer does it
@@ -1030,6 +1037,19 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         console.warn(`arrangeChildren: failed to persist position for ${k.id}`, e);
       });
     }
+  },
+
+  moveNode: (nodeId, dx, dy) => {
+    const node = get().nodes.find((n) => n.id === nodeId);
+    if (!node) return;
+    set({
+      nodes: get().nodes.map((n) =>
+        n.id === nodeId
+          ? { ...n, position: { x: n.position.x + dx, y: n.position.y + dy } }
+          : n,
+      ),
+    });
+    void get().savePosition(nodeId, node.position.x + dx, node.position.y + dy);
   },
 
   savePosition: async (nodeId: string, x: number, y: number) => {
