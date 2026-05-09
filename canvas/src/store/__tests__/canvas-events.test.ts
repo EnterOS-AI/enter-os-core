@@ -835,3 +835,181 @@ describe("handleCanvasEvent – unknown event", () => {
     ).not.toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Screen-reader live announcements
+// ---------------------------------------------------------------------------
+
+describe("handleCanvasEvent – liveAnnouncement", () => {
+  it("announces WORKSPACE_ONLINE with node name", () => {
+    const node = makeNode("ws-1", { name: "Alpha" });
+    const { get, set, state } = makeStore([node]);
+
+    handleCanvasEvent(
+      makeMsg({ event: "WORKSPACE_ONLINE", workspace_id: "ws-1" }),
+      get,
+      set
+    );
+
+    expect(state.liveAnnouncement).toBe("Alpha is now online");
+  });
+
+  it("announces WORKSPACE_OFFLINE with node name", () => {
+    const node = makeNode("ws-1", { name: "Beta" });
+    const { get, set, state } = makeStore([node]);
+
+    handleCanvasEvent(
+      makeMsg({ event: "WORKSPACE_OFFLINE", workspace_id: "ws-1" }),
+      get,
+      set
+    );
+
+    expect(state.liveAnnouncement).toBe("Beta is now offline");
+  });
+
+  it("announces WORKSPACE_PAUSED with node name", () => {
+    const node = makeNode("ws-1", { name: "Gamma" });
+    const { get, set, state } = makeStore([node]);
+
+    handleCanvasEvent(
+      makeMsg({ event: "WORKSPACE_PAUSED", workspace_id: "ws-1" }),
+      get,
+      set
+    );
+
+    expect(state.liveAnnouncement).toBe("Gamma has been paused");
+  });
+
+  it("announces WORKSPACE_DEGRADED with node name", () => {
+    const node = makeNode("ws-1", { name: "Delta" });
+    const { get, set, state } = makeStore([node]);
+
+    handleCanvasEvent(
+      makeMsg({
+        event: "WORKSPACE_DEGRADED",
+        workspace_id: "ws-1",
+        payload: { sample_error: "connection timeout" },
+      }),
+      get,
+      set
+    );
+
+    expect(state.liveAnnouncement).toBe("Delta is degraded");
+  });
+
+  it("announces WORKSPACE_PROVISIONING for new workspace with payload name", () => {
+    const { get, set, state } = makeStore([]);
+
+    handleCanvasEvent(
+      makeMsg({
+        event: "WORKSPACE_PROVISIONING",
+        workspace_id: "ws-new",
+        payload: { name: "NewBot" },
+      }),
+      get,
+      set
+    );
+
+    expect(state.liveAnnouncement).toBe("NewBot is provisioning");
+  });
+
+  it("announces WORKSPACE_PROVISIONING for new workspace with default name", () => {
+    const { get, set, state } = makeStore([]);
+
+    handleCanvasEvent(
+      makeMsg({
+        event: "WORKSPACE_PROVISIONING",
+        workspace_id: "ws-new",
+        payload: {},
+      }),
+      get,
+      set
+    );
+
+    expect(state.liveAnnouncement).toBe("New Workspace is provisioning");
+  });
+
+  it("announces WORKSPACE_REMOVED with node name", () => {
+    const node = makeNode("ws-1", { name: "Gamma" });
+    const { get, set, state } = makeStore([node]);
+
+    handleCanvasEvent(
+      makeMsg({ event: "WORKSPACE_REMOVED", workspace_id: "ws-1" }),
+      get,
+      set
+    );
+
+    expect(state.liveAnnouncement).toBe("Gamma was removed");
+  });
+
+  it("announces WORKSPACE_PROVISION_FAILED with node name", () => {
+    const node = makeNode("ws-1", { name: "Delta" });
+    const { get, set, state } = makeStore([node]);
+
+    handleCanvasEvent(
+      makeMsg({
+        event: "WORKSPACE_PROVISION_FAILED",
+        workspace_id: "ws-1",
+        payload: { error: "docker pull failed" },
+      }),
+      get,
+      set
+    );
+
+    expect(state.liveAnnouncement).toBe("Delta provisioning failed");
+  });
+
+  it("does not announce for TASK_UPDATED", () => {
+    const node = makeNode("ws-1", { name: "Alpha" });
+    const { get, set, state } = makeStore([node]);
+
+    handleCanvasEvent(
+      makeMsg({
+        event: "TASK_UPDATED",
+        workspace_id: "ws-1",
+        payload: { current_task: "building release", active_tasks: 1 },
+      }),
+      get,
+      set
+    );
+
+    // TASK_UPDATED is noisy (every heartbeat); it should not announce
+    expect(state.liveAnnouncement ?? "").toBe("");
+  });
+
+  it("does not announce for AGENT_MESSAGE", () => {
+    const node = makeNode("ws-1", { name: "Alpha" });
+    const { get, set, state } = makeStore([node]);
+
+    handleCanvasEvent(
+      makeMsg({
+        event: "AGENT_MESSAGE",
+        workspace_id: "ws-1",
+        payload: { message: "hello from the agent" },
+      }),
+      get,
+      set
+    );
+
+    expect(state.liveAnnouncement ?? "").toBe("");
+  });
+
+  it("uses payload name for ONLINE when node not found in store", () => {
+    const { get, set, state } = makeStore([]);
+
+    handleCanvasEvent(
+      makeMsg({
+        event: "WORKSPACE_ONLINE",
+        workspace_id: "ws-1",
+        payload: { name: "FromPayload" },
+      }),
+      get,
+      set
+    );
+
+    // ONLINE when node doesn't exist just buffers _pendingOnline;
+    // no announcement should be set
+    expect(state.liveAnnouncement ?? "").toBe("");
+  });
+});
+});

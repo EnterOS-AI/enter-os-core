@@ -168,15 +168,29 @@ export function extractResponseText(body: Record<string, unknown>): string {
       if (rootTexts.length > 0) collected.push(rootTexts.join("\n"));
 
       // Task shape: {result: {artifacts: [{parts: [...]}]}}
-      const artifacts = result.artifacts as Array<Record<string, unknown>> | undefined;
+      const artifacts = result.artifacts as Array<Record<string, unknown> | undefined>;
       if (artifacts) {
         for (const a of artifacts) {
-          const t = extractTextsFromParts(a.parts);
+          const t = extractTextsFromParts(a?.parts);
           if (t) collected.push(t);
         }
       }
 
       if (collected.length > 0) return collected.join("\n");
+    }
+
+    // Delegation results from delegation.go store response_body as
+    // {"text": "...", "delegation_id": "..."} — no "result" wrapper.
+    // Check this after the body.result path so A2A responses take
+    // precedence when both shapes are somehow present.
+    // Without this, responseText is always "" for delegate_result rows,
+    // causing the error UI to fire even when the delegation succeeded
+    // (issue #159).
+    if (typeof body.text === "string" && body.text) return body.text;
+    // DELEGATION_COMPLETE event (via canvas-events WS handler) stores
+    // response_body as {response_preview: "..."}. Handle this too.
+    if (typeof body.response_preview === "string" && body.response_preview) {
+      return body.response_preview;
     }
 
     // {task: "text"} — request body format, shouldn't be in response but handle it

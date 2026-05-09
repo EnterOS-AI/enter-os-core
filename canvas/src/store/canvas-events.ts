@@ -80,6 +80,7 @@ export function handleCanvasEvent(
   switch (msg.event) {
     case "WORKSPACE_ONLINE": {
       const existing = nodes.find((n) => n.id === msg.workspace_id);
+      const nodeName = existing?.data.name ?? (msg.payload.name as string) ?? "Workspace";
       if (!existing) {
         // PROVISIONING event hasn't been applied yet (WS reorder or
         // this tab joined mid-deploy). Buffer so the later PROVISIONING
@@ -105,6 +106,7 @@ export function handleCanvasEvent(
             ? { ...n, data: { ...n.data, status: "online" } }
             : n,
         ),
+        liveAnnouncement: `${nodeName} is now online`,
       });
       // Remove the laser class after its keyframe ends so the edge
       // settles into the app's default solid styling. Fire-and-forget.
@@ -123,28 +125,36 @@ export function handleCanvasEvent(
     }
 
     case "WORKSPACE_OFFLINE": {
+      const offlineNode = nodes.find((n) => n.id === msg.workspace_id);
+      const offlineName = offlineNode?.data.name ?? "Workspace";
       set({
         nodes: nodes.map((n) =>
           n.id === msg.workspace_id
             ? { ...n, data: { ...n.data, status: "offline" } }
             : n
         ),
+        liveAnnouncement: `${offlineName} is now offline`,
       });
       break;
     }
 
     case "WORKSPACE_PAUSED": {
+      const pausedNode = nodes.find((n) => n.id === msg.workspace_id);
+      const pausedName = pausedNode?.data.name ?? "Workspace";
       set({
         nodes: nodes.map((n) =>
           n.id === msg.workspace_id
             ? { ...n, data: { ...n.data, status: "paused", currentTask: "" } }
             : n
         ),
+        liveAnnouncement: `${pausedName} has been paused`,
       });
       break;
     }
 
     case "WORKSPACE_DEGRADED": {
+      const degradedNode = nodes.find((n) => n.id === msg.workspace_id);
+      const degradedName = degradedNode?.data.name ?? "Workspace";
       set({
         nodes: nodes.map((n) =>
           n.id === msg.workspace_id
@@ -160,6 +170,7 @@ export function handleCanvasEvent(
               }
             : n
         ),
+        liveAnnouncement: `${degradedName} is degraded`,
       });
       break;
     }
@@ -230,6 +241,7 @@ export function handleCanvasEvent(
         // removed per demo feedback. A2A edges (showA2AEdges) still
         // render when enabled — those represent runtime traffic,
         // which nesting doesn't express.
+        const newNodeName = (msg.payload.name as string) ?? "New Workspace";
         set({
           nodes: [
             ...nodes,
@@ -244,7 +256,7 @@ export function handleCanvasEvent(
               ...(parentId ? { parentId } : {}),
               className: "mol-deploy-spawn",
               data: {
-                name: (msg.payload.name as string) ?? "New Workspace",
+                name: newNodeName,
                 status: "provisioning",
                 tier: (msg.payload.tier as number) ?? 1,
                 agentCard: null,
@@ -261,6 +273,7 @@ export function handleCanvasEvent(
               },
             },
           ],
+          liveAnnouncement: `${newNodeName} is provisioning`,
         });
 
         // Grow the parent to fit the just-landed child. DEBOUNCED
@@ -345,6 +358,7 @@ export function handleCanvasEvent(
 
     case "WORKSPACE_REMOVED": {
       const removedNode = nodes.find((n) => n.id === msg.workspace_id);
+      const removedName = removedNode?.data.name ?? "Workspace";
       const parentOfRemoved = removedNode?.data.parentId ?? null;
       set({
         nodes: nodes
@@ -363,6 +377,7 @@ export function handleCanvasEvent(
             e.source !== msg.workspace_id && e.target !== msg.workspace_id
         ),
         selectedNodeId: selectedNodeId === msg.workspace_id ? null : selectedNodeId,
+        liveAnnouncement: `${removedName} was removed`,
       });
       break;
     }
@@ -445,6 +460,8 @@ export function handleCanvasEvent(
 
     case "WORKSPACE_PROVISION_FAILED": {
       const errorMsg = (msg.payload.error as string) ?? "Unknown provisioning error";
+      const failedNode = nodes.find((n) => n.id === msg.workspace_id);
+      const failedName = failedNode?.data.name ?? "Workspace";
       set({
         nodes: nodes.map((n) =>
           n.id === msg.workspace_id
@@ -458,6 +475,7 @@ export function handleCanvasEvent(
               }
             : n
         ),
+        liveAnnouncement: `${failedName} provisioning failed`,
       });
       break;
     }
