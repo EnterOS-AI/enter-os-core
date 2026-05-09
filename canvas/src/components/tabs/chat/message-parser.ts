@@ -114,9 +114,15 @@ function basename(uri: string): string {
   return slash >= 0 ? cleaned.slice(slash + 1) : cleaned || "file";
 }
 
-/** Extract user message text from an activity log request_body */
+/** Extract user message text from an activity log request_body.
+ *
+ *  Delegation activities from delegation.go store the task text directly
+ *  at `body.task` as a plain string: {"task": "...", "delegation_id": "..."}.
+ *  Check this first before falling back to the A2A JSON-RPC format
+ *  (`body.params.message.parts[].text`). */
 export function extractRequestText(body: Record<string, unknown> | null): string {
   if (!body) return "";
+  if (typeof body.task === "string" && body.task) return body.task;
   const params = body.params as Record<string, unknown> | undefined;
   const msg = params?.message as Record<string, unknown> | undefined;
   const parts = msg?.parts as Array<Record<string, unknown>> | undefined;
