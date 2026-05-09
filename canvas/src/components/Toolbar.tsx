@@ -317,7 +317,7 @@ export function Toolbar() {
           onClick={() => setHelpOpen((open) => !open)}
           className="flex items-center justify-center w-7 h-7 bg-surface-card hover:bg-surface-card/70 border border-line rounded-lg transition-colors text-ink-mid hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           aria-expanded={helpOpen}
-          aria-label="Open quick help"
+          aria-label="Open shortcuts and tips"
           title="Help — shortcuts & quick start"
         >
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -327,24 +327,35 @@ export function Toolbar() {
         </button>
 
         {helpOpen && (
-          <div className="absolute right-0 top-full mt-2 w-72 rounded-xl border border-line/60 bg-surface/95 p-3 shadow-2xl shadow-black/50 backdrop-blur-md">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-[10px] font-semibold uppercase tracking-[0.24em] text-ink-mid">Quick start</span>
+          <div
+            role="dialog"
+            aria-label="Shortcuts and tips"
+            aria-modal="false"
+            className="absolute right-0 top-full mt-2 w-80 rounded-xl border border-line/60 bg-surface/95 p-3 shadow-2xl shadow-black/50 backdrop-blur-md z-50"
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.24em] text-ink-mid">Shortcuts & tips</span>
               <button
                 type="button"
                 onClick={() => setHelpOpen(false)}
+                aria-label="Close help dialog"
                 className="text-[10px] text-ink-mid hover:text-ink transition-colors focus:outline-none focus-visible:underline"
               >
                 Close
               </button>
             </div>
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <HelpRow shortcut="⌘K" text="Search workspaces and jump straight into Details or Chat." />
+              <HelpRow shortcut="Esc" text="Clear selection, close menus, dismiss dialogs." />
+              <HelpRow shortcut="Enter" text="Zoom into selected team and select its first child node." />
+              <HelpRow shortcut="Shift+Enter" text="Select the parent of the selected node." />
+              <HelpRow shortcut="⌘]" text="Bring selected node forward in the z-order." />
+              <HelpRow shortcut="⌘[" text="Send selected node backward in the z-order." />
+              <HelpRow shortcut="Z" text="Zoom canvas to fit a team node and all its sub-workspaces." />
               <HelpRow shortcut="Palette" text="Open the template palette to deploy a new workspace." />
               <HelpRow shortcut="Right-click" text="Use node actions for duplicate, export, restart, or delete." />
-              <HelpRow shortcut="Chat" text="If a task is still running, the chat tab resumes that session automatically." />
-              <HelpRow shortcut="Config" text="Use the Config tab for skills, model, secrets, and runtime settings." />
-              <HelpRow shortcut="Dbl-click / Z" text="Zoom canvas to fit a team node and all its sub-workspaces." />
+              <HelpRow shortcut="Dbl-click" text="On a team node: expand and zoom to show all sub-workspaces." />
+              <HelpRow shortcut="Shift+click" text="Multi-select: add or remove a node from the batch selection." />
             </div>
             {/* Link to the full keyboard shortcuts dialog */}
             <button
