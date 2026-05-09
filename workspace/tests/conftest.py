@@ -401,6 +401,35 @@ if "a2a" not in sys.modules:
 # tests now live in the claude-code template repo, where the real SDK
 # IS installed via Dockerfile, so no stub is needed.
 
+
+# ==================== Test isolation fixtures ====================
+
+import pytest
+
+
+@pytest.fixture(scope="function", autouse=True)
+def _clear_platform_auth_cache():
+    """Reset platform_auth._cached_token before each test.
+
+    Fixes issue #160: tests that use monkeypatch.delenv("MOLECULE_WORKSPACE_TOKEN")
+    to simulate "no token in env" fail when platform_auth._cached_token was already
+    set from a prior test's MOLECULE_WORKSPACE_TOKEN value. The cache is populated
+    at module import or first get_token() call and persists for the process lifetime
+    — monkeypatch.delenv removes the env var but not the module-level cache.
+
+    Run at function scope so each test starts with a clean slate regardless of
+    what the previous test set. The import is inside the fixture (not at file
+    top-level) because conftest.py runs during test collection before
+    platform_auth might be available in all test environments. If the module is
+    absent (import error), the fixture is a no-op.
+    """
+    try:
+        import platform_auth as _pa
+        _pa.clear_cache()
+    except ImportError:
+        pass
+    yield  # run the test, then fixture teardown has nothing to do
+
 if "langchain_core" not in sys.modules:
     _make_langchain_mocks()
 

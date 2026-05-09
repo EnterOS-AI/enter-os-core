@@ -132,19 +132,20 @@ func TestLocalResolver_HonoursContextCancellation(t *testing.T) {
 }
 
 func TestLocalResolver_BubblesUpCopyFailure(t *testing.T) {
-	// os.Chmod(dst, 0o555) silently passes when os.Geteuid() == 0
-	// (root bypasses POSIX permission checks).  We cannot reliably
-	// exercise the write-failure branch in a root environment without
-	// patching the syscalls, so skip it honestly.
+	// Source file the copyTree walk would read; make dst unwritable so
+	// the copyFile step fails. Skip when running as root — Linux
+	// filesystem permissions are advisory-only for uid 0, so chmod 0o555
+	// does not prevent writes and the test passes vacuously instead of
+	// exercising the error path (issue #87).
 	if os.Getuid() == 0 {
-		t.Skip("running as root — cannot exercise write-failure branch")
+		t.Skip("skipping: chmod 0o555 is ineffective when running as root")
 	}
-
 	base := t.TempDir()
 	writePlugin(t, base, "demo", map[string]string{
 		"plugin.yaml": "name: demo\n",
 	})
 	dst := t.TempDir()
+	// Make dst read-only so creating files inside it fails.
 	if err := os.Chmod(dst, 0o555); err != nil {
 		t.Fatal(err)
 	}
