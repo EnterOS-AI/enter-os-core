@@ -280,9 +280,16 @@ func TestStartSweeper_RecordsMetricsOnSuccess(t *testing.T) {
 	// vs-metric-record race (see waitForMetricDelta comment).
 	waitForMetricDelta(t, deltaAcked, 3, 2*time.Second)
 	waitForMetricDelta(t, deltaExpired, 5, 2*time.Second)
-	// Error counter MUST stay at zero on the success path. Read after
-	// the success counters have settled — once those are correct,
-	// StartSweeper has fully processed this cycle's result.
+	// Also poll error counter to 0 — with the race detector, a
+	// concurrent sweeper goroutine from a prior test can still be
+	// running and incrementing pendingUploadsSweepErrors after
+	// metricDelta() captures its baseline. Polling to 0 (matching
+	// TestStartSweeper_RecordsMetricsOnError's pattern for the error
+	// path) ensures the error counter has settled before we assert.
+	// Without this, on a slow race-detector host the error counter
+	// from the previous test's sweeper is still in flight when we
+	// read it, producing deltaError=1 instead of 0.
+	waitForMetricDelta(t, deltaError, 0, 2*time.Second)
 	if got := deltaError(); got != 0 {
 		t.Errorf("error counter delta = %d, want 0", got)
 	}
