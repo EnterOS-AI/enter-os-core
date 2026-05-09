@@ -56,7 +56,7 @@ canvas/src/
 - **Framework:** `@xyflow/react` (React Flow) — DOM-based, not SVG/Canvas
 - **Node selection:** `aria-pressed` + border ring (`border-accent/70`) + shadow
 - **Node drag:** React Flow native drag + Arrow keys (10px/step, Shift 50px) — keyboard-accessible (PR #182) ✅
-- **Node resize:** `NodeResizer` component visible on selected card, keyboard-inaccessible
+- **Node resize:** `NodeResizer` component visible on selected card; `Cmd/Ctrl+Arrow` keys resize (↑↓ height, ←→ width, 10px/step, Shift 2px) — keyboard-accessible ✅
 - **Status:** Accessible via `aria-label` on node cards — "Alpha Workspace workspace — online"
 
 ### Edge Wiring ✅
@@ -76,7 +76,8 @@ canvas/src/
 - All shortcuts in `useKeyboardShortcuts.ts` with `inInput` guard ✅
 - Global `?` shortcut opens `KeyboardShortcutsDialog` (PR #175) ✅
 - Dialog: portal-based, aria-modal, focus trap, Escape close ✅
-- Arrow keys move selected node 10px (50px with Shift) — keyboard node drag (this PR) ✅
+- Arrow keys move selected node 10px (50px with Shift) — keyboard node drag (PR #182) ✅
+- `Cmd/Ctrl+Arrow` resize selected node (↑↓ height, ←→ width, 10px, Shift 2px) ✅
 - Hierarchy navigation (Enter/Shift+Enter), z-order (Cmd+]/[), zoom-to-team (Z) ✅
 
 ### Focus Management ✅ (strong)
@@ -112,7 +113,7 @@ canvas/src/
 | MEDIUM | Keyboard shortcut help dialog | useKeyboardShortcuts.ts | ✅ Done (PR #175) |
 | MEDIUM | Keyboard-accessible node drag | WorkspaceNode.tsx, useDragHandlers.ts | ✅ Done (this PR) |
 | LOW | Keyboard-accessible edge anchors | A2AEdge.tsx, WorkspaceNode.tsx | ✅ Done |
-| LOW | Node resize keyboard accessibility | WorkspaceNode.tsx (NodeResizer) | Not started |
+| LOW | Keyboard-accessible node resize | useKeyboardShortcuts.ts, WorkspaceNode.tsx | ✅ Done |
 
 ---
 

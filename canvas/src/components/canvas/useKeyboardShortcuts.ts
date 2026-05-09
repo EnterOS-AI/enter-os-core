@@ -2,6 +2,13 @@
 
 import { useEffect } from "react";
 import { useCanvasStore } from "@/store/canvas";
+import { type NodeChange, type Node } from "@xyflow/react";
+import type { WorkspaceNodeData } from "@/store/canvas";
+
+/** Returns true if the node has any direct child in the node list. */
+function hasChildren(nodeId: string, nodes: Node<WorkspaceNodeData>[]): boolean {
+  return nodes.some((n) => n.data.parentId === nodeId);
+}
 
 /**
  * Canvas-wide keyboard shortcuts. All bound to the document window so
@@ -15,6 +22,8 @@ import { useCanvasStore } from "@/store/canvas";
  *   Cmd/Ctrl+[           — bump selected node backward in z-order
  *   Z                    — zoom-to-team if the selected node has children
  *   Arrow keys           — move selected node 10px (50px with Shift)
+ *   Cmd/Ctrl+Arrow       — resize selected node (↑↓ height, ←→ width)
+ *   Cmd/Ctrl+Shift+Arrow — resize by 2px per press (fine control)
  */
 export function useKeyboardShortcuts() {
   useEffect(() => {
@@ -84,9 +93,14 @@ export function useKeyboardShortcuts() {
 
       // Arrow-key node movement — Figma-style keyboard drag for keyboard users.
       // 10 px per press, 50 px with Shift held. Only fires when a node
-      // is selected and the target isn't a form control.
+      // is selected and the target isn't a form control. Skipped when a
+      // modifier key (Cmd/Ctrl/Alt) is held so those combos can be used
+      // for other shortcuts (e.g. Cmd+Arrow = resize).
       if (
         !inInput &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
         (e.key === "ArrowUp" ||
           e.key === "ArrowDown" ||
           e.key === "ArrowLeft" ||
@@ -107,6 +121,44 @@ export function useKeyboardShortcuts() {
         else if (e.key === "ArrowLeft") dx = -step;
         else dx = step;
         state.moveNode(selectedId, dx, dy);
+      }
+
+      // Cmd/Ctrl+Arrow — keyboard-accessible node resize.
+      // ↑/↓ resizes height, ←/→ resizes width.
+      // 10 px per press (2 px with Shift for fine control).
+      // Uses the same onNodesChange('dimensions') path that NodeResizer uses.
+      if (
+        !inInput &&
+        (e.metaKey || e.ctrlKey) &&
+        (e.key === "ArrowUp" ||
+          e.key === "ArrowDown" ||
+          e.key === "ArrowLeft" ||
+          e.key === "ArrowRight")
+      ) {
+        const state = useCanvasStore.getState();
+        const selectedId = state.selectedNodeId;
+        if (!selectedId) return;
+        if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+        e.preventDefault();
+        const step = e.shiftKey ? 2 : 10;
+        const node = state.nodes.find((n) => n.id === selectedId);
+        if (!node) return;
+        const currentWidth = (node.width ?? 210) as number;
+        const currentHeight = (node.height ?? 110) as number;
+        const minWidth = hasChildren(node.id, state.nodes) ? 360 : 210;
+        const minHeight = hasChildren(node.id, state.nodes) ? 200 : 110;
+        let newWidth = currentWidth;
+        let newHeight = currentHeight;
+        if (e.key === "ArrowUp") newHeight = Math.max(minHeight, currentHeight - step);
+        else if (e.key === "ArrowDown") newHeight = currentHeight + step;
+        else if (e.key === "ArrowLeft") newWidth = Math.max(minWidth, currentWidth - step);
+        else newWidth = currentWidth + step;
+        const change: NodeChange = {
+          type: "dimensions",
+          id: selectedId,
+          dimensions: { width: newWidth, height: newHeight },
+        };
+        state.onNodesChange([change]);
       }
     };
     window.addEventListener("keydown", handler);
