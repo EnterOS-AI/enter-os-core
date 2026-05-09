@@ -72,10 +72,12 @@ canvas/src/
 - **Minimap:** Not present (MiniMap mocked as null in tests)
 - **Status:** Basic keyboard support via viewport shortcuts
 
-### Keyboard Shortcuts ⚠️ PARTIAL
-- Exists in `useKeyboardShortcuts.ts` but no `aria-describedby` on trigger buttons
-- No dedicated keyboard shortcut help dialog
-- **Gap:** Users can't discover shortcuts visually
+### Keyboard Shortcuts ✅ (strong)
+- All shortcuts in `useKeyboardShortcuts.ts` with `inInput` guard ✅
+- Global `?` shortcut opens `KeyboardShortcutsDialog` (PR #175) ✅
+- Dialog: portal-based, aria-modal, focus trap, Escape close ✅
+- Arrow keys move selected node 10px (50px with Shift) — keyboard node drag (this PR) ✅
+- Hierarchy navigation (Enter/Shift+Enter), z-order (Cmd+]/[), zoom-to-team (Z) ✅
 
 ### Focus Management ✅ (strong)
 - Skip link → `#canvas-main` ✅
@@ -83,9 +85,9 @@ canvas/src/
 - Focus trap in modals via Radix ✅
 - Focus ring: `focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950`
 
-### Accessibility Tree ⚠️ PARTIAL
+### Accessibility Tree ✅
 - Canvas is in accessibility tree (React Flow DOM nodes)
-- Node state changes not announced to screen readers (no `aria-live` region)
+- Node state changes announced via `aria-live="polite"` region (PR #172) ✅
 - Context menus announced via `role="menu"` ✅
 
 ### Context Menus ✅ (strong)
@@ -109,7 +111,7 @@ canvas/src/
 |----------|------|-------|--------|
 | ~~HIGH~~ | ~~Screen reader announcements for canvas state changes~~ | ~~Canvas.tsx, canvas-events.ts, canvas.ts~~ | ✅ Done — PR #172 |
 | MEDIUM | Keyboard shortcut help dialog | useKeyboardShortcuts.ts | ✅ Done (PR #175) |
-| MEDIUM | Keyboard-accessible node drag | WorkspaceNode.tsx, useDragHandlers.ts | Not started |
+| MEDIUM | Keyboard-accessible node drag | WorkspaceNode.tsx, useDragHandlers.ts | ✅ Done (this PR) |
 | LOW | Edge anchor keyboard accessibility | A2AEdge.tsx | Not started |
 | LOW | Node resize keyboard accessibility | WorkspaceNode.tsx (NodeResizer) | Not started |
 

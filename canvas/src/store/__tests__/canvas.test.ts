@@ -1181,3 +1181,46 @@ describe("batchNest", () => {
     expect(nestPatches).toHaveLength(1);
   });
 });
+
+// ---------- moveNode ----------
+
+describe("moveNode", () => {
+  beforeEach(() => {
+    const mock = global.fetch as ReturnType<typeof vi.fn>;
+    mock.mockImplementation(() =>
+      Promise.resolve({ ok: true, json: () => Promise.resolve({}) } as Response),
+    );
+    mock.mockClear();
+  });
+
+  it("updates the node's position by the given delta", () => {
+    useCanvasStore.getState().hydrate([
+      makeWS({ id: "n1", name: "Node 1", x: 100, y: 200 }),
+    ]);
+    useCanvasStore.getState().selectNode("n1");
+    useCanvasStore.getState().moveNode("n1", 10, -50);
+    const node = useCanvasStore.getState().nodes.find((n) => n.id === "n1")!;
+    expect(node.position).toEqual({ x: 110, y: 150 });
+  });
+
+  it("is a no-op when the node does not exist", () => {
+    useCanvasStore.getState().hydrate([makeWS({ id: "n1", name: "Node 1", x: 0, y: 0 })]);
+    expect(() => useCanvasStore.getState().moveNode("nonexistent", 10, 10)).not.toThrow();
+  });
+
+  it("calls savePosition with the new absolute coordinates", async () => {
+    useCanvasStore.getState().hydrate([makeWS({ id: "n1", name: "Node 1", x: 100, y: 200 })]);
+    useCanvasStore.getState().selectNode("n1");
+    const mock = global.fetch as ReturnType<typeof vi.fn>;
+    useCanvasStore.getState().moveNode("n1", 10, 20);
+    await vi.waitFor(() => {
+      expect(mock).toHaveBeenCalledWith(
+        expect.stringContaining("/workspaces/n1"),
+        expect.objectContaining({
+          method: "PATCH",
+          body: JSON.stringify({ x: 110, y: 220 }),
+        }),
+      );
+    });
+  });
+});

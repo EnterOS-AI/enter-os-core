@@ -1012,4 +1012,3 @@ describe("handleCanvasEvent – liveAnnouncement", () => {
     expect(state.liveAnnouncement ?? "").toBe("");
   });
 });
-});
