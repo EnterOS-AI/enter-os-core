@@ -342,6 +342,18 @@ func (h *DelegationHandler) executeDelegation(sourceID, targetID, delegationID s
 		}
 	}
 
+	// When proxyA2ARequest returns an error but we have a non-empty response body
+	// with a 2xx status code, the agent completed the work successfully — the error
+	// is a delivery/transport error (e.g., connection reset after response was
+	// received). Treat as success: the response body is valid and the work is done.
+	// This prevents "retry storms" where the canvas sees error + Restart-workspace
+	// suggestion even though the delegation actually completed.
+	if proxyErr != nil && len(respBody) > 0 && status >= 200 && status < 300 {
+		log.Printf("Delegation %s: completed with delivery error (status=%d, respBody=%d bytes, proxyErr=%v) — treating as success",
+			delegationID, status, len(respBody), proxyErr.Error())
+		goto handleSuccess
+	}
+
 	if proxyErr != nil {
 		log.Printf("Delegation %s: failed — %s", delegationID, proxyErr.Error())
 		h.updateDelegationStatus(sourceID, delegationID, "failed", proxyErr.Error())
@@ -360,6 +372,8 @@ func (h *DelegationHandler) executeDelegation(sourceID, targetID, delegationID s
 		pushDelegationResultToInbox(ctx, sourceID, delegationID, "failed", "", proxyErr.Error())
 		return
 	}
+
+handleSuccess:
 
 	// 202 + {queued: true} means the target was busy and the proxy
 	// enqueued the request for the next drain tick — NOT a completion.
