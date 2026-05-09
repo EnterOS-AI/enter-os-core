@@ -55,7 +55,7 @@ canvas/src/
 ### Node Rendering ✅ (with notes)
 - **Framework:** `@xyflow/react` (React Flow) — DOM-based, not SVG/Canvas
 - **Node selection:** `aria-pressed` + border ring (`border-accent/70`) + shadow
-- **Node drag:** React Flow native drag — mouse only, no keyboard alternative yet
+- **Node drag:** React Flow native drag + Arrow keys (10px/step, Shift 50px) — keyboard-accessible (PR #182) ✅
 - **Node resize:** `NodeResizer` component visible on selected card, keyboard-inaccessible
 - **Status:** Accessible via `aria-label` on node cards — "Alpha Workspace workspace — online"
 
@@ -97,11 +97,10 @@ canvas/src/
 - Escape + Tab close menu ✅
 - Auto-focus first item on open ✅
 
-### Drag and Drop ⚠️ PARTIAL
+### Drag and Drop ✅
 - **Mouse drag:** React Flow native
 - **Drop target:** Visual indicator (`bg-emerald-950/40 border-emerald-400/60`) ✅
-- **Keyboard alternative:** None — nodes repositioned only via mouse drag
-- **Status:** Mouse-only. Keyboard users cannot rearrange nodes.
+- **Keyboard alternative:** Arrow keys move selected node 10px per press (50px with Shift) (PR #182) ✅
 
 ---
 
