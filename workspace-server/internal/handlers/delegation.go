@@ -348,7 +348,7 @@ func (h *DelegationHandler) executeDelegation(sourceID, targetID, delegationID s
 	// received). Treat as success: the response body is valid and the work is done.
 	// This prevents "retry storms" where the canvas sees error + Restart-workspace
 	// suggestion even though the delegation actually completed.
-	if proxyErr != nil && len(respBody) > 0 && status >= 200 && status < 300 {
+	if isDeliveryConfirmedSuccess(proxyErr, status, respBody) {
 		log.Printf("Delegation %s: completed with delivery error (status=%d, respBody=%d bytes, proxyErr=%v) — treating as success",
 			delegationID, status, len(respBody), proxyErr.Error())
 		goto handleSuccess
@@ -683,6 +683,34 @@ func isTransientProxyError(err *proxyA2AError) bool {
 		return false
 	}
 	return false
+}
+
+// isDeliveryConfirmedSuccess reports whether the proxy's `(status, body, err)`
+// triple represents a delivery-confirmed success: the proxy hit a transport-
+// layer error AFTER receiving a complete 2xx response with a non-empty body.
+// In that case the agent did the work — the error is on the wire, not in the
+// agent — so the delegation should be marked succeeded rather than failed
+// (preventing the retry-storm + restart-suggest cascade described in #159).
+//
+// Caller invariants:
+//   - proxyErr != nil: a delivery error fired (e.g. connection reset).
+//   - len(respBody) > 0: a response body was received before the error.
+//   - 200 <= status < 300: the partial response carried a 2xx code.
+//
+// All three must hold. nil proxyErr → no decision to make (success path
+// already chosen upstream). Empty body → no work-result to recover. Non-2xx →
+// the agent itself signalled failure or transient state; don't promote it.
+func isDeliveryConfirmedSuccess(proxyErr *proxyA2AError, status int, respBody []byte) bool {
+	if proxyErr == nil {
+		return false
+	}
+	if len(respBody) == 0 {
+		return false
+	}
+	if status < 200 || status >= 300 {
+		return false
+	}
+	return true
 }
 
 // isQueuedProxyResponse reports whether the proxy returned a body shaped like
