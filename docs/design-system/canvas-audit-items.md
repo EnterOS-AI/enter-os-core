@@ -108,7 +108,7 @@ canvas/src/
 | Priority | Item | Files | Status |
 |----------|------|-------|--------|
 | ~~HIGH~~ | ~~Screen reader announcements for canvas state changes~~ | ~~Canvas.tsx, canvas-events.ts, canvas.ts~~ | ✅ Done — PR #172 |
-| MEDIUM | Keyboard shortcut help dialog | useKeyboardShortcuts.ts | Not started |
+| MEDIUM | Keyboard shortcut help dialog | useKeyboardShortcuts.ts | ✅ Done (PR #175) |
 | MEDIUM | Keyboard-accessible node drag | WorkspaceNode.tsx, useDragHandlers.ts | Not started |
 | LOW | Edge anchor keyboard accessibility | A2AEdge.tsx | Not started |
 | LOW | Node resize keyboard accessibility | WorkspaceNode.tsx (NodeResizer) | Not started |
@@ -116,3 +116,4 @@ canvas/src/
 ---
 
 *Verified 2026-05-09 by Core-UIUX against molecule-core/canvas/src/*
+*Updated 2026-05-09: screen reader announcements (PR #172) + keyboard shortcut dialog (PR #175) completed*
