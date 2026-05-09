@@ -331,8 +331,14 @@ func (h *WorkspaceHandler) Delete(c *gin.Context) {
 	// stay in this handler.
 	descendantIDs, stopErrs, err := h.CascadeDelete(ctx, id)
 	if err != nil {
+		// Audit 2026-05-09 (Core-Security): raw `err.Error()` here was
+		// exposed to HTTP clients verbatim, including wrapped lib/pq
+		// driver strings that disclose schema column names + index
+		// hints. Log full error server-side; return a sanitized message
+		// to the client. Operators trace via the log line below using
+		// the workspace id.
 		log.Printf("Delete: CascadeDelete(%s) failed: %v", id, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error processing delete request"})
 		return
 	}
 	allIDs := append([]string{id}, descendantIDs...)
