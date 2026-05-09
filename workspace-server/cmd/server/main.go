@@ -31,7 +31,7 @@ import (
 	// External plugins — each registers EnvMutator(s) that run at workspace
 	// provision time. Loaded via soft-dep gates in main() so self-hosters
 	// without per-agent identity configured keep working.
-	ghidentity "github.com/Molecule-AI/molecule-ai-plugin-gh-identity/pluginloader"
+	ghidentity "go.moleculesai.app/plugin/gh-identity/pluginloader"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/pkg/provisionhook"
 )
