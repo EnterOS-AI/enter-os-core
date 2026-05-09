@@ -1,0 +1,120 @@
+# sop-tier-check — canonical Gitea Actions workflow for §SOP-6 enforcement.
+#
+# Copy this file to `.gitea/workflows/sop-tier-check.yml` in any repo that
+# wants the §SOP-6 PR gate enforced. Pair with branch protection on the
+# protected branch:
+#   required_status_checks: ["sop-tier-check"]
+#   required_approving_reviews: 1
+#   approving_review_teams: ["ceo", "managers", "engineers"]
+#
+# What it does:
+#   1. Reads the PR's `tier:*` label (low | medium | high). Fails if absent
+#      or ambiguous.
+#   2. Reads every approving review on the PR.
+#   3. For each approver, queries Gitea team membership.
+#   4. Marks the check success only if at least one approver is in a team
+#      whose tier-tag covers the PR's tier label, AND the approver is not
+#      the author.
+#
+# Tier → eligible-team mapping (mirror of dev-sop §SOP-6):
+#   tier:low    → engineers, managers, ceo
+#   tier:medium → managers, ceo
+#   tier:high   → ceo
+#
+# Author identity is excluded automatically; Gitea's review system already
+# rejects self-reviews, but this workflow re-checks defensively in case the
+# native rule is bypassed (admin override, branch-protection edit, etc.).
+#
+# Force-merge: Owners-team override remains available out-of-band via the
+# Gitea merge API; force-merge writes `incident.force_merge` to
+# structure_events per §Persistent structured logging gate (Phase 3).
+
+name: sop-tier-check
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
+  pull_request_review:
+    types: [submitted, dismissed, edited]
+
+jobs:
+  tier-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Verify tier label + reviewer team membership
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+          GITEA_HOST: ${{ vars.GITEA_HOST || 'git.moleculesai.app' }}
+          REPO: ${{ gitea.repository }}
+          PR_NUMBER: ${{ gitea.event.pull_request.number }}
+          PR_AUTHOR: ${{ gitea.event.pull_request.user.login }}
+        run: |
+          set -euo pipefail
+          OWNER="${REPO%%/*}"
+          NAME="${REPO##*/}"
+          API="https://${GITEA_HOST}/api/v1"
+          AUTH="Authorization: token ${GITEA_TOKEN}"
+
+          # 1. Read tier label
+          LABELS=$(curl -sS -H "$AUTH" "${API}/repos/${OWNER}/${NAME}/issues/${PR_NUMBER}/labels" | jq -r '.[].name')
+          TIER=""
+          for L in $LABELS; do
+            case "$L" in
+              tier:low|tier:medium|tier:high)
+                if [ -n "$TIER" ]; then
+                  echo "::error::Multiple tier labels: $TIER + $L. Apply exactly one."
+                  exit 1
+                fi
+                TIER="$L"
+              ;;
+            esac
+          done
+          if [ -z "$TIER" ]; then
+            echo "::error::PR has no tier:low|tier:medium|tier:high label. Apply one before merge."
+            exit 1
+          fi
+          echo "tier=$TIER"
+
+          # 2. Tier → eligible teams
+          case "$TIER" in
+            tier:low)    ELIGIBLE="engineers managers ceo" ;;
+            tier:medium) ELIGIBLE="managers ceo" ;;
+            tier:high)   ELIGIBLE="ceo" ;;
+          esac
+          echo "eligible_teams=$ELIGIBLE"
+
+          # 3. Read approving reviewers
+          REVIEWS=$(curl -sS -H "$AUTH" "${API}/repos/${OWNER}/${NAME}/pulls/${PR_NUMBER}/reviews")
+          APPROVERS=$(echo "$REVIEWS" | jq -r '[.[] | select(.state=="APPROVED") | .user.login] | unique | .[]')
+          if [ -z "$APPROVERS" ]; then
+            echo "::error::No approving reviews. Tier $TIER requires approval from {$ELIGIBLE} (non-author)."
+            exit 1
+          fi
+
+          # 4. For each approver: check non-author + team membership
+          OK=""
+          for U in $APPROVERS; do
+            if [ "$U" = "$PR_AUTHOR" ]; then
+              echo "skip self-review by $U"
+              continue
+            fi
+            for T in $ELIGIBLE; do
+              CODE=$(curl -sS -o /dev/null -w '%{http_code}' -H "$AUTH" \
+                "${API}/orgs/${OWNER}/teams/${T}/members/${U}")
+              if [ "$CODE" = "200" ] || [ "$CODE" = "204" ]; then
+                echo "approver $U is in team $T (eligible for $TIER)"
+                OK="yes"
+                break
+              fi
+            done
+            [ -n "$OK" ] && break
+          done
+
+          if [ -z "$OK" ]; then
+            echo "::error::Tier $TIER requires approval from a non-author member of {$ELIGIBLE}. Got approvers: $APPROVERS"
+            exit 1
+          fi
+          echo "::notice::sop-tier-check passed: $TIER, approver in {$ELIGIBLE}"
