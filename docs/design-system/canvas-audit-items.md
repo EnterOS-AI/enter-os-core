@@ -49,6 +49,7 @@ canvas/src/
 
 ### 🟡 MEDIUM: Pre-commit Hook Verification
 **Issue:** Pre-commit hook checks 'use client' on hook-using components but unclear if it actually fails on violations.
+**Action:** Verify the hook is enforcing the rule correctly.
 
 ### ✅ MEDIUM: text-ink-soft WCAG AA contrast (fixed)
 **File:** `canvas/src/app/globals.css` + all canvas components
@@ -57,7 +58,6 @@ below the WCAG 2.1 AA minimum of 4.5:1 for normal text.
 **Impact:** Used in 261 instances across 52 files (captions, group titles, hints).
 **Fix:** Replaced `text-ink-soft` → `text-ink-mid` (7.6:1) across all canvas source.
 PR: `fix/ink-soft-wcag-contrast`.
-**Action:** Verify the hook is enforcing the rule correctly.
 
 ## Verified Findings
 
