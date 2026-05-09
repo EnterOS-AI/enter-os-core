@@ -233,6 +233,9 @@ func (h *TemplatesHandler) ReplaceFiles(c *gin.Context) {
 			"files":     len(body.Files),
 			"source":    "ec2-ssh",
 		})
+		if h.wh != nil {
+			go h.wh.RestartByID(workspaceID)
+		}
 		return
 	}
 
@@ -264,6 +267,9 @@ func (h *TemplatesHandler) ReplaceFiles(c *gin.Context) {
 			"files":     len(body.Files),
 			"source":    "container",
 		})
+		if h.wh != nil {
+			go h.wh.RestartByID(workspaceID)
+		}
 		return
 	}
 
@@ -281,4 +287,7 @@ func (h *TemplatesHandler) ReplaceFiles(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "replaced", "workspace": workspaceID, "files": len(body.Files), "source": "volume"})
+	if h.wh != nil {
+		go h.wh.RestartByID(workspaceID)
+	}
 }
