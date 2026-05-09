@@ -452,3 +452,43 @@ func TestReplaceFiles_PathTraversal(t *testing.T) {
 		t.Errorf("unmet sqlmock expectations: %v", err)
 	}
 }
+
+// TestReplaceFiles_OfflineDocker_Returns503 ensures that when the workspace
+// container is offline AND the ephemeral Docker write fails (docker unavailable),
+// ReplaceFiles returns 503 instead of silently falling back to the template
+// directory. A template-dir write would be invisible after restart because
+// the restart handler reads from the Docker volume, not the template dir (#151).
+func TestReplaceFiles_OfflineDocker_Returns503(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	// nil docker → TemplatesHandler.docker == nil → findContainer returns "" (offline)
+	// → writeViaEphemeral returns error (docker not available) → handler should
+	// return 503, NOT fall back to the host-side template dir.
+	handler := NewTemplatesHandler(t.TempDir(), nil, nil)
+
+	mock.ExpectQuery(`SELECT name, COALESCE\(instance_id, ''\), COALESCE\(runtime, ''\) FROM workspaces WHERE id =`).
+		WithArgs("ws-offline").
+		WillReturnRows(sqlmock.NewRows([]string{"name", "instance_id", "runtime"}).AddRow("Offline Agent", "", ""))
+
+	body := `{"files": {"initial-prompt.md": "updated prompt"}}`
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-offline"}}
+	c.Request = httptest.NewRequest("PUT", "/workspaces/ws-offline/files", bytes.NewBufferString(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.ReplaceFiles(c)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if !strings.Contains(w.Body.String(), "offline") {
+		t.Errorf("response should mention 'offline': %s", w.Body.String())
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}

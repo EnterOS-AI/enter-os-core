@@ -267,22 +267,16 @@ func (h *TemplatesHandler) ReplaceFiles(c *gin.Context) {
 		return
 	}
 
-	// Container offline — try ephemeral container to write to volume
+	// Container offline — write to the config volume via ephemeral container.
+	// Do NOT fall back to the host-side template dir: the restart handler
+	// reads from the volume, not the template dir, so a template-dir write
+	// would silently succeed (200) while the file change is invisible to
+	// restarted containers (#151). Surface the error so the caller retries
+	// when Docker is available instead of believing the change persisted.
 	volName := provisioner.ConfigVolumeName(workspaceID)
 	if err := h.writeViaEphemeral(ctx, volName, body.Files); err != nil {
-		// Last resort: write to host-side template dir
-		destDir := h.resolveTemplateDir(wsName)
-		if destDir == "" {
-			log.Printf("ReplaceFiles: writeViaEphemeral failed and no template dir for %s: %v", workspaceID, err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to write files to workspace"})
-			return
-		}
-		os.MkdirAll(destDir, 0o755)
-		if err := writeFiles(destDir, body.Files); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"status": "replaced", "workspace": workspaceID, "files": len(body.Files), "source": "template"})
+		log.Printf("ReplaceFiles: writeViaEphemeral failed for %s (workspace %s offline): %v", wsName, workspaceID, err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "workspace offline — retry after it starts"})
 		return
 	}
 
