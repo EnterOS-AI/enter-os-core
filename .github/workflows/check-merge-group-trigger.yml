@@ -14,6 +14,13 @@ name: Check merge_group trigger on required workflows
 # Reasoning for staging-only: main has its own CI gating model (PR review),
 # but staging is what the merge queue runs on, so it's the trigger that
 # matters.
+#
+# Gitea stub: Gitea has no merge queue feature and no `merge_group:`
+# event type. The linter would find no `merge_group:` triggers to verify
+# (they don't exist on Gitea), so the lint is vacuously satisfied.
+# Converting to a no-op stub keeps the workflow+job name stable for any
+# commit-status context consumers while eliminating the `gh api` call
+# that fails against Gitea's REST surface (#75 / PR-D).
 
 on:
   pull_request:
@@ -25,9 +32,6 @@ on:
     paths:
       - '.github/workflows/**.yml'
       - '.github/workflows/**.yaml'
-  # Self-listen on merge_group so the linter passes its own queue run.
-  merge_group:
-    types: [checks_requested]
 
 jobs:
   check:
@@ -36,88 +40,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Verify merge_group trigger on required-check workflows
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-        shell: bash
+      - name: Gitea no-op (merge queue not applicable)
         run: |
-          set -euo pipefail
-
-          # Branch we care about — the one merge queue runs on.
-          BRANCH=staging
-
-          # Pull the list of required status check contexts. If the branch
-          # has no protection or no required checks, exit clean — nothing
-          # to lint.
-          REQUIRED=$(gh api "repos/${REPO}/branches/${BRANCH}/protection/required_status_checks" \
-            --jq '.contexts[]' 2>/dev/null || true)
-          if [ -z "$REQUIRED" ]; then
-            echo "No required status checks on ${BRANCH} — nothing to verify."
-            exit 0
-          fi
-
-          echo "Required checks on ${BRANCH}:"
-          echo "${REQUIRED}" | sed 's/^/  - /'
-          echo
-
-          # Build a map: workflow file -> set of job names declared in it.
-          # We use yq if available, otherwise grep the `name:` lines under
-          # `jobs:`. Stick with grep for portability — runner image always
-          # has it; yq isn't in the default image as of 2026-04.
-          declare -A workflow_jobs
-          shopt -s nullglob
-          for wf in .github/workflows/*.yml .github/workflows/*.yaml; do
-            [ -f "$wf" ] || continue
-            # Extract the workflow name (the `name:` at file root).
-            wf_name=$(awk '/^name:[[:space:]]/ {sub(/^name:[[:space:]]+/,""); gsub(/^"|"$/,""); print; exit}' "$wf")
-            # Extract job step names from the `jobs:` block. A job step is:
-            #   - id under `jobs:` (key with 2-space indent followed by colon)
-            #   - the `name:` field inside that job (4-space indent)
-            # We collect both because required_status_checks contexts can
-            # match either, depending on how the workflow was authored.
-            jobs_block=$(awk '/^jobs:/{flag=1; next} flag' "$wf")
-            job_names=$(echo "$jobs_block" | awk '/^[[:space:]]{4}name:[[:space:]]/ {sub(/^[[:space:]]+name:[[:space:]]+/,""); gsub(/^["'"'"']|["'"'"']$/,""); print}')
-            workflow_jobs["$wf"]="${wf_name}"$'\n'"${job_names}"
-          done
-
-          # For each required check, find the workflow that produces it.
-          # Then verify that workflow lists merge_group as a trigger.
-          FAILED=0
-          while IFS= read -r check; do
-            [ -z "$check" ] && continue
-            owning_wf=""
-            for wf in "${!workflow_jobs[@]}"; do
-              if echo "${workflow_jobs[$wf]}" | grep -Fxq "$check"; then
-                owning_wf="$wf"
-                break
-              fi
-            done
-
-            if [ -z "$owning_wf" ]; then
-              echo "::warning::Required check '${check}' has no matching workflow in this repo. Skipping (may be from an external app)."
-              continue
-            fi
-
-            # Does the workflow's trigger list include merge_group?
-            # Match either bare `merge_group:` line or merge_group with
-            # subsequent indented config (types: [checks_requested]).
-            if grep -qE '^[[:space:]]*merge_group:' "$owning_wf"; then
-              echo "OK: '${check}' (in $owning_wf) — has merge_group trigger"
-            else
-              echo "::error file=${owning_wf}::Required check '${check}' is produced by ${owning_wf}, but the workflow does not declare a 'merge_group:' trigger. With merge queue enabled on ${BRANCH}, this will deadlock the queue (every PR sits AWAITING_CHECKS forever). Add this to the workflow's 'on:' block:"
-              echo "::error file=${owning_wf}::  merge_group:"
-              echo "::error file=${owning_wf}::    types: [checks_requested]"
-              FAILED=1
-            fi
-          done <<< "$REQUIRED"
-
-          if [ "$FAILED" -ne 0 ]; then
-            echo
-            echo "::error::Block. See errors above. Reference: $(grep -l 'reference_merge_queue' /dev/null 2>/dev/null || echo 'memory: reference_merge_queue_enablement.md')."
-            exit 1
-          fi
-
-          echo
-          echo "All required workflows on ${BRANCH} declare merge_group triggers."
+          echo "Gitea Actions — merge queue not supported; no-op."
+          echo "On GitHub this workflow lints that required-check workflows declare"
+          echo "merge_group: triggers to prevent queue deadlock. On Gitea that"
+          echo "constraint is inapplicable — all workflows pass vacuously."
