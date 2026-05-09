@@ -247,7 +247,7 @@ export function OrgImportPreflightModal({
           <h2 id="org-preflight-title" className="text-sm font-semibold text-ink">
             Deploy {orgName}
           </h2>
-          <p className="mt-0.5 text-[11px] text-ink-soft">
+          <p className="mt-0.5 text-[11px] text-ink-mid">
             {workspaceCount} workspace{workspaceCount === 1 ? "" : "s"}.
             Review the credentials needed before import.
           </p>
@@ -400,7 +400,7 @@ function StrictEnvRow({
     <li className="flex items-center gap-2 rounded bg-surface-sunken/70 border border-line px-2 py-1.5">
       <code
         className={`text-[11px] font-mono flex-1 ${
-          configured ? "text-ink-soft line-through" : "text-ink"
+          configured ? "text-ink-mid line-through" : "text-ink"
         }`}
       >
         {envKey}
@@ -492,7 +492,7 @@ function AnyOfEnvGroup({
             >
               <code
                 className={`text-[11px] font-mono flex-1 ${
-                  isConfigured ? "text-ink-soft line-through" : "text-ink"
+                  isConfigured ? "text-ink-mid line-through" : "text-ink"
                 }`}
               >
                 {m}

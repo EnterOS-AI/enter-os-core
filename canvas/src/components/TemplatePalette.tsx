@@ -236,7 +236,7 @@ export function OrgTemplatesSection() {
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
           aria-controls="org-templates-body"
-          className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-ink-soft hover:text-ink-mid font-semibold transition-colors"
+          className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-ink-mid hover:text-ink-mid font-semibold transition-colors"
         >
           <span
             aria-hidden="true"
@@ -246,7 +246,7 @@ export function OrgTemplatesSection() {
           </span>
           Org Templates
           {orgs.length > 0 && (
-            <span className="text-ink-soft normal-case tracking-normal">
+            <span className="text-ink-mid normal-case tracking-normal">
               ({orgs.length})
             </span>
           )}
@@ -255,7 +255,7 @@ export function OrgTemplatesSection() {
           type="button"
           onClick={loadOrgs}
           aria-label="Refresh org templates"
-          className="text-[10px] text-ink-soft hover:text-ink-mid"
+          className="text-[10px] text-ink-mid hover:text-ink-mid"
         >
           ↻
         </button>
@@ -264,14 +264,14 @@ export function OrgTemplatesSection() {
       {expanded && (
         <div id="org-templates-body" className="space-y-2">
       {loading && (
-        <div role="status" aria-live="polite" className="flex items-center gap-1.5 text-[10px] text-ink-soft">
+        <div role="status" aria-live="polite" className="flex items-center gap-1.5 text-[10px] text-ink-mid">
           <Spinner size="sm" />
           Loading…
         </div>
       )}
 
       {!loading && orgs.length === 0 && (
-        <div className="text-[10px] text-ink-soft">
+        <div className="text-[10px] text-ink-mid">
           No org templates in <code>org-templates/</code>
         </div>
       )}
@@ -298,7 +298,7 @@ export function OrgTemplatesSection() {
               </span>
             </div>
             {o.description && (
-              <p className="text-[10px] text-ink-soft mb-2.5 line-clamp-2 leading-relaxed">
+              <p className="text-[10px] text-ink-mid mb-2.5 line-clamp-2 leading-relaxed">
                 {o.description}
               </p>
             )}
@@ -499,7 +499,7 @@ export function TemplatePalette() {
         <div className="fixed top-0 left-0 h-full w-[280px] bg-surface-sunken/95 backdrop-blur-md border-r border-line/60 z-30 flex flex-col shadow-2xl shadow-black/40">
           <div className="px-4 pt-14 pb-3 border-b border-line/60">
             <h2 className="text-sm font-semibold text-ink">Templates</h2>
-            <p className="text-[10px] text-ink-soft mt-0.5">Click to deploy a workspace</p>
+            <p className="text-[10px] text-ink-mid mt-0.5">Click to deploy a workspace</p>
           </div>
 
           <div className="flex-1 overflow-y-auto p-3 space-y-2">
@@ -509,14 +509,14 @@ export function TemplatePalette() {
             <OrgTemplatesSection />
 
             {loading && (
-              <div role="status" aria-live="polite" className="flex items-center justify-center gap-2 text-xs text-ink-soft text-center py-8">
+              <div role="status" aria-live="polite" className="flex items-center justify-center gap-2 text-xs text-ink-mid text-center py-8">
                 <Spinner />
                 Loading…
               </div>
             )}
 
             {!loading && templates.length === 0 && (
-              <div role="status" aria-live="polite" className="text-xs text-ink-soft text-center py-8">
+              <div role="status" aria-live="polite" className="text-xs text-ink-mid text-center py-8">
                 No templates found in<br />workspace-configs-templates/
               </div>
             )}
@@ -549,7 +549,7 @@ export function TemplatePalette() {
                   </div>
 
                   {t.description && (
-                    <p className="text-[10px] text-ink-soft mb-2 line-clamp-2 leading-relaxed">
+                    <p className="text-[10px] text-ink-mid mb-2 line-clamp-2 leading-relaxed">
                       {t.description}
                     </p>
                   )}
@@ -562,7 +562,7 @@ export function TemplatePalette() {
                         </span>
                       ))}
                       {t.skills.length > 3 && (
-                        <span className="text-[8px] text-ink-soft">+{t.skills.length - 3}</span>
+                        <span className="text-[8px] text-ink-mid">+{t.skills.length - 3}</span>
                       )}
                     </div>
                   )}
@@ -580,7 +580,7 @@ export function TemplatePalette() {
             <button
               type="button"
               onClick={loadTemplates}
-              className="text-[10px] text-ink-soft hover:text-ink-mid transition-colors block"
+              className="text-[10px] text-ink-mid hover:text-ink-mid transition-colors block"
             >
               Refresh templates
             </button>

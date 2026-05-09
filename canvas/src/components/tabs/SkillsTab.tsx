@@ -320,7 +320,7 @@ export function SkillsTab({ workspaceId, data }: Props) {
           aria-label="Plugins (none installed)"
         >
           <div className="flex items-center gap-2">
-            <span className="text-[10px] uppercase tracking-[0.2em] text-ink-soft">Plugins</span>
+            <span className="text-[10px] uppercase tracking-[0.2em] text-ink-mid">Plugins</span>
             <span className="text-[11px] text-ink-mid">0 installed</span>
           </div>
           <button
@@ -342,7 +342,7 @@ export function SkillsTab({ workspaceId, data }: Props) {
       <div id="plugins-section" className="rounded-xl border border-line bg-surface-sunken/70 p-3">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <div className="text-[10px] uppercase tracking-[0.22em] text-ink-soft">Plugins</div>
+            <div className="text-[10px] uppercase tracking-[0.22em] text-ink-mid">Plugins</div>
             <h3 className="mt-1 text-sm font-semibold text-ink">
               {installed.length} installed
             </h3>
@@ -379,21 +379,21 @@ export function SkillsTab({ workspaceId, data }: Props) {
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-[11px] font-medium text-ink">{p.name}</span>
-                      {p.version && <span className="text-[10px] text-ink-soft">v{p.version}</span>}
+                      {p.version && <span className="text-[10px] text-ink-mid">v{p.version}</span>}
                       {inert && (
                         <span className="rounded-full border border-amber-700/50 bg-amber-950/30 px-1.5 py-0.5 text-[10px] text-warm">
                           inert on this runtime
                         </span>
                       )}
                     </div>
-                    {p.description && <div className="text-[10px] text-ink-soft truncate">{p.description}</div>}
+                    {p.description && <div className="text-[10px] text-ink-mid truncate">{p.description}</div>}
                     {p.skills && p.skills.length > 0 && (
                       <div className="mt-1 flex flex-wrap gap-1">
                         {p.skills.slice(0, 4).map((s) => (
                           <span key={s} className="rounded-full bg-surface-card/60 px-1.5 py-0.5 text-[10px] text-ink-mid">{s}</span>
                         ))}
                         {p.skills.length > 4 && (
-                          <span className="text-[10px] text-ink-soft">+{p.skills.length - 4}</span>
+                          <span className="text-[10px] text-ink-mid">+{p.skills.length - 4}</span>
                         )}
                       </div>
                     )}
@@ -417,7 +417,7 @@ export function SkillsTab({ workspaceId, data }: Props) {
             {/* Install from any source (github://, clawhub://, …) */}
             <div className="mb-3 rounded-lg border border-line/60 bg-surface/40 p-2.5">
               <div className="flex items-center justify-between gap-2 mb-1.5">
-                <div className="text-[10px] uppercase tracking-[0.2em] text-ink-soft">
+                <div className="text-[10px] uppercase tracking-[0.2em] text-ink-mid">
                   Install from source
                 </div>
                 {sourceSchemes.length > 0 && (
@@ -425,7 +425,7 @@ export function SkillsTab({ workspaceId, data }: Props) {
                     {sourceSchemes.map((s) => (
                       <span
                         key={s}
-                        className="rounded-full border border-line/50 bg-surface-sunken/50 px-1.5 py-0.5 text-[10px] text-ink-soft"
+                        className="rounded-full border border-line/50 bg-surface-sunken/50 px-1.5 py-0.5 text-[10px] text-ink-mid"
                       >
                         {s}://
                       </span>
@@ -444,7 +444,7 @@ export function SkillsTab({ workspaceId, data }: Props) {
                   }}
                   placeholder="e.g. github://owner/repo#v1.0"
                   spellCheck={false}
-                  className="flex-1 rounded border border-line bg-surface px-2 py-1 text-[10px] text-ink placeholder:text-ink-soft focus:outline-none focus:border-violet-600 focus-visible:ring-2 focus-visible:ring-violet-600/50"
+                  className="flex-1 rounded border border-line bg-surface px-2 py-1 text-[10px] text-ink placeholder:text-ink-mid focus:outline-none focus:border-violet-600 focus-visible:ring-2 focus-visible:ring-violet-600/50"
                 />
                 <button
                   onClick={handleInstallCustom}
@@ -454,12 +454,12 @@ export function SkillsTab({ workspaceId, data }: Props) {
                   {installing === customSource.trim() ? "Installing..." : "Install"}
                 </button>
               </div>
-              <div className="mt-1 text-[10px] text-ink-soft">
+              <div className="mt-1 text-[10px] text-ink-mid">
                 Local registry plugins below; paste any scheme URL above for GitHub or other sources.
               </div>
             </div>
             <div className="flex items-center justify-between mb-2">
-              <div className="text-[10px] uppercase tracking-[0.2em] text-ink-soft">Available plugins</div>
+              <div className="text-[10px] uppercase tracking-[0.2em] text-ink-mid">Available plugins</div>
               {/* Retry visible whenever registry is empty — including
                   the loading state — so a stuck fetch (Fast Refresh
                   stranded promise, slow server, browser quirk) has a
@@ -486,21 +486,21 @@ export function SkillsTab({ workspaceId, data }: Props) {
               )}
             </div>
             {registryLoading && registry.length === 0 ? (
-              <div className="text-[10px] text-ink-soft">Loading registry…</div>
+              <div className="text-[10px] text-ink-mid">Loading registry…</div>
             ) : registryError ? (
               <div className="rounded-lg border border-red-800/40 bg-red-950/20 px-2 py-1.5">
                 <div className="text-[10px] text-bad font-semibold mb-0.5">
                   Couldn't load the plugin registry
                 </div>
                 <div className="text-[10px] text-bad/80">{registryError}</div>
-                <div className="mt-1 text-[10px] text-ink-soft">
+                <div className="mt-1 text-[10px] text-ink-mid">
                   Check the platform server is reachable at /plugins. The Retry button is in the header above.
                 </div>
               </div>
             ) : registry.length === 0 ? (
               <div className="rounded-lg border border-line/40 bg-surface/40 px-2 py-1.5">
                 <div className="text-[10px] text-ink-mid mb-0.5">Registry returned 0 plugins.</div>
-                <div className="text-[10px] text-ink-soft">
+                <div className="text-[10px] text-ink-mid">
                   This usually means the platform's plugins/ directory is empty.
                   Run scripts/clone-manifest.sh to populate it from the standalone repos.
                 </div>
@@ -514,13 +514,13 @@ export function SkillsTab({ workspaceId, data }: Props) {
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           <span className="text-[11px] text-ink-mid">{p.name}</span>
-                          {p.version && <span className="text-[10px] text-ink-soft">v{p.version}</span>}
+                          {p.version && <span className="text-[10px] text-ink-mid">v{p.version}</span>}
                         </div>
-                        {p.description && <div className="text-[10px] text-ink-soft truncate">{p.description}</div>}
+                        {p.description && <div className="text-[10px] text-ink-mid truncate">{p.description}</div>}
                         {p.tags && p.tags.length > 0 && (
                           <div className="mt-1 flex flex-wrap gap-1">
                             {p.tags.map((t) => (
-                              <span key={t} className="rounded-full border border-line/40 px-1.5 py-0.5 text-[10px] text-ink-soft">{t}</span>
+                              <span key={t} className="rounded-full border border-line/40 px-1.5 py-0.5 text-[10px] text-ink-mid">{t}</span>
                             ))}
                           </div>
                         )}
@@ -556,7 +556,7 @@ export function SkillsTab({ workspaceId, data }: Props) {
       <div className="rounded-xl border border-line bg-surface-sunken/70 p-3">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <div className="text-[10px] uppercase tracking-[0.22em] text-ink-soft">Workspace skills</div>
+            <div className="text-[10px] uppercase tracking-[0.22em] text-ink-mid">Workspace skills</div>
             <h3 className="mt-1 text-sm font-semibold text-ink">Installed skills</h3>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -564,7 +564,7 @@ export function SkillsTab({ workspaceId, data }: Props) {
             <MetaPill label="Runtime" value={capability.runtime || "unknown"} />
           </div>
         </div>
-        <p className="mt-2 text-[11px] leading-5 text-ink-soft">
+        <p className="mt-2 text-[11px] leading-5 text-ink-mid">
           Live skill directory from the Agent Card — updates when the workspace hot-reloads skills.
         </p>
         <div className="mt-3 flex flex-wrap gap-2">
@@ -593,7 +593,7 @@ export function SkillsTab({ workspaceId, data }: Props) {
       {skills.length === 0 ? (
         <div className="rounded-xl border border-dashed border-line bg-surface-sunken/40 p-6 text-center">
           <div className="text-sm text-ink">No skills loaded</div>
-          <p className="mt-2 text-[11px] leading-5 text-ink-soft">
+          <p className="mt-2 text-[11px] leading-5 text-ink-mid">
             Add skills from the Config tab, install a plugin above, or let the runtime hot-load them.
           </p>
         </div>
@@ -604,7 +604,7 @@ export function SkillsTab({ workspaceId, data }: Props) {
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-xs font-semibold text-ink">{skill.name}</div>
-                  <div className="mt-0.5 text-[10px] font-mono text-ink-soft">{skill.id}</div>
+                  <div className="mt-0.5 text-[10px] font-mono text-ink-mid">{skill.id}</div>
                 </div>
                 {skill.tags.length > 0 && (
                   <div className="flex flex-wrap justify-end gap-1.5">
@@ -626,7 +626,7 @@ export function SkillsTab({ workspaceId, data }: Props) {
 
               {skill.examples.length > 0 && (
                 <div className="mt-2">
-                  <div className="text-[9px] uppercase tracking-[0.2em] text-ink-soft">Examples</div>
+                  <div className="text-[9px] uppercase tracking-[0.2em] text-ink-mid">Examples</div>
                   <div className="mt-1 space-y-1">
                     {skill.examples.slice(0, 2).map((example, index) => (
                       <div
@@ -666,7 +666,7 @@ function extractSkills(agentCard: Record<string, unknown> | null): SkillEntry[] 
 function MetaPill({ label, value }: { label: string; value: string }) {
   return (
     <span className="inline-flex items-center gap-1 rounded-full border border-line/60 bg-surface/60 px-2 py-1 text-[9px] text-ink-mid">
-      <span className="uppercase tracking-[0.18em] text-[8px] text-ink-soft">{label}</span>
+      <span className="uppercase tracking-[0.18em] text-[8px] text-ink-mid">{label}</span>
       <span className="font-medium">{value}</span>
     </span>
   );

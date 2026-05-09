@@ -389,7 +389,7 @@ export function AgentCommsPanel({ workspaceId }: { workspaceId: string }) {
   }, [messages]);
 
   if (loading) {
-    return <div className="text-xs text-ink-soft text-center py-8">Loading agent communications...</div>;
+    return <div className="text-xs text-ink-mid text-center py-8">Loading agent communications...</div>;
   }
 
   if (loadError !== null && messages.length === 0) {
@@ -415,10 +415,10 @@ export function AgentCommsPanel({ workspaceId }: { workspaceId: string }) {
 
   if (messages.length === 0) {
     return (
-      <div className="text-xs text-ink-soft text-center py-8">
+      <div className="text-xs text-ink-mid text-center py-8">
         No agent-to-agent communications yet.
         <br />
-        <span className="text-ink-soft">Delegations and peer messages will appear here.</span>
+        <span className="text-ink-mid">Delegations and peer messages will appear here.</span>
       </div>
     );
   }
@@ -613,10 +613,10 @@ function PeerTabButton({
       className={`shrink-0 px-3 py-1.5 text-[10px] font-medium transition-colors whitespace-nowrap ${
         active
           ? "border-b-2 border-cyan-500 text-cyan-200"
-          : "border-b-2 border-transparent text-ink-soft hover:text-ink-mid"
+          : "border-b-2 border-transparent text-ink-mid hover:text-ink-mid"
       }`}
     >
-      {label} <span className="text-[9px] text-ink-soft">({count})</span>
+      {label} <span className="text-[9px] text-ink-mid">({count})</span>
     </button>
   );
 }
@@ -669,7 +669,7 @@ function WaitingBubbles({ visible }: { visible: CommMessage[] }) {
             role="status"
             aria-label={`Waiting for reply from ${m.peerName}`}
           >
-            <div className="text-[9px] text-ink-soft mb-1">→ To {m.peerName}</div>
+            <div className="text-[9px] text-ink-mid mb-1">→ To {m.peerName}</div>
             <span className="flex items-center gap-2 text-ink-mid">
               <span className="flex gap-0.5" aria-hidden="true">
                 <span
@@ -708,7 +708,7 @@ function NormalMessage({ msg }: { msg: CommMessage }) {
             : "bg-surface-card/80 text-ink border border-line/30"
         }`}
       >
-        <div className="text-[9px] text-ink-soft mb-1">
+        <div className="text-[9px] text-ink-mid mb-1">
           {msg.flow === "out" ? `→ To ${msg.peerName}` : `← From ${msg.peerName}`}
         </div>
         {msg.text ? (
@@ -731,7 +731,7 @@ function NormalMessage({ msg }: { msg: CommMessage }) {
             {msg.responseText}
           </MarkdownBody>
         )}
-        <div className="text-[9px] text-ink-soft mt-1">
+        <div className="text-[9px] text-ink-mid mt-1">
           {new Date(msg.timestamp).toLocaleTimeString()}
         </div>
       </div>
@@ -804,7 +804,7 @@ function ErrorMessage({ msg }: { msg: CommMessage }) {
         </div>
 
         {msg.text && (
-          <div className="text-[10px] text-ink-soft mb-1.5">
+          <div className="text-[10px] text-ink-mid mb-1.5">
             <span className="uppercase tracking-wide">Task</span>
             <MarkdownBody className="text-ink-mid">{msg.text}</MarkdownBody>
           </div>
@@ -841,7 +841,7 @@ function ErrorMessage({ msg }: { msg: CommMessage }) {
           </div>
         )}
 
-        <div className="text-[9px] text-ink-soft mt-1.5">
+        <div className="text-[9px] text-ink-mid mt-1.5">
           {new Date(msg.timestamp).toLocaleTimeString()}
         </div>
       </div>

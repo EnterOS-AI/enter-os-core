@@ -209,7 +209,7 @@ function TreeItem({
           onContextMenu={(e) => openContextMenu(e, node)}
           {...dragProps}
         >
-          <span className="text-[9px] text-ink-soft w-3">{isLoading ? "…" : expanded ? "▼" : "▶"}</span>
+          <span className="text-[9px] text-ink-mid w-3">{isLoading ? "…" : expanded ? "▼" : "▶"}</span>
           <span className="text-[10px]">📁</span>
           <span className="text-[10px] text-ink-mid flex-1">{node.name}</span>
           <button

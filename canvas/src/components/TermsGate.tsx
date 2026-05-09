@@ -124,7 +124,7 @@ export function TermsGate({ children }: { children: React.ReactNode }) {
                 </a>
                 . Click agree to continue.
               </p>
-              <p className="mt-3 text-xs text-ink-soft">
+              <p className="mt-3 text-xs text-ink-mid">
                 By agreeing you acknowledge that workspace data is stored in AWS us-east-2 (Ohio, United States).
               </p>
             </div>

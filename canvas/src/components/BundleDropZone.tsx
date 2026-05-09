@@ -125,7 +125,7 @@ export function BundleDropZone() {
           <div className="bg-surface-sunken/95 border border-accent/50 rounded-2xl px-8 py-6 shadow-2xl text-center">
             <div className="text-3xl mb-2" aria-hidden="true">📦</div>
             <div className="text-sm font-semibold text-ink">Drop Bundle to Import</div>
-            <div className="text-xs text-ink-soft mt-1">.bundle.json files only</div>
+            <div className="text-xs text-ink-mid mt-1">.bundle.json files only</div>
           </div>
         </div>
       )}

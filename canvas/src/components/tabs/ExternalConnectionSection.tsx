@@ -77,7 +77,7 @@ export function ExternalConnectionSection({ workspaceId }: Props) {
   return (
     <div className="mx-3 mt-3 p-3 bg-surface-sunken/50 border border-line rounded">
       <h3 className="text-xs text-ink-mid font-medium mb-1">External Connection</h3>
-      <p className="text-[10px] text-ink-soft mb-2">
+      <p className="text-[10px] text-ink-mid mb-2">
         This workspace runs an external agent. Use these controls to
         re-show the setup snippets or rotate the workspace token.
       </p>

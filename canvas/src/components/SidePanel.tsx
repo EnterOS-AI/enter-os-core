@@ -165,12 +165,12 @@ export function SidePanel() {
             </h2>
             <div className="flex items-center gap-2 mt-0.5">
               {node.data.role && (
-                <span className="text-[10px] text-ink-soft truncate">
+                <span className="text-[10px] text-ink-mid truncate">
                   {node.data.role}
                 </span>
               )}
               <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-mono ${
-                isOnline ? "text-good bg-emerald-950/30" : "text-ink-soft bg-surface-card/50"
+                isOnline ? "text-good bg-emerald-950/30" : "text-ink-mid bg-surface-card/50"
               }`}>
                 T{node.data.tier}
               </span>
@@ -181,7 +181,7 @@ export function SidePanel() {
           type="button"
           onClick={() => selectNode(null)}
           aria-label="Close workspace panel"
-          className="w-7 h-7 flex items-center justify-center rounded-lg text-ink-soft hover:text-ink hover:bg-surface-card/60 transition-colors"
+          className="w-7 h-7 flex items-center justify-center rounded-lg text-ink-mid hover:text-ink hover:bg-surface-card/60 transition-colors"
         >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
             <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -296,7 +296,7 @@ export function SidePanel() {
 
       {/* Footer — workspace ID */}
       <div className="px-5 py-2 border-t border-line/40 bg-surface-sunken/20">
-        <span className="text-[9px] font-mono text-ink-soft select-all">
+        <span className="text-[9px] font-mono text-ink-mid select-all">
           {selectedNodeId}
         </span>
       </div>

@@ -203,7 +203,7 @@ function PlatformOwnedFilesTab({ workspaceId }: { workspaceId: string }) {
   };
 
   if (loading) {
-    return <div className="p-4 text-xs text-ink-soft">Loading files...</div>;
+    return <div className="p-4 text-xs text-ink-mid">Loading files...</div>;
   }
 
   return (
@@ -304,7 +304,7 @@ function PlatformOwnedFilesTab({ workspaceId }: { workspaceId: string }) {
           )}
 
           {files.length === 0 ? (
-            <div className="px-3 py-4 text-[10px] text-ink-soft text-center">
+            <div className="px-3 py-4 text-[10px] text-ink-mid text-center">
               {rootDragHover
                 ? "Drop to upload to root"
                 : root === "/configs"

@@ -965,7 +965,7 @@ function MyChatPanel({ workspaceId, data }: Props) {
       {/* Messages */}
       <div ref={containerRef} className="flex-1 overflow-y-auto p-3 space-y-3">
         {loading && (
-          <div className="text-xs text-ink-soft text-center py-4">Loading chat history...</div>
+          <div className="text-xs text-ink-mid text-center py-4">Loading chat history...</div>
         )}
         {!loading && loadError !== null && messages.length === 0 && (
           <div
@@ -984,7 +984,7 @@ function MyChatPanel({ workspaceId, data }: Props) {
           </div>
         )}
         {!loading && loadError === null && messages.length === 0 && (
-          <div className="text-xs text-ink-soft text-center py-8">
+          <div className="text-xs text-ink-mid text-center py-8">
             No messages yet. Send a message to start chatting with this agent.
           </div>
         )}
@@ -1002,7 +1002,7 @@ function MyChatPanel({ workspaceId, data }: Props) {
             scroll resting against the top of the conversation IS the
             signal. */}
         {hasMore && messages.length > 0 && (
-          <div ref={topRef} className="text-xs text-ink-soft text-center py-1">
+          <div ref={topRef} className="text-xs text-ink-mid text-center py-1">
             {loadingOlder ? "Loading older messages…" : " "}
           </div>
         )}
@@ -1153,7 +1153,7 @@ function MyChatPanel({ workspaceId, data }: Props) {
                 {thinkingElapsed}s
               </div>
               {activityLog.length > 0 && (
-                <div className="mt-1.5 text-[9px] text-ink-soft space-y-0.5">
+                <div className="mt-1.5 text-[9px] text-ink-mid space-y-0.5">
                   <div className="text-ink-mid">Processing with {runtimeDisplayName(data.runtime)}...</div>
                   {activityLog.map((line, i) => (
                     <div key={line + i} className="pl-2 border-l border-line">◇ {line}</div>

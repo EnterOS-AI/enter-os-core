@@ -148,7 +148,7 @@ export function AttachmentTextPreview({ workspaceId, attachment, onDownload, ton
         <button
           type="button"
           onClick={() => onDownload(attachment)}
-          className="text-ink-soft hover:text-ink"
+          className="text-ink-mid hover:text-ink"
           title={`Download ${attachment.name}`}
           aria-label={`Download ${attachment.name}`}
         >

@@ -36,7 +36,7 @@ export function FileEditor({
       <div className="flex-1 flex items-center justify-center">
         <div className="text-center">
           <div className="text-2xl opacity-20 mb-2">📄</div>
-          <p className="text-[10px] text-ink-soft">Select a file to edit</p>
+          <p className="text-[10px] text-ink-mid">Select a file to edit</p>
         </div>
       </div>
     );
@@ -56,7 +56,7 @@ export function FileEditor({
           <button
             onClick={onDownload}
             aria-label="Download file"
-            className="text-[10px] text-ink-soft hover:text-ink-mid"
+            className="text-[10px] text-ink-mid hover:text-ink-mid"
           >
             ↓
           </button>
@@ -74,7 +74,7 @@ export function FileEditor({
 
       {/* Editor area */}
       {loadingFile ? (
-        <div className="p-4 text-xs text-ink-soft">Loading...</div>
+        <div className="p-4 text-xs text-ink-mid">Loading...</div>
       ) : (
         <textarea
           ref={editorRef}

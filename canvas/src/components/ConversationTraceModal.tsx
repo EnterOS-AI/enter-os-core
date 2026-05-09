@@ -106,7 +106,7 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
                 <Dialog.Title className="text-sm font-semibold text-ink">
                   Conversation Trace
                 </Dialog.Title>
-                <p className="text-[10px] text-ink-soft mt-0.5">
+                <p className="text-[10px] text-ink-mid mt-0.5">
                   {entries.length} events across all workspaces
                 </p>
               </div>
@@ -114,7 +114,7 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
                 <button
                   type="button"
                   aria-label="Close conversation trace"
-                  className="text-ink-soft hover:text-ink-mid text-lg px-2"
+                  className="text-ink-mid hover:text-ink-mid text-lg px-2"
                 >
                   ✕
                 </button>
@@ -124,13 +124,13 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
             {/* Timeline */}
             <div className="flex-1 overflow-y-auto px-5 py-4">
               {loading && (
-                <div className="text-xs text-ink-soft text-center py-8">
+                <div className="text-xs text-ink-mid text-center py-8">
                   Loading trace from all workspaces...
                 </div>
               )}
 
               {!loading && entries.length === 0 && (
-                <div className="text-xs text-ink-soft text-center py-8">
+                <div className="text-xs text-ink-mid text-center py-8">
                   No activity found
                 </div>
               )}
@@ -250,7 +250,7 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
                           {/* Message content — show request and/or response */}
                           {requestText && (
                             <div className="mt-1.5 bg-surface/60 border border-line/50 rounded-lg px-3 py-2 max-h-32 overflow-y-auto">
-                              <div className="text-[8px] text-ink-soft uppercase mb-1">
+                              <div className="text-[8px] text-ink-mid uppercase mb-1">
                                 {isSend ? "Task" : "Request"}
                               </div>
                               <div className="text-[10px] text-ink-mid whitespace-pre-wrap break-words leading-relaxed">
