@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, type KeyboardEvent } from "react";
 import { Handle, NodeResizer, Position, type NodeProps, type Node } from "@xyflow/react";
 import { useCanvasStore, type WorkspaceNodeData } from "@/store/canvas";
 import { getConfigurationError, getConfigurationStatus } from "@/store/canvas-topology";
@@ -191,7 +191,23 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
       <Handle
         type="target"
         position={Position.Top}
-        className="!w-2.5 !h-1 !rounded-full !bg-surface-card/80 !border-0 !-top-0.5 hover:!bg-blue-400 hover:!h-1.5 transition-all"
+        tabIndex={0}
+        role="button"
+        aria-label={`Extract ${data.name} from its parent (Enter or Space)`}
+        onKeyDown={(e: KeyboardEvent<HTMLDivElement>) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            e.stopPropagation();
+            // Keyboard accessibility for edge anchors: pressing Enter/Space on
+            // the top handle extracts this node from its current parent,
+            // moving it to the root level. Mirrors the Figma/Excalidraw
+            // pattern of using the connector dot as a keyboard affordance.
+            if (data.parentId) {
+              void nestNode(id, null);
+            }
+          }
+        }}
+        className="!w-2.5 !h-1 !rounded-full !bg-surface-card/80 !border-0 !-top-0.5 hover:!bg-blue-400 hover:!h-1.5 focus-visible:!bg-blue-400 focus-visible:!h-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60 focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-950 transition-all"
       />
 
       <div className="relative px-3.5 py-2.5">
@@ -358,7 +374,23 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
       <Handle
         type="source"
         position={Position.Bottom}
-        className="!w-2.5 !h-1 !rounded-full !bg-surface-card/80 !border-0 !-bottom-0.5 hover:!bg-blue-400 hover:!h-1.5 transition-all"
+        tabIndex={0}
+        role="button"
+        aria-label={`Nest selected workspace inside ${data.name} (Enter or Space)`}
+        onKeyDown={(e: KeyboardEvent<HTMLDivElement>) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            e.stopPropagation();
+            // Keyboard accessibility for edge anchors: pressing Enter/Space on
+            // the bottom handle nests the currently-selected node as a child
+            // of this node. Requires another node to be selected first.
+            const selected = selectedNodeId;
+            if (selected && selected !== id) {
+              void nestNode(selected, id);
+            }
+          }
+        }}
+        className="!w-2.5 !h-1 !rounded-full !bg-surface-card/80 !border-0 !-bottom-0.5 hover:!bg-blue-400 hover:!h-1.5 focus-visible:!bg-blue-400 focus-visible:!h-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60 focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-950 transition-all"
       />
     </div>
     </>
