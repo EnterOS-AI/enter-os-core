@@ -4,9 +4,11 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
 // API mock — tests can override per case via apiGetMock.mockImplementationOnce.
 const apiGetMock = vi.fn<(url: string) => Promise<unknown>>();
+const apiPostMock = vi.fn<(url: string, body?: unknown) => Promise<unknown>>();
 vi.mock("@/lib/api", () => ({
   api: {
     get: (url: string) => apiGetMock(url),
+    post: (url: string, body?: unknown) => apiPostMock(url, body),
   },
 }));
 
@@ -16,17 +18,23 @@ vi.mock("@/hooks/useSocketEvent", () => ({
   useSocketEvent: () => {},
 }));
 
-// Canvas store — peer name resolution.
-vi.mock("@/store/canvas", () => ({
-  useCanvasStore: {
-    getState: () => ({
-      nodes: [
-        { id: "ws-self", data: { name: "Self" } },
-        { id: "ws-peer", data: { name: "Peer Agent" } },
-      ],
-    }),
-  },
-}));
+// Canvas store — peer name resolution + ErrorMessage requires selectNode
+// (Zustand hook usage). The mock must support BOTH:
+//   useCanvasStore.getState().nodes  (plain object with getState)
+//   useCanvasStore((s) => s.selectNode)  (Zustand hook with selector)
+vi.mock("@/store/canvas", () => {
+  const state = {
+    nodes: [
+      { id: "ws-self", data: { name: "Self" } },
+      { id: "ws-peer", data: { name: "Peer Agent" } },
+    ],
+    selectNode: vi.fn(),
+  };
+  const hook = (selector?: (s: typeof state) => unknown) =>
+    selector ? selector(state) : state;
+  hook.getState = () => state;
+  return { useCanvasStore: hook };
+});
 
 // Toaster shim — AgentCommsPanel imports showToast.
 vi.mock("../../Toaster", () => ({
@@ -41,12 +49,89 @@ import { AgentCommsPanel } from "../AgentCommsPanel";
 const scrollSpy = vi.fn<(opts?: ScrollIntoViewOptions | boolean) => void>();
 beforeEach(() => {
   apiGetMock.mockReset();
+  apiPostMock.mockReset();
+  apiPostMock.mockResolvedValue({});
   scrollSpy.mockReset();
   Element.prototype.scrollIntoView = scrollSpy as unknown as Element["scrollIntoView"];
 });
 
 afterEach(() => {
   vi.clearAllMocks();
+});
+
+// Regression test: when a delegation succeeds but the platform persisted
+// status="error" (transport-layer HTTP failure, not agent failure), the
+// canvas had the response text in msg.text but rendered ErrorMessage
+// anyway, burying the real content in an "Underlying error" banner and
+// prompting PMs to restart working agents (issue #159).
+describe("AgentCommsPanel — error rendering guard (issue #159)", () => {
+  it("renders NormalMessage when status=error but msg.text is present (successful delegation)", async () => {
+    // Simulate a delegation result where status="error" (HTTP transport
+    // failed) but response_body.text carries the actual agent response.
+    // The correct behaviour: show the content as a normal inbound bubble,
+    // NOT an error banner.
+    apiGetMock.mockResolvedValueOnce([
+      {
+        id: "act-1",
+        activity_type: "delegation",
+        method: "delegate_result",
+        source_id: "ws-self",
+        target_id: "ws-peer",
+        summary: "Delegation completed",
+        request_body: null,
+        // delegation.go stores response_body as {text: "...", delegation_id: "..."}
+        response_body: {
+          text: "PR #149: tier-check fails NO REVIEWS (author needs engineers/managers/ceo approval)",
+          delegation_id: "delg_01jx8q4n3k",
+        },
+        status: "error", // transport-layer error, not agent failure
+        created_at: "2026-04-25T18:00:00Z",
+      },
+    ]);
+    render(<AgentCommsPanel workspaceId="ws-self" />);
+
+    // The response text should appear in a normal inbound bubble, NOT in
+    // an error banner. Specifically: no "Failed to deliver" or "returned
+    // an error" text should appear.
+    await waitFor(() => {
+      expect(screen.queryByText(/failed to deliver/i)).toBeNull();
+      expect(screen.queryByText(/returned an error/i)).toBeNull();
+    });
+    // The actual content must be visible.
+    await waitFor(() =>
+      expect(
+        screen.getByText(/tier-check fails NO REVIEWS/i),
+      ).toBeDefined(),
+    );
+  });
+
+  it("renders ErrorMessage when status=error and msg.text is absent (true failure)", async () => {
+    // True delivery failure: no response body, no text. The error banner
+    // IS appropriate here.
+    apiGetMock.mockResolvedValueOnce([
+      {
+        id: "act-1",
+        activity_type: "a2a_send",
+        source_id: "ws-self",
+        target_id: "ws-peer",
+        method: "message/send",
+        summary: "A2A send failed",
+        request_body: null,
+        response_body: null,
+        status: "error",
+        created_at: "2026-04-25T18:00:00Z",
+      },
+    ]);
+    render(<AgentCommsPanel workspaceId="ws-self" />);
+
+    // Error banner IS shown for true failures (no content).
+    // jsdom doesn't reliably match role="alert" in getByRole, so use
+    // getByText instead.
+    const errorBanner = await waitFor(() =>
+      screen.getByText(/failed to deliver/i),
+    );
+    expect(errorBanner).toBeDefined();
+  });
 });
 
 describe("AgentCommsPanel — initial-state parity with ChatTab my-chat", () => {
