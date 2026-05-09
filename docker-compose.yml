@@ -1,3 +1,7 @@
+# Include infra services (Temporal, Langfuse) so `docker compose up` starts the full stack.
+include:
+  - docker-compose.infra.yml
+
 services:
   # --- Infrastructure ---
   postgres:
@@ -12,7 +16,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks:
-      - molecule-monorepo-net
+      - molecule-core-net
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dev}"]
@@ -40,7 +44,7 @@ services:
           psql -h postgres -U "$${POSTGRES_USER}" -d postgres -c "CREATE DATABASE langfuse"
         fi
     networks:
-      - molecule-monorepo-net
+      - molecule-core-net
 
   redis:
     image: redis:7-alpine
@@ -50,7 +54,7 @@ services:
     volumes:
       - redisdata:/data
     networks:
-      - molecule-monorepo-net
+      - molecule-core-net
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -68,7 +72,7 @@ services:
     volumes:
       - clickhousedata:/var/lib/clickhouse
     networks:
-      - molecule-monorepo-net
+      - molecule-core-net
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:8123/ping || exit 1"]
       interval: 5s
@@ -97,7 +101,7 @@ services:
     ports:
       - "3001:3000"
     networks:
-      - molecule-monorepo-net
+      - molecule-core-net
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/public/health || exit 1"]
       interval: 10s
@@ -217,7 +221,7 @@ services:
     ports:
       - "${PLATFORM_PUBLISH_PORT:-8080}:${PLATFORM_PORT:-8080}"
     networks:
-      - molecule-monorepo-net
+      - molecule-core-net
     restart: unless-stopped
     healthcheck:
       # Plain GET — `--spider` would issue HEAD, which returns 404 because
@@ -258,7 +262,7 @@ services:
     ports:
       - "${CANVAS_PUBLISH_PORT:-3000}:${CANVAS_PORT:-3000}"
     networks:
-      - molecule-monorepo-net
+      - molecule-core-net
     healthcheck:
       test: ["CMD-SHELL", "wget -qO /dev/null --tries=1 http://127.0.0.1:${CANVAS_PORT:-3000} || exit 1"]
       interval: 10s
@@ -291,7 +295,7 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-molecule}
     networks:
-      - molecule-monorepo-net
+      - molecule-core-net
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:4000/health || exit 1"]
@@ -316,7 +320,7 @@ services:
     volumes:
       - ollamadata:/root/.ollama
     networks:
-      - molecule-monorepo-net
+      - molecule-core-net
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "ollama list || exit 1"]
@@ -326,8 +330,8 @@ services:
       start_period: 20s
 
 networks:
-  molecule-monorepo-net:
-    name: molecule-monorepo-net
+  molecule-core-net:
+    name: molecule-core-net
 
 volumes:
   pgdata:

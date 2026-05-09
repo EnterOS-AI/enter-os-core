@@ -607,7 +607,16 @@ func (h *OrgHandler) Import(c *gin.Context) {
 		orgFile := filepath.Join(orgBaseDir, "org.yaml")
 		data, err := os.ReadFile(orgFile)
 		if err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("org template not found: %s", body.Dir)})
+			// Audit 2026-05-09 (Core-Security): the prior message echoed
+			// the user-supplied `body.Dir` verbatim. Path traversal is
+			// already blocked by resolveInsideRoot above, but echoing
+			// the raw input back lets a client probe for the existence
+			// of relative paths inside h.orgDir (a 404 with the input
+			// vs. a 400 from resolveInsideRoot is itself a signal).
+			// Drop the input from the message; log full context server-
+			// side via the resolved path for operator triage.
+			log.Printf("OrgImport: failed to read %s (requested dir=%q): %v", orgFile, body.Dir, err)
+			c.JSON(http.StatusNotFound, gin.H{"error": "org template not found"})
 			return
 		}
 		// Expand !include directives before unmarshal. Splits org.yaml

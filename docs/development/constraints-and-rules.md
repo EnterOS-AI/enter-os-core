@@ -73,7 +73,7 @@ These are applied after CORS middleware on every response.
 
 ## 14. No Exposed Database Ports
 
-Postgres and Redis must not expose host ports. They communicate exclusively over the internal Docker network (`molecule-monorepo-net`). Use `docker compose exec` for direct access during development.
+Postgres and Redis must not expose host ports. They communicate exclusively over the internal Docker network (`molecule-core-net`). Use `docker compose exec` for direct access during development.
 
 ## Related Docs
 

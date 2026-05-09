@@ -124,7 +124,7 @@ Six runtime adapters ship production-ready on `main`: LangGraph, DeepAgents, Cla
 | Platform ↔ Redis | TCP | Ephemeral state (liveness TTL), caching, pub/sub |
 | Workspace ↔ Workspace | HTTP (A2A JSON-RPC 2.0) | Direct peer-to-peer, **platform not in data path** |
 | Workspace → Langfuse | HTTP | Automatic OpenTelemetry tracing |
-| Docker Network | `molecule-monorepo-net` | Internal-only by default, no exposed DB/Redis ports |
+| Docker Network | `molecule-core-net` | Internal-only by default, no exposed DB/Redis ports |
 
 ### Core Components
 
@@ -465,7 +465,7 @@ Unknown tier values default to T2 for safety. Applied via `provisioner.ApplyTier
 
 ### Docker Networking
 
-- All containers join `molecule-monorepo-net` private network
+- All containers join `molecule-core-net` private network
 - Container naming: `ws-{workspace_id[:12]}`
 - Ephemeral host port binding: `127.0.0.1:0→8000/tcp`
 

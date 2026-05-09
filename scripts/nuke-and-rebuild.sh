@@ -24,7 +24,7 @@ echo "=== NUKE ==="
 docker compose -f "$ROOT/docker-compose.yml" down -v 2>/dev/null || true
 docker ps -a --format "{{.Names}}" | grep "^ws-" | xargs -r docker rm -f 2>/dev/null || true
 docker volume ls --format "{{.Name}}" | grep "^ws-" | xargs -r docker volume rm 2>/dev/null || true
-docker network rm molecule-monorepo-net 2>/dev/null || true
+docker network rm molecule-core-net 2>/dev/null || true
 echo "  cleaned"
 
 echo "=== POPULATE MANIFEST DIRS ==="

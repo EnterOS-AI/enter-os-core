@@ -119,7 +119,7 @@ services:
 
 networks:
   default:
-    name: molecule-monorepo-net
+    name: molecule-core-net
     external: true
 
 volumes:

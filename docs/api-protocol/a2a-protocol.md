@@ -67,7 +67,7 @@ On-demand fits naturally with how agents work — an agent only needs to know ab
 
 This is acceptable for MVP because:
 - All workspaces are provisioned by the same platform on trusted infrastructure
-- Docker network isolation (`molecule-monorepo-net`) limits who can reach workspace endpoints
+- Docker network isolation (`molecule-core-net`) limits who can reach workspace endpoints
 - The tool is self-hosted — the operator controls the network
 
 **Known gap:** Once workspace A caches workspace B's URL, nothing stops A from calling B directly even after the hierarchy changes and A is no longer supposed to reach B. The cached URL remains valid until the container is restarted or the URL changes.

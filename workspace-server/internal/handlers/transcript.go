@@ -134,7 +134,7 @@ func (h *TranscriptHandler) Get(c *gin.Context) {
 //   - block cloud metadata endpoints (IMDS, GCP, Azure)
 //   - block link-local IPs (169.254/16 IPv4, fe80::/10 IPv6)
 //   - loopback is allowed — local dev runs workspaces on 127.0.0.1
-//   - Docker internal hostnames (host.docker.internal, *.molecule-monorepo-net)
+//   - Docker internal hostnames (host.docker.internal, *.molecule-core-net)
 //     are allowed; the whole threat model assumes the platform already
 //     trusts peers on that network
 func validateWorkspaceURL(u *url.URL) error {

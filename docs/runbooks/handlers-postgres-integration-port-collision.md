@@ -73,19 +73,19 @@ runner-wide setting, not per-job. Source: gitea/act_runner config docs
 
 Flipping the global `container.network` to `bridge` would break every
 other workflow in the repo (cache server discovery,
-`molecule-monorepo-net` peer access during integration tests, etc.) —
+`molecule-core-net` peer access during integration tests, etc.) —
 unacceptable blast radius for a per-test bug.
 
 ## Fix shape
 
 `handlers-postgres-integration.yml` no longer uses `services: postgres:`.
 It launches a sibling postgres container manually on the existing
-`molecule-monorepo-net` bridge network with a per-run unique name:
+`molecule-core-net` bridge network with a per-run unique name:
 
 ```yaml
 env:
   PG_NAME: pg-handlers-${{ github.run_id }}-${{ github.run_attempt }}
-  PG_NETWORK: molecule-monorepo-net
+  PG_NETWORK: molecule-core-net
 
 steps:
   - name: Start sibling Postgres on bridge network
@@ -117,7 +117,7 @@ host-network runner config. Translate using this same pattern:
 1. Drop the `services:` block.
 2. Use `${{ github.run_id }}-${{ github.run_attempt }}` for unique
    container name.
-3. Launch on `molecule-monorepo-net` (already trusted bridge in
+3. Launch on `molecule-core-net` (already trusted bridge in
    `docker-compose.infra.yml`).
 4. Read back the bridge IP via `docker inspect` and export as a step env.
 5. `if: always()` cleanup step at the end.
@@ -131,7 +131,7 @@ in one place.
 - Issue #88 (closed by #92): localhost → 127.0.0.1 fix that unmasked
   this collision; the IPv6 fix is correct, port collision is the new
   layer.
-- Issue #94 created `molecule-monorepo-net` + `alpine:latest` as
+- Issue #94 created `molecule-core-net` + `alpine:latest` as
   prereqs.
 - Saved memory `feedback_act_runner_github_server_url` documents
   another act_runner-vs-GHA divergence (server URL).

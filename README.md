@@ -284,7 +284,7 @@ cp .env.example .env
 ./infra/scripts/setup.sh
 # Boots Postgres (:5432), Redis (:6379), Langfuse (:3001),
 # and Temporal (:7233 gRPC, :8233 UI) on the shared
-# `molecule-monorepo-net` Docker network. Temporal runs with
+# `molecule-core-net` Docker network. Temporal runs with
 # no auth on localhost — dev-only; production must gate it.
 #
 # Also populates the template/plugin registry by cloning every repo

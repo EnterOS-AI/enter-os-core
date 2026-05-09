@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 echo "==> Ensuring shared docker network exists..."
-docker network create molecule-monorepo-net 2>/dev/null || true
+docker network create molecule-core-net 2>/dev/null || true
 
 # Populate the template / plugin registry.
 # workspace-configs-templates/, org-templates/, and plugins/ are intentionally
