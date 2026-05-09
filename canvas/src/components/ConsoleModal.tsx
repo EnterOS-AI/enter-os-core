@@ -103,7 +103,7 @@ export function ConsoleModal({ workspaceId, workspaceName, open, onClose }: Prop
               EC2 console output
             </h3>
             {workspaceName && (
-              <div className="text-[11px] text-ink-soft mt-0.5 truncate max-w-[600px]">
+              <div className="text-[11px] text-ink-mid mt-0.5 truncate max-w-[600px]">
                 {workspaceName}
               </div>
             )}
@@ -124,7 +124,7 @@ export function ConsoleModal({ workspaceId, workspaceName, open, onClose }: Prop
 
         <div className="flex-1 overflow-auto bg-black/80 p-4">
           {loading && (
-            <div className="text-[12px] text-ink-soft" data-testid="console-loading">
+            <div className="text-[12px] text-ink-mid" data-testid="console-loading">
               Loading console output…
             </div>
           )}

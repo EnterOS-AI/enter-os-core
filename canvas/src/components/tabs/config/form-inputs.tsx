@@ -50,7 +50,7 @@ export function TextInput({ label, value, onChange, placeholder, mono }: { label
   const id = `textinput-${label.toLowerCase().replace(/\s+/g, "-")}`;
   return (
     <div>
-      <label htmlFor={id} className="text-[10px] text-ink-soft block mb-1">{label}</label>
+      <label htmlFor={id} className="text-[10px] text-ink-mid block mb-1">{label}</label>
       <input
         id={id}
         type="text"
@@ -68,7 +68,7 @@ export function NumberInput({ label, value, onChange, min, max }: { label: strin
   const id = `numberinput-${label.toLowerCase().replace(/\s+/g, "-")}`;
   return (
     <div>
-      <label htmlFor={id} className="text-[10px] text-ink-soft block mb-1">{label}</label>
+      <label htmlFor={id} className="text-[10px] text-ink-mid block mb-1">{label}</label>
       <input
         id={id}
         type="number"
@@ -97,12 +97,12 @@ export function TagList({ label, values, onChange, placeholder }: { label: strin
   const [input, setInput] = useState("");
   return (
     <div>
-      <label htmlFor={id} className="text-[10px] text-ink-soft block mb-1">{label}</label>
+      <label htmlFor={id} className="text-[10px] text-ink-mid block mb-1">{label}</label>
       <div className="flex flex-wrap gap-1 mb-1">
         {values.map((v, i) => (
           <span key={i} className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-surface-card border border-line rounded text-[10px] text-ink-mid font-mono">
             {v}
-            <button type="button" aria-label={`Remove tag ${v}`} onClick={() => onChange(values.filter((_, j) => j !== i))} className="text-ink-soft hover:text-bad">×</button>
+            <button type="button" aria-label={`Remove tag ${v}`} onClick={() => onChange(values.filter((_, j) => j !== i))} className="text-ink-mid hover:text-bad">×</button>
           </span>
         ))}
       </div>

@@ -127,7 +127,7 @@ export function AuditTrailPanel({ workspaceId }: Props) {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-32">
-        <span className="text-xs text-ink-soft">Loading audit trail…</span>
+        <span className="text-xs text-ink-mid">Loading audit trail…</span>
       </div>
     );
   }
@@ -145,7 +145,7 @@ export function AuditTrailPanel({ workspaceId }: Props) {
             className={`px-2 py-1 text-[10px] rounded-md font-medium transition-all shrink-0 ${
               filter === f.id
                 ? "bg-surface-card text-ink ring-1 ring-zinc-600"
-                : "text-ink-soft hover:text-ink-mid hover:bg-surface-card/60"
+                : "text-ink-mid hover:text-ink-mid hover:bg-surface-card/60"
             }`}
           >
             {f.label}
@@ -174,9 +174,9 @@ export function AuditTrailPanel({ workspaceId }: Props) {
         {entries.length === 0 ? (
           /* Empty state */
           <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
-            <span className="text-4xl text-ink-soft" aria-hidden="true">⊟</span>
+            <span className="text-4xl text-ink-mid" aria-hidden="true">⊟</span>
             <p className="text-sm font-medium text-ink-mid">No audit events yet</p>
-            <p className="text-[11px] text-ink-soft max-w-[200px] leading-relaxed">
+            <p className="text-[11px] text-ink-mid max-w-[200px] leading-relaxed">
               Delegation, decision, gate, and human-in-the-loop events will appear here.
             </p>
           </div>
@@ -203,7 +203,7 @@ export function AuditTrailPanel({ workspaceId }: Props) {
             )}
 
             {/* Entry count footer */}
-            <p className="mt-3 text-center text-[9px] text-ink-soft">
+            <p className="mt-3 text-center text-[9px] text-ink-mid">
               {entries.length} event{entries.length !== 1 ? "s" : ""} loaded
               {cursor ? " · more available" : " · all loaded"}
             </p>
@@ -265,7 +265,7 @@ export function AuditEntryRow({ entry, now }: AuditEntryRowProps) {
         )}
 
         {/* Relative timestamp */}
-        <span className="shrink-0 text-[9px] text-ink-soft">
+        <span className="shrink-0 text-[9px] text-ink-mid">
           {formatAuditRelativeTime(entry.created_at, now)}
         </span>
       </div>

@@ -288,7 +288,7 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
   if (loading && entries.length === 0 && !error && !pluginUnavailable) {
     return (
       <div className="flex items-center justify-center h-32">
-        <span className="text-xs text-ink-soft">Loading memories…</span>
+        <span className="text-xs text-ink-mid">Loading memories…</span>
       </div>
     );
   }
@@ -311,7 +311,7 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
       {/* Namespace dropdown */}
       <div className="px-4 pt-3 pb-2 border-b border-line/40 shrink-0 space-y-2">
         <div className="flex items-center gap-2">
-          <label htmlFor="namespace-dropdown" className="text-[10px] text-ink-soft shrink-0">
+          <label htmlFor="namespace-dropdown" className="text-[10px] text-ink-mid shrink-0">
             Namespace:
           </label>
           <select
@@ -337,7 +337,7 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
             height="12"
             viewBox="0 0 16 16"
             fill="none"
-            className="absolute left-2.5 text-ink-soft pointer-events-none shrink-0"
+            className="absolute left-2.5 text-ink-mid pointer-events-none shrink-0"
             aria-hidden="true"
           >
             <circle cx="7" cy="7" r="4.5" stroke="currentColor" strokeWidth="1.5" />
@@ -360,7 +360,7 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
                 setDebouncedQuery('');
               }}
               aria-label="Clear search"
-              className="absolute right-2 text-ink-soft hover:text-ink transition-colors text-sm leading-none"
+              className="absolute right-2 text-ink-mid hover:text-ink transition-colors text-sm leading-none"
             >
               ×
             </button>
@@ -370,7 +370,7 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
 
       {/* Toolbar */}
       <div className="px-4 py-2.5 border-b border-line/40 flex items-center justify-between shrink-0">
-        <span className="text-[11px] text-ink-soft">
+        <span className="text-[11px] text-ink-mid">
           {debouncedQuery
             ? `${entries.length} result${entries.length !== 1 ? 's' : ''}`
             : entries.length === 1
@@ -446,11 +446,11 @@ function EmptyState({
     // mirror it so the operator sees both signals.
     return (
       <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
-        <span className="text-4xl text-ink-soft" aria-hidden="true">
+        <span className="text-4xl text-ink-mid" aria-hidden="true">
           ◇
         </span>
         <p className="text-sm font-medium text-ink-mid">Memory plugin disabled</p>
-        <p className="text-[11px] text-ink-soft max-w-[220px] leading-relaxed">
+        <p className="text-[11px] text-ink-mid max-w-[220px] leading-relaxed">
           See banner above for the operator-side fix.
         </p>
       </div>
@@ -459,11 +459,11 @@ function EmptyState({
   if (query) {
     return (
       <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
-        <span className="text-4xl text-ink-soft" aria-hidden="true">
+        <span className="text-4xl text-ink-mid" aria-hidden="true">
           ◇
         </span>
         <p className="text-sm font-medium text-ink-mid">No memories match your search</p>
-        <p className="text-[11px] text-ink-soft max-w-[200px] leading-relaxed">
+        <p className="text-[11px] text-ink-mid max-w-[200px] leading-relaxed">
           Try a different query or clear the search.
         </p>
       </div>
@@ -471,11 +471,11 @@ function EmptyState({
   }
   return (
     <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
-      <span className="text-4xl text-ink-soft" aria-hidden="true">
+      <span className="text-4xl text-ink-mid" aria-hidden="true">
         ◇
       </span>
       <p className="text-sm font-medium text-ink-mid">No memories yet</p>
-      <p className="text-[11px] text-ink-soft max-w-[220px] leading-relaxed">
+      <p className="text-[11px] text-ink-mid max-w-[220px] leading-relaxed">
         Agents commit memories via MCP tools (commit_memory, commit_summary). They
         appear here once written.
       </p>
@@ -558,7 +558,7 @@ function MemoryEntryRow({ entry, onDelete }: MemoryEntryRowProps) {
 
         {/* Namespace tag */}
         <span
-          className="text-[9px] shrink-0 font-mono text-ink-soft truncate max-w-[100px]"
+          className="text-[9px] shrink-0 font-mono text-ink-mid truncate max-w-[100px]"
           title={entry.namespace}
         >
           {entry.namespace}
@@ -598,10 +598,10 @@ function MemoryEntryRow({ entry, onDelete }: MemoryEntryRowProps) {
         )}
 
 
-        <span className="text-[9px] text-ink-soft shrink-0">
+        <span className="text-[9px] text-ink-mid shrink-0">
           {formatRelativeTime(entry.created_at)}
         </span>
-        <span className="text-[9px] text-ink-soft shrink-0" aria-hidden="true">
+        <span className="text-[9px] text-ink-mid shrink-0" aria-hidden="true">
           {expanded ? '▼' : '▶'}
         </span>
       </button>
@@ -618,7 +618,7 @@ function MemoryEntryRow({ entry, onDelete }: MemoryEntryRowProps) {
             {entry.content}
           </pre>
           <div className="flex items-center justify-between gap-2">
-            <span className="text-[9px] text-ink-soft">
+            <span className="text-[9px] text-ink-mid">
               Created: {new Date(entry.created_at).toLocaleString()}
               {entry.expires_at && ` · Expires: ${new Date(entry.expires_at).toLocaleString()}`}
             </span>

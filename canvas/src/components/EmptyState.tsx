@@ -129,11 +129,11 @@ export function EmptyState() {
                       T{t.tier}
                     </span>
                   </div>
-                  <p className="text-[11px] text-ink-soft line-clamp-2 leading-relaxed">
+                  <p className="text-[11px] text-ink-mid line-clamp-2 leading-relaxed">
                     {t.description || "No description"}
                   </p>
                   {t.skill_count > 0 && (
-                    <p className="text-[9px] text-ink-soft mt-1.5">
+                    <p className="text-[9px] text-ink-mid mt-1.5">
                       {t.skill_count} skill{t.skill_count !== 1 ? "s" : ""}
                       {t.model ? ` · ${t.model}` : ""}
                     </p>
@@ -174,10 +174,10 @@ export function EmptyState() {
         <div className="mt-5 pt-4 border-t border-line/50">
           <div className="flex items-center justify-center gap-6 text-[10px] text-ink-mid">
             <span>Drag to nest workspaces into teams</span>
-            <span className="text-ink-soft">|</span>
+            <span className="text-ink-mid">|</span>
             <span>Right-click for actions</span>
-            <span className="text-ink-soft">|</span>
-            <span>Press <kbd className="px-1 py-0.5 bg-surface-card rounded text-ink-soft font-mono">&#8984;K</kbd> to search</span>
+            <span className="text-ink-mid">|</span>
+            <span>Press <kbd className="px-1 py-0.5 bg-surface-card rounded text-ink-mid font-mono">&#8984;K</kbd> to search</span>
           </div>
         </div>
       </div>

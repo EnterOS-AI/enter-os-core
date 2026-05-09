@@ -55,7 +55,7 @@ export function WorkspaceUsage({ workspaceId }: WorkspaceUsageProps) {
         </h4>
         {!loading && metrics && (
           <span
-            className="text-[10px] text-ink-soft font-mono"
+            className="text-[10px] text-ink-mid font-mono"
             data-testid="usage-period"
           >
             {formatPeriod(metrics.period_start, metrics.period_end)}
@@ -131,7 +131,7 @@ function StatRow({
 }) {
   return (
     <div className="flex justify-between items-center" data-testid={testId}>
-      <span className="text-xs text-ink-soft">{label}</span>
+      <span className="text-xs text-ink-mid">{label}</span>
       <span className="text-xs text-ink-mid font-mono">{value}</span>
     </div>
   );

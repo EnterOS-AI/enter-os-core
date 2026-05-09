@@ -57,7 +57,7 @@ export function ThemeToggle({ className = "" }: { className?: string }) {
               "flex h-6 w-6 items-center justify-center rounded transition-colors " +
               (active
                 ? "bg-surface-elevated text-ink shadow-sm"
-                : "text-ink-soft hover:text-ink-mid")
+                : "text-ink-mid hover:text-ink-mid")
             }
           >
             <svg

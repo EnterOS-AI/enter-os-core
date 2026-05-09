@@ -104,7 +104,7 @@ export function SearchDialog() {
       >
         {/* Search input */}
         <div className="flex items-center gap-3 px-4 py-3 border-b border-line/40">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="shrink-0 text-ink-soft" aria-hidden="true">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="shrink-0 text-ink-mid" aria-hidden="true">
             <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.5" />
             <path d="M11 11l3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
           </svg>
@@ -156,7 +156,7 @@ export function SearchDialog() {
                 <div className="min-w-0 flex-1">
                   <div className="text-sm text-ink truncate">{node.data.name}</div>
                   {node.data.role && (
-                    <div className="text-[10px] text-ink-soft truncate">{node.data.role}</div>
+                    <div className="text-[10px] text-ink-mid truncate">{node.data.role}</div>
                   )}
                 </div>
                 <span

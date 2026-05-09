@@ -29,11 +29,11 @@ export function PendingAttachmentPill({
     <div className="flex items-center gap-1.5 rounded-md border border-line/60 bg-surface-card/80 px-2 py-1 text-[10px] text-ink-mid max-w-[200px]">
       <FileGlyph className="text-ink-mid shrink-0" />
       <span className="truncate" title={file.name}>{file.name}</span>
-      <span className="text-ink-soft shrink-0 tabular-nums">{formatSize(file.size)}</span>
+      <span className="text-ink-mid shrink-0 tabular-nums">{formatSize(file.size)}</span>
       <button
         onClick={onRemove}
         aria-label={`Remove ${file.name}`}
-        className="ml-0.5 text-ink-soft hover:text-ink transition-colors shrink-0"
+        className="ml-0.5 text-ink-mid hover:text-ink transition-colors shrink-0"
       >
         <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />

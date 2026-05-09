@@ -242,7 +242,7 @@ export function ChannelsTab({ workspaceId }: Props) {
 
   if (loading) {
     return (
-      <div className="p-4 text-ink-soft text-xs">Loading channels...</div>
+      <div className="p-4 text-ink-mid text-xs">Loading channels...</div>
     );
   }
 
@@ -271,7 +271,7 @@ export function ChannelsTab({ workspaceId }: Props) {
       {showForm && (
         <div className="space-y-2 p-3 bg-surface-card/40 rounded border border-line/50">
           <div>
-            <label htmlFor={platformId} className="text-[10px] text-ink-soft block mb-1">Platform</label>
+            <label htmlFor={platformId} className="text-[10px] text-ink-mid block mb-1">Platform</label>
             <select
               id={platformId}
               value={formType}
@@ -327,7 +327,7 @@ export function ChannelsTab({ workspaceId }: Props) {
                                     className="rounded border-line"
                                   />
                                   <span className="text-xs text-ink-mid">{chat.name || "Unknown"}</span>
-                                  <span className="text-[10px] text-ink-soft ml-auto">{chat.type} {chat.chat_id}</span>
+                                  <span className="text-[10px] text-ink-mid ml-auto">{chat.type} {chat.chat_id}</span>
                                 </label>
                               ))}
                               <button
@@ -347,8 +347,8 @@ export function ChannelsTab({ workspaceId }: Props) {
           )}
 
           <div>
-            <label htmlFor={allowedUsersId} className="text-[10px] text-ink-soft block mb-1">
-              Allowed Users <span className="text-ink-soft">(optional, comma-separated)</span>
+            <label htmlFor={allowedUsersId} className="text-[10px] text-ink-mid block mb-1">
+              Allowed Users <span className="text-ink-mid">(optional, comma-separated)</span>
             </label>
             <input
               id={allowedUsersId}
@@ -357,7 +357,7 @@ export function ChannelsTab({ workspaceId }: Props) {
               placeholder="123456789, 987654321"
               className="w-full text-xs bg-surface-sunken border border-line rounded px-2 py-1.5 text-ink-mid placeholder-zinc-600"
             />
-            <p className="text-[11px] text-ink-soft mt-0.5">
+            <p className="text-[11px] text-ink-mid mt-0.5">
               Platform-specific user IDs. Leave empty to allow everyone.
             </p>
           </div>
@@ -380,8 +380,8 @@ export function ChannelsTab({ workspaceId }: Props) {
       {/* Channel list */}
       {channels.length === 0 && !showForm && (
         <div className="text-center py-8">
-          <p className="text-ink-soft text-xs">No channels connected</p>
-          <p className="text-ink-soft text-[10px] mt-1">
+          <p className="text-ink-mid text-xs">No channels connected</p>
+          <p className="text-ink-mid text-[10px] mt-1">
             Connect Telegram, Slack, Discord, or Lark / Feishu to chat with this agent from social platforms.
           </p>
         </div>
@@ -402,7 +402,7 @@ export function ChannelsTab({ workspaceId }: Props) {
               <span className="text-xs font-medium text-ink">
                 {ch.channel_type.charAt(0).toUpperCase() + ch.channel_type.slice(1)}
               </span>
-              <span className="text-[10px] text-ink-soft">
+              <span className="text-[10px] text-ink-mid">
                 {ch.config.chat_id || ch.config.channel_id || ""}
               </span>
             </div>
@@ -419,7 +419,7 @@ export function ChannelsTab({ workspaceId }: Props) {
                 className={`text-[10px] px-2 py-0.5 rounded transition ${
                   ch.enabled
                     ? "bg-emerald-900/30 text-good hover:bg-emerald-900/50"
-                    : "bg-surface-card/50 text-ink-soft hover:text-ink-mid"
+                    : "bg-surface-card/50 text-ink-mid hover:text-ink-mid"
                 }`}
               >
                 {ch.enabled ? "On" : "Off"}
@@ -432,7 +432,7 @@ export function ChannelsTab({ workspaceId }: Props) {
               </button>
             </div>
           </div>
-          <div className="flex items-center gap-4 text-[10px] text-ink-soft">
+          <div className="flex items-center gap-4 text-[10px] text-ink-mid">
             <span>{ch.message_count} messages</span>
             <span>Last: {relativeTime(ch.last_message_at)}</span>
             {ch.allowed_users.length > 0 && (
@@ -474,9 +474,9 @@ function SchemaField({
     "w-full text-xs bg-surface-sunken border border-line rounded px-2 py-1.5 text-ink-mid placeholder-zinc-600";
   return (
     <div>
-      <label htmlFor={inputId} className="text-[10px] text-ink-soft block mb-1">
+      <label htmlFor={inputId} className="text-[10px] text-ink-mid block mb-1">
         {field.label}
-        {!field.required && <span className="text-ink-soft"> (optional)</span>}
+        {!field.required && <span className="text-ink-mid"> (optional)</span>}
       </label>
       {field.type === "textarea" ? (
         <textarea
@@ -499,7 +499,7 @@ function SchemaField({
       )}
       {renderExtras?.()}
       {field.help && (
-        <p className="text-[11px] text-ink-soft mt-0.5">{field.help}</p>
+        <p className="text-[11px] text-ink-mid mt-0.5">{field.help}</p>
       )}
     </div>
   );

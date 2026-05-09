@@ -55,13 +55,13 @@ export default function PricingPage() {
           </a>
           .
         </p>
-        <p className="mt-6 text-sm text-ink-soft">
+        <p className="mt-6 text-sm text-ink-mid">
           Prices shown in USD. Flat-rate per org — no per-seat fees on any paid tier.
           Enterprise / self-hosted licensing available — contact us.
         </p>
       </section>
 
-      <footer className="mx-auto mt-20 max-w-5xl border-t border-line px-6 py-6 text-center text-sm text-ink-soft">
+      <footer className="mx-auto mt-20 max-w-5xl border-t border-line px-6 py-6 text-center text-sm text-ink-mid">
         <p>
           © {new Date().getFullYear()} Molecule AI, Inc. ·{" "}
           <a href="/legal/terms" className="hover:text-ink-mid">

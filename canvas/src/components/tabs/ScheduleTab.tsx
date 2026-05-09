@@ -180,7 +180,7 @@ export function ScheduleTab({ workspaceId }: Props) {
   };
 
   if (loading) {
-    return <div className="p-4 text-[10px] text-ink-soft">Loading schedules...</div>;
+    return <div className="p-4 text-[10px] text-ink-mid">Loading schedules...</div>;
   }
 
   return (
@@ -207,11 +207,11 @@ export function ScheduleTab({ workspaceId }: Props) {
             placeholder="Schedule name (e.g., Daily security scan)"
             value={formName}
             onChange={(e) => setFormName(e.target.value)}
-            className="w-full text-[10px] bg-surface-card border border-line rounded px-2 py-1 text-ink placeholder:text-ink-soft"
+            className="w-full text-[10px] bg-surface-card border border-line rounded px-2 py-1 text-ink placeholder:text-ink-mid"
           />
           <div className="flex gap-2">
             <div className="flex-1">
-              <label htmlFor={cronId} className="text-[10px] text-ink-soft block mb-0.5">Cron Expression</label>
+              <label htmlFor={cronId} className="text-[10px] text-ink-mid block mb-0.5">Cron Expression</label>
               <input
                 id={cronId}
                 type="text"
@@ -219,12 +219,12 @@ export function ScheduleTab({ workspaceId }: Props) {
                 onChange={(e) => setFormCron(e.target.value)}
                 className="w-full text-[10px] bg-surface-card border border-line rounded px-2 py-1 text-ink font-mono"
               />
-              <div className="text-[10px] text-ink-soft mt-0.5">
+              <div className="text-[10px] text-ink-mid mt-0.5">
                 {cronToHuman(formCron)}
               </div>
             </div>
             <div className="w-24">
-              <label htmlFor={timezoneId} className="text-[10px] text-ink-soft block mb-0.5">Timezone</label>
+              <label htmlFor={timezoneId} className="text-[10px] text-ink-mid block mb-0.5">Timezone</label>
               <select
                 id={timezoneId}
                 value={formTimezone}
@@ -245,14 +245,14 @@ export function ScheduleTab({ workspaceId }: Props) {
             </div>
           </div>
           <div>
-            <label htmlFor={promptId} className="text-[10px] text-ink-soft block mb-0.5">Prompt / Task</label>
+            <label htmlFor={promptId} className="text-[10px] text-ink-mid block mb-0.5">Prompt / Task</label>
             <textarea
               id={promptId}
               value={formPrompt}
               onChange={(e) => setFormPrompt(e.target.value)}
               placeholder="What should the agent do on this schedule?"
               rows={3}
-              className="w-full text-[10px] bg-surface-card border border-line rounded px-2 py-1 text-ink placeholder:text-ink-soft resize-y"
+              className="w-full text-[10px] bg-surface-card border border-line rounded px-2 py-1 text-ink placeholder:text-ink-mid resize-y"
             />
           </div>
           <div className="flex items-center gap-2">
@@ -290,7 +290,7 @@ export function ScheduleTab({ workspaceId }: Props) {
               Cancel
             </button>
           </div>
-          <div className="text-[10px] text-ink-soft space-y-0.5">
+          <div className="text-[10px] text-ink-mid space-y-0.5">
             <div>Common patterns:</div>
             <div className="font-mono">{"0 9 * * *"} — Daily at 9:00 AM</div>
             <div className="font-mono">{"*/30 * * * *"} — Every 30 minutes</div>
@@ -306,7 +306,7 @@ export function ScheduleTab({ workspaceId }: Props) {
           <div className="p-6 text-center">
             <div className="text-2xl mb-2">⏲</div>
             <div className="text-[10px] text-ink-mid mb-1">No schedules yet</div>
-            <div className="text-[9px] text-ink-soft">
+            <div className="text-[9px] text-ink-mid">
               Add a schedule to run tasks automatically — daily scans, periodic reports, standup reminders.
             </div>
           </div>
@@ -336,16 +336,16 @@ export function ScheduleTab({ workspaceId }: Props) {
                       {sched.name || "Unnamed schedule"}
                     </span>
                   </div>
-                  <div className="text-[9px] text-ink-soft mt-0.5 font-mono">
+                  <div className="text-[9px] text-ink-mid mt-0.5 font-mono">
                     {cronToHuman(sched.cron_expr)}
                     {sched.timezone !== "UTC" && (
-                      <span className="text-ink-soft"> ({sched.timezone})</span>
+                      <span className="text-ink-mid"> ({sched.timezone})</span>
                     )}
                   </div>
-                  <div className="text-[9px] text-ink-soft mt-0.5 truncate">
+                  <div className="text-[9px] text-ink-mid mt-0.5 truncate">
                     {sched.prompt.slice(0, 80)}{sched.prompt.length > 80 ? "..." : ""}
                   </div>
-                  <div className="flex items-center gap-3 mt-1 text-[8px] text-ink-soft">
+                  <div className="flex items-center gap-3 mt-1 text-[8px] text-ink-mid">
                     <span>Last: {relativeTime(sched.last_run_at)}</span>
                     <span>Next: {relativeTime(sched.next_run_at)}</span>
                     <span>Runs: {sched.run_count}</span>

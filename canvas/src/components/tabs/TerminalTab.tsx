@@ -37,7 +37,7 @@ function NotAvailablePanel({ runtime }: { runtime: string }) {
         viewBox="0 0 72 72"
         fill="none"
         aria-hidden="true"
-        className="text-ink-soft mb-4"
+        className="text-ink-mid mb-4"
       >
         <rect
           x="10"
@@ -74,7 +74,7 @@ function NotAvailablePanel({ runtime }: { runtime: string }) {
         />
       </svg>
       <h3 className="text-sm font-medium text-ink mb-1.5">Terminal not available</h3>
-      <p className="text-[11px] text-ink-soft max-w-xs leading-relaxed">
+      <p className="text-[11px] text-ink-mid max-w-xs leading-relaxed">
         This workspace runs the{" "}
         <span className="font-mono text-ink-mid">{runtime}</span> runtime,
         which doesn't expose a shell. Use the Chat tab to interact with the

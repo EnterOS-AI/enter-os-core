@@ -142,7 +142,7 @@ export function ActivityTab({ workspaceId }: Props) {
               className={`px-2 py-1 text-[11px] rounded-md font-medium transition-all ${
                 filter === f.id
                   ? "bg-surface-card text-ink ring-1 ring-zinc-600"
-                  : "text-ink-soft hover:text-ink-mid hover:bg-surface-card/60"
+                  : "text-ink-mid hover:text-ink-mid hover:bg-surface-card/60"
               }`}
             >
               <span className="mr-0.5 opacity-60">{f.icon}</span> {f.label}
@@ -153,7 +153,7 @@ export function ActivityTab({ workspaceId }: Props) {
               onClick={() => setAutoRefresh(!autoRefresh)}
               aria-pressed={autoRefresh}
               className={`text-[11px] px-1.5 py-0.5 rounded ${
-                autoRefresh ? "text-good bg-emerald-950/30" : "text-ink-soft"
+                autoRefresh ? "text-good bg-emerald-950/30" : "text-ink-mid"
               }`}
               title={autoRefresh ? "Auto-refresh ON" : "Auto-refresh OFF"}
             >
@@ -177,7 +177,7 @@ export function ActivityTab({ workspaceId }: Props) {
             </button>
           </div>
         </div>
-        <div className="mt-1.5 text-[10px] text-ink-soft">
+        <div className="mt-1.5 text-[10px] text-ink-mid">
           {activities.length} {filter === "all" ? "activities" : filter.replace("_", " ") + " entries"}
         </div>
       </div>
@@ -185,7 +185,7 @@ export function ActivityTab({ workspaceId }: Props) {
       {/* Activity list */}
       <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
         {loading && activities.length === 0 && (
-          <div className="text-xs text-ink-soft text-center py-8">Loading activity...</div>
+          <div className="text-xs text-ink-mid text-center py-8">Loading activity...</div>
         )}
 
         {error && (
@@ -196,8 +196,8 @@ export function ActivityTab({ workspaceId }: Props) {
 
         {!loading && !error && activities.length === 0 && (
           <div className="text-center py-8">
-            <div className="text-ink-soft text-xs">No activity recorded yet</div>
-            <div className="text-ink-soft text-[9px] mt-1">
+            <div className="text-ink-mid text-xs">No activity recorded yet</div>
+            <div className="text-ink-mid text-[9px] mt-1">
               Activity logs appear when agents communicate or perform tasks
             </div>
           </div>
@@ -265,16 +265,16 @@ function ActivityRow({
           </span>
 
           {entry.duration_ms != null && (
-            <span className="text-[8px] text-ink-soft font-mono tabular-nums shrink-0">
+            <span className="text-[8px] text-ink-mid font-mono tabular-nums shrink-0">
               {entry.duration_ms}ms
             </span>
           )}
 
-          <span className="text-[8px] text-ink-soft shrink-0">
+          <span className="text-[8px] text-ink-mid shrink-0">
             {formatTime(entry.created_at)}
           </span>
 
-          <span className="text-[9px] text-ink-soft">
+          <span className="text-[9px] text-ink-mid">
             {expanded ? "▼" : "▶"}
           </span>
         </div>
@@ -296,7 +296,7 @@ function ActivityRow({
                 {resolveName(entry.source_id)}
               </span>
             )}
-            <span className="text-[9px] text-ink-soft">→</span>
+            <span className="text-[9px] text-ink-mid">→</span>
             {entry.target_id && (
               <span className="text-[9px] text-accent/80 truncate max-w-[140px]" title={entry.target_id}>
                 {resolveName(entry.target_id)}
@@ -338,7 +338,7 @@ function ActivityRow({
           {entry.response_body && (
             <JsonBlock label="Response" data={entry.response_body} />
           )}
-          <div className="text-[8px] text-ink-soft font-mono select-all">
+          <div className="text-[8px] text-ink-mid font-mono select-all">
             ID: {entry.id}
           </div>
         </div>
@@ -386,7 +386,7 @@ function MessagePreview({ label, body }: { label: string; body: Record<string, u
       }
       return (
         <div>
-          <div className="text-[8px] text-ink-soft uppercase tracking-wider mb-1">{label}</div>
+          <div className="text-[8px] text-ink-mid uppercase tracking-wider mb-1">{label}</div>
           <div className="text-[10px] text-ink-mid bg-surface-sunken/60 rounded p-2 max-h-32 overflow-y-auto whitespace-pre-wrap break-words">
             {text.slice(0, 2000)}
           </div>
@@ -429,7 +429,7 @@ function MessagePreview({ label, body }: { label: string; body: Record<string, u
 
   return (
     <div>
-      <div className="text-[8px] text-ink-soft uppercase tracking-wider mb-1">{label}</div>
+      <div className="text-[8px] text-ink-mid uppercase tracking-wider mb-1">{label}</div>
       <div className="text-[10px] text-ink-mid bg-surface-sunken/60 rounded p-2 max-h-32 overflow-y-auto whitespace-pre-wrap break-words">
         {text.slice(0, 2000)}
       </div>
@@ -440,7 +440,7 @@ function MessagePreview({ label, body }: { label: string; body: Record<string, u
 function Detail({ label, value, mono, error: isError }: { label: string; value: string; mono?: boolean; error?: boolean }) {
   return (
     <div className="flex items-start gap-2">
-      <span className="text-[8px] text-ink-soft uppercase tracking-wider w-14 shrink-0 pt-0.5">{label}</span>
+      <span className="text-[8px] text-ink-mid uppercase tracking-wider w-14 shrink-0 pt-0.5">{label}</span>
       <span className={`text-[9px] break-all ${isError ? "text-bad" : "text-ink-mid"} ${mono ? "font-mono" : ""}`}>
         {value}
       </span>
@@ -451,7 +451,7 @@ function Detail({ label, value, mono, error: isError }: { label: string; value: 
 function JsonBlock({ label, data }: { label: string; data: Record<string, unknown> }) {
   return (
     <div>
-      <div className="text-[8px] text-ink-soft uppercase tracking-wider mb-1">{label}</div>
+      <div className="text-[8px] text-ink-mid uppercase tracking-wider mb-1">{label}</div>
       <pre className="text-[9px] text-ink-mid bg-surface-sunken/80 rounded p-2 overflow-x-auto max-h-48 font-mono">
         {JSON.stringify(data, null, 2)}
       </pre>

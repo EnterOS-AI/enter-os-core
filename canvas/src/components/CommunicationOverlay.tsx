@@ -226,7 +226,7 @@ export function CommunicationOverlay() {
           type="button"
           onClick={() => setVisible(false)}
           aria-label="Close communications panel"
-          className="text-ink-soft hover:text-ink-mid text-xs"
+          className="text-ink-mid hover:text-ink-mid text-xs"
         >
           <span aria-hidden="true">✕</span>
         </button>
@@ -268,7 +268,7 @@ export function CommunicationOverlay() {
                 </div>
               </div>
               {c.summary && (
-                <div className="text-ink-soft truncate mt-0.5 pl-4">{c.summary}</div>
+                <div className="text-ink-mid truncate mt-0.5 pl-4">{c.summary}</div>
               )}
               {c.durationMs && (
                 <div className="text-ink-mid pl-4">{c.durationMs}ms</div>

@@ -354,7 +354,7 @@ function OrgCTA({ org }: { org: Org }) {
     );
   }
   // provisioning / unknown — non-interactive
-  return <span className="text-sm text-ink-soft">{org.status}…</span>;
+  return <span className="text-sm text-ink-mid">{org.status}…</span>;
 }
 
 function EmptyState({ banner }: { banner?: React.ReactNode }) {
@@ -420,7 +420,7 @@ function CreateOrgForm({ onCreated }: { onCreated: (slug: string) => void }) {
           aria-describedby="org-slug-hint"
           className="mt-1 w-full rounded border border-line bg-surface-card px-3 py-2 text-sm text-ink"
         />
-        <p id="org-slug-hint" className="mt-1 text-xs text-ink-soft">
+        <p id="org-slug-hint" className="mt-1 text-xs text-ink-mid">
           Lowercase letters, numbers, and hyphens only. Cannot be changed later.
         </p>
       </div>
