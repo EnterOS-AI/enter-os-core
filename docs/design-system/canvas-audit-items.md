@@ -9,7 +9,7 @@
 | Technology | Version | Purpose |
 |-----------|--------|---------|
 | React Flow | `@xyflow/react` v12 | Node/edge rendering |
-| Framework | Next.js 14 App Router | Routing, SSR |
+| Framework | Next.js 15 App Router | Routing, SSR |
 | Styling | Tailwind v4 | CSS with custom properties |
 | State | Zustand | Client state management |
 
@@ -20,6 +20,7 @@ canvas/src/
 ├── components/
 │   ├── Canvas.tsx           # Viewport management, ReactFlow wrapper
 │   ├── Toolbar.tsx          # Add node/edge controls
+│   ├── KeyboardShortcutsDialog.tsx  # ? help dialog
 │   ├── ContextMenu.tsx      # Right-click menu
 │   ├── SidePanel.tsx        # Properties panel
 │   ├── WorkspaceNode.tsx     # Node rendering
@@ -48,6 +49,14 @@ canvas/src/
 
 ### 🟡 MEDIUM: Pre-commit Hook Verification
 **Issue:** Pre-commit hook checks 'use client' on hook-using components but unclear if it actually fails on violations.
+
+### ✅ MEDIUM: text-ink-soft WCAG AA contrast (fixed)
+**File:** `canvas/src/app/globals.css` + all canvas components
+**Issue:** `--color-ink-soft` (#8d92a0) on dark zinc (#0e1014) = ~2.2:1 contrast,
+below the WCAG 2.1 AA minimum of 4.5:1 for normal text.
+**Impact:** Used in 261 instances across 52 files (captions, group titles, hints).
+**Fix:** Replaced `text-ink-soft` → `text-ink-mid` (7.6:1) across all canvas source.
+PR: `fix/ink-soft-wcag-contrast`.
 **Action:** Verify the hook is enforcing the rule correctly.
 
 ## Verified Findings
@@ -101,7 +110,8 @@ canvas/src/
 ### Drag and Drop ✅
 - **Mouse drag:** React Flow native
 - **Drop target:** Visual indicator (`bg-emerald-950/40 border-emerald-400/60`) ✅
-- **Keyboard alternative:** Arrow keys move selected node 10px per press (50px with Shift) (PR #182) ✅
+- **Keyboard alternative:** Arrow-key nudge via `useKeyboardShortcuts` (PR #182) ✅
+- **Status:** Full — mouse and keyboard users can reposition nodes.
 
 ---
 
@@ -111,11 +121,11 @@ canvas/src/
 |----------|------|-------|--------|
 | ~~HIGH~~ | ~~Screen reader announcements for canvas state changes~~ | ~~Canvas.tsx, canvas-events.ts, canvas.ts~~ | ✅ Done — PR #172 |
 | MEDIUM | Keyboard shortcut help dialog | useKeyboardShortcuts.ts | ✅ Done (PR #175) |
-| MEDIUM | Keyboard-accessible node drag | WorkspaceNode.tsx, useDragHandlers.ts | ✅ Done (this PR) |
-| LOW | Keyboard-accessible edge anchors | A2AEdge.tsx, WorkspaceNode.tsx | ✅ Done |
-| LOW | Keyboard-accessible node resize | useKeyboardShortcuts.ts, WorkspaceNode.tsx | ✅ Done |
+| MEDIUM | Keyboard-accessible node drag | WorkspaceNode.tsx, useDragHandlers.ts | ✅ Done (PR #182) |
+| LOW | Keyboard-accessible edge anchors | A2AEdge.tsx, WorkspaceNode.tsx | ✅ Done (PR #190) |
+| LOW | Keyboard-accessible node resize | useKeyboardShortcuts.ts, WorkspaceNode.tsx | ✅ Done (PR #192) |
 
 ---
 
 *Verified 2026-05-09 by Core-UIUX against molecule-core/canvas/src/*
-*Updated 2026-05-09: screen reader announcements (PR #172) + keyboard shortcut dialog (PR #175) completed*
+*Updated 2026-05-10: keyboard shortcut dialog (PR #175) + keyboard node drag (PR #182) + keyboard edge anchors (PR #190) + keyboard node resize (PR #192) + screen reader announcements (PR #172) + text-ink-soft WCAG AA fix + Next.js 15.5.15*
