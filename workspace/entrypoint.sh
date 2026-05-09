@@ -43,11 +43,29 @@ if [ "$(id -u)" = "0" ]; then
         ln -sfn /root/.claude/sessions /home/agent/.claude/sessions
     fi
 
+    # --- Per-persona git identity (closes molecule-core#155) ---
+    # Without this, every team commit lands with an empty author and Gitea
+    # attributes the work to the founder PAT instead of the persona that
+    # actually authored it. Same fingerprint that got us suspended on GitHub
+    # 2026-05-06. GITEA_USER is injected by the provisioner from the
+    # workspace_secrets table; bot.moleculesai.app is the agent-only domain
+    # so commits are clearly distinguishable from human authors.
+    if [ -n "${GITEA_USER:-}" ]; then
+        git config --global user.name  "${GITEA_USER}"
+        git config --global user.email "${GITEA_USER}@bot.moleculesai.app"
+    fi
+
     # --- GitHub credential helper setup (issue #547 / #613) ---
     # Configure git to use the molecule credential helper for github.com.
     # This runs as root so the global gitconfig is written before we drop
     # to agent. The helper fetches fresh GitHub App installation tokens
     # from the platform API, with caching and env-var fallback.
+    #
+    # NOTE: post-suspension (2026-05-06), github.com/Molecule-AI is gone;
+    # the helper's platform endpoint also 500s (internal#187). The helper
+    # block is kept for legacy boxes that still have a working token chain;
+    # post-suspension provisioner injects GITEA_TOKEN directly so this
+    # path's failure is non-fatal. Full removal tracked under #171.
     if [ -x /app/scripts/molecule-git-token-helper.sh ]; then
         # Set credential helper for github.com only (not all hosts).
         # The '!' prefix tells git to run the command as a shell command.
@@ -55,11 +73,13 @@ if [ "$(id -u)" = "0" ]; then
             "!/app/scripts/molecule-git-token-helper.sh"
         # Disable other credential helpers for github.com to avoid conflicts.
         git config --global "credential.https://github.com.useHttpPath" true
-        # Move gitconfig to agent's home so it takes effect after gosu.
-        if [ -f /root/.gitconfig ]; then
-            cp /root/.gitconfig /home/agent/.gitconfig
-            chown agent:agent /home/agent/.gitconfig
-        fi
+    fi
+    # Move gitconfig to agent's home so it takes effect after gosu —
+    # done unconditionally so the per-persona identity survives the drop
+    # even when the github.com helper block is skipped.
+    if [ -f /root/.gitconfig ]; then
+        cp /root/.gitconfig /home/agent/.gitconfig
+        chown agent:agent /home/agent/.gitconfig
     fi
     # Create the token cache directory for the agent user.
     mkdir -p /home/agent/.molecule-token-cache
