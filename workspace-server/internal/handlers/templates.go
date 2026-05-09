@@ -524,6 +524,9 @@ func (h *TemplatesHandler) WriteFile(c *gin.Context) {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "saved", "path": filePath})
+		if h.wh != nil {
+			go h.wh.RestartByID(workspaceID)
+		}
 		return
 	}
 
@@ -535,6 +538,9 @@ func (h *TemplatesHandler) WriteFile(c *gin.Context) {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "saved", "path": filePath})
+		if h.wh != nil {
+			go h.wh.RestartByID(workspaceID)
+		}
 		return
 	}
 
@@ -546,6 +552,9 @@ func (h *TemplatesHandler) WriteFile(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "saved", "path": filePath})
+	if h.wh != nil {
+		go h.wh.RestartByID(workspaceID)
+	}
 }
 
 // DeleteFile handles DELETE /workspaces/:id/files/*path
@@ -592,6 +601,9 @@ func (h *TemplatesHandler) DeleteFile(c *gin.Context) {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "deleted", "path": filePath})
+		if h.wh != nil {
+			go h.wh.RestartByID(workspaceID)
+		}
 		return
 	}
 
@@ -607,6 +619,9 @@ func (h *TemplatesHandler) DeleteFile(c *gin.Context) {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "deleted", "path": filePath})
+		if h.wh != nil {
+			go h.wh.RestartByID(workspaceID)
+		}
 		return
 	}
 
@@ -617,5 +632,8 @@ func (h *TemplatesHandler) DeleteFile(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "deleted", "path": filePath})
+	if h.wh != nil {
+		go h.wh.RestartByID(workspaceID)
+	}
 }
 
