@@ -9,6 +9,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { showToast } from "@/components/Toaster";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { statusDotClass } from "@/lib/design-tokens";
+import { KeyboardShortcutsDialog } from "@/components/KeyboardShortcutsDialog";
 
 export function Toolbar() {
   const nodes = useCanvasStore((s) => s.nodes);
@@ -33,6 +34,7 @@ export function Toolbar() {
   const [restartingAll, setRestartingAll] = useState(false);
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const helpRef = useRef<HTMLDivElement>(null);
 
   // Suppress toast on the very first connect at page load; only fire on reconnects.
@@ -125,6 +127,29 @@ export function Toolbar() {
       window.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("keydown", onKeyDown);
     };
+  }, []);
+
+  // Global ? shortcut opens the shortcuts dialog (mirrors the help button).
+  // Skip when the user is typing in an input so ? in a text field doesn't
+  // steal focus. Also skip when a modal/dialog is already open.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "?") return;
+      const tag = (e.target as HTMLElement).tagName;
+      const inInput =
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        (e.target as HTMLElement).isContentEditable;
+      if (inInput) return;
+      // Don't fire when a modal/dialog is already mounted (canvas modals,
+      // side panel, etc. use z-50 or above).
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      e.preventDefault();
+      setShortcutsOpen(true);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
   }, []);
 
   return (
@@ -321,6 +346,14 @@ export function Toolbar() {
               <HelpRow shortcut="Config" text="Use the Config tab for skills, model, secrets, and runtime settings." />
               <HelpRow shortcut="Dbl-click / Z" text="Zoom canvas to fit a team node and all its sub-workspaces." />
             </div>
+            {/* Link to the full keyboard shortcuts dialog */}
+            <button
+              type="button"
+              onClick={() => { setHelpOpen(false); setShortcutsOpen(true); }}
+              className="mt-3 w-full text-center text-[10px] text-ink-soft hover:text-accent transition-colors focus:outline-none focus-visible:underline"
+            >
+              See all shortcuts →
+            </button>
           </div>
         )}
       </div>
@@ -339,6 +372,11 @@ export function Toolbar() {
         confirmVariant="warning"
         onConfirm={restartAll}
         onCancel={() => setRestartConfirmOpen(false)}
+      />
+
+      <KeyboardShortcutsDialog
+        open={shortcutsOpen}
+        onClose={() => setShortcutsOpen(false)}
       />
     </div>
   );

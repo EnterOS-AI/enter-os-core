@@ -184,9 +184,14 @@ class TestPlatformAuthRegistry:
         assert b["Authorization"] == "Bearer tok-b"
         assert a["Origin"] == "https://example.test"
 
-    def test_auth_headers_with_no_arg_uses_legacy_path(self, monkeypatch):
+    def test_auth_headers_with_no_arg_uses_legacy_path(self, monkeypatch, tmp_path):
         import platform_auth
 
+        # Wipe the module-level token cache and redirect _token_file() to a
+        # non-existent path so the env var isolation is clean. Without this,
+        # the real /configs/.auth_token pollutes the result.
+        platform_auth.clear_cache()
+        monkeypatch.setattr(platform_auth, "_token_file", lambda: tmp_path / ".auth_token")
         monkeypatch.setenv("PLATFORM_URL", "https://example.test")
         monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN", "legacy-tok")
         # Multi-workspace registry populated, but auth_headers() with
@@ -199,10 +204,15 @@ class TestPlatformAuthRegistry:
         assert h["Authorization"] == "Bearer legacy-tok"
 
     def test_auth_headers_with_unknown_workspace_falls_back_to_legacy(
-        self, monkeypatch
+        self, monkeypatch, tmp_path
     ):
         import platform_auth
 
+        # Wipe the module-level token cache and redirect _token_file() to a
+        # non-existent path so the env var isolation is clean. Without this,
+        # the real /configs/.auth_token pollutes the result.
+        platform_auth.clear_cache()
+        monkeypatch.setattr(platform_auth, "_token_file", lambda: tmp_path / ".auth_token")
         monkeypatch.setenv("PLATFORM_URL", "https://example.test")
         monkeypatch.setenv("MOLECULE_WORKSPACE_TOKEN", "legacy-tok")
         platform_auth.register_workspace_token("ws-a", "tok-a")

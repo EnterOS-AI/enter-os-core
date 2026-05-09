@@ -166,9 +166,15 @@ def test_resolve_token_returns_value_and_label_for_env(monkeypatch):
     assert mcp_doctor._resolve_token_summary() == label
 
 
-def test_resolve_token_returns_none_when_missing(monkeypatch):
+def test_resolve_token_returns_none_when_missing(monkeypatch, tmp_path):
     monkeypatch.delenv("MOLECULE_WORKSPACE_TOKEN", raising=False)
     monkeypatch.delenv("MOLECULE_WORKSPACE_TOKEN_FILE", raising=False)
+    # The .auth_token file at /configs/.auth_token (present in container env)
+    # must not pollute the test. Patch configs_dir.resolve() to return a
+    # bare temp dir so the disk-file fallback in _resolve_token() has
+    # nothing to find.
+    import configs_dir
+    monkeypatch.setattr(configs_dir, "resolve", lambda: tmp_path)
     val, label = mcp_doctor._resolve_token()
     assert val is None
     assert label is None
