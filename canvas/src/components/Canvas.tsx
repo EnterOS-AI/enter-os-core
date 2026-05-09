@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -187,6 +187,23 @@ function CanvasInner() {
   // Pan-to-node / zoom-to-team CustomEvent listeners + viewport save.
   const { onMoveEnd } = useCanvasViewport();
 
+  // Screen-reader announcements — read liveAnnouncement from the store and
+  // immediately clear it so the same announcement doesn't re-fire on
+  // re-render. Using a ref avoids a setState loop while keeping the
+  // effect reactive to new announcement strings.
+  const liveAnnouncement = useCanvasStore((s) => s.liveAnnouncement);
+  const clearAnnouncement = useCanvasStore((s) => s.setLiveAnnouncement);
+  const prevAnnouncement = useRef("");
+  useEffect(() => {
+    if (liveAnnouncement && liveAnnouncement !== prevAnnouncement.current) {
+      prevAnnouncement.current = liveAnnouncement;
+      // Small delay so the DOM update lands before clearing, giving
+      // screen readers time to pick up the new text.
+      const timer = setTimeout(() => clearAnnouncement(""), 500);
+      return () => clearTimeout(timer);
+    }
+  }, [liveAnnouncement, clearAnnouncement]);
+
   // Delete-confirmation lives in the store so the dialog survives ContextMenu
   // unmounting — the prior local-in-ContextMenu state raced with the menu's
   // outside-click handler.
@@ -326,11 +343,21 @@ function CanvasInner() {
           <DropTargetBadge />
         </ReactFlow>
 
-        {/* Screen-reader live region: announces workspace count on canvas load or change */}
-        <div role="status" aria-live="polite" className="sr-only">
-          {nodes.filter((n) => !n.parentId).length === 0
-            ? "No workspaces on canvas"
-            : `${nodes.filter((n) => !n.parentId).length} workspace${nodes.filter((n) => !n.parentId).length !== 1 ? "s" : ""} on canvas`}
+        {/* Screen-reader live region — announces workspace count on initial load and
+            live status updates from WebSocket events (online, offline, provisioning, etc.).
+            The liveAnnouncement text is cleared after the screen reader has had time
+            to read it so the same message doesn't re-announce on re-render. */}
+        <div
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          className="sr-only"
+        >
+          {liveAnnouncement || (
+            nodes.filter((n) => !n.parentId).length === 0
+              ? "No workspaces on canvas"
+              : `${nodes.filter((n) => !n.parentId).length} workspace${nodes.filter((n) => !n.parentId).length !== 1 ? "s" : ""} on canvas`
+          )}
         </div>
 
         {nodes.length === 0 && <EmptyState />}

@@ -41,11 +41,10 @@ canvas/src/
 
 ## Known Issues
 
-### 🔴 HIGH: secrets-store.ts Performance
+### ✅ MEDIUM: secrets-store.ts Performance (mitigated)
 **File:** `canvas/src/stores/secrets-store.ts`
-**Issue:** `getGrouped()` selector creates new objects every call (Object.fromEntries + arrays). Not memoized.
-**Impact:** Causes unnecessary re-renders on frequent selector access.
-**Fix needed:** Memoize the selector or use a proper Zustand selector pattern.
+**Issue:** `getGrouped()` selector creates new objects every call. Not memoized.
+**Impact:** Mitigated — `SecretsTab.tsx` wraps the call in `useMemo`, so no active re-render issues in the single consumer. The store-level fix (memoizing `getGrouped` itself) is optional but low priority now.
 
 ### 🟡 MEDIUM: Pre-commit Hook Verification
 **Issue:** Pre-commit hook checks 'use client' on hook-using components but unclear if it actually fails on violations.
@@ -108,7 +107,7 @@ canvas/src/
 
 | Priority | Item | Files | Status |
 |----------|------|-------|--------|
-| HIGH | Screen reader announcements for canvas state changes | Canvas.tsx | Not started |
+| ~~HIGH~~ | ~~Screen reader announcements for canvas state changes~~ | ~~Canvas.tsx, canvas-events.ts, canvas.ts~~ | ✅ Done — PR #172 |
 | MEDIUM | Keyboard shortcut help dialog | useKeyboardShortcuts.ts | Not started |
 | MEDIUM | Keyboard-accessible node drag | WorkspaceNode.tsx, useDragHandlers.ts | Not started |
 | LOW | Edge anchor keyboard accessibility | A2AEdge.tsx | Not started |

@@ -225,6 +225,11 @@ interface CanvasState {
   /** Whether the A2A topology overlay is visible. Persisted to localStorage. Default: true. */
   showA2AEdges: boolean;
   setShowA2AEdges: (show: boolean) => void;
+  /** Screen-reader announcement text. Set by handleCanvasEvent on significant
+   *  status changes; consumed and cleared by the aria-live region in Canvas.tsx
+   *  so the same announcement doesn't re-fire on re-render. */
+  liveAnnouncement: string;
+  setLiveAnnouncement: (msg: string) => void;
 }
 
 export const useCanvasStore = create<CanvasState>((set, get) => ({
@@ -321,6 +326,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       localStorage.setItem("molecule:show-a2a-edges", String(show));
     }
   },
+  liveAnnouncement: "",
+  setLiveAnnouncement: (msg) => set({ liveAnnouncement: msg }),
 
   viewport: { x: 0, y: 0, zoom: 1 },
 
