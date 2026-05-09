@@ -62,9 +62,9 @@ canvas/src/
 ### Edge Wiring ✅
 - **Edge rendering:** React Flow SVG paths
 - **Edge click target:** 1.5px stroke (CSS `stroke-width: 1.5 !important` in globals.css)
-- **Edge creation:** React Flow drag-from-handle
-- **Edge anchors:** Visible on hover (`hover:!bg-blue-400`), not keyboard accessible
-- **Status:** Partial — mouse users only
+- **Edge creation:** React Flow drag-from-handle (mouse); keyboard via handle Enter/Space
+- **Edge anchors:** Target handle (top): `Enter/Space` extracts node from parent. Source handle (bottom): `Enter/Space` nests selected node into this node. Both have `tabIndex=0`, `role="button"`, descriptive `aria-label`, and a blue focus ring ✅
+- **Status:** Mouse + keyboard — keyboard users can nest and un-nest without a mouse
 
 ### Canvas Controls ✅
 - **Zoom:** React Flow Controls component (verify if keyboard accessible)
@@ -111,7 +111,7 @@ canvas/src/
 | ~~HIGH~~ | ~~Screen reader announcements for canvas state changes~~ | ~~Canvas.tsx, canvas-events.ts, canvas.ts~~ | ✅ Done — PR #172 |
 | MEDIUM | Keyboard shortcut help dialog | useKeyboardShortcuts.ts | ✅ Done (PR #175) |
 | MEDIUM | Keyboard-accessible node drag | WorkspaceNode.tsx, useDragHandlers.ts | ✅ Done (this PR) |
-| LOW | Edge anchor keyboard accessibility | A2AEdge.tsx | Not started |
+| LOW | Keyboard-accessible edge anchors | A2AEdge.tsx, WorkspaceNode.tsx | ✅ Done |
 | LOW | Node resize keyboard accessibility | WorkspaceNode.tsx (NodeResizer) | Not started |
 
 ---
