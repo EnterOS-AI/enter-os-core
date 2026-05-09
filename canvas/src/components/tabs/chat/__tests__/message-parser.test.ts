@@ -64,6 +64,54 @@ describe("extractRequestText", () => {
     };
     expect(extractRequestText(body)).toBe("");
   });
+
+  // Regression: delegation.go stores request_body as {"task": "...", "delegation_id": "..."}.
+  // extractRequestText was checking only the A2A params.message.parts path, so
+  // outbound delegation messages were rendered as blank bubbles.
+  // Fix: check body.task first (delegation format), then fall back to A2A.
+  it("extracts text from body.task (delegation format)", () => {
+    const body = {
+      task: "Deploy the staging environment for this sprint's release",
+      delegation_id: "delg_01jx8q4n3k",
+    };
+    expect(extractRequestText(body)).toBe(
+      "Deploy the staging environment for this sprint's release"
+    );
+  });
+
+  it("prefers body.task over A2A params when both present", () => {
+    const body = {
+      task: "Delegation text wins",
+      params: {
+        message: {
+          parts: [{ kind: "text", text: "A2A text" }],
+        },
+      },
+    };
+    // body.task is checked first; delegation wins for delegation activities.
+    expect(extractRequestText(body)).toBe("Delegation text wins");
+  });
+
+  it("falls back to A2A format when body.task is absent", () => {
+    const body = {
+      params: {
+        message: {
+          parts: [{ kind: "text", text: "A2A fallback" }],
+        },
+      },
+    };
+    expect(extractRequestText(body)).toBe("A2A fallback");
+  });
+
+  it("returns empty string when body.task is empty string", () => {
+    const body = { task: "" };
+    expect(extractRequestText(body)).toBe("");
+  });
+
+  it("returns empty string when body.task is not a string", () => {
+    const body = { task: 42 };
+    expect(extractRequestText(body)).toBe("");
+  });
 });
 
 describe("extractResponseText", () => {
