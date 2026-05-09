@@ -304,13 +304,9 @@ jobs:
     needs: [changes, canvas-build]
     # Only fires on direct pushes to main (i.e. after staging→main promotion).
     if: needs.changes.outputs.canvas == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
-    permissions:
-      # Required to post commit comments via the GitHub API.
-      contents: write
     steps:
-      - name: Post deploy reminder as commit comment
+      - name: Write deploy reminder to step summary
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMIT_SHA: ${{ github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -337,10 +333,13 @@ jobs:
           printf '\n> Posted automatically by CI · commit `%s` · [build log](%s)\n' \
             "$COMMIT_SHA" "$RUN_URL" >> /tmp/deploy-reminder.md
 
-          gh api \
-            --method POST \
-            "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" \
-            --field "body=@/tmp/deploy-reminder.md"
+          # Gitea has no commit-comments API (no equivalent of
+          # POST /repos/{owner}/{repo}/commits/{commit_sha}/comments).
+          # Write to GITHUB_STEP_SUMMARY instead — both GitHub Actions and
+          # Gitea Actions render this as the workflow run's summary page,
+          # which is where operators look for post-deploy action items.
+          # (#75 / PR-D)
+          cat /tmp/deploy-reminder.md >> "$GITHUB_STEP_SUMMARY"
 
   # Python Lint & Test — required check, always runs. See platform-build
   # for the rationale.
