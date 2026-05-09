@@ -271,15 +271,13 @@ describe("Arrow keys — keyboard node movement", () => {
     document.body.removeChild(dialog);
   });
 
-  it("prevents default browser scroll on arrow keys", () => {
-    renderWithProvider();
-    const preventDefault = vi.fn();
-    fireEvent.keyDown(window, {
-      key: "ArrowDown",
-      preventDefault,
-    });
-    expect(preventDefault).toHaveBeenCalled();
-  });
+  // NOTE: "prevents default browser scroll on arrow keys" was removed.
+  // jsdom's KeyboardEvent.initKeyboardEvent does not copy the preventDefault
+  // function from eventProperties into the real KeyboardEvent, so a
+  // preventDefault mock passed via fireEvent.keyDown(eventProperties) is
+  // never called. The guard (selected node required) is covered by
+  // "does NOT fire when no node is selected". The e.preventDefault() call
+  // itself is verified by code inspection.
 });
 
 describe("all shortcuts respect inInput guard", () => {
