@@ -2,6 +2,54 @@
 
 > **Status:** VERIFIED — Cross-referenced against molecule-core/canvas/src/ (2026-05-09)
 > **Author:** Core-FE (draft), Core-UIUX (verification)
+> **Updated:** 2026-05-09 with architecture structure + known issues
+
+## Canvas Stack (Verified)
+
+| Technology | Version | Purpose |
+|-----------|--------|---------|
+| React Flow | `@xyflow/react` v12 | Node/edge rendering |
+| Framework | Next.js 14 App Router | Routing, SSR |
+| Styling | Tailwind v4 | CSS with custom properties |
+| State | Zustand | Client state management |
+
+## Directory Structure (Verified)
+
+```
+canvas/src/
+├── components/
+│   ├── Canvas.tsx           # Viewport management, ReactFlow wrapper
+│   ├── Toolbar.tsx          # Add node/edge controls
+│   ├── ContextMenu.tsx      # Right-click menu
+│   ├── SidePanel.tsx        # Properties panel
+│   ├── WorkspaceNode.tsx     # Node rendering
+│   ├── A2AEdge.tsx          # Edge rendering
+│   └── [tests]/             # Accessibility + component tests
+├── stores/
+│   └── secrets-store.ts     # ⚠️ getGrouped() performance issue
+├── hooks/
+│   ├── useSocketEvent.ts
+│   ├── useTemplateDeploy.tsx
+│   └── useWorkspaceName.ts
+└── lib/
+    ├── api.ts
+    ├── auth.ts
+    ├── canvas-actions.ts
+    ├── design-tokens.ts     # STATUS_CONFIG, TIER_CONFIG
+    ├── theme.ts
+    └── theme-provider.tsx   # ThemeProvider, useTheme()
+
+## Known Issues
+
+### 🔴 HIGH: secrets-store.ts Performance
+**File:** `canvas/src/stores/secrets-store.ts`
+**Issue:** `getGrouped()` selector creates new objects every call (Object.fromEntries + arrays). Not memoized.
+**Impact:** Causes unnecessary re-renders on frequent selector access.
+**Fix needed:** Memoize the selector or use a proper Zustand selector pattern.
+
+### 🟡 MEDIUM: Pre-commit Hook Verification
+**Issue:** Pre-commit hook checks 'use client' on hook-using components but unclear if it actually fails on violations.
+**Action:** Verify the hook is enforcing the rule correctly.
 
 ## Verified Findings
 

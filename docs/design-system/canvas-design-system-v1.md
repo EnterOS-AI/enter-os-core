@@ -378,10 +378,47 @@ Canvas uses `@xyflow/react` (React Flow).
 
 ---
 
-## 8. Remaining Open Items
+## 8. Canvas Architecture (Verified)
 
-1. **Visual regression tests** — No screenshot/visual tests exist yet. KI-006 tracks this gap.
+**Stack:**
+- `@xyflow/react` v12 (React Flow) — node/edge rendering
+- Next.js 14 App Router
+- Tailwind v4 with CSS custom properties
+- Zustand for state management
+
+**Directory Structure:**
+```
+canvas/src/
+├── components/        # Canvas.tsx, Toolbar.tsx, ContextMenu.tsx, SidePanel.tsx, WorkspaceNode.tsx, A2AEdge.tsx
+├── stores/           # secrets-store.ts (only store)
+├── hooks/            # useSocketEvent.ts, useTemplateDeploy.tsx, useWorkspaceName.ts
+├── lib/              # api.ts, auth.ts, canvas-actions.ts, design-tokens.ts, theme.ts, theme-provider.tsx
+└── app/             # Next.js App Router
+```
+
+## 9. Known Issues (Technical Debt)
+
+### Performance Issues
+- **secrets-store.ts getGrouped() selector** — Creates new objects every call (Object.fromEntries + arrays) — not memoized. Causes performance issues with frequent re-renders. Needs selector optimization.
+
+### Code Quality
+- Check for `any` types in canvas/ directory
+- Verify pre-commit hook actually fails on 'use client' violations (unverified)
+- Verify all Zustand selectors avoid object creation (see getGrouped issue above)
+- Check 'use client' directive on hook-using components
+
+### Testing
+- Add axe-core integration for automated accessibility testing
+- Visual regression tests — no screenshot tests exist yet (KI-006)
+- Target >80% test coverage on changed files
+
+## 10. Remaining Open Items
+
+### Accessibility Gaps
+1. **Screen reader announcements** — Node/edge changes not announced. Need `aria-live="polite"` region.
 2. **Keyboard shortcut help dialog** — No dedicated dialog. Shortcuts exist in `useKeyboardShortcuts.ts` but no `aria-describedby` hints on buttons.
-3. **Screen reader announcements for canvas state changes** — Node/edge changes not announced. Consider `aria-live="polite"` region.
-4. **Edge anchor accessibility** — React Flow handles are purely visual. May need ARIA annotations for screen readers.
-5. **Drag-and-drop keyboard alternative** — Drag uses mouse primarily. No keyboard equivalent for node rearrangement.
+3. **Edge anchor accessibility** — React Flow handles purely visual. Need ARIA annotations for screen readers.
+4. **Drag-and-drop keyboard alternative** — Mouse only. Need keyboard equivalent for node rearrangement.
+
+### Performance
+5. **secrets-store.ts getGrouped()** — Not memoized, creates new objects every call.
