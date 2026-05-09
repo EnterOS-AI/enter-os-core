@@ -378,6 +378,44 @@ func TestIsTransientProxyError_RetriesOnRestartRaceStatuses(t *testing.T) {
 	}
 }
 
+// TestIsDeliveryConfirmedSuccess — regression guard for #159: the proxy can
+// return a complete 2xx body and THEN raise a transport error (e.g. the TCP
+// connection drops after the response is received but before close). In that
+// case the agent did the work; marking the delegation "failed" causes the
+// retry-storm + Restart-workspace cascade described in #159. The new helper
+// distinguishes this from genuine failures.
+func TestIsDeliveryConfirmedSuccess(t *testing.T) {
+	connErr := &proxyA2AError{Status: http.StatusOK, Response: gin.H{}}
+	cases := []struct {
+		name     string
+		proxyErr *proxyA2AError
+		status   int
+		body     []byte
+		expect   bool
+	}{
+		// The new branch: 2xx + body + transport error → recover as success.
+		{"200 + body + connreset (THE bug fix path)", connErr, http.StatusOK, []byte(`{"text":"ok"}`), true},
+		{"299 + body + connreset (boundary high)", connErr, 299, []byte(`{"text":"ok"}`), true},
+		{"200 + body + connreset (boundary low)", connErr, 200, []byte(`{"x":1}`), true},
+		// Negative cases: any one of the three preconditions failing → false.
+		{"nil proxyErr (no decision to make)", nil, http.StatusOK, []byte(`{"text":"ok"}`), false},
+		{"empty body (no work-result to recover)", connErr, http.StatusOK, []byte{}, false},
+		{"nil body (no work-result to recover)", connErr, http.StatusOK, nil, false},
+		{"4xx with body — agent signalled failure, do not promote", connErr, http.StatusBadRequest, []byte(`{"err":"bad"}`), false},
+		{"5xx with body — agent signalled failure, do not promote", connErr, http.StatusInternalServerError, []byte(`{"err":"crash"}`), false},
+		{"3xx with body — redirect, not a result", connErr, 301, []byte(`{"loc":"/x"}`), false},
+		{"199 status (under 200) — not a 2xx", connErr, 199, []byte(`{"x":1}`), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isDeliveryConfirmedSuccess(tc.proxyErr, tc.status, tc.body); got != tc.expect {
+				t.Errorf("isDeliveryConfirmedSuccess(%v, %d, %q) = %v, want %v",
+					tc.proxyErr, tc.status, string(tc.body), got, tc.expect)
+			}
+		})
+	}
+}
+
 func TestIsQueuedProxyResponse(t *testing.T) {
 	// Regression guard for the chat-leak bug: when the proxy returns
 	// 202 with a queued-shape body, executeDelegation must classify it
