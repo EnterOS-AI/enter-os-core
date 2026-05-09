@@ -34,7 +34,7 @@ name: Handlers Postgres Integration
 # So we sidestep `services:` entirely. The job container still uses
 # host-net (inherited from runner config; required for cache server
 # discovery on the bridge IP 172.18.0.17:42631). We launch a sibling
-# postgres on the existing `molecule-monorepo-net` bridge with a
+# postgres on the existing `molecule-core-net` bridge with a
 # UNIQUE name per run — `pg-handlers-${RUN_ID}-${RUN_ATTEMPT}` — and
 # read its bridge IP via `docker inspect`. A host-net job container
 # can reach a bridge-net container directly via the bridge IP (verified
@@ -44,7 +44,7 @@ name: Handlers Postgres Integration
 #   + No host-port collision; N parallel runs share the bridge cleanly
 #   + `if: always()` cleanup runs even on test-step failure
 #   - One more step in the workflow (+~3 lines)
-#   - Requires `molecule-monorepo-net` to exist on the operator host
+#   - Requires `molecule-core-net` to exist on the operator host
 #     (it does; declared in docker-compose.yml + docker-compose.infra.yml)
 #
 # Class B Hongming-owned CICD red sweep, 2026-05-08.
@@ -96,7 +96,7 @@ jobs:
       PG_NAME: pg-handlers-${{ github.run_id }}-${{ github.run_attempt }}
       # Bridge network already exists on the operator host (declared
       # in docker-compose.yml + docker-compose.infra.yml).
-      PG_NETWORK: molecule-monorepo-net
+      PG_NETWORK: molecule-core-net
     defaults:
       run:
         working-directory: workspace-server

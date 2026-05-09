@@ -51,7 +51,7 @@ name: E2E API Smoke Test
 #   * Pre-pull `alpine:latest` so the platform-server's provisioner
 #     (`internal/handlers/container_files.go`) can stand up its
 #     ephemeral token-write helper without a daemon.io round-trip.
-#   * Create `molecule-monorepo-net` bridge network if missing so the
+#   * Create `molecule-core-net` bridge network if missing so the
 #     provisioner's container.HostConfig {NetworkMode: ...} attach
 #     succeeds.
 # Item #1 (timeouts) — evidence on recent runs (77/3191, ae/4270, 0e/
@@ -163,12 +163,12 @@ jobs:
           # when the image is already present.
           docker pull alpine:latest >/dev/null
           # Provisioner attaches workspace containers to
-          # molecule-monorepo-net (workspace-server/internal/provisioner/
+          # molecule-core-net (workspace-server/internal/provisioner/
           # provisioner.go::DefaultNetwork). The bridge already exists on
           # the operator host's docker daemon — `network create` is
           # idempotent via `|| true`.
-          docker network create molecule-monorepo-net >/dev/null 2>&1 || true
-          echo "alpine:latest pre-pulled; molecule-monorepo-net ensured."
+          docker network create molecule-core-net >/dev/null 2>&1 || true
+          echo "alpine:latest pre-pulled; molecule-core-net ensured."
       - name: Start Postgres (docker)
         if: needs.detect-changes.outputs.api == 'true'
         run: |

@@ -3,7 +3,7 @@ the workspace auth token is not yet on disk.
 
 Prior behaviour (regressed in #287): `if expected:` skipped the auth
 check when `get_token()` returned None, so any container on
-`molecule-monorepo-net` could read the full session log during the
+`molecule-core-net` could read the full session log during the
 bootstrap window. The fix lifts the guard into transcript_auth.py for
 testability.
 """

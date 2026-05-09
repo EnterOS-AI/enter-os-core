@@ -173,7 +173,7 @@ func (h *WorkspaceHandler) provisionWorkspaceOpts(workspaceID, templatePath stri
 			log.Printf("Provisioner: failed to cache URL for %s: %v", workspaceID, cacheErr)
 		}
 		// Also cache the Docker-internal URL for workspace-to-workspace discovery.
-		// Containers on molecule-monorepo-net can reach each other by container name.
+		// Containers on molecule-core-net can reach each other by container name.
 		internalURL := provisioner.InternalURL(workspaceID)
 		if cacheErr := db.CacheInternalURL(ctx, workspaceID, internalURL); cacheErr != nil {
 			log.Printf("Provisioner: failed to cache internal URL for %s: %v", workspaceID, cacheErr)

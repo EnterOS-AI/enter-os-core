@@ -67,7 +67,7 @@ var DefaultImage = RuntimeImage(defaultRuntime)
 
 const (
 	// DefaultNetwork is the Docker network workspaces join.
-	DefaultNetwork = "molecule-monorepo-net"
+	DefaultNetwork = "molecule-core-net"
 
 	// DefaultPort is the port the A2A server listens on inside the container.
 	DefaultPort = "8000"
@@ -405,7 +405,7 @@ func (p *Provisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string, e
 	// Apply tier-based container configuration
 	ApplyTierConfig(hostCfg, cfg, configMount, name)
 
-	// Network config — join molecule-monorepo-net with container name as alias
+	// Network config — join molecule-core-net with container name as alias
 	networkCfg := &network.NetworkingConfig{
 		EndpointsConfig: map[string]*network.EndpointSettings{
 			DefaultNetwork: {

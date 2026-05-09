@@ -19,7 +19,7 @@ The provisioner is the platform component that deploys workspace containers and 
 
 ## Docker Networking (Tier 1-3, Tier 4 uses host)
 
-All workspace containers join the `molecule-monorepo-net` Docker network. Containers are named `ws-{id[:12]}` (first 12 chars of workspace UUID). Two exported helpers in `provisioner` package provide the canonical naming:
+All workspace containers join the `molecule-core-net` Docker network. Containers are named `ws-{id[:12]}` (first 12 chars of workspace UUID). Two exported helpers in `provisioner` package provide the canonical naming:
 
 - `provisioner.ContainerName(workspaceID)` → `ws-{id[:12]}`
 - `provisioner.InternalURL(workspaceID)` → `http://ws-{id[:12]}:8000`
@@ -38,7 +38,7 @@ This URL is pre-stored in both Postgres and Redis before the agent registers. Wh
 
 **Why not use Docker-internal URLs?** In local dev, the platform runs on the host (not in Docker), so it cannot resolve Docker container hostnames. The ephemeral port mapping lets the A2A proxy reach agents via localhost. In production (platform in Docker), the Docker-internal URL (`http://ws-{id}:8000`) would work directly.
 
-**Workspace-to-workspace discovery:** When a workspace discovers another workspace (via `X-Workspace-ID` header on `GET /registry/discover/:id`), the platform returns the Docker-internal URL (`http://ws-{first12chars}:8000`) so containers can reach each other directly on `molecule-monorepo-net`. The internal URL is cached in Redis at provision time and also synthesized as a fallback if the cache misses (only for online/degraded workspaces).
+**Workspace-to-workspace discovery:** When a workspace discovers another workspace (via `X-Workspace-ID` header on `GET /registry/discover/:id`), the platform returns the Docker-internal URL (`http://ws-{first12chars}:8000`) so containers can reach each other directly on `molecule-core-net`. The internal URL is cached in Redis at provision time and also synthesized as a fallback if the cache misses (only for online/degraded workspaces).
 
 For external HTTPS access (multi-host mode), Nginx on the host handles TLS termination and proxies to the container.
 

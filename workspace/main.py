@@ -434,7 +434,7 @@ async def main():  # pragma: no cover
 
     async def _transcript_handler(request):
         # Require workspace bearer token — the same token issued at registration
-        # and stored in /configs/.auth_token. Any container on molecule-monorepo-net
+        # and stored in /configs/.auth_token. Any container on molecule-core-net
         # could otherwise read the full session log. Closes #287.
         #
         # #328: fail CLOSED when the token file is unavailable. get_token()
