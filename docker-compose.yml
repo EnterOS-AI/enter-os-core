@@ -1,3 +1,7 @@
+# Include infra services (Temporal, Langfuse) so `docker compose up` starts the full stack.
+include:
+  - docker-compose.infra.yml
+
 services:
   # --- Infrastructure ---
   postgres:
