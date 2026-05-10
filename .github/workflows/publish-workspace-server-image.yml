@@ -107,6 +107,22 @@ jobs:
         run: |
           echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
+      # Health check: verify Docker daemon is accessible before attempting any
+      # build steps. This fails loudly at step 1 when the runner's docker.sock
+      # is inaccessible rather than silently continuing to the build step
+      # where docker build fails deep in ECR auth with a cryptic error.
+      - name: Verify Docker daemon access
+        run: |
+          set -euo pipefail
+          echo "::group::Docker daemon health check"
+          docker info 2>&1 | head -5 || {
+            echo "::error::Docker daemon is not accessible at /var/run/docker.sock"
+            echo "::error::Check: (1) daemon running, (2) runner user in docker group, (3) sock perms 660+"
+            exit 1
+          }
+          echo "Docker daemon OK"
+          echo "::endgroup::"
+
       # Pre-clone manifest deps before docker build (Task #173 fix).
       #
       # Why pre-clone: post-2026-05-06, every workspace-template-* repo on
