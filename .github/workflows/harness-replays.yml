@@ -56,21 +56,40 @@ jobs:
       run: ${{ steps.decide.outputs.run }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
-        id: filter
-        with:
-          filters: |
-            run:
-              - 'workspace-server/**'
-              - 'canvas/**'
-              - 'tests/harness/**'
-              - '.github/workflows/harness-replays.yml'
       - id: decide
         run: |
+          # workflow_dispatch: always run (manual trigger)
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "debug=manual-trigger" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Determine the base commit to diff against.
+          # For pull_request: use base.sha (the merge-base with main/staging).
+          # For push: use github.event.before (the previous tip of the branch).
+          # Fallback for new branches (all-zeros SHA): run everything.
+          if [ "${{ github.event_name }}" = "pull_request" ] && \
+             [ -n "${{ github.event.pull_request.base.sha }}" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          elif [ -n "${{ github.event.before }}" ] && \
+               ! echo "${{ github.event.before }}" | grep -qE '^0+$'; then
+            BASE="${{ github.event.before }}"
           else
-            echo "run=${{ steps.filter.outputs.run }}" >> "$GITHUB_OUTPUT"
+            # New branch or github.event.before unavailable — run everything.
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "debug=new-branch-fallback" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # GitHub Actions and Gitea Actions both expose github.sha for HEAD.
+          DIFF=$(git diff --name-only "$BASE" "${{ github.sha }}" 2>/dev/null)
+          echo "debug=diff-base=$BASE diff-files=$DIFF" >> "$GITHUB_OUTPUT"
+
+          if echo "$DIFF" | grep -qE '^workspace-server/|^canvas/|^tests/harness/|^.github/workflows/harness-replays\.yml$'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
           fi
 
   # ONE job that always runs. Real work is gated per-step on
@@ -91,9 +110,16 @@ jobs:
         run: |
           echo "No workspace-server / canvas / tests/harness / workflow changes — Harness Replays gate satisfied without running."
           echo "::notice::Harness Replays no-op pass (paths filter excluded this commit)."
+          echo "::notice::Debug: ${{ needs.detect-changes.outputs.debug }}"
 
       - if: needs.detect-changes.outputs.run == 'true'
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Log what files were detected so future failures include the diff.
+      - name: Log detected changes
+        if: needs.detect-changes.outputs.run == 'true'
+        run: |
+          echo "::notice::detect-changes debug: ${{ needs.detect-changes.outputs.debug }}"
 
       # github-app-auth sibling-checkout removed 2026-05-07 (#157):
       # the plugin was dropped + Dockerfile.tenant no longer COPYs it.
