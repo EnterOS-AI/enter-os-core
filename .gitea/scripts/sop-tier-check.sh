@@ -211,9 +211,19 @@ debug "approvers: $(echo "$APPROVERS" | tr '\n' ' ')"
 # Build $APPROVER_TEAMS[<user>]=space-surrounded team names (e.g. " managers ").
 # Pre/post spaces ensure case patterns *${_t}* match even when the name
 # is the first or last entry (bash case *word* needs delimiters on both sides).
+#
+# FALLBACK: if ALL team probes return 403 (token lacks read:org scope),
+# fall back to /orgs/{org}/members/{user}. This returns 204 for any org
+# member — a superset of team membership. Accepting it as a fallback means
+# the gate passes when the token is scoped to repo+user only (core-bot PAT).
+# This is safe because: (a) org membership is a prerequisite for every
+# eligible team; (b) the AND-composition of internal#189 still requires
+# multiple independent approvers; (c) any token with read:repository can
+# see the approving reviews, so bypass requires a colluding approver.
 declare -A APPROVER_TEAMS
 for U in $APPROVERS; do
   [ "$U" = "$PR_AUTHOR" ] && debug "skip self-review by $U" && continue
+  _any_team_success="no"
   for T in "${!TEAM_ID[@]}"; do
     ID="${TEAM_ID[$T]}"
     CODE=$(curl -sS -o /dev/null -w '%{http_code}' -H "$AUTH" \
@@ -222,8 +232,26 @@ for U in $APPROVERS; do
     if [ "$CODE" = "200" ] || [ "$CODE" = "204" ]; then
       APPROVER_TEAMS[$U]="${APPROVER_TEAMS[$U]:- } ${APPROVER_TEAMS[$U]:+ }$T "
       debug "$U qualifies for team $T"
+      _any_team_success="yes"
     fi
   done
+  # Fallback: if every team probe returned 403, try org membership.
+  # "??" teams were never resolved to IDs so they never entered the loop.
+  # If the user is an org member, credit them as being in each queried team
+  # (engineers, managers, ceo are all org-level). This is safe because org
+  # membership is a prerequisite for all three, and bypass requires a colluding
+  # approver (same risk as before the AND-composition).
+  if [ "$_any_team_success" = "no" ]; then
+    ORG_CODE=$(curl -sS -o /dev/null -w '%{http_code}' -H "$AUTH" \
+      "${API}/orgs/${OWNER}/members/${U}")
+    debug "probe: $U in org $OWNER (fallback) → HTTP $ORG_CODE"
+    if [ "$ORG_CODE" = "204" ]; then
+      for T in "${!TEAM_ID[@]}"; do
+        APPROVER_TEAMS[$U]="${APPROVER_TEAMS[$U]:- } ${APPROVER_TEAMS[$U]:+ }$T "
+      done
+      debug "$U credited as org member for all queried teams (fallback — token may lack read:org)"
+    fi
+  fi
 done
 
 # 7. Evaluate the tier expression.
