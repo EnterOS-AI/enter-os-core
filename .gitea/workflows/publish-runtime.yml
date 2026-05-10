@@ -1,0 +1,303 @@
+name: publish-runtime
+
+# Gitea Actions port of .github/workflows/publish-runtime.yml.
+#
+# Ported 2026-05-10 (issue #206). Key differences from the GitHub version:
+#   - Gitea Actions reads .gitea/workflows/, not .github/workflows/
+#   - Dropped `environment: pypi-publish` — Gitea Actions does not support
+#     named environments or OIDC trusted publishers
+#   - Replaced `pypa/gh-action-pypi-publish@release/v1` (OIDC) with
+#     `twine upload` using PYPI_TOKEN secret — same mechanism as a local
+#     `python -m twine upload` with a PyPI token
+#   - Replaced `github.ref_name` (GitHub-only) with `${GITHUB_REF#refs/tags/}`
+#     — Gitea Actions exposes github.ref (the full ref) but not ref_name
+#   - Dropped `merge_group` trigger (Gitea has no merge queue)
+#   - Dropped `staging` branch trigger (no staging branch exists in this repo)
+#
+# PyPI publishing: requires PYPI_TOKEN repository secret (or org-level secret).
+# Set via: repo Settings → Actions → Variables and Secrets → New Secret.
+# The token should be a PyPI API token scoped to molecule-ai-workspace-runtime.
+#
+# The DISPATCH_TOKEN cascade (git push to template repos) is unchanged —
+# it uses the Gitea API directly and was already Gitea-compatible.
+
+on:
+  push:
+    tags:
+      - "runtime-v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 0.1.6). Required for manual dispatch."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Serialize publishes so two concurrent tag pushes don't both compute
+# "latest+1" and race on PyPI upload. The second one waits.
+concurrency:
+  group: publish-runtime
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      wheel_sha256: ${{ steps.wheel_hash.outputs.wheel_sha256 }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Derive version (tag, manual input, or PyPI auto-bump)
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          elif echo "$GITHUB_REF" | grep -q "^refs/tags/runtime-v"; then
+            # Tag is `runtime-vX.Y.Z` — strip the prefix.
+            VERSION="${GITHUB_REF#refs/tags/runtime-v}"
+          else
+            # Fallback: derive from PyPI latest + patch bump.
+            # (The staging-push auto-bump trigger is dropped on Gitea —
+            # no staging branch exists. This fallback path is kept for
+            # robustness if a future automation uses workflow_dispatch without
+            # an explicit version input.)
+            LATEST=$(curl -fsS --retry 3 https://pypi.org/pypi/molecule-ai-workspace-runtime/json \
+              | python -c "import sys,json; print(json.load(sys.stdin)['info']['version'])")
+            MAJOR=$(echo "$LATEST" | cut -d. -f1)
+            MINOR=$(echo "$LATEST" | cut -d. -f2)
+            PATCH=$(echo "$LATEST" | cut -d. -f3)
+            VERSION="${MAJOR}.${MINOR}.$((PATCH+1))"
+            echo "Auto-bumped from PyPI latest $LATEST -> $VERSION"
+          fi
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(\.dev[0-9]+|rc[0-9]+|a[0-9]+|b[0-9]+|\.post[0-9]+)?$'; then
+            echo "::error::version $VERSION does not match PEP 440"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Publishing molecule-ai-workspace-runtime $VERSION"
+
+      - name: Install build tooling
+        run: pip install build twine
+
+      - name: Build package from workspace/
+        run: |
+          python scripts/build_runtime_package.py \
+            --version "${{ steps.version.outputs.version }}" \
+            --out "${{ runner.temp }}/runtime-build"
+
+      - name: Build wheel + sdist
+        working-directory: ${{ runner.temp }}/runtime-build
+        run: python -m build
+
+      - name: Capture wheel SHA256 for cascade content-verification
+        id: wheel_hash
+        working-directory: ${{ runner.temp }}/runtime-build
+        run: |
+          set -eu
+          WHEEL=$(ls dist/*.whl 2>/dev/null | head -1)
+          if [ -z "$WHEEL" ]; then
+            echo "::error::No .whl in dist/ — \`python -m build\` must have failed silently"
+            exit 1
+          fi
+          HASH=$(sha256sum "$WHEEL" | awk '{print $1}')
+          echo "wheel_sha256=${HASH}" >> "$GITHUB_OUTPUT"
+          echo "Local wheel SHA256 (pre-upload): ${HASH}"
+          echo "Wheel filename: $(basename "$WHEEL")"
+
+      - name: Verify package contents (sanity)
+        working-directory: ${{ runner.temp }}/runtime-build
+        run: |
+          python -m twine check dist/*
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install --quiet dist/*.whl
+          /tmp/smoke/bin/python "$GITHUB_WORKSPACE/scripts/wheel_smoke.py"
+
+      - name: Publish to PyPI
+        env:
+          # PYPI_TOKEN: repository secret scoped to molecule-ai-workspace-runtime.
+          # Set via: Settings → Actions → Variables and Secrets → New Secret.
+          # Format: pypi-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          if [ -z "$PYPI_TOKEN" ]; then
+            echo "::error::PYPI_TOKEN secret is not set — set it at Settings → Actions → Variables and Secrets → New Secret."
+            echo "::error::Required format: pypi-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+            exit 1
+          fi
+          python -m twine upload \
+            --repository pypi \
+            --username __token__ \
+            --password "$PYPI_TOKEN" \
+            dist/*
+
+  cascade:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for PyPI to propagate the new version
+        env:
+          RUNTIME_VERSION: ${{ needs.publish.outputs.version }}
+          EXPECTED_SHA256: ${{ needs.publish.outputs.wheel_sha256 }}
+        run: |
+          set -eu
+          if [ -z "$EXPECTED_SHA256" ]; then
+            echo "::error::publish job did not expose wheel_sha256 — cannot verify wheel content. Refusing to fan out cascade."
+            exit 1
+          fi
+          python -m venv /tmp/propagation-probe
+          PROBE=/tmp/propagation-probe/bin
+          $PROBE/pip install --upgrade --quiet pip
+          for i in $(seq 1 30); do
+            if $PROBE/pip install \
+                  --quiet \
+                  --no-cache-dir \
+                  --force-reinstall \
+                  --no-deps \
+                  "molecule-ai-workspace-runtime==${RUNTIME_VERSION}" \
+                  >/dev/null 2>&1; then
+              INSTALLED=$($PROBE/pip show molecule-ai-workspace-runtime 2>/dev/null \
+                          | awk -F': ' '/^Version:/{print $2}')
+              if [ "$INSTALLED" = "$RUNTIME_VERSION" ]; then
+                echo "✓ PyPI resolved $RUNTIME_VERSION (install check)"
+                break
+              fi
+            fi
+            if [ $i -eq 30 ]; then
+              echo "::error::pip install --no-cache-dir molecule-ai-workspace-runtime==${RUNTIME_VERSION} never resolved within ~5 min."
+              echo "::error::Refusing to fan out cascade against a potentially stale PyPI index."
+              exit 1
+            fi
+            echo "  [$i/30] waiting for PyPI to propagate ${RUNTIME_VERSION}..."
+            sleep 4
+          done
+
+          # Stage (b): download wheel + SHA256 compare against what we built.
+          # Catches Fastly stale-content serving old bytes under a new version URL.
+          HASH=$(python -m pip download \
+                    --no-deps \
+                    --no-cache-dir \
+                    --dest /tmp/wheel-probe \
+                    "molecule-ai-workspace-runtime==${RUNTIME_VERSION}" \
+                    2>/dev/null \
+                 && sha256sum /tmp/wheel-probe/*.whl | awk '{print $1}')
+          if [ "$HASH" != "$EXPECTED_SHA256" ]; then
+            echo "::error::PyPI propagated $RUNTIME_VERSION but wheel content SHA256 mismatch."
+            echo "::error::Expected: $EXPECTED_SHA256"
+            echo "::error::Got:      $HASH"
+            echo "::error::Fastly may be serving stale content. Refusing to fan out cascade."
+            exit 1
+          fi
+          echo "✓ PyPI CDN verified (SHA256 match)"
+
+      - name: Fan out via push to .runtime-version
+        env:
+          # Gitea PAT with write:repository scope on the 8 cascade-active
+          # template repos. Used for git push to each template repo's main
+          # branch, which trips their `on: push: branches: [main]` trigger
+          # on publish-image.yml.
+          DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+          RUNTIME_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set +e   # don't abort on a single repo failure — collect them all
+
+          if [ -z "$DISPATCH_TOKEN" ]; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "::warning::DISPATCH_TOKEN secret not set — skipping cascade."
+              echo "::warning::set it at Settings → Actions → Variables and Secrets → New Secret."
+              exit 0
+            fi
+            echo "::error::DISPATCH_TOKEN secret missing — cascade cannot fan out."
+            echo "::error::PyPI was published, but the 8 template repos will NOT pick up the new version."
+            exit 1
+          fi
+          VERSION="$RUNTIME_VERSION"
+          if [ -z "$VERSION" ]; then
+            echo "::error::publish job did not expose a version output"
+            exit 1
+          fi
+
+          GITEA_URL="${GITEA_URL:-https://git.moleculesai.app}"
+          TEMPLATES="claude-code hermes openclaw codex langgraph crewai autogen deepagents gemini-cli"
+          FAILED=""
+          SKIPPED=""
+
+          git config --global user.name  "publish-runtime cascade"
+          git config --global user.email "publish-runtime@moleculesai.app"
+
+          WORKDIR="$(mktemp -d)"
+          for tpl in $TEMPLATES; do
+            REPO="molecule-ai/molecule-ai-workspace-template-$tpl"
+            CLONE="$WORKDIR/$tpl"
+
+            HTTP=$(curl -sS -o /dev/null -w "%{http_code}" \
+              -H "Authorization: token $DISPATCH_TOKEN" \
+              "$GITEA_URL/api/v1/repos/$REPO/contents/.github/workflows/publish-image.yml")
+            if [ "$HTTP" = "404" ]; then
+              echo "↷ $tpl has no publish-image.yml — soft-skip"
+              SKIPPED="$SKIPPED $tpl"
+              continue
+            fi
+
+            attempt=0
+            success=false
+            while [ $attempt -lt 3 ]; do
+              attempt=$((attempt + 1))
+              rm -rf "$CLONE"
+              if ! git clone --depth=1 \
+                  "https://x-access-token:${DISPATCH_TOKEN}@${GITEA_URL#https://}/$REPO.git" \
+                  "$CLONE" >/tmp/clone.log 2>&1; then
+                echo "::warning::clone $tpl attempt $attempt failed: $(tail -n3 /tmp/clone.log)"
+                sleep 2
+                continue
+              fi
+
+              cd "$CLONE"
+              echo "$VERSION" > .runtime-version
+
+              if git diff --quiet -- .runtime-version; then
+                echo "✓ $tpl already at $VERSION — no commit needed"
+                success=true
+                cd - >/dev/null
+                break
+              fi
+
+              git add .runtime-version
+              git commit -m "chore: pin runtime to $VERSION (publish-runtime cascade)" \
+                -m "Co-Authored-By: publish-runtime cascade <publish-runtime@moleculesai.app>" \
+                >/dev/null
+
+              if git push origin HEAD:main >/tmp/push.log 2>&1; then
+                echo "✓ $tpl pushed $VERSION on attempt $attempt"
+                success=true
+                cd - >/dev/null
+                break
+              fi
+
+              echo "::warning::push $tpl attempt $attempt failed, pull-rebasing"
+              git pull --rebase origin main >/tmp/rebase.log 2>&1 || true
+              cd - >/dev/null
+            done
+
+            if [ "$success" != "true" ]; then
+              FAILED="$FAILED $tpl"
+            fi
+          done
+          rm -rf "$WORKDIR"
+
+          if [ -n "$FAILED" ]; then
+            echo "::error::Cascade incomplete after 3 retries each. Failed:$FAILED"
+            exit 1
+          fi
+          if [ -n "$SKIPPED" ]; then
+            echo "Cascade complete: pinned $VERSION. Soft-skipped (no publish-image.yml):$SKIPPED"
+          else
+            echo "Cascade complete: $VERSION pinned across all manifest workspace_templates."
+          fi

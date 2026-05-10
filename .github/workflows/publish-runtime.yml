@@ -1,5 +1,15 @@
 name: publish-runtime
 
+# DEPRECATED on Gitea Actions — this file is kept for reference only.
+# Gitea Actions reads .gitea/workflows/, not .github/workflows/.
+# The canonical version is now: .gitea/workflows/publish-runtime.yml
+# That port:
+#   - Drops OIDC trusted publisher (Gitea has no environments/OIDC)
+#   - Uses PYPI_TOKEN secret instead of gh-action-pypi-publish
+#   - Uses ${GITHUB_REF#refs/tags/} instead of github.ref_name
+#   - Drops staging branch trigger (staging branch does not exist)
+#   - Drops merge_group trigger (Gitea has no merge queue)
+#
 # Publishes molecule-ai-workspace-runtime to PyPI from monorepo workspace/.
 # Monorepo workspace/ is the only source-of-truth for runtime code; this
 # workflow is the bridge from monorepo edits to the PyPI artifact that
