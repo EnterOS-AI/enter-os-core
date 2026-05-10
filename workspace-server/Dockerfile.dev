@@ -13,7 +13,7 @@
 # developer's filesystem has the workspace-configs-templates/ + plugins/
 # dirs available, mounted at runtime via docker-compose.dev.yml.
 
-FROM golang:1.25-alpine
+FROM golang:1.25-alpine@sha256:c4ea15b4a7912716eb362a022e2b12317762eca387423760bc59c0f9ae69423c
 
 # air + git (for go mod) + ca-certs (for TLS) + tzdata (for time-zone DB)
 # + docker-cli + docker-cli-buildx so the platform binary can shell out to

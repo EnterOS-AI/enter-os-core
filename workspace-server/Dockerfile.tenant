@@ -34,7 +34,7 @@
 #     --push .
 
 # ── Stage 1: Go platform binary ──────────────────────────────────────
-FROM golang:1.25-alpine AS go-builder
+FROM golang:1.25-alpine@sha256:c4ea15b4a7912716eb362a022e2b12317762eca387423760bc59c0f9ae69423c AS go-builder
 WORKDIR /app
 COPY workspace-server/go.mod workspace-server/go.sum ./
 # github-app-auth plugin removed 2026-05-07 (#157): per-agent Gitea
@@ -64,7 +64,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o /memory-plugin ./cmd/memory-plugin-postgres
 
 # ── Stage 2: Canvas Next.js standalone ────────────────────────────────
-FROM node:20-alpine AS canvas-builder
+FROM node:20-alpine@sha256:afdf98210b07b586eb71fa22ba2e432e058e4cd1304d31ed60888755b8c865fb AS canvas-builder
 WORKDIR /canvas
 COPY canvas/package.json canvas/package-lock.json* ./
 RUN npm install
@@ -76,7 +76,7 @@ ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
 RUN npm run build
 
 # ── Stage 3: Runtime ──────────────────────────────────────────────────
-FROM node:20-alpine
+FROM node:20-alpine@sha256:afdf98210b07b586eb71fa22ba2e432e058e4cd1304d31ed60888755b8c865fb
 RUN apk add --no-cache ca-certificates git tzdata openssh-client aws-cli
 
 # Non-root runtime for the Node.js canvas process.

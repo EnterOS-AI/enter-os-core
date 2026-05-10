@@ -11,7 +11,7 @@
 # Build context: repo root, with `.tenant-bundle-deps/` populated by the
 # workflow's "Pre-clone manifest deps" step (Task #173).
 
-FROM golang:1.25-alpine AS builder
+FROM golang:1.25-alpine@sha256:c4ea15b4a7912716eb362a022e2b12317762eca387423760bc59c0f9ae69423c AS builder
 WORKDIR /app
 COPY workspace-server/go.mod workspace-server/go.sum ./
 # github-app-auth plugin removed 2026-05-07 (#157): per-agent Gitea
@@ -34,7 +34,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags "-X github.com/Molecule-AI/molecule-monorepo/platform/internal/buildinfo.GitSHA=${GIT_SHA}" \
     -o /memory-plugin ./cmd/memory-plugin-postgres
 
-FROM alpine:3.20
+FROM alpine:3.20@sha256:c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e
 RUN apk add --no-cache ca-certificates git tzdata wget
 COPY --from=builder /platform /platform
 COPY --from=builder /memory-plugin /memory-plugin
