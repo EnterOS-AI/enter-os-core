@@ -100,7 +100,14 @@ export function toYaml(config: ConfigData): string {
     if (!o) return;
     lines.push(`${k}:`);
     Object.entries(o).forEach(([sk, sv]) => {
-      if (sv !== undefined && sv !== null && sv !== "") lines.push(`  ${sk}: ${sv}`);
+      if (sv === undefined || sv === null || sv === "") return;
+      if (Array.isArray(sv)) {
+        // Nested list block: e.g. required_env: [KEY, SECRET]
+        lines.push(`  ${sk}:`);
+        sv.forEach((v) => lines.push(`    - ${v}`));
+      } else {
+        lines.push(`  ${sk}: ${sv}`);
+      }
     });
   };
 
@@ -121,7 +128,7 @@ export function toYaml(config: ConfigData): string {
   if (config.task_budget && config.task_budget > 0) { simple("task_budget", config.task_budget); }
   if (config.prompt_files?.length) { lines.push(""); list("prompt_files", config.prompt_files); }
   lines.push(""); list("skills", config.skills);
-  if (config.tools?.length) { list("tools", config.tools); }
+  lines.push(""); list("tools", config.tools);
   lines.push(""); obj("a2a", config.a2a as unknown as Record<string, unknown>);
   lines.push(""); obj("delegation", config.delegation as unknown as Record<string, unknown>);
   if (config.sandbox?.backend) { lines.push(""); obj("sandbox", config.sandbox as unknown as Record<string, unknown>); }
