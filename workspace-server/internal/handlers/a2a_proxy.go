@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/envx"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
@@ -110,11 +111,14 @@ const maxProxyResponseBody = 10 << 20
 //      a generic 502 page to canvas. 10s is well above realistic intra-region
 //      latencies and well below CF's edge timeout.
 //
-//   3. Transport.ResponseHeaderTimeout — 60s. From request-body-end to
-//      response-headers-start. Covers cold-start first-byte (the 30-60s OAuth
-//      flow above), with margin. Body streaming after headers is governed by
-//      the per-request context deadline, NOT this timeout — so multi-minute
-//      agent responses still work fine.
+//   3. Transport.ResponseHeaderTimeout — 180s default. From request-body-end
+//      to response-headers-start. Configurable via
+//      A2A_PROXY_RESPONSE_HEADER_TIMEOUT (envx.Duration). Covers cold-start
+//      first-byte (30-60s OAuth flow above) with enough room for Opus agent
+//      turns (big context + internal delegate_task round-trips routinely exceed
+//      the old 60s ceiling). Body streaming after headers is governed by the
+//      per-request context deadline, NOT this timeout — so multi-minute agent
+//      responses still work fine.
 //
 // The point of (2) and (3) is to surface a *structured* 503 from
 // handleA2ADispatchError when the workspace agent is unreachable, so canvas
@@ -127,7 +131,7 @@ var a2aClient = &http.Client{
 			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		ResponseHeaderTimeout: 60 * time.Second,
+		ResponseHeaderTimeout: envx.Duration("A2A_PROXY_RESPONSE_HEADER_TIMEOUT", 180*time.Second),
 		TLSHandshakeTimeout:   10 * time.Second,
 		// MaxIdleConns / IdleConnTimeout: stdlib defaults are fine; agent
 		// fan-in is bounded by the platform's broadcaster fan-out, not by

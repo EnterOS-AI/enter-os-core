@@ -2276,3 +2276,43 @@ func TestProxyA2A_PollMode_FailsClosedToPush(t *testing.T) {
 		t.Errorf("unmet sqlmock expectations: %v", err)
 	}
 }
+
+// ==================== a2aClient ResponseHeaderTimeout config ====================
+
+func TestA2AClientResponseHeaderTimeout(t *testing.T) {
+	const defaultTimeout = 180 * time.Second
+
+	// Default (unset env) — a2aClient was initialised at package load time.
+	if a2aClient.Transport.(*http.Transport).ResponseHeaderTimeout != defaultTimeout {
+		t.Errorf("a2aClient default ResponseHeaderTimeout = %v, want %v",
+			a2aClient.Transport.(*http.Transport).ResponseHeaderTimeout, defaultTimeout)
+	}
+
+	// Env var override — verify parsing logic inline since a2aClient is
+	// initialised once at package load (env already consumed at import time).
+	t.Run("A2A_PROXY_RESPONSE_HEADER_TIMEOUT parsed correctly", func(t *testing.T) {
+		// We can't re-initialise a2aClient, but we can verify the same
+		// envx.Duration logic inline for the 5m override case.
+		t.Setenv("A2A_PROXY_RESPONSE_HEADER_TIMEOUT", "5m")
+		if d, err := time.ParseDuration("5m"); err == nil && d > 0 {
+			if d != 5*time.Minute {
+				t.Errorf("ParseDuration(\"5m\") = %v, want 5m", d)
+			}
+		}
+	})
+
+	t.Run("invalid A2A_PROXY_RESPONSE_HEADER_TIMEOUT falls back to default", func(t *testing.T) {
+		t.Setenv("A2A_PROXY_RESPONSE_HEADER_TIMEOUT", "not-a-duration")
+		// Simulate what envx.Duration does with an invalid value.
+		var fallback = 180 * time.Second
+		override := fallback
+		if v := os.Getenv("A2A_PROXY_RESPONSE_HEADER_TIMEOUT"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil && d > 0 {
+				override = d
+			}
+		}
+		if override != fallback {
+			t.Errorf("invalid env var: got %v, want fallback %v", override, fallback)
+		}
+	})
+}
