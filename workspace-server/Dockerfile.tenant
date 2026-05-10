@@ -115,8 +115,16 @@ COPY --from=canvas-builder /canvas/.next/static ./.next/static
 COPY --from=canvas-builder /canvas/public ./public
 
 COPY workspace-server/entrypoint-tenant.sh /entrypoint.sh
+# /org-templates must be writable by the canvas user — the !external
+# resolver mkdirs <orgBaseDir>/.external-cache/<repo>/<sha>/ on first
+# import to cache cross-repo subtree fetches (org_external.go,
+# internal#77 / task #222). Without this chown the resolver fails with
+# "mkdir cache root: permission denied" and POST /org/import returns
+# 400 "org template expansion failed" for any template that uses
+# !external (e.g. molecule-dev → dev-lead). Caught on staging-cplead-2
+# 2026-05-10 — see internal incident debrief.
 RUN chmod +x /entrypoint.sh && \
-    chown -R canvas:canvas /canvas /platform /memory-plugin /migrations
+    chown -R canvas:canvas /canvas /platform /memory-plugin /migrations /org-templates
 
 EXPOSE 8080
 # entrypoint.sh starts as root to fix volume perms, then drops to
