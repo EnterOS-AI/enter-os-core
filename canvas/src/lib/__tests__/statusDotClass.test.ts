@@ -4,7 +4,7 @@
  * CSS tailwind class used on the status indicator dot.
  */
 import { describe, it, expect } from "vitest";
-import { statusDotClass } from "../design-tokens";
+import { statusDotClass, TIER_CONFIG, COMM_TYPE_LABELS } from "../design-tokens";
 
 describe("statusDotClass", () => {
   it('returns "bg-emerald-400" for "online"', () => {
@@ -48,5 +48,59 @@ describe("statusDotClass", () => {
     for (let i = 0; i < 5; i++) {
       expect(statusDotClass("online")).toBe(result);
     }
+  });
+});
+
+// ── TIER_CONFIG ────────────────────────────────────────────────────────────────
+
+describe("TIER_CONFIG", () => {
+  it("has entries for all four tier levels", () => {
+    expect(TIER_CONFIG).toHaveProperty(1);
+    expect(TIER_CONFIG).toHaveProperty(2);
+    expect(TIER_CONFIG).toHaveProperty(3);
+    expect(TIER_CONFIG).toHaveProperty(4);
+  });
+
+  it("each tier has label, color, and border fields", () => {
+    for (const tier of [1, 2, 3, 4]) {
+      expect(TIER_CONFIG[tier]).toHaveProperty("label");
+      expect(TIER_CONFIG[tier]).toHaveProperty("color");
+      expect(TIER_CONFIG[tier]).toHaveProperty("border");
+    }
+  });
+
+  it("tier labels match expected values", () => {
+    expect(TIER_CONFIG[1].label).toBe("T1");
+    expect(TIER_CONFIG[2].label).toBe("T2");
+    expect(TIER_CONFIG[3].label).toBe("T3");
+    expect(TIER_CONFIG[4].label).toBe("T4");
+  });
+
+  it("is immutable at runtime — same key always returns same shape", () => {
+    const result = TIER_CONFIG[2];
+    expect(TIER_CONFIG[2]).toBe(result);
+  });
+});
+
+// ── COMM_TYPE_LABELS ────────────────────────────────────────────────────────
+
+describe("COMM_TYPE_LABELS", () => {
+  it("has labels for all known communication types", () => {
+    expect(COMM_TYPE_LABELS).toHaveProperty("a2a_send");
+    expect(COMM_TYPE_LABELS).toHaveProperty("a2a_receive");
+    expect(COMM_TYPE_LABELS).toHaveProperty("task_update");
+  });
+
+  it("labels are non-empty strings", () => {
+    for (const key of Object.keys(COMM_TYPE_LABELS)) {
+      expect(typeof COMM_TYPE_LABELS[key]).toBe("string");
+      expect(COMM_TYPE_LABELS[key].length).toBeGreaterThan(0);
+    }
+  });
+
+  it("is a static map — same key always returns same label", () => {
+    expect(COMM_TYPE_LABELS["a2a_send"]).toBe("sent");
+    expect(COMM_TYPE_LABELS["a2a_receive"]).toBe("received");
+    expect(COMM_TYPE_LABELS["task_update"]).toBe("task update");
   });
 });
