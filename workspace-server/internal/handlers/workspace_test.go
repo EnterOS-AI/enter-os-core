@@ -521,6 +521,107 @@ func TestWorkspaceCreate_EmptySecrets_OK(t *testing.T) {
 	}
 }
 
+// TestWorkspaceCreate_ExternalURL_SSRFSafe asserts that an external workspace
+// created with a safe public URL succeeds and writes the URL to the DB.
+// Uses self-hosted mode so RFC-1918 is also blocked (not just metadata IPs).
+func TestWorkspaceCreate_ExternalURL_SSRFSafe(t *testing.T) {
+	t.Setenv("MOLECULE_DEPLOY_MODE", "self-hosted")
+	t.Setenv("MOLECULE_ORG_ID", "")
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO workspaces").
+		WithArgs(sqlmock.AnyArg(), "Ext Agent", nil, 3, "external", sqlmock.AnyArg(), (*string)(nil), nil, "none", (*int64)(nil), models.DefaultMaxConcurrentTasks, "push").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	// External URL update (SSRF-safe public URL passes validateAgentURL).
+	mock.ExpectExec("UPDATE workspaces SET url").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// CacheURL is non-fatal but still called.
+	mock.ExpectExec("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"ok"}).AddRow("ok"))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	body := `{"name":"Ext Agent","runtime":"external","external":true,"url":"https://agent.example.com/a2a"}`
+	c.Request = httptest.NewRequest("POST", "/workspaces", bytes.NewBufferString(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.Create(c)
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("expected status 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// TestWorkspaceCreate_ExternalURL_SSRFMetadataBlocked asserts that an external
+// workspace created with a cloud-metadata URL is rejected with 400 before any
+// DB write. 169.254.0.0/16 is always blocked regardless of mode (SaaS or
+// self-hosted). Regression guard for issue #212.
+func TestWorkspaceCreate_ExternalURL_SSRFMetadataBlocked(t *testing.T) {
+	t.Setenv("MOLECULE_DEPLOY_MODE", "self-hosted")
+	t.Setenv("MOLECULE_ORG_ID", "")
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+
+	// No DB calls expected — the handler should reject before any transaction.
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	body := `{"name":"Bad Agent","runtime":"external","external":true,"url":"http://169.254.169.254/latest/meta-data/"}`
+	c.Request = httptest.NewRequest("POST", "/workspaces", bytes.NewBufferString(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.Create(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// TestWorkspaceCreate_ExternalURL_SSRFLoopbackBlocked is the same regression
+// guard as TestWorkspaceCreate_ExternalURL_SSRFMetadataBlocked but for the
+// loopback rejection in self-hosted mode. admin-create is AdminAuth-gated,
+// but a compromised admin token or insider should not be able to register
+// a loopback URL either.
+func TestWorkspaceCreate_ExternalURL_SSRFLoopbackBlocked(t *testing.T) {
+	t.Setenv("MOLECULE_DEPLOY_MODE", "self-hosted")
+	t.Setenv("MOLECULE_ORG_ID", "")
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+
+	// No DB calls expected.
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	body := `{"name":"Bad Loopback","runtime":"external","external":true,"url":"http://127.0.0.1:9000/a2a"}`
+	c.Request = httptest.NewRequest("POST", "/workspaces", bytes.NewBufferString(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.Create(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
 // ==================== GET /workspaces (List) ====================
 
 func TestWorkspaceList_Empty(t *testing.T) {

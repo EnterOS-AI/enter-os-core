@@ -383,6 +383,16 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 	if payload.External || payload.Runtime == "external" {
 		var connectionToken string
 		if payload.URL != "" {
+			// SSRF guard (issue #212): validateAgentURL blocks cloud metadata
+			// IPs (169.254/16), loopback, link-local, and RFC-1918 in
+			// strict/self-hosted mode. AdminAuth is required here, but the
+			// admin token could be leaked or a compromised insider — defence
+			// in depth. Compare: registry.go:324 (heartbeat path) also
+			// calls validateAgentURL; external_rotate.go should too.
+			if err := validateAgentURL(payload.URL); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "unsafe workspace URL: " + err.Error()})
+				return
+			}
 			db.DB.ExecContext(ctx, `UPDATE workspaces SET url = $1, status = $2, runtime = 'external', updated_at = now() WHERE id = $3`, payload.URL, models.StatusOnline, id)
 			if err := db.CacheURL(ctx, id, payload.URL); err != nil {
 				log.Printf("External workspace: failed to cache URL for %s: %v", id, err)
