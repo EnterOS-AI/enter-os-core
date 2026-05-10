@@ -21,6 +21,7 @@ import (
 	memwiring "github.com/Molecule-AI/molecule-monorepo/platform/internal/memory/wiring"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/middleware"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/pendinguploads"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/plugins"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/registry"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/router"
@@ -331,7 +332,23 @@ func main() {
 	cronSched.SetChannels(channelMgr)
 
 	// Router
-	r := router.Setup(hub, broadcaster, prov, platformURL, configsDir, wh, channelMgr, memBundle)
+	// Plugin registry — created before Setup so the same registry is shared
+	// between the PluginsHandler (for installs) and the drift sweeper (for
+	// drift detection). github:// sources always work; local:// sources
+	// require a plugins/ dir on disk (nil in CP/SaaS mode).
+	pluginRegistry := plugins.NewRegistry()
+	pluginRegistry.Register(plugins.NewGithubResolver())
+	r := router.Setup(hub, broadcaster, prov, platformURL, configsDir, wh, channelMgr, memBundle, pluginRegistry)
+
+	// Plugin drift sweeper — periodic detection of upstream plugin version drift
+	// (core#123). Scans workspace_plugins rows where tracked_ref != 'none',
+	// resolves the current upstream SHA for each tracked ref, and queues drift
+	// entries when the upstream has moved. Only runs when pluginResolver is
+	// non-nil (CP/SaaS mode has no local git and the sweeper is a no-op there).
+	// Nil prov: Docker not available (test harness / local dev without Docker).
+	go supervised.RunWithRecover(ctx, "plugin-drift-sweeper", func(c context.Context) {
+		plugins.StartPluginDriftSweeper(c, pluginRegistry)
+	})
 
 	// HTTP server with graceful shutdown.
 	//

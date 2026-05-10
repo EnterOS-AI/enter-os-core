@@ -18,6 +18,7 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/metrics"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/middleware"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/pendinguploads"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/plugins"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/supervised"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/ws"
@@ -26,7 +27,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provisioner, platformURL, configsDir string, wh *handlers.WorkspaceHandler, channelMgr *channels.Manager, memBundle *memwiring.Bundle) *gin.Engine {
+func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provisioner, platformURL, configsDir string, wh *handlers.WorkspaceHandler, channelMgr *channels.Manager, memBundle *memwiring.Bundle, pluginResolver plugins.SourceResolver) *gin.Engine {
 	r := gin.Default()
 
 	// Issue #179 — trust no reverse-proxy headers. Without this call Gin's
@@ -498,6 +499,15 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		r.POST("/admin/workspace-images/refresh", middleware.AdminAuth(db.DB), imgH.Refresh)
 	}
 
+	// Admin — plugin version-subscription drift queue (core#123).
+	// List pending drift entries and apply approved updates.
+	{
+		driftH := handlers.NewAdminPluginDriftHandler(plgh)
+		adminAuth := r.Group("", middleware.AdminAuth(db.DB))
+		adminAuth.GET("/admin/plugin-updates-pending", driftH.ListPending)
+		adminAuth.POST("/admin/plugin-updates/:id/apply", driftH.Apply)
+	}
+
 	// Admin — test token minting (issue #6). Hidden in production via TestTokensEnabled().
 	// NOT behind AdminAuth — this is the bootstrap endpoint E2E tests and
 	// fresh installs use to obtain their first admin bearer. Adding AdminAuth
@@ -615,9 +625,16 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		).Scan(&instanceID)
 		return instanceID, err
 	}
+	// pluginResolver: when provided (normal production), use it for plgh so
+	// the drift sweeper (which also gets the same resolver in main.go) uses
+	// identical resolver state. When nil (test / backward compat), let
+	// NewPluginsHandler create its own default registry.
 	plgh := handlers.NewPluginsHandler(pluginsDir, dockerCli, wh.RestartByID).
 		WithRuntimeLookup(runtimeLookup).
 		WithInstanceIDLookup(instanceIDLookup)
+	if pluginResolver != nil {
+		plgh = plgh.WithSourceResolver(pluginResolver)
+	}
 	r.GET("/plugins", plgh.ListRegistry)
 	r.GET("/plugins/sources", plgh.ListSources)
 	wsAuth.GET("/plugins", plgh.ListInstalled)
