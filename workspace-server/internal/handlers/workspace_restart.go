@@ -564,6 +564,18 @@ func (h *WorkspaceHandler) runRestartCycle(workspaceID string) {
 
 	log.Printf("Auto-restart: restarting %s (%s) runtime=%q (was: %s)", wsName, workspaceID, dbRuntime, status)
 
+	// #125 Phase 1: send pre-restart drain signal to the workspace agent.
+	// For native_session targets, A2A messages go directly to the SDK session
+	// and bypass the platform's a2a_queue buffering. If the container dies
+	// mid-request, those messages are lost. The pre-restart signal gives the
+	// SDK a chance to drain in-flight work before the container stops.
+	//
+	// Fire-and-forget: gracefulPreRestart runs in a detached goroutine with its
+	// own 10s timeout. If the workspace doesn't implement the handler (404) or
+	// times out, we proceed with the stop anyway — identical to the pre-fix
+	// behaviour.
+	h.gracefulPreRestart(ctx, workspaceID)
+
 	h.stopForRestart(ctx, workspaceID)
 
 	db.DB.ExecContext(ctx,
