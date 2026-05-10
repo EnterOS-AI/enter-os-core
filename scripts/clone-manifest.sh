@@ -37,6 +37,50 @@ PLUGINS_DIR="${4:?Missing plugins dir}"
 EXPECTED=0
 CLONED=0
 
+# clone_one_with_retry — clone a single repo, retrying on transient failure.
+#
+# Why: the publish-workspace-server-image (and harness-replays) CI jobs
+# clone the full manifest (~36 repos) serially on a memory-constrained
+# Gitea Actions runner. Under host memory pressure the OOM killer
+# occasionally SIGKILLs git-remote-https mid-clone:
+#
+#   error: git-remote-https died of signal 9
+#   fatal: the remote end hung up unexpectedly
+#
+# (observed in publish-workspace-server-image run 4622 on 2026-05-10 — the
+# job died on the 14th of 36 clones, which wedged staging→main). One
+# transient SIGKILL / network blip would otherwise fail the whole tenant
+# image rebuild. Retrying after a short backoff lets the pressure subside.
+# The durable fix is more runner RAM/swap (tracked with Infra-SRE); this
+# just stops a single flake from being release-blocking.
+#
+# Args: <target_dir> <name> <clone_url> <display_url> <ref>
+clone_one_with_retry() {
+    local tdir="$1" name="$2" url="$3" display="$4" ref="$5"
+    local attempt=1 max_attempts=3 backoff
+
+    while : ; do
+        # A killed attempt can leave a partial directory behind; git clone
+        # refuses a non-empty target, so wipe it before each try.
+        rm -rf "$tdir/$name"
+
+        if [ "$ref" = "main" ]; then
+            if git clone --depth=1 -q "$url" "$tdir/$name"; then return 0; fi
+        else
+            if git clone --depth=1 -q --branch "$ref" "$url" "$tdir/$name"; then return 0; fi
+        fi
+
+        if [ "$attempt" -ge "$max_attempts" ]; then
+            echo "::error::clone failed after ${max_attempts} attempts: ${display}" >&2
+            return 1
+        fi
+        backoff=$((attempt * 3))   # 3s, then 6s
+        echo "  ⚠ clone attempt ${attempt}/${max_attempts} failed for ${display} — retrying in ${backoff}s" >&2
+        sleep "$backoff"
+        attempt=$((attempt + 1))
+    done
+}
+
 clone_category() {
     local category="$1"
     local target_dir="$2"
@@ -82,11 +126,7 @@ clone_category() {
         fi
 
         echo "  cloning $display_url -> $target_dir/$name (ref=$ref)"
-        if [ "$ref" = "main" ]; then
-            git clone --depth=1 -q "$clone_url" "$target_dir/$name"
-        else
-            git clone --depth=1 -q --branch "$ref" "$clone_url" "$target_dir/$name"
-        fi
+        clone_one_with_retry "$target_dir" "$name" "$clone_url" "$display_url" "$ref"
         CLONED=$((CLONED + 1))
         i=$((i + 1))
     done
