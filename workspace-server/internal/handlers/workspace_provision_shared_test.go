@@ -665,45 +665,61 @@ func TestApplyRuntimeModelEnv_SetsUniversalMODELForAllRuntimes(t *testing.T) {
 		runtime           string
 		model             string
 		modelProviderEnv  string
+		moleculeModelEnv  string
 		wantMODEL         string
 		wantHermesDefault string // empty string = must be unset
 	}{
 		{
-			name:      "claude-code: picked model populates MODEL",
+			name:      "claude-code: picked model populates MODEL + MOLECULE_MODEL",
 			runtime:   "claude-code",
 			model:     "MiniMax-M2",
 			wantMODEL: "MiniMax-M2",
 		},
 		{
-			name:              "hermes: picked model populates BOTH MODEL and HERMES_DEFAULT_MODEL",
+			name:              "hermes: picked model populates MODEL, MOLECULE_MODEL, HERMES_DEFAULT_MODEL",
 			runtime:           "hermes",
 			model:             "minimax/MiniMax-M2.7",
 			wantMODEL:         "minimax/MiniMax-M2.7",
 			wantHermesDefault: "minimax/MiniMax-M2.7",
 		},
 		{
-			name:      "langgraph: picked model populates MODEL (no vendor-specific name)",
+			name:      "langgraph: picked model populates MODEL + MOLECULE_MODEL (no vendor-specific name)",
 			runtime:   "langgraph",
 			model:     "anthropic:claude-opus-4-7",
 			wantMODEL: "anthropic:claude-opus-4-7",
 		},
 		{
-			name:      "crewai: picked model populates MODEL (no vendor-specific name)",
+			name:      "crewai: picked model populates MODEL + MOLECULE_MODEL (no vendor-specific name)",
 			runtime:   "crewai",
 			model:     "openai:gpt-4o",
 			wantMODEL: "openai:gpt-4o",
 		},
 		{
-			name:    "empty model + empty MODEL_PROVIDER fallback: nothing set",
+			name:    "empty model + no env fallback: nothing set",
 			runtime: "claude-code",
 			model:   "",
 		},
 		{
-			name:             "empty model + MODEL_PROVIDER fallback hits: MODEL set from secret",
+			name:             "empty model + MODEL_PROVIDER fallback hits: MODEL/MOLECULE_MODEL set from secret",
 			runtime:          "claude-code",
 			model:            "",
 			modelProviderEnv: "MiniMax-M2",
 			wantMODEL:        "MiniMax-M2",
+		},
+		{
+			name:             "empty model + MOLECULE_MODEL env fallback hits (canonical name)",
+			runtime:          "claude-code",
+			model:            "",
+			moleculeModelEnv: "opus",
+			wantMODEL:        "opus",
+		},
+		{
+			name:             "MOLECULE_MODEL beats MODEL_PROVIDER when both set (misnomer guard, internal#226)",
+			runtime:          "claude-code",
+			model:            "",
+			moleculeModelEnv: "opus",
+			modelProviderEnv: "claude-code",
+			wantMODEL:        "opus",
 		},
 	}
 
@@ -713,10 +729,17 @@ func TestApplyRuntimeModelEnv_SetsUniversalMODELForAllRuntimes(t *testing.T) {
 			if tc.modelProviderEnv != "" {
 				envVars["MODEL_PROVIDER"] = tc.modelProviderEnv
 			}
+			if tc.moleculeModelEnv != "" {
+				envVars["MOLECULE_MODEL"] = tc.moleculeModelEnv
+			}
 			applyRuntimeModelEnv(envVars, tc.runtime, tc.model)
 
 			if got := envVars["MODEL"]; got != tc.wantMODEL {
 				t.Errorf("MODEL = %q, want %q", got, tc.wantMODEL)
+			}
+			// MOLECULE_MODEL (the canonical name) must mirror MODEL exactly.
+			if got := envVars["MOLECULE_MODEL"]; got != tc.wantMODEL {
+				t.Errorf("MOLECULE_MODEL = %q, want %q", got, tc.wantMODEL)
 			}
 			if got := envVars["HERMES_DEFAULT_MODEL"]; got != tc.wantHermesDefault {
 				t.Errorf("HERMES_DEFAULT_MODEL = %q, want %q", got, tc.wantHermesDefault)
