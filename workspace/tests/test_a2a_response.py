@@ -105,6 +105,22 @@ _FIXTURES = {
         "status": "queued",
         "delivery_mode": "poll",
     },
+    # Push-mode queue envelope: returned when a push-mode workspace is at
+    # capacity. The platform queues the request and returns
+    # {queued: true, message: "...", queue_id: "..."}. The ``delivery_mode``
+    # field is not present in this envelope (distinguishes it from poll-mode).
+    "push_queued_full": {
+        "queued": True,
+        "method": "message/send",
+        "queue_id": "q-abc-123",
+    },
+    "push_queued_notify": {
+        "queued": True,
+        "method": "notify",
+    },
+    "push_queued_no_method": {
+        "queued": True,
+    },
     "malformed_empty_dict": {},
     "malformed_unexpected_keys": {"foo": "bar", "baz": 42},
     "malformed_status_queued_no_delivery_mode": {
@@ -158,6 +174,44 @@ class TestQueuedVariant:
         with caplog.at_level(logging.INFO, logger="a2a_response"):
             a2a_response.parse(_FIXTURES["poll_queued_full"])
         assert any("queued for poll-mode peer" in r.message for r in caplog.records)
+
+    # --- Push-mode queue (handleA2ADispatchError → EnqueueA2A → 202 {queued: true}) ---
+
+    def test_push_queued_full_returns_queued_with_delivery_mode_push(self):
+        # The push-mode path must set delivery_mode="push", not silently default to "poll".
+        # Callers that branch on v.delivery_mode will mis-route poll-mode responses
+        # as push-mode (and vice versa) if this field is wrong.
+        v = a2a_response.parse(_FIXTURES["push_queued_full"])
+        assert isinstance(v, a2a_response.Queued)
+        assert v.method == "message/send"
+        assert v.delivery_mode == "push"
+
+    def test_push_queued_notify(self):
+        v = a2a_response.parse(_FIXTURES["push_queued_notify"])
+        assert isinstance(v, a2a_response.Queued)
+        assert v.method == "notify"
+        assert v.delivery_mode == "push"
+
+    def test_push_queued_missing_method_defaults_to_message_send(self):
+        # Push-mode servers should always send method, but we handle absence gracefully.
+        v = a2a_response.parse(_FIXTURES["push_queued_no_method"])
+        assert isinstance(v, a2a_response.Queued)
+        assert v.method == "message/send"
+        assert v.delivery_mode == "push"
+
+    def test_push_queued_logs_queue_id(self, caplog):
+        with caplog.at_level(logging.INFO, logger="a2a_response"):
+            a2a_response.parse(_FIXTURES["push_queued_full"])
+        assert any("q-abc-123" in r.message for r in caplog.records)
+
+    def test_queued_string_yes_is_malformed_not_push_queued(self):
+        # ``{"queued": "yes"}`` is not True, so it must NOT enter the push branch.
+        v = a2a_response.parse({"queued": "yes"})
+        assert isinstance(v, a2a_response.Malformed)
+
+    def test_queued_false_is_malformed(self):
+        v = a2a_response.parse({"queued": False})
+        assert isinstance(v, a2a_response.Malformed)
 
 
 class TestResultVariant:
@@ -436,6 +490,9 @@ class TestRegressionGate:
             "poll_queued_full":                  a2a_response.Queued,
             "poll_queued_notify":                a2a_response.Queued,
             "poll_queued_no_method":             a2a_response.Queued,
+            "push_queued_full":                  a2a_response.Queued,
+            "push_queued_notify":                a2a_response.Queued,
+            "push_queued_no_method":             a2a_response.Queued,
             "malformed_empty_dict":              a2a_response.Malformed,
             "malformed_unexpected_keys":         a2a_response.Malformed,
             "malformed_status_queued_no_delivery_mode": a2a_response.Malformed,
