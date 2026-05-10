@@ -4,7 +4,6 @@ go 1.25.0
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
-	go.moleculesai.app/plugin/gh-identity v0.0.0-20260509010445-788988195fce
 	github.com/alicebob/miniredis/v2 v2.37.0
 	github.com/creack/pty v1.1.24
 	github.com/docker/docker v28.5.2+incompatible
@@ -19,6 +18,7 @@ require (
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/redis/go-redis/v9 v9.19.0
 	github.com/robfig/cron/v3 v3.0.1
+	go.moleculesai.app/plugin/gh-identity v0.0.0-20260509010445-788988195fce
 	golang.org/x/crypto v0.50.0
 	gopkg.in/yaml.v3 v3.0.1
 )
