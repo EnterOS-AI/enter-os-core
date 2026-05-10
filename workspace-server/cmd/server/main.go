@@ -367,6 +367,9 @@ func main() {
 	// Start server in goroutine
 	go func() {
 		log.Printf("Platform starting on %s:%s (dev-mode-fail-open=%v)", bindHost, port, middleware.IsDevModeFailOpen())
+		if handlers.TestTokensEnabled() {
+			log.Printf("NOTE: /admin/workspaces/:id/test-token is ENABLED (MOLECULE_ENV=%q — set MOLECULE_ENV=production in staging/prod to lock this route)", os.Getenv("MOLECULE_ENV"))
+		}
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server failed: %v", err)
 		}

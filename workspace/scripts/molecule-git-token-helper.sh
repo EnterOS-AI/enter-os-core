@@ -46,7 +46,15 @@
 # 2. Fetch fresh token from platform API.
 # 3. If platform is unreachable, fall back to GITHUB_TOKEN / GH_TOKEN
 #    env var (set at container start, valid for up to 60 min).
-# 4. If all fail, exit 1 so git falls through to the next credential
+# 4. If env is unset, fall back to ${CONFIGS_DIR:-/configs}/.github-token
+#    static token file (operator-placed PAT as incident workaround).
+#    Empty file rejected; whitespace stripped before use.
+#    Written by operator into the agent-writable /configs dir so
+#    no root and no platform restart needed to activate.
+#    Both _fetch_token (git path) and _refresh_gh (gh CLI path) use
+#    this fallback — otherwise git would work but gh auth status would
+#    still be unauthenticated post-incident.
+# 5. If all fail, exit 1 so git falls through to the next credential
 #    helper in the chain (if any).
 #
 # # gh CLI integration
@@ -197,7 +205,7 @@ _fetch_token_from_api() {
     echo "${token}"
 }
 
-# _fetch_token — return a fresh token using cache > API > env fallback chain.
+# _fetch_token — return a fresh token using cache > API > env > static fallback chain.
 # Outputs the raw token string on success; exits non-zero if all sources fail.
 _fetch_token() {
     # 1. Try cache first.
@@ -222,6 +230,20 @@ _fetch_token() {
         return 0
     fi
 
+    # 4. Static token fallback — operator-placed PAT in the agent-writable
+    #    configs dir. Written without root; no platform restart needed.
+    #    Both this helper and _refresh_gh use the same fallback so git
+    #    and gh both recover from a platform outage.
+    static_token_file="${CONFIGS_DIR:-/configs}/.github-token"
+    if [ -f "${static_token_file}" ]; then
+        static_token=$(tr -d '[:space:]' < "${static_token_file}")
+        if [ -n "${static_token}" ]; then
+            echo "[molecule-git-token-helper] API + env unreachable, falling back to static .github-token" >&2
+            echo "${static_token}"
+            return 0
+        fi
+    fi
+
     echo "[molecule-git-token-helper] all token sources exhausted" >&2
     return 1
 }
@@ -240,15 +262,36 @@ case "${ACTION}" in
         # No-op — the platform manages token lifecycle.
         ;;
     _fetch_token)
-        # Return raw token (cache > API > env fallback).
+        # Return raw token (cache > API > env > static fallback).
         _fetch_token
         ;;
     _refresh_gh)
         # Refresh cache AND update gh CLI auth in one shot.
         # Called by molecule-gh-token-refresh.sh background daemon.
         # Force-bypass cache to get a definitely fresh token.
+        #
+        # Chain: API > static fallback. Env is deliberately excluded here —
+        # _refresh_gh is a background daemon that re-runs every 30 min;
+        # if we used the env fallback on every cycle the gh CLI would stay
+        # stuck on a stale env token instead of recovering when the API
+        # comes back. Static fallback is intentionally operator-activated
+        # only (file presence gates it).
         api_token=$(_fetch_token_from_api) || {
-            echo "[molecule-git-token-helper] _refresh_gh: API fetch failed" >&2
+            # API down — try static token fallback.
+            static_token_file="${CONFIGS_DIR:-/configs}/.github-token"
+            if [ -f "${static_token_file}" ]; then
+                static_token=$(tr -d '[:space:]' < "${static_token_file}")
+                if [ -n "${static_token}" ]; then
+                    echo "[molecule-git-token-helper] _refresh_gh: API unreachable, using static .github-token" >&2
+                    _write_cache "${static_token}"
+                    echo "${static_token}" | gh auth login --hostname github.com --with-token 2>/dev/null || {
+                        echo "[molecule-git-token-helper] _refresh_gh: gh auth login with static token failed (non-fatal)" >&2
+                    }
+                    echo "[molecule-git-token-helper] _refresh_gh: static token used successfully" >&2
+                    return 0
+                fi
+            fi
+            echo "[molecule-git-token-helper] _refresh_gh: API fetch failed and no static fallback" >&2
             exit 1
         }
         _write_cache "${api_token}"
