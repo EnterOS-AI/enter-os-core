@@ -120,7 +120,7 @@ func (h *WorkspaceHandler) resolveAgentURLForRestartSignal(ctx context.Context, 
 	// Try Redis cache first.
 	agentURL, err := db.GetCachedURL(ctx, workspaceID)
 	if err == nil && agentURL != "" {
-		return rewriteForDocker(agentURL, workspaceID), nil
+		return h.rewriteForDocker(agentURL, workspaceID), nil
 	}
 
 	// Cache miss — fall back to DB.
@@ -136,13 +136,13 @@ func (h *WorkspaceHandler) resolveAgentURLForRestartSignal(ctx context.Context, 
 	}
 	agentURL = *urlNullable
 	_ = db.CacheURL(ctx, workspaceID, agentURL)
-	return rewriteForDocker(agentURL, workspaceID), nil
+	return h.rewriteForDocker(agentURL, workspaceID), nil
 }
 
 // rewriteForDocker rewrites a 127.0.0.1 agent URL to the Docker-DNS form
 // when the platform is running inside a Docker container. When platform is
 // on the host (non-Docker), 127.0.0.1 IS the host and the original URL works.
-func rewriteForDocker(agentURL, workspaceID string) string {
+func (h *WorkspaceHandler) rewriteForDocker(agentURL, workspaceID string) string {
 	if platformInDocker && h.provisioner != nil {
 		// Only rewrite if the URL points to localhost (the ephemeral port
 		// binding the container published to the host). Internal Docker

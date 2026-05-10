@@ -1262,4 +1262,3 @@ func TestExecuteDelegation_CleanProxyResponse_Unchanged(t *testing.T) {
 		t.Errorf("unmet sqlmock expectations: %v", err)
 	}
 }
-}

@@ -2,12 +2,14 @@ package plugins
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"testing"
 )
 
-// stubResolver is a SourceResolver that always returns a stub github resolver.
+// stubResolver is a PluginResolver that always returns a stub github
+// resolver. *GithubResolver satisfies the production SourceResolver from
+// source.go via Scheme() + Fetch(); the sweeper only uses Schemes() and
+// Resolve(), so the returned resolver's Fetch is never invoked here.
 type stubResolver struct {
 	schemes []string
 }
@@ -156,8 +158,9 @@ func TestPluginUpdateQueueRow_Struct(t *testing.T) {
 	}
 }
 
-// TestSourceResolverInterface_StubResolver verifies that a stub resolver
-// satisfies the SourceResolver interface.
-func TestSourceResolverInterface_StubResolver(t *testing.T) {
-	var _ SourceResolver = (*stubResolver)(nil)
+// TestPluginResolverInterface_StubResolver verifies that a stub resolver
+// satisfies the PluginResolver interface (the sweeper-side abstraction
+// over *Registry — distinct from the per-scheme SourceResolver in source.go).
+func TestPluginResolverInterface_StubResolver(t *testing.T) {
+	var _ PluginResolver = (*stubResolver)(nil)
 }
