@@ -179,6 +179,23 @@ def parse(data: Any) -> Variant:
         )
         return Malformed(raw=data)
 
+    # Push-mode queue envelope — returned when a push-mode workspace
+    # (one with a public URL) is at capacity. The platform queues the
+    # request and returns {"queued": true, "message": "...", "queue_id": "..."}.
+    # Unlike the poll-mode envelope (status=queued + delivery_mode=poll),
+    # this shape has no delivery_mode key — it's distinguishable by
+    # data.get("queued") is True alone. Checked before poll-mode so the
+    # two cases are mutually exclusive even if a buggy server sends both.
+    if data.get("queued") is True:
+        method_raw = data.get(_KEY_METHOD)
+        method = str(method_raw) if method_raw is not None else "message/send"
+        logger.info(
+            "a2a_response.parse: queued for busy push-mode peer (method=%s, queue_id=%s)",
+            method,
+            data.get("queue_id", "?"),
+        )
+        return Queued(method=method)
+
     # Poll-queued envelope. Both keys must be present — the workspace
     # server sets them together; if only one is present the body is
     # ambiguous and we route to Malformed for visibility.
