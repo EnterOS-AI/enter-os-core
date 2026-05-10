@@ -51,6 +51,22 @@ class AdaptorSource:
 
 def _load_module_from_path(module_name: str, path: Path):
     """Import a Python file by absolute path. Returns the module or None on failure."""
+    # Ensure the plugins_registry package and its submodules are importable in the
+    # fresh module namespace created by module_from_spec().  Plugin adapters
+    # (molecule-skill-*/adapters/*.py) use "from plugins_registry.builtins import ..."
+    # which requires plugins_registry and its submodules to already be in sys.modules.
+    # We import and register them before exec_module so the plugin's own
+    # from ... import statements resolve correctly.
+    import sys
+    import plugins_registry
+    sys.modules.setdefault("plugins_registry", plugins_registry)
+    for _sub in ("builtins", "protocol", "raw_drop"):
+        try:
+            sub = importlib.import_module(f"plugins_registry.{_sub}")
+            sys.modules.setdefault(f"plugins_registry.{_sub}", sub)
+        except Exception:
+            # Submodule may not exist in all versions; skip if absent.
+            pass
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         return None
