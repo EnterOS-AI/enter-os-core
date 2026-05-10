@@ -248,6 +248,19 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 	// Begin a transaction so the workspace row and any initial secrets are
 	// committed atomically.  A secret-encrypt or DB error rolls back the
 	// workspace insert so we never leave a workspace row with missing secrets.
+
+	// SSRF guard: validate workspace URL before starting any DB transaction.
+	// registry.go:324 calls this same guard for agent self-registration;
+	// the admin-create path must be covered too (core#212).
+	// Must stay above BeginTx so the rejection path never touches the DB.
+	if payload.URL != "" {
+		if err := validateAgentURL(payload.URL); err != nil {
+			log.Printf("Create: workspace URL rejected: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unsafe workspace URL: " + err.Error()})
+			return
+		}
+	}
+
 	tx, txErr := db.DB.BeginTx(ctx, nil)
 	if txErr != nil {
 		log.Printf("Create workspace: begin tx error: %v", txErr)
@@ -383,16 +396,9 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 	if payload.External || payload.Runtime == "external" {
 		var connectionToken string
 		if payload.URL != "" {
-			// SSRF guard (issue #212): validateAgentURL blocks cloud metadata
-			// IPs (169.254/16), loopback, link-local, and RFC-1918 in
-			// strict/self-hosted mode. AdminAuth is required here, but the
-			// admin token could be leaked or a compromised insider — defence
-			// in depth. Compare: registry.go:324 (heartbeat path) also
-			// calls validateAgentURL; external_rotate.go should too.
-			if err := validateAgentURL(payload.URL); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "unsafe workspace URL: " + err.Error()})
-				return
-			}
+			// URL already validated by validateAgentURL above (before BeginTx).
+			// Now persist it: the external URL is set after the workspace row
+			// commits so that a failed URL UPDATE doesn't roll back the row.
 			db.DB.ExecContext(ctx, `UPDATE workspaces SET url = $1, status = $2, runtime = 'external', updated_at = now() WHERE id = $3`, payload.URL, models.StatusOnline, id)
 			if err := db.CacheURL(ctx, id, payload.URL); err != nil {
 				log.Printf("External workspace: failed to cache URL for %s: %v", id, err)

@@ -28,6 +28,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"time"
@@ -326,7 +327,7 @@ func (h *MCPHandler) Call(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, mcpResponse{
 			JSONRPC: "2.0",
-			Error:   &mcpRPCError{Code: -32700, Message: "parse error: " + err.Error()},
+			Error:   &mcpRPCError{Code: -32700, Message: "parse error"},
 		})
 		return
 	}
@@ -414,12 +415,16 @@ func (h *MCPHandler) dispatchRPC(ctx context.Context, workspaceID string, req mc
 			Arguments map[string]interface{} `json:"arguments"`
 		}
 		if err := json.Unmarshal(req.Params, &params); err != nil {
-			base.Error = &mcpRPCError{Code: -32602, Message: "invalid params: " + err.Error()}
+			base.Error = &mcpRPCError{Code: -32602, Message: "invalid parameters"}
 			return base
 		}
 		text, err := h.dispatch(ctx, workspaceID, params.Name, params.Arguments)
 		if err != nil {
-			base.Error = &mcpRPCError{Code: -32000, Message: err.Error()}
+			// Log full error server-side for forensics; return constant string
+			// to client per OFFSEC-001 / #259.  WorkspaceAuth required — caller
+			// already authenticated, so this is defence-in-depth.
+			log.Printf("mcp: tool call failed workspace=%s tool=%s: %v", workspaceID, params.Name, err)
+			base.Error = &mcpRPCError{Code: -32000, Message: "tool call failed"}
 			return base
 		}
 		base.Result = map[string]interface{}{

@@ -269,6 +269,28 @@ Each workspace exposes an A2A server, builds an Agent Card, and registers with t
 
 But the long-term collaboration model remains direct workspace-to-workspace communication via A2A.
 
+## Known Limitations
+
+### Playwright / browser system libs are not installed
+
+The base `molecule-ai-workspace-runtime` image (`workspace/Dockerfile`) is built on `python:3.11-slim` with Node.js 22, git, and `gh` — about 500 MB. It deliberately **does not** include the system libraries Chromium needs (`libnss3`, `libatk-bridge2.0-0`, `libxkbcommon0`, `libcups2`, `libdrm2`, `libxcomposite1`, `libxdamage1`, `libxrandr2`, `libgbm1`, `libpango-1.0-0`, `libasound2`, etc.). Adding them would inflate the image by ~200–250 MB (~40%) for every workspace, even though only frontend / QA workspaces ever launch a browser.
+
+Practical consequences:
+
+- `npx playwright test` (and any other Chromium-driven E2E tooling) **will fail at browser launch** when run from inside an in-container workspace agent.
+- The error surface is missing-shared-object messages such as `error while loading shared libraries: libnss3.so` or `Host system is missing dependencies to run browsers`.
+- Unit and integration tests (Vitest, Jest, etc.) that don't spawn a real browser are unaffected.
+
+Recommended workflow:
+
+1. **Run E2E in CI**, not in-container. The Gitea Actions self-hosted runner (and the GitHub Actions runner used by mirror repos) has the full Playwright dep set installed and is the supported surface for E2E. Push a branch, let CI run the suite.
+2. **Local debugging** of a single failing spec is best done on a developer laptop with `npx playwright install-deps` run once.
+3. **In-container iteration** on test logic itself is fine — write specs, lint them, type-check them — just don't expect `playwright test` to actually launch a browser.
+
+If a particular workspace role genuinely needs in-container E2E (a dedicated QA template, for instance), the right place to layer Playwright deps is in a **role-specific adapter template image** that does `FROM molecule-ai-workspace-runtime:<tag>` and adds `RUN npx playwright install-deps`. Open a request against `molecule-ai-workspace-runtime` if you need this template stamped.
+
+Tracking issue: [molecule-ai/molecule-app#7](https://git.moleculesai.app/molecule-ai/molecule-app/issues/7).
+
 ## Related Docs
 
 - [Agent Runtime Adapters](./cli-runtime.md)

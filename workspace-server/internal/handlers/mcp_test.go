@@ -1024,3 +1024,126 @@ func TestIsPrivateOrMetadataIP_PublicAllowed(t *testing.T) {
 		}
 	}
 }
+
+// TestMCPHandler_Call_MalformedJSON returns constant parse-error message.
+// Per OFFSEC-001 / #259: err.Error() must not leak struct field names or
+// JSON library internals in JSON-RPC error.message.
+func TestMCPHandler_Call_MalformedJSON_ReturnsConstantParseError(t *testing.T) {
+	h, _ := newMCPHandler(t)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}}
+	// Valid JSON-RPC 2.0 envelope but JSON body is malformed.
+	c.Request = httptest.NewRequest("POST", "/", bytes.NewBuffer([]byte("not valid json{][")))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.Call(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp mcpResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	if resp.Error == nil {
+		t.Fatal("expected JSON-RPC error, got nil")
+	}
+	// Message must be a constant — no err.Error() content.
+	if resp.Error.Message != "parse error" {
+		t.Errorf("error message should be constant 'parse error', got: %q", resp.Error.Message)
+	}
+	// Code must be -32700 (Parse error).
+	if resp.Error.Code != -32700 {
+		t.Errorf("error code should be -32700, got: %d", resp.Error.Code)
+	}
+}
+
+// TestMCPHandler_dispatchRPC_InvalidParams returns constant message.
+// Per OFFSEC-001 / #259: err.Error() from json.Unmarshal must not be
+// returned in JSON-RPC error.message.
+func TestMCPHandler_dispatchRPC_InvalidParams_ReturnsConstantMessage(t *testing.T) {
+	h, _ := newMCPHandler(t)
+
+	// Valid JSON-RPC but params is a string (not an object) — invalid for tools/call.
+	w := mcpPost(t, h, "ws-1", map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params":  "not an object", // string instead of object — json.Unmarshal fails
+	})
+
+	var resp mcpResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	if resp.Error == nil {
+		t.Fatal("expected JSON-RPC error, got nil")
+	}
+	// Message must be a constant — no JSON library error content.
+	if resp.Error.Message != "invalid parameters" {
+		t.Errorf("error message should be constant 'invalid parameters', got: %q", resp.Error.Message)
+	}
+	if resp.Error.Code != -32602 {
+		t.Errorf("error code should be -32602 (Invalid params), got: %d", resp.Error.Code)
+	}
+}
+
+// TestMCPHandler_dispatchRPC_UnknownTool returns constant tool-failed message.
+// Per OFFSEC-001 / #259: dispatch errors must not leak workspace IDs or
+// internal paths.  Note: this test exercises the dispatch path through
+// dispatchRPC since dispatch is package-private.
+func TestMCPHandler_dispatchRPC_UnknownTool_ReturnsConstantMessage(t *testing.T) {
+	h, _ := newMCPHandler(t)
+
+	// Valid params shape but tool name does not exist.
+	w := mcpPost(t, h, "ws-1", map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "tools/call",
+		"params": map[string]interface{}{
+			"name":      "nonexistent_tool_xyz",
+			"arguments": map[string]interface{}{},
+		},
+	})
+
+	var resp mcpResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	if resp.Error == nil {
+		t.Fatal("expected JSON-RPC error for unknown tool, got nil")
+	}
+	// Message must be a constant — no "unknown tool: nonexistent_tool_xyz" leak.
+	if resp.Error.Message != "tool call failed" {
+		t.Errorf("error message should be constant 'tool call failed', got: %q", resp.Error.Message)
+	}
+	if resp.Error.Code != -32000 {
+		t.Errorf("error code should be -32000 (Server error), got: %d", resp.Error.Code)
+	}
+}
+
+// TestMCPHandler_dispatchRPC_InvalidParams_NilParams covers the edge case
+// where params is present but not an object (e.g. an array). json.Unmarshal
+// into the params struct fails, and we assert the constant error message.
+func TestMCPHandler_dispatchRPC_InvalidParams_ArrayInsteadOfObject(t *testing.T) {
+	h, _ := newMCPHandler(t)
+
+	w := mcpPost(t, h, "ws-1", map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      3,
+		"method":  "tools/call",
+		"params":  []interface{}{"one", "two"}, // array instead of object
+	})
+
+	var resp mcpResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	if resp.Error == nil {
+		t.Fatal("expected JSON-RPC error, got nil")
+	}
+	if resp.Error.Message != "invalid parameters" {
+		t.Errorf("error message should be constant 'invalid parameters', got: %q", resp.Error.Message)
+	}
+}
