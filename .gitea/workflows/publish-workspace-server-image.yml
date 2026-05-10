@@ -23,7 +23,7 @@ name: publish-workspace-server-image
 
 on:
   push:
-    branches: [staging, main]
+    branches: [main]
     paths:
       - 'workspace-server/**'
       - 'canvas/**'
