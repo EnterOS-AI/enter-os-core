@@ -75,3 +75,46 @@ func TestExternalMcpTemplates_UseMoleculeMcpWrapper(t *testing.T) {
 		}
 	}
 }
+
+// TestExternalTemplates_NoBrokenMoleculeAIGitHubURLs pins the invariant
+// that operator-facing snippets never embed github.com URLs pointing at
+// Molecule-AI repos.
+//
+// Why: the Molecule-AI GitHub org was suspended 2026-05-06 and the
+// canonical SCM is now git.moleculesai.app. Any `pip install
+// git+https://github.com/Molecule-AI/...` or marketplace-add Molecule-AI/
+// URL emitted to an external operator hits a 404 / org-suspended page,
+// breaking onboarding silently. RFC #229 P2-5.
+//
+// Third-party github URLs (gin, openai/codex, NousResearch/hermes-agent
+// upstream issue trackers, npm @openai/codex) remain valid — only
+// Molecule-AI/ paths are broken.
+func TestExternalTemplates_NoBrokenMoleculeAIGitHubURLs(t *testing.T) {
+	templates := map[string]string{
+		"externalCurlTemplate":          externalCurlTemplate,
+		"externalChannelTemplate":       externalChannelTemplate,
+		"externalUniversalMcpTemplate":  externalUniversalMcpTemplate,
+		"externalPythonTemplate":        externalPythonTemplate,
+		"externalHermesChannelTemplate": externalHermesChannelTemplate,
+		"externalCodexTemplate":         externalCodexTemplate,
+		"externalOpenClawTemplate":      externalOpenClawTemplate,
+	}
+	// Substrings that imply the snippet is pointing an operator at the
+	// suspended Molecule-AI GitHub org.
+	bannedSubstrings := []string{
+		"github.com/Molecule-AI/",
+		"github.com/molecule-ai/",
+		// Bare `Molecule-AI/<repo>` form used by `/plugin marketplace add`
+		// resolves through GitHub by default — explicit Gitea URL is
+		// required post-suspension.
+		"marketplace add Molecule-AI/",
+		"marketplace add molecule-ai/",
+	}
+	for name, body := range templates {
+		for _, banned := range bannedSubstrings {
+			if strings.Contains(body, banned) {
+				t.Errorf("%s contains %q — Molecule-AI GitHub org is suspended; use git.moleculesai.app/molecule-ai/<repo> instead (RFC #229 P2-5)", name, banned)
+			}
+		}
+	}
+}
