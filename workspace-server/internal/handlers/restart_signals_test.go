@@ -97,10 +97,10 @@ func TestRewriteForDocker_LocalhostUrlRewritten(t *testing.T) {
 // TestResolveAgentURLForRestartSignal_CacheHit verifies that a Redis-cached
 // URL is returned without hitting the DB.
 func TestResolveAgentURLForRestartSignal_CacheHit(t *testing.T) {
-	mockDB, mock := setupTestDB(t) // must come before setupTestRedisWithURL so db.DB is correct
+	_ = setupTestDB(t) // db.DB must be set before setupTestRedisWithURL
 	_ = setupTestRedisWithURL(t, "http://cached.internal:9000/agent")
 
-	h := newHandlerWithTestDepsWithDB(t, mockDB)
+	h := newHandlerWithTestDeps(t)
 
 	// Redis cache hit → DB should NOT be queried
 	url, err := h.resolveAgentURLForRestartSignal(context.Background(), "ws-cache-hit-123")
@@ -110,19 +110,18 @@ func TestResolveAgentURLForRestartSignal_CacheHit(t *testing.T) {
 	if url == "" {
 		t.Fatal("expected non-empty URL from cache")
 	}
-	// DB should not be queried (no rows returned to sqlmock)
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unfulfilled DB expectations: %v", err)
+	if url != "http://cached.internal:9000/agent" {
+		t.Errorf("expected cached URL, got %q", url)
 	}
 }
 
 // TestResolveAgentURLForRestartSignal_DBError verifies that a DB error is
 // returned and propagated when neither Redis cache nor DB lookup succeeds.
 func TestResolveAgentURLForRestartSignal_DBError(t *testing.T) {
-	mockDB, mock := setupTestDB(t) // must come before setupTestRedis so db.DB is correct
-	_ = setupTestRedis(t)         // empty → cache miss
+	mock := setupTestDB(t) // must come before setupTestRedis so db.DB is correct
+	_ = setupTestRedis(t) // empty → cache miss
 
-	h := newHandlerWithTestDepsWithDB(t, mockDB)
+	h := newHandlerWithTestDeps(t)
 
 	mock.ExpectQuery(`SELECT url FROM workspaces WHERE id =`).
 		WithArgs("ws-db-err-789").
@@ -141,10 +140,10 @@ func TestResolveAgentURLForRestartSignal_DBError(t *testing.T) {
 // TestResolveAgentURLForRestartSignal_CacheMiss verifies that on Redis miss,
 // the URL is fetched from the DB and cached.
 func TestResolveAgentURLForRestartSignal_CacheMiss(t *testing.T) {
-	mockDB, mock := setupTestDB(t) // must come before setupTestRedis so db.DB is correct
-	mr := setupTestRedis(t)         // empty → cache miss
+	mock := setupTestDB(t) // must come before setupTestRedis so db.DB is correct
+	_ = setupTestRedis(t)  // empty → cache miss
 
-	h := newHandlerWithTestDepsWithDB(t, mockDB)
+	h := newHandlerWithTestDeps(t)
 
 	mock.ExpectQuery(`SELECT url FROM workspaces WHERE id =`).
 		WithArgs("ws-cache-miss-456").
@@ -159,10 +158,12 @@ func TestResolveAgentURLForRestartSignal_CacheMiss(t *testing.T) {
 		t.Errorf("expected DB URL, got %q", url)
 	}
 
-	// Verify the URL was cached in Redis
-	cached, err := mr.Get(context.Background(), "ws:ws-cache-miss-456:url").Result()
+	// Verify the URL was cached in Redis via db.GetCachedURL.
+	// GetCachedURL takes workspaceID and builds the key internally, so
+	// pass "ws-cache-miss-456" (not the full "ws:ws-cache-miss-456:url").
+	cached, err := db.GetCachedURL(context.Background(), "ws-cache-miss-456")
 	if err != nil {
-		t.Fatalf("URL was not cached in Redis: %v", err)
+		t.Fatalf("URL cache read failed: %v", err)
 	}
 	if cached != "http://db.internal:8000/agent" {
 		t.Errorf("expected cached URL %q, got %q", "http://db.internal:8000/agent", cached)
@@ -175,9 +176,7 @@ func TestResolveAgentURLForRestartSignal_CacheMiss(t *testing.T) {
 // TestGracefulPreRestart_Success verifies that when the workspace returns 200,
 // the signal is logged as acknowledged without error.
 func TestGracefulPreRestart_Success(t *testing.T) {
-	_ = setupTestDB(t) // must come before setupTestRedisWithURL so db.DB is correct
-
-	mr := setupTestRedisWithURL(t, "http://localhost:18000/agent")
+	_ = setupTestDB(t)
 
 	// httptest server simulating the workspace container's /signals/restart_pending
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -206,44 +205,40 @@ func TestGracefulPreRestart_Success(t *testing.T) {
 		})
 	}))
 	defer srv.Close()
-	mr.Set("ws:ws-ack-789:url", srv.URL, 5*time.Minute)
 
-	// Patch the handler's resolveAgentURLForRestartSignal to return the test server URL
-	// (avoids needing a real provisioner for this test)
-	h := newHandlerWithTestDeps(t)
-	origResolve := h.resolveAgentURLForRestartSignal
-	h.resolveAgentURLForRestartSignal = func(ctx context.Context, wsID string) (string, error) {
-		return srv.URL + "/agent", nil
+	// Pre-populate Redis cache with the test server URL
+	_ = setupTestRedisWithURL(t, srv.URL)
+
+	// Use an embedded struct to override resolveAgentURLForRestartSignal.
+	hWrapper := &resolveURLTestWrapper{
+		WorkspaceHandler: newHandlerWithTestDeps(t),
+		testURL:         srv.URL + "/agent",
 	}
-	defer func() { h.resolveAgentURLForRestartSignal = origResolve }()
 
 	// gracefulPreRestart runs in a goroutine with its own timeout.
 	// We give it time to complete before the test ends.
-	h.gracefulPreRestart(context.Background(), "ws-ack-789")
+	hWrapper.gracefulPreRestart(context.Background(), "ws-ack-789")
 	time.Sleep(200 * time.Millisecond)
 }
 
 // TestGracefulPreRestart_NotImplemented verifies that when the workspace returns
 // 404 (old SDK version), the platform proceeds gracefully (log + no error).
 func TestGracefulPreRestart_NotImplemented(t *testing.T) {
-	_ = setupTestDB(t) // must come before setupTestRedisWithURL so db.DB is correct
-
-	mr := setupTestRedisWithURL(t, "http://localhost:18001/agent")
+	_ = setupTestDB(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
-	mr.Set("ws:ws-noimpl-999:url", srv.URL, 5*time.Minute)
 
-	h := newHandlerWithTestDeps(t)
-	origResolve := h.resolveAgentURLForRestartSignal
-	h.resolveAgentURLForRestartSignal = func(ctx context.Context, wsID string) (string, error) {
-		return srv.URL + "/agent", nil
+	_ = setupTestRedisWithURL(t, srv.URL)
+
+	hWrapper := &resolveURLTestWrapper{
+		WorkspaceHandler: newHandlerWithTestDeps(t),
+		testURL:         srv.URL + "/agent",
 	}
-	defer func() { h.resolveAgentURLForRestartSignal = origResolve }()
 
-	h.gracefulPreRestart(context.Background(), "ws-noimpl-999")
+	hWrapper.gracefulPreRestart(context.Background(), "ws-noimpl-999")
 	time.Sleep(200 * time.Millisecond)
 	// No panic or error expected — graceful degradation
 }
@@ -251,19 +246,17 @@ func TestGracefulPreRestart_NotImplemented(t *testing.T) {
 // TestGracefulPreRestart_ConnectionRefused verifies that when the workspace
 // is unreachable, the platform proceeds gracefully without error.
 func TestGracefulPreRestart_ConnectionRefused(t *testing.T) {
-	_ = setupTestDB(t) // must come before setupTestRedisWithURL so db.DB is correct
+	_ = setupTestDB(t)
 
 	mr := setupTestRedisWithURL(t, "http://localhost:19999/agent") // nothing listening on 19999
-	mr.Set("ws:ws-unreachable-000:url", "http://localhost:19999/agent", 5*time.Minute)
+	_ = mr
 
-	h := newHandlerWithTestDeps(t)
-	origResolve := h.resolveAgentURLForRestartSignal
-	h.resolveAgentURLForRestartSignal = func(ctx context.Context, wsID string) (string, error) {
-		return "http://localhost:19999/agent", nil
+	hWrapper := &resolveURLTestWrapper{
+		WorkspaceHandler: newHandlerWithTestDeps(t),
+		testURL:         "http://localhost:19999/agent",
 	}
-	defer func() { h.resolveAgentURLForRestartSignal = origResolve }()
 
-	h.gracefulPreRestart(context.Background(), "ws-unreachable-000")
+	hWrapper.gracefulPreRestart(context.Background(), "ws-unreachable-000")
 	time.Sleep(200 * time.Millisecond)
 	// No panic or error expected — proceeds with stop as documented
 }
@@ -274,36 +267,35 @@ func TestGracefulPreRestart_URLResolutionError(t *testing.T) {
 	_ = setupTestDB(t)
 	_ = setupTestRedis(t) // empty → URL resolution will fail in resolveAgentURLForRestartSignal
 
-	h := newHandlerWithTestDeps(t)
-
-	// Override resolveAgentURLForRestartSignal to return an error
-	origResolve := h.resolveAgentURLForRestartSignal
-	h.resolveAgentURLForRestartSignal = func(ctx context.Context, wsID string) (string, error) {
-		return "", context.DeadlineExceeded
+	hWrapper := &resolveURLTestWrapper{
+		WorkspaceHandler: newHandlerWithTestDeps(t),
+		errToReturn:     context.DeadlineExceeded,
 	}
-	defer func() { h.resolveAgentURLForRestartSignal = origResolve }()
 
-	h.gracefulPreRestart(context.Background(), "ws-url-err-111")
+	hWrapper.gracefulPreRestart(context.Background(), "ws-url-err-111")
 	time.Sleep(200 * time.Millisecond)
 	// No panic or error expected — proceeds with stop as documented
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-// newHandlerWithTestDeps creates a WorkspaceHandler with test stubs.
-// provisioner is nil so rewriteForDocker returns URL unchanged.
-func newHandlerWithTestDeps(t *testing.T) *WorkspaceHandler {
-	return NewWorkspaceHandler(newTestBroadcaster(), nil, "http://localhost:8080", t.TempDir())
+// resolveURLTestWrapper embeds *WorkspaceHandler and overrides
+// resolveAgentURLForRestartSignal so tests can inject a fixed URL or error.
+type resolveURLTestWrapper struct {
+	*WorkspaceHandler
+	testURL     string
+	errToReturn error
 }
 
-// newHandlerWithTestDepsWithDB creates a WorkspaceHandler with a specific mock DB.
-// Use this when you need to control the DB mock expectations.
-func newHandlerWithTestDepsWithDB(t *testing.T, mockDB *sql.DB) *WorkspaceHandler {
-	// We need to temporarily replace db.DB with our mock
-	origDB := db.DB
-	db.DB = mockDB
-	t.Cleanup(func() { db.DB = origDB })
+func (w *resolveURLTestWrapper) resolveAgentURLForRestartSignal(ctx context.Context, workspaceID string) (string, error) {
+	if w.errToReturn != nil {
+		return "", w.errToReturn
+	}
+	return w.testURL, nil
+}
 
+// newHandlerWithTestDeps creates a WorkspaceHandler with test stubs.
+func newHandlerWithTestDeps(t *testing.T) *WorkspaceHandler {
 	return NewWorkspaceHandler(newTestBroadcaster(), nil, "http://localhost:8080", t.TempDir())
 }
 
@@ -314,7 +306,6 @@ func setupTestRedisWithURL(t *testing.T, url string) *miniredis.Miniredis {
 		t.Fatalf("failed to start miniredis: %v", err)
 	}
 	db.RDB = redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	// Pre-populate a URL for the test workspace IDs used in these tests
 	for _, wsID := range []string{"ws-cache-hit-123", "ws-cache-miss-456", "ws-ack-789", "ws-noimpl-999", "ws-unreachable-000"} {
 		if err := db.CacheURL(context.Background(), wsID, url); err != nil {
 			t.Fatalf("failed to cache URL for %s: %v", wsID, err)
@@ -322,9 +313,4 @@ func setupTestRedisWithURL(t *testing.T, url string) *miniredis.Miniredis {
 	}
 	t.Cleanup(func() { mr.Close() })
 	return mr
-}
-
-// rewriteForDocker is exported from restart_signals.go so it can be tested here.
-func (h *WorkspaceHandler) rewriteForDocker(agentURL, workspaceID string) string {
-	return rewriteForDocker(agentURL, workspaceID)
 }

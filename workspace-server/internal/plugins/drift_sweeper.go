@@ -9,7 +9,7 @@ package plugins
 //   1. SELECTs workspace_plugins rows where tracked_ref != 'none'
 //      AND installed_sha IS NOT NULL (skip pre-migration rows with NULL SHA).
 //   2. For each row, resolves the tracked ref to its current upstream SHA
-//      using the appropriate SourceResolver.
+//      using the appropriate PluginResolver.
 //   3. If the resolved SHA differs from installed_sha → drift detected.
 //   4. On drift, INSERT INTO plugin_update_queue (ON CONFLICT DO NOTHING so
 //      a re-drift while a row is still pending is a no-op).
@@ -61,12 +61,25 @@ const DriftSweepInterval = 1 * time.Hour
 // that handles Gitea instances on high-latency links.
 const ResolveRefDeadline = 60 * time.Second
 
-// SourceResolver resolves plugin sources to installable directories.
-// Satisfied by *Registry (which wraps GithubResolver + LocalResolver).
-type SourceResolver interface {
+// PluginResolver is the registry-level abstraction the sweeper consumes:
+// pick a per-scheme SourceResolver for a parsed Source, and enumerate the
+// registered schemes so we can strip the prefix from a stored source_raw.
+//
+// Resolve returns the production SourceResolver from source.go (NOT another
+// PluginResolver) — that's the actual shape of *Registry.Resolve, and the
+// sweeper only needs the per-scheme resolver's identity, not its Fetch.
+//
+// Named PluginResolver (not SourceResolver) to avoid redeclaring the
+// per-scheme SourceResolver interface defined in source.go (core#228 fix).
+// Satisfied by *Registry from source.go via Resolve + Schemes.
+type PluginResolver interface {
 	Resolve(source Source) (SourceResolver, error)
 	Schemes() []string
 }
+
+// Compile-time assertion: *Registry satisfies PluginResolver. Catches any
+// future drift in Registry.Resolve / Schemes signatures at build time.
+var _ PluginResolver = (*Registry)(nil)
 
 // StartPluginDriftSweeper runs the drift-detection loop until ctx is cancelled.
 // Pass a nil resolver to disable the sweeper (useful for harnesses or CP/SaaS
@@ -74,7 +87,7 @@ type SourceResolver interface {
 //
 // Registers itself via atexits in cmd/server/main.go so the process
 // shuts down cleanly on SIGTERM.
-func StartPluginDriftSweeper(ctx context.Context, resolver SourceResolver) {
+func StartPluginDriftSweeper(ctx context.Context, resolver PluginResolver) {
 	if resolver == nil {
 		log.Println("Plugin drift sweeper: resolver is nil — sweeper disabled")
 		return
@@ -107,7 +120,7 @@ func StartPluginDriftSweeper(ctx context.Context, resolver SourceResolver) {
 // sweepDriftOnce runs one full drift-detection cycle.
 // Errors are non-fatal — each row is handled independently so a single
 // slow row doesn't block the rest of the sweep.
-func sweepDriftOnce(parent context.Context, resolver SourceResolver) {
+func sweepDriftOnce(parent context.Context, resolver PluginResolver) {
 	ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
 	defer cancel()
 
@@ -170,7 +183,7 @@ func sweepDriftOnce(parent context.Context, resolver SourceResolver) {
 // resolveLatestSHA resolves the tracked ref to its current upstream SHA.
 // Handles both github:// and local:// sources; local sources are skipped
 // (no meaningful upstream to drift against).
-func resolveLatestSHA(ctx context.Context, resolver SourceResolver, sourceRaw, trackedRef string) (string, error) {
+func resolveLatestSHA(ctx context.Context, resolver PluginResolver, sourceRaw, trackedRef string) (string, error) {
 	// Strip the scheme prefix to get the raw spec.
 	// sourceRaw is stored as the full string, e.g. "github://owner/repo#tag:v1.0.0"
 	spec := sourceRaw
@@ -231,7 +244,7 @@ func queueDriftEntry(ctx context.Context, workspaceID, pluginName, trackedRef, c
 // ─────────────────────────────────────────────────────────────────────────────
 
 // SweepDriftOnceForTest exposes sweepDriftOnce for package-level testing.
-func SweepDriftOnceForTest(parent context.Context, resolver SourceResolver) {
+func SweepDriftOnceForTest(parent context.Context, resolver PluginResolver) {
 	sweepDriftOnce(parent, resolver)
 }
 
