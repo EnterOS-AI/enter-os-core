@@ -71,10 +71,17 @@ func TemplateImageRef(runtime string) string {
 
 // ghcrAuthHeader returns the base64-encoded JSON auth payload Docker's
 // ImagePull expects in PullOptions.RegistryAuth, or empty string when no
-// GHCR_USER/GHCR_TOKEN env is set (lets public images pull through).
+// GHCR_USER/GHCR_TOKEN env is set (lets public images pull through and lets
+// ECR's credential-helper-driven flow take over without a stale GHCR
+// payload masking it).
 //
 // The Docker SDK doesn't read ~/.docker/config.json — every authenticated
-// pull needs an explicit RegistryAuth string.
+// pull needs an explicit RegistryAuth string. The serveraddress field is
+// resolved from provisioner.RegistryHost() so it tracks MOLECULE_IMAGE_REGISTRY
+// when the operator points the platform at a private mirror (e.g. ECR).
+// Leaving it hardcoded to "ghcr.io" caused the engine to match the wrong
+// auth entry post-suspension when MOLECULE_IMAGE_REGISTRY was flipped to
+// the AWS ECR mirror (RFC #229).
 func ghcrAuthHeader() string {
 	user := strings.TrimSpace(os.Getenv("GHCR_USER"))
 	token := strings.TrimSpace(os.Getenv("GHCR_TOKEN"))
@@ -84,7 +91,7 @@ func ghcrAuthHeader() string {
 	payload := map[string]string{
 		"username":      user,
 		"password":      token,
-		"serveraddress": "ghcr.io",
+		"serveraddress": provisioner.RegistryHost(),
 	}
 	js, err := json.Marshal(payload)
 	if err != nil {

@@ -127,6 +127,50 @@ func TestComputeRuntimeImages_ReflectsCurrentEnv(t *testing.T) {
 	}
 }
 
+// TestRegistryHost_SplitsHostFromOrgPath pins the contract that callers
+// (Docker auth payloads, registry V2 HTTP base URLs) need: the host portion
+// must be free of the "/molecule-ai" org suffix that appears in the
+// pull-prefix form. Pre-RFC #229, ghcr.io was hardcoded in two places
+// (imagewatch + admin_workspace_images auth payload); this helper is the
+// single source they should resolve from.
+func TestRegistryHost_SplitsHostFromOrgPath(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string
+		want string
+	}{
+		{"default GHCR", "", "ghcr.io"},
+		{"AWS ECR mirror", "004947743811.dkr.ecr.us-east-2.amazonaws.com/molecule-ai", "004947743811.dkr.ecr.us-east-2.amazonaws.com"},
+		{"self-hosted Gitea", "git.moleculesai.app/molecule-ai", "git.moleculesai.app"},
+		// Bare host (no /org) — defensive: return as-is rather than empty.
+		{"bare host no org-path", "registry.example.com", "registry.example.com"},
+		// Multi-level org path — split at the first "/" only.
+		{"nested org path", "registry.example.com/org/sub", "registry.example.com"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("MOLECULE_IMAGE_REGISTRY", tc.env)
+			got := RegistryHost()
+			if got != tc.want {
+				t.Errorf("RegistryHost() with env=%q: got %q, want %q", tc.env, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRegistryHost_NeverEmpty — guard against a future refactor accidentally
+// returning "" for some edge env value. An empty serveraddress in the
+// Docker engine auth payload, or an empty host in `https:///v2/...`, would
+// silently break image operations.
+func TestRegistryHost_NeverEmpty(t *testing.T) {
+	for _, env := range []string{"", "ghcr.io/molecule-ai", "/leading-slash", "host-only", "host/with/path"} {
+		t.Setenv("MOLECULE_IMAGE_REGISTRY", env)
+		if got := RegistryHost(); got == "" {
+			t.Errorf("RegistryHost() with env=%q returned empty (would break Docker auth + V2 HTTP)", env)
+		}
+	}
+}
+
 // TestKnownRuntimes_AlphabeticalOrder — pin the order so test snapshots
 // (and human readers diffing the file) see deterministic output. Adding a
 // new runtime out of alphabetical order will fail this test, which is the

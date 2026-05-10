@@ -3,6 +3,7 @@ package provisioner
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 // defaultRegistryPrefix is the upstream OSS face for all workspace template
@@ -60,6 +61,32 @@ func RegistryPrefix() string {
 		return v
 	}
 	return defaultRegistryPrefix
+}
+
+// RegistryHost returns just the registry host portion of RegistryPrefix() —
+// i.e. everything before the first "/" separator. This is the value that
+// belongs in:
+//
+//   - Docker Engine PullOptions.RegistryAuth payloads (`serveraddress` field)
+//     — the engine matches credentials against host, not host+org-path.
+//   - Docker Registry V2 HTTP API base URLs (e.g. `https://<host>/v2/...`)
+//     — the V2 API is host-rooted; the org-path lives in the manifest path.
+//
+// Examples:
+//
+//	"ghcr.io/molecule-ai"                                    → "ghcr.io"
+//	"123456789012.dkr.ecr.us-east-2.amazonaws.com/molecule-ai" → "123456789012.dkr.ecr.us-east-2.amazonaws.com"
+//	"git.moleculesai.app/molecule-ai"                        → "git.moleculesai.app"
+//
+// If RegistryPrefix() ever returns a bare host (no `/`), we return it as-is
+// rather than letting strings.SplitN produce an empty string — defensive
+// against a misconfiguration where the operator sets just the host.
+func RegistryHost() string {
+	prefix := RegistryPrefix()
+	if i := strings.IndexByte(prefix, '/'); i > 0 {
+		return prefix[:i]
+	}
+	return prefix
 }
 
 // RuntimeImage returns the canonical image reference for the given runtime,

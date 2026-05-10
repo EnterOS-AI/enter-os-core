@@ -3,6 +3,9 @@ package imagewatch
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -158,6 +161,100 @@ func TestTick_DigestFetchErrorSkipsRuntime(t *testing.T) {
 	if got := w.seen["claude-code"]; got != "sha256:old" {
 		t.Errorf("fetch error must leave seen digest untouched, got %q", got)
 	}
+}
+
+// TestRemoteDigest_RegistryHostFollowsEnv pins the RFC #229 fix: with
+// MOLECULE_IMAGE_REGISTRY pointed at a private mirror, the watcher's HTTP
+// calls (token endpoint + manifest HEAD) must hit that mirror's host, not
+// the hardcoded ghcr.io of the pre-fix code path. We stand up an httptest
+// server, point MOLECULE_IMAGE_REGISTRY at its host, and assert both
+// endpoints get hit on it.
+//
+// Without this test, a future refactor could revert the helper indirection
+// and the watcher would silently go back to talking to ghcr.io even when
+// the platform is configured for ECR — exactly the bug RFC #229 is closing.
+func TestRemoteDigest_RegistryHostFollowsEnv(t *testing.T) {
+	var (
+		mu              sync.Mutex
+		tokenHits       int
+		manifestHits    int
+		lastTokenURL    string
+		lastManifestURL string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/token"):
+			tokenHits++
+			lastTokenURL = r.URL.String()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"token":"fake-bearer"}`))
+		case strings.HasPrefix(r.URL.Path, "/v2/") && strings.Contains(r.URL.Path, "/manifests/latest"):
+			manifestHits++
+			lastManifestURL = r.URL.Path
+			w.Header().Set("Docker-Content-Digest", "sha256:cafef00d")
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	// httptest.Server.URL is "http://127.0.0.1:NNNN". RegistryHost() works
+	// over the host:port portion (provisioner.RegistryPrefix takes the env
+	// verbatim), so we strip the scheme and append "/molecule-ai" to mimic
+	// the prefix shape MOLECULE_IMAGE_REGISTRY actually uses in production.
+	host := strings.TrimPrefix(srv.URL, "http://")
+	t.Setenv("MOLECULE_IMAGE_REGISTRY", host+"/molecule-ai")
+
+	w := newTestWatcher(&fakeRefresher{}, "claude-code")
+	// Use the test-server URL scheme by overriding the http client only —
+	// remoteDigest constructs https://<host>/... internally. We need the
+	// watcher to hit our http server, so swap the URL scheme by injecting
+	// a transport that rewrites https→http for this test.
+	w.http = &http.Client{Transport: rewriteToHTTP{}}
+
+	digest, err := w.remoteDigest(context.Background(), "claude-code")
+	if err != nil {
+		t.Fatalf("remoteDigest failed: %v", err)
+	}
+	if digest != "sha256:cafef00d" {
+		t.Errorf("digest: got %q, want sha256:cafef00d", digest)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if tokenHits != 1 {
+		t.Errorf("token endpoint hits: got %d, want 1 (watcher must hit configured registry, not ghcr.io)", tokenHits)
+	}
+	if manifestHits != 1 {
+		t.Errorf("manifest HEAD hits: got %d, want 1 (watcher must hit configured registry, not ghcr.io)", manifestHits)
+	}
+	// service= query param must reflect the configured host so registries
+	// that validate the param (GHCR-style spec) accept the request.
+	if !strings.Contains(lastTokenURL, "service="+host) && !strings.Contains(lastTokenURL, "service=127.0.0.1") {
+		t.Errorf("token URL service param not host-derived: got %q", lastTokenURL)
+	}
+	wantManifestPath := "/v2/molecule-ai/workspace-template-claude-code/manifests/latest"
+	if lastManifestURL != wantManifestPath {
+		t.Errorf("manifest path: got %q, want %q", lastManifestURL, wantManifestPath)
+	}
+}
+
+// rewriteToHTTP is a tiny RoundTripper that flips https→http so the watcher
+// (which builds https URLs from the configured registry host) can target an
+// httptest.Server that only speaks http. Production code paths still go
+// over https; this is a unit-test seam only.
+type rewriteToHTTP struct{}
+
+func (rewriteToHTTP) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Scheme == "https" {
+		clone := req.Clone(req.Context())
+		clone.URL.Scheme = "http"
+		req = clone
+	}
+	return http.DefaultTransport.RoundTrip(req)
 }
 
 func TestShortDigest(t *testing.T) {
