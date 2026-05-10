@@ -84,9 +84,9 @@ PR: `fix/ink-soft-wcag-contrast`.
 - **Status:** Mouse + keyboard — keyboard users can nest and un-nest without a mouse
 
 ### Canvas Controls ✅
-- **Zoom:** React Flow Controls component (verify if keyboard accessible)
+- **Zoom:** React Flow Controls component (zoom in/out/fit — each button has aria-label; keyboard-accessible) ✅
 - **Pan:** Space+drag, mouse drag
-- **Minimap:** Not present (MiniMap mocked as null in tests)
+- **Minimap:** Present with status-colored nodes (online=green, offline=zinc, degraded=amber, failed=red, provisioning=sky) ✅
 - **Status:** Basic keyboard support via viewport shortcuts
 
 ### Keyboard Shortcuts ✅ (strong)
