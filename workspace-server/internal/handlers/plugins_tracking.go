@@ -55,8 +55,12 @@ func validateTrackedRef(s string) (string, error) {
 // plugin install. ON CONFLICT (workspace_id, plugin_name) DO UPDATE so
 // reinstalling the same plugin name (with a possibly-different source or
 // track value) updates the existing row rather than failing.
+//
+// installedSHA records the commit SHA that was installed; used by the drift
+// sweeper to detect when the upstream ref has moved. May be empty (e.g. for
+// local:// sources or pre-migration installs) — the sweeper skips NULL SHAs.
 func recordWorkspacePluginInstall(
-	ctx context.Context, workspaceID, pluginName, sourceRaw, track string,
+	ctx context.Context, workspaceID, pluginName, sourceRaw, track, installedSHA string,
 ) error {
 	if workspaceID == "" || pluginName == "" || sourceRaw == "" {
 		return errors.New("recordWorkspacePluginInstall: missing required field")
@@ -66,13 +70,24 @@ func recordWorkspacePluginInstall(
 		return err
 	}
 	_, err = db.DB.ExecContext(ctx, `
-		INSERT INTO workspace_plugins (workspace_id, plugin_name, source_raw, tracked_ref)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO workspace_plugins (workspace_id, plugin_name, source_raw, tracked_ref, installed_sha)
+		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (workspace_id, plugin_name)
 		DO UPDATE SET
-			source_raw  = EXCLUDED.source_raw,
-			tracked_ref = EXCLUDED.tracked_ref,
-			updated_at  = NOW()
-	`, workspaceID, pluginName, sourceRaw, canonicalTrack)
+			source_raw    = EXCLUDED.source_raw,
+			tracked_ref   = EXCLUDED.tracked_ref,
+			installed_sha = EXCLUDED.installed_sha,
+			updated_at    = NOW()
+	`, workspaceID, pluginName, sourceRaw, canonicalTrack, installedSHA)
+	return err
+}
+
+// deleteWorkspacePluginRow removes the workspace_plugins row for a workspace/plugin
+// pair. Called by the uninstall path so the row doesn't persist with a stale
+// installed_sha after the plugin has been removed from the container.
+func deleteWorkspacePluginRow(ctx context.Context, workspaceID, pluginName string) error {
+	_, err := db.DB.ExecContext(ctx, `
+		DELETE FROM workspace_plugins WHERE workspace_id = $1 AND plugin_name = $2
+	`, workspaceID, pluginName)
 	return err
 }

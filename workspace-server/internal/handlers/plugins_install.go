@@ -95,7 +95,7 @@ func (h *PluginsHandler) Install(c *gin.Context) {
 	// foundation). Best-effort: DB write failure is logged but doesn't fail
 	// the install — the plugin IS in the container; surfacing a 500 here
 	// would mislead the caller about the install state.
-	if err := recordWorkspacePluginInstall(ctx, workspaceID, result.PluginName, result.Source.Raw(), req.Track); err != nil {
+	if err := recordWorkspacePluginInstall(ctx, workspaceID, result.PluginName, result.Source.Raw(), req.Track, result.InstalledSHA); err != nil {
 		log.Printf("Plugin install: failed to record %s for %s in workspace_plugins: %v (install succeeded; tracking row missing)", result.PluginName, workspaceID, err)
 	}
 
@@ -189,6 +189,15 @@ func (h *PluginsHandler) uninstallViaDocker(ctx context.Context, c *gin.Context,
 	// Verify deletion before restart
 	h.execInContainer(ctx, containerName, []string{"sync"})
 
+	// Remove the workspace_plugins tracking row so the row doesn't persist
+	// with a stale installed_sha after the plugin has been removed. Drift
+	// detection ignores rows without an installed_sha, but keeping the row
+	// would prevent the next install from creating a fresh row (ON CONFLICT
+	// UPDATE would apply instead of INSERT, which is wrong for an uninstall).
+	if err := deleteWorkspacePluginRow(ctx, workspaceID, pluginName); err != nil {
+		log.Printf("Plugin uninstall: failed to delete workspace_plugins row for %s: %v (container cleanup succeeded)", pluginName, err)
+	}
+
 	// Auto-restart (small delay to ensure fs writes are flushed)
 	if h.restartFunc != nil {
 		go func() {
@@ -243,6 +252,11 @@ func (h *PluginsHandler) uninstallViaEIC(ctx context.Context, c *gin.Context, wo
 		log.Printf("Plugin uninstall: EIC rm failed for %s on %s: %v", pluginName, workspaceID, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to remove plugin from workspace EC2"})
 		return
+	}
+
+	// Remove the workspace_plugins tracking row (see uninstallViaDocker for rationale).
+	if err := deleteWorkspacePluginRow(ctx, workspaceID, pluginName); err != nil {
+		log.Printf("Plugin uninstall: failed to delete workspace_plugins row for %s: %v (container cleanup succeeded)", pluginName, err)
 	}
 
 	if h.restartFunc != nil {

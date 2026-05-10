@@ -128,9 +128,10 @@ type installRequest struct {
 // stageResult bundles the outputs of resolveAndStage for the caller.
 // Avoids a 5-value tuple return.
 type stageResult struct {
-	StagedDir  string
-	PluginName string
-	Source     plugins.Source
+	StagedDir    string
+	PluginName   string
+	Source       plugins.Source
+	InstalledSHA string // empty for local:// sources (no meaningful upstream)
 }
 
 // resolveAndStage parses a validated request, dispatches to the right
@@ -212,6 +213,16 @@ func (h *PluginsHandler) resolveAndStage(ctx context.Context, req installRequest
 			"source": source.Raw(),
 		})
 	}
+
+	// Capture the installed SHA from github:// sources for drift detection.
+	// GithubResolver.LastSHA() is set by Fetch after a successful clone.
+	// Type-assert is safe because resolver was obtained via Resolve(), which
+	// returns the concrete GithubResolver for github:// sources.
+	var installedSHA string
+	if gh, ok := resolver.(*plugins.GithubResolver); ok {
+		installedSHA = gh.LastSHA()
+	}
+
 	if err := validatePluginName(pluginName); err != nil {
 		cleanup()
 		return nil, newHTTPErr(http.StatusBadRequest, gin.H{
@@ -264,7 +275,7 @@ func (h *PluginsHandler) resolveAndStage(ctx context.Context, req installRequest
 		}
 	}
 
-	return &stageResult{StagedDir: stagedDir, PluginName: pluginName, Source: source}, nil
+	return &stageResult{StagedDir: stagedDir, PluginName: pluginName, Source: source, InstalledSHA: installedSHA}, nil
 }
 
 // deliverToContainer copies the staged plugin dir into the workspace
@@ -511,4 +522,25 @@ func streamDirAsTar(root string, tw *tar.Writer) error {
 		_, err = io.Copy(tw, f)
 		return err
 	})
+}
+
+// ResolveAndStageForApply is the context-based equivalent of resolveAndStage,
+// exposed for the admin plugin drift apply endpoint (core#123). It bypasses
+// the gin.Context dependency so the apply path can re-trigger a plugin install
+// programmatically.
+func (h *PluginsHandler) ResolveAndStageForApply(ctx context.Context, req installRequest) (*stageResult, error) {
+	return h.resolveAndStage(ctx, req)
+}
+
+// DeliverForApply is the context-based equivalent of deliverToContainer,
+// exposed for the admin plugin drift apply endpoint (core#123).
+func (h *PluginsHandler) DeliverForApply(ctx context.Context, workspaceID string, r *stageResult) error {
+	return h.deliverToContainer(ctx, workspaceID, r)
+}
+
+// GetRestartFunc returns the pluginsHandler's restartFunc, or nil if not set.
+// Used by the admin drift apply endpoint to trigger a workspace restart after
+// a plugin update is applied.
+func (h *PluginsHandler) GetRestartFunc() func(string) {
+	return h.restartFunc
 }

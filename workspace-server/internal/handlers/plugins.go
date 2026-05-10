@@ -110,6 +110,12 @@ func (h *PluginsHandler) WithInstanceIDLookup(lookup InstanceIDLookup) *PluginsH
 	return h
 }
 
+// Sources returns the underlying plugin source registry. Used by main.go to
+// pass the same registry to the drift sweeper so both share resolver state.
+func (h *PluginsHandler) Sources() plugins.SourceResolver {
+	return h.sources
+}
+
 // pluginInfo is the API response for a plugin.
 type pluginInfo struct {
 	Name        string   `json:"name"`
