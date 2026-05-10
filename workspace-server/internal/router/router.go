@@ -27,7 +27,15 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provisioner, platformURL, configsDir string, wh *handlers.WorkspaceHandler, channelMgr *channels.Manager, memBundle *memwiring.Bundle, pluginResolver plugins.SourceResolver) *gin.Engine {
+// Setup wires the gin router. pluginResolver is the registry-level resolver
+// (typically *plugins.Registry from main.go) reserved for future per-deploy
+// customisation — currently passed only to satisfy the call-site contract;
+// plgh (PluginsHandler) constructs its own internal registry with the
+// default github+local resolvers via NewPluginsHandler. The drift sweeper
+// (main.go) gets the same pluginResolver instance so it can share scheme
+// enumeration if a deployment registers extra schemes externally. A nil
+// pluginResolver is harmless: plgh still works with its built-in defaults.
+func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provisioner, platformURL, configsDir string, wh *handlers.WorkspaceHandler, channelMgr *channels.Manager, memBundle *memwiring.Bundle, pluginResolver plugins.PluginResolver) *gin.Engine {
 	r := gin.Default()
 
 	// Issue #179 — trust no reverse-proxy headers. Without this call Gin's
@@ -499,6 +507,18 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		r.POST("/admin/workspace-images/refresh", middleware.AdminAuth(db.DB), imgH.Refresh)
 	}
 
+	// dockerCli is shared across plugins, terminal, templates, and bundle
+	// handlers. Declared up-front (was at line ~594) because the plugins
+	// init block — moved here in 70f84823 to fix "undefined: plgh" — needs
+	// dockerCli at construction time (NewPluginsHandler signature). Moving
+	// only the plgh block left dockerCli used-before-declared. Same nil
+	// guard semantics: prov nil → dockerCli nil → handlers fall back to
+	// non-Docker paths or skip Docker-dependent routes.
+	var dockerCli *client.Client
+	if prov != nil {
+		dockerCli = prov.DockerClient()
+	}
+
 	// Plugins — plgh must be initialized before the drift handler that uses it.
 	// Moved here (core#248 fix) because the drift handler block (core#123) was
 	// registered before plgh was created, causing "undefined: plgh" on main.
@@ -531,16 +551,17 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		).Scan(&instanceID)
 		return instanceID, err
 	}
-	// pluginResolver: when provided (normal production), use it for plgh so
-	// the drift sweeper (which also gets the same resolver in main.go) uses
-	// identical resolver state. When nil (test / backward compat), let
-	// NewPluginsHandler create its own default registry.
+	// plgh constructs its own internal registry (github + local) inside
+	// NewPluginsHandler. The pluginResolver param is the SHARED registry the
+	// drift sweeper consumes (main.go); we don't graft it onto plgh because
+	// plgh's WithSourceResolver expects a per-scheme SourceResolver, not a
+	// PluginResolver/registry. Cross-wiring those types was the original
+	// "*Registry doesn't implement SourceResolver" build break (core#228).
+	// Use of pluginResolver here is intentionally read-side only.
+	_ = pluginResolver
 	plgh := handlers.NewPluginsHandler(pluginsDir, dockerCli, wh.RestartByID).
 		WithRuntimeLookup(runtimeLookup).
 		WithInstanceIDLookup(instanceIDLookup)
-	if pluginResolver != nil {
-		plgh = plgh.WithSourceResolver(pluginResolver)
-	}
 	r.GET("/plugins", plgh.ListRegistry)
 	r.GET("/plugins/sources", plgh.ListSources)
 	wsAuth.GET("/plugins", plgh.ListInstalled)
@@ -590,11 +611,7 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		wsAuth.GET("/github-installation-token", ghTokH.GetInstallationToken)
 	}
 
-	// Terminal — shares Docker client with provisioner
-	var dockerCli *client.Client
-	if prov != nil {
-		dockerCli = prov.DockerClient()
-	}
+	// Terminal — shares Docker client with provisioner (declared above).
 	th := handlers.NewTerminalHandler(dockerCli)
 	wsAuth.GET("/terminal", th.HandleConnect)
 	wsAuth.GET("/terminal/diagnose", th.HandleDiagnose)

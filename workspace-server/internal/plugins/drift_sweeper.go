@@ -61,14 +61,25 @@ const DriftSweepInterval = 1 * time.Hour
 // that handles Gitea instances on high-latency links.
 const ResolveRefDeadline = 60 * time.Second
 
-// PluginResolver resolves plugin sources to installable directories.
-// Satisfied by *Registry (which wraps GithubResolver + LocalResolver).
+// PluginResolver is the registry-level abstraction the sweeper consumes:
+// pick a per-scheme SourceResolver for a parsed Source, and enumerate the
+// registered schemes so we can strip the prefix from a stored source_raw.
+//
+// Resolve returns the production SourceResolver from source.go (NOT another
+// PluginResolver) — that's the actual shape of *Registry.Resolve, and the
+// sweeper only needs the per-scheme resolver's identity, not its Fetch.
+//
 // Named PluginResolver (not SourceResolver) to avoid redeclaring the
-// SourceResolver interface defined in source.go (core#228 fix).
+// per-scheme SourceResolver interface defined in source.go (core#228 fix).
+// Satisfied by *Registry from source.go via Resolve + Schemes.
 type PluginResolver interface {
-	Resolve(source Source) (PluginResolver, error)
+	Resolve(source Source) (SourceResolver, error)
 	Schemes() []string
 }
+
+// Compile-time assertion: *Registry satisfies PluginResolver. Catches any
+// future drift in Registry.Resolve / Schemes signatures at build time.
+var _ PluginResolver = (*Registry)(nil)
 
 // StartPluginDriftSweeper runs the drift-detection loop until ctx is cancelled.
 // Pass a nil resolver to disable the sweeper (useful for harnesses or CP/SaaS
