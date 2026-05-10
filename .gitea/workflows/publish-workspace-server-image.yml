@@ -59,6 +59,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      # Health check: verify Docker daemon is accessible before attempting any
+      # build steps. This fails loudly at step 1 when the runner's docker.sock
+      # is inaccessible (e.g. permission change, daemon restart, or group-membership
+      # drift) rather than silently continuing to step 2 where `docker build`
+      # fails deep in the process with a cryptic ECR auth error that doesn't
+      # surface the root cause.  Also reports the daemon version so operator
+      # can correlate with runner host logs.
+      - name: Verify Docker daemon access
+        run: |
+          set -euo pipefail
+          echo "::group::Docker daemon health check"
+          docker info 2>&1 | head -5 || {
+            echo "::error::Docker daemon is not accessible at /var/run/docker.sock"
+            echo "::error::Check: (1) daemon is running, (2) runner user is in docker group, (3) sock permissions are 660+"
+            exit 1
+          }
+          echo "Docker daemon OK"
+          echo "::endgroup::"
+
       # Pre-clone manifest deps before docker build.
       #
       # Why: workspace-template-* repos on Gitea are private. The pre-fix
