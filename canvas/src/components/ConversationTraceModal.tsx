@@ -13,7 +13,8 @@ interface Props {
   onClose: () => void;
 }
 
-function extractMessageText(body: Record<string, unknown> | null): string {
+/** Exported for unit testing — see ConversationTraceModal.test.ts */
+export function extractMessageText(body: Record<string, unknown> | null): string {
   if (!body) return "";
   try {
     // Simple task format from MCP server: {task: "..."}
@@ -84,6 +85,7 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
     });
   }, [open, nodes]);
 
+  /** Exported for unit testing — see ConversationTraceModal.test.ts */
   const isA2A = (e: ActivityEntry) =>
     e.activity_type === "a2a_receive" || e.activity_type === "a2a_send";
 
