@@ -350,7 +350,7 @@ export function Toolbar() {
             <button
               type="button"
               onClick={() => { setHelpOpen(false); setShortcutsOpen(true); }}
-              className="mt-3 w-full text-center text-[10px] text-ink-soft hover:text-accent transition-colors focus:outline-none focus-visible:underline"
+              className="mt-3 w-full text-center text-[10px] text-ink-mid hover:text-accent transition-colors focus:outline-none focus-visible:underline"
             >
               See all shortcuts →
             </button>

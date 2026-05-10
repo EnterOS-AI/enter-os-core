@@ -97,7 +97,7 @@ export function Legend() {
           // 24×24 touch target (was ~10×16, well under WCAG 2.5.5 min).
           // Negative margin keeps the visual position the same as before
           // — only the hit area + focus ring are larger.
-          className="-mt-1.5 -mr-1.5 w-6 h-6 inline-flex items-center justify-center rounded text-[14px] leading-none text-ink-soft hover:text-ink hover:bg-surface-card/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 transition-colors"
+          className="-mt-1.5 -mr-1.5 w-6 h-6 inline-flex items-center justify-center rounded text-[14px] leading-none text-ink-mid hover:text-ink hover:bg-surface-card/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 transition-colors"
         >
           ×
         </button>
@@ -105,7 +105,7 @@ export function Legend() {
 
       {/* Status */}
       <div className="mb-2">
-        <div className="text-[11px] text-ink-soft font-medium mb-1">Status</div>
+        <div className="text-[11px] text-ink-mid font-medium mb-1">Status</div>
         <div className="flex flex-wrap gap-x-3 gap-y-1">
           {LEGEND_STATUSES.map((s) => (
             <StatusItem key={s} color={STATUS_CONFIG[s].dot} label={STATUS_CONFIG[s].label} />
@@ -115,7 +115,7 @@ export function Legend() {
 
       {/* Tiers */}
       <div className="mb-2">
-        <div className="text-[11px] text-ink-soft font-medium mb-1">Tier</div>
+        <div className="text-[11px] text-ink-mid font-medium mb-1">Tier</div>
         <div className="flex flex-wrap gap-x-3 gap-y-1">
           {LEGEND_TIERS.map(({ tier, label }) => (
             <TierItem key={tier} tier={tier} label={label} color={TIER_CONFIG[tier].border} />
@@ -125,7 +125,7 @@ export function Legend() {
 
       {/* Communication */}
       <div>
-        <div className="text-[11px] text-ink-soft font-medium mb-1">Communication</div>
+        <div className="text-[11px] text-ink-mid font-medium mb-1">Communication</div>
         <div className="flex flex-wrap gap-x-3 gap-y-1">
           <CommItem icon="↗" color="text-cyan-400" label="A2A Out" />
           <CommItem icon="↙" color="text-accent" label="A2A In" />

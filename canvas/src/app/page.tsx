@@ -56,7 +56,7 @@ export default function Home() {
       <div className="fixed inset-0 flex items-center justify-center bg-surface">
         <div role="status" aria-live="polite" className="flex flex-col items-center gap-3">
           <Spinner size="lg" />
-          <span className="text-xs text-ink-soft">Loading canvas...</span>
+          <span className="text-xs text-ink-mid">Loading canvas...</span>
         </div>
       </div>
     );
@@ -119,11 +119,11 @@ function PlatformDownDiagnostic() {
         Most common cause on a dev host: one of those services stopped.
       </p>
       <div className="bg-surface-sunken/80 border border-line/50 rounded-lg px-4 py-3 max-w-lg w-full">
-        <div className="text-[10px] uppercase tracking-wider text-ink-soft mb-2">Try first</div>
+        <div className="text-[10px] uppercase tracking-wider text-ink-mid mb-2">Try first</div>
         <pre className="text-[12px] text-ink-mid font-mono whitespace-pre-wrap leading-relaxed">{`brew services start postgresql@14
 brew services start redis`}</pre>
       </div>
-      <p className="text-[11px] text-ink-soft max-w-lg text-center">
+      <p className="text-[11px] text-ink-mid max-w-lg text-center">
         If both are running, check <code className="font-mono">/tmp/molecule-server.log</code> for
         the underlying error. If you&apos;re on hosted SaaS, this is a platform incident — try again in a moment.
       </p>

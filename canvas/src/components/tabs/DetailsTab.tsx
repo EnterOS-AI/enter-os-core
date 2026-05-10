@@ -242,7 +242,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
               {data.lastSampleError}
             </pre>
           ) : (
-            <p className="text-xs text-ink-soft">No error detail recorded.</p>
+            <p className="text-xs text-ink-mid">No error detail recorded.</p>
           )}
           <button
             type="button"
@@ -268,7 +268,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
               <div key={s.id} className="flex items-start gap-2">
                 <span className="text-xs text-accent font-mono shrink-0">{s.id}</span>
                 {s.description && (
-                  <span className="text-xs text-ink-soft">{s.description}</span>
+                  <span className="text-xs text-ink-mid">{s.description}</span>
                 )}
               </div>
             ))}
@@ -281,11 +281,11 @@ export function DetailsTab({ workspaceId, data }: Props) {
         {peersError ? (
           <p className="text-xs text-bad">{peersError}</p>
         ) : peers.length === 0 && data.status !== "online" && data.status !== "degraded" ? (
-          <p className="text-xs text-ink-soft">
+          <p className="text-xs text-ink-mid">
             Peers are only discoverable while the workspace is online.
           </p>
         ) : peers.length === 0 ? (
-          <p className="text-xs text-ink-soft">No reachable peers</p>
+          <p className="text-xs text-ink-mid">No reachable peers</p>
         ) : (
           <div className="space-y-1">
             {peers.map((p) => (
@@ -297,7 +297,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
               >
                 <StatusDot status={p.status} />
                 <span className="text-xs text-ink">{p.name}</span>
-                {p.role && <span className="text-[10px] text-ink-soft">{p.role}</span>}
+                {p.role && <span className="text-[10px] text-ink-mid">{p.role}</span>}
               </button>
             ))}
           </div>
@@ -385,7 +385,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   const fieldId = useId();
   return (
     <div>
-      <label htmlFor={fieldId} className="text-[10px] text-ink-soft block mb-0.5">{label}</label>
+      <label htmlFor={fieldId} className="text-[10px] text-ink-mid block mb-0.5">{label}</label>
       {cloneElement(children as ReactElement<{ id?: string }>, { id: fieldId })}
     </div>
   );
@@ -394,7 +394,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
     <div className="flex justify-between">
-      <span className="text-xs text-ink-soft">{label}</span>
+      <span className="text-xs text-ink-mid">{label}</span>
       <span className={`text-xs text-ink ${mono ? "font-mono" : ""} text-right max-w-[200px] truncate`}>
         {value}
       </span>

@@ -356,7 +356,7 @@ export function ProviderModelSelector({
       <div>
         <label
           htmlFor={providerSelectId}
-          className="text-[10px] uppercase tracking-wide text-ink-soft font-semibold mb-1.5 block"
+          className="text-[10px] uppercase tracking-wide text-ink-mid font-semibold mb-1.5 block"
         >
           Provider <span aria-hidden="true" className="text-bad">*</span>
           <span className="sr-only"> (required)</span>
@@ -382,13 +382,13 @@ export function ProviderModelSelector({
         {selected?.tooltip && (
           <p
             id={`${providerSelectId}-help`}
-            className="text-[9px] text-ink-soft mt-1 leading-relaxed"
+            className="text-[9px] text-ink-mid mt-1 leading-relaxed"
           >
             {selected.tooltip}
           </p>
         )}
         {selected && selected.envVars.length > 0 && (
-          <p className="text-[9px] text-ink-soft mt-0.5 font-mono">
+          <p className="text-[9px] text-ink-mid mt-0.5 font-mono">
             requires: {selected.envVars.join(", ")}
           </p>
         )}
@@ -397,7 +397,7 @@ export function ProviderModelSelector({
       <div>
         <label
           htmlFor={modelSelectId}
-          className="text-[10px] uppercase tracking-wide text-ink-soft font-semibold mb-1.5 block"
+          className="text-[10px] uppercase tracking-wide text-ink-mid font-semibold mb-1.5 block"
         >
           Model <span aria-hidden="true" className="text-bad">*</span>
           <span className="sr-only"> (required)</span>
@@ -422,7 +422,7 @@ export function ProviderModelSelector({
               data-testid="model-input"
               className="w-full bg-surface-sunken border border-line rounded px-2 py-1.5 text-[11px] text-ink font-mono focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/20 transition-colors disabled:opacity-50"
             />
-            <p className="text-[9px] text-ink-soft mt-1 leading-relaxed">
+            <p className="text-[9px] text-ink-mid mt-1 leading-relaxed">
               {selected?.wildcard
                 ? wildcardHelpText(selected)
                 : "Free-text model id. Make sure the provider can resolve it."}

@@ -201,7 +201,7 @@ export function ExternalConnectModal({ info, onClose }: Props) {
                 className={`px-3 py-2 text-sm border-b-2 -mb-px transition-colors ${
                   tab === t
                     ? "border-accent text-ink"
-                    : "border-transparent text-ink-soft hover:text-ink-mid"
+                    : "border-transparent text-ink-mid hover:text-ink-mid"
                 }`}
               >
                 {t === "claude"
@@ -335,7 +335,7 @@ function SnippetBlock({
   return (
     <div>
       <div className="flex items-center justify-between pb-1">
-        <span className="text-xs text-ink-soft">{label}</span>
+        <span className="text-xs text-ink-mid">{label}</span>
         <button
           type="button"
           onClick={onCopy}
@@ -366,7 +366,7 @@ function Field({
 }) {
   return (
     <div className="flex items-center gap-2">
-      <span className="text-xs text-ink-soft w-36 shrink-0">{label}</span>
+      <span className="text-xs text-ink-mid w-36 shrink-0">{label}</span>
       <code
         className={`flex-1 text-xs bg-surface border border-line rounded px-2 py-1 text-ink break-all ${mono ? "font-mono" : ""}`}
       >

@@ -182,7 +182,7 @@ export function MemoryTab({ workspaceId }: Props) {
   };
 
   if (loading) {
-    return <div className="p-4 text-xs text-ink-soft">Loading memory...</div>;
+    return <div className="p-4 text-xs text-ink-mid">Loading memory...</div>;
   }
 
   return (
@@ -197,7 +197,7 @@ export function MemoryTab({ workspaceId }: Props) {
         <div className="flex items-center justify-between gap-3">
           <div>
             <div className="text-xs font-medium text-ink">Awareness dashboard</div>
-            <p className="text-[10px] text-ink-soft">
+            <p className="text-[10px] text-ink-mid">
               Embedded view for the local Awareness memory UI. The current workspace id is appended to the URL for workspace-scoped routing or future filtering.
             </p>
           </div>
@@ -230,7 +230,7 @@ export function MemoryTab({ workspaceId }: Props) {
               />
             </div>
           ) : (
-            <div className="rounded-xl border border-dashed border-line bg-surface-sunken/40 p-4 text-xs text-ink-soft">
+            <div className="rounded-xl border border-dashed border-line bg-surface-sunken/40 p-4 text-xs text-ink-mid">
               Set <code className="font-mono text-ink-mid">NEXT_PUBLIC_AWARENESS_URL</code> to embed the Awareness dashboard here.
             </div>
           )
@@ -238,7 +238,7 @@ export function MemoryTab({ workspaceId }: Props) {
           <div className="rounded-xl border border-line bg-surface-sunken/50 px-4 py-3 flex items-center justify-between gap-3">
             <div className="min-w-0">
               <p className="text-xs text-ink">Awareness dashboard is collapsed</p>
-              <p className="text-[10px] text-ink-soft truncate">
+              <p className="text-[10px] text-ink-mid truncate">
                 Workspace context stays linked through <span className="font-mono text-ink-mid">{workspaceId}</span>.
               </p>
             </div>
@@ -254,15 +254,15 @@ export function MemoryTab({ workspaceId }: Props) {
 
         <div className="grid gap-2 rounded-xl border border-line bg-surface/40 px-3 py-2 text-[10px] text-ink-mid sm:grid-cols-3">
           <div className="flex items-center justify-between gap-2">
-            <span className="uppercase tracking-[0.18em] text-ink-soft">Status</span>
+            <span className="uppercase tracking-[0.18em] text-ink-mid">Status</span>
             <span className="font-medium text-good">Connected</span>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <span className="uppercase tracking-[0.18em] text-ink-soft">Mode</span>
+            <span className="uppercase tracking-[0.18em] text-ink-mid">Mode</span>
             <span className="font-medium text-ink">{awarenessStatus}</span>
           </div>
           <div className="flex items-center justify-between gap-2 min-w-0">
-            <span className="uppercase tracking-[0.18em] text-ink-soft">Workspace</span>
+            <span className="uppercase tracking-[0.18em] text-ink-mid">Workspace</span>
             <span className="font-mono text-ink-mid truncate">{workspaceId}</span>
           </div>
         </div>
@@ -272,7 +272,7 @@ export function MemoryTab({ workspaceId }: Props) {
         <div className="flex items-center justify-between">
           <div>
             <div className="text-xs font-medium text-ink">Workspace KV memory</div>
-            <p className="text-[10px] text-ink-soft">
+            <p className="text-[10px] text-ink-mid">
               Native platform key-value memory for workspace <span className="font-mono text-ink-mid">{workspaceId}</span>.
             </p>
           </div>
@@ -350,7 +350,7 @@ export function MemoryTab({ workspaceId }: Props) {
 
         {showAdvanced ? (
           entries.length === 0 ? (
-            <p className="text-xs text-ink-soft text-center py-4">No memory entries</p>
+            <p className="text-xs text-ink-mid text-center py-4">No memory entries</p>
           ) : (
             <div className="space-y-1">
               {entries.map((entry) => (
@@ -364,11 +364,11 @@ export function MemoryTab({ workspaceId }: Props) {
                     <span className="text-xs font-mono text-accent">{entry.key}</span>
                     <div className="flex items-center gap-2">
                       {entry.expires_at && (
-                        <span className="text-[9px] text-ink-soft">
+                        <span className="text-[9px] text-ink-mid">
                           TTL {new Date(entry.expires_at).toLocaleString()}
                         </span>
                       )}
-                      <span className="text-[10px] text-ink-soft">
+                      <span className="text-[10px] text-ink-mid">
                         {expanded === entry.key ? "▼" : "▶"}
                       </span>
                     </div>
@@ -420,7 +420,7 @@ export function MemoryTab({ workspaceId }: Props) {
                         </pre>
                       )}
                       <div className="flex items-center justify-between">
-                        <span className="text-[9px] text-ink-soft">
+                        <span className="text-[9px] text-ink-mid">
                           Updated: {new Date(entry.updated_at).toLocaleString()}
                         </span>
                         <div className="flex items-center gap-2">
@@ -452,7 +452,7 @@ export function MemoryTab({ workspaceId }: Props) {
           <div className="rounded-xl border border-line bg-surface/30 px-4 py-3 flex items-center justify-between gap-3">
             <div className="min-w-0">
               <p className="text-xs text-ink">Advanced workspace memory is hidden</p>
-              <p className="text-[10px] text-ink-soft truncate">
+              <p className="text-[10px] text-ink-mid truncate">
                 KV entries remain available if you need the raw platform store.
               </p>
             </div>

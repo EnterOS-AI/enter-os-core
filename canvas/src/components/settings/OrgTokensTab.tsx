@@ -109,7 +109,7 @@ export function OrgTokensTab() {
             Organization API Keys
           </h3>
         </div>
-        <p className="text-[10px] text-ink-soft leading-relaxed">
+        <p className="text-[10px] text-ink-mid leading-relaxed">
           Full-admin bearer tokens for this organization. Use with external
           integrations, CLI tools, or AI agents that need to manage
           workspaces, settings, and secrets. Each key has the same
@@ -182,13 +182,13 @@ export function OrgTokensTab() {
 
       {/* Token list */}
       {loading ? (
-        <div role="status" aria-live="polite" className="flex items-center justify-center gap-2 py-6 text-ink-soft text-xs">
+        <div role="status" aria-live="polite" className="flex items-center justify-center gap-2 py-6 text-ink-mid text-xs">
           <Spinner /> Loading keys...
         </div>
       ) : tokens.length === 0 ? (
         <div className="text-center py-6">
-          <p className="text-xs text-ink-soft">No active keys</p>
-          <p className="text-[10px] text-ink-soft mt-1">
+          <p className="text-xs text-ink-mid">No active keys</p>
+          <p className="text-[10px] text-ink-mid mt-1">
             Create a key above to authenticate API calls to this organization.
           </p>
         </div>
@@ -209,7 +209,7 @@ export function OrgTokensTab() {
                       {t.name}
                     </span>
                   )}
-                  <div className="text-[9px] text-ink-soft space-x-3">
+                  <div className="text-[9px] text-ink-mid space-x-3">
                     <span>Created {formatAge(t.created_at)}</span>
                     {t.last_used_at && (
                       <span>Last used {formatAge(t.last_used_at)}</span>

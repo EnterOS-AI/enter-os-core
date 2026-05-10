@@ -158,7 +158,7 @@ export function BudgetSection({ workspaceId }: Props) {
 
       {/* Usage stats */}
       {loading ? (
-        <p className="text-xs text-ink-soft" data-testid="budget-loading">
+        <p className="text-xs text-ink-mid" data-testid="budget-loading">
           Loading…
         </p>
       ) : fetchError ? (
@@ -172,7 +172,7 @@ export function BudgetSection({ workspaceId }: Props) {
             <span className="text-xs text-ink-mid">Credits used</span>
             <span className="text-xs font-mono text-ink-mid">
               <span data-testid="budget-used-value">{(budget.budget_used ?? 0).toLocaleString()}</span>
-              <span className="text-ink-soft mx-1">/</span>
+              <span className="text-ink-mid mx-1">/</span>
               <span data-testid="budget-limit-value">
                 {budget.budget_limit != null
                   ? budget.budget_limit.toLocaleString()
@@ -201,7 +201,7 @@ export function BudgetSection({ workspaceId }: Props) {
 
           {/* Remaining credits */}
           {budget.budget_remaining != null && (
-            <p className="text-[11px] text-ink-soft" data-testid="budget-remaining">
+            <p className="text-[11px] text-ink-mid" data-testid="budget-remaining">
               {budget.budget_remaining.toLocaleString()} credits remaining
             </p>
           )}
@@ -227,7 +227,7 @@ export function BudgetSection({ workspaceId }: Props) {
           data-testid="budget-limit-input"
           className="w-full bg-surface-card border border-line rounded-lg px-3 py-2 text-sm text-ink-mid placeholder-zinc-500 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors"
         />
-        <p className="text-xs text-ink-soft">Leave blank for unlimited</p>
+        <p className="text-xs text-ink-mid">Leave blank for unlimited</p>
 
         {saveError && (
           <div

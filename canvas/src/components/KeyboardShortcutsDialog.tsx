@@ -17,6 +17,10 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
         description: "Close context menu, clear selection, or deselect",
       },
       {
+        keys: ["↑↓←→"],
+        description: "Nudge selected node 20px; hold Shift for 100px",
+      },
+      {
         keys: ["Enter"],
         description: "Descend into selected node's first child",
       },
@@ -177,7 +181,7 @@ export function KeyboardShortcutsDialog({ open, onClose }: Props) {
         <div className="overflow-y-auto p-5 space-y-5">
           {SHORTCUT_GROUPS.map((group) => (
             <div key={group.title}>
-              <h3 className="text-[10px] font-semibold uppercase tracking-[0.2em] text-ink-soft mb-2.5">
+              <h3 className="text-[10px] font-semibold uppercase tracking-[0.2em] text-ink-mid mb-2.5">
                 {group.title}
               </h3>
               <div className="space-y-2">
@@ -193,7 +197,7 @@ export function KeyboardShortcutsDialog({ open, onClose }: Props) {
                       {shortcut.keys.map((k, j) => (
                         <span key={j} className="flex items-center gap-0.5">
                           {j > 0 && (
-                            <span className="text-[9px] text-ink-soft mx-0.5">
+                            <span className="text-[9px] text-ink-mid mx-0.5">
                               +
                             </span>
                           )}
@@ -212,7 +216,7 @@ export function KeyboardShortcutsDialog({ open, onClose }: Props) {
 
         {/* Footer */}
         <div className="px-5 py-3 border-t border-line bg-surface-sunken/30 shrink-0">
-          <p className="text-[10px] text-ink-soft text-center">
+          <p className="text-[10px] text-ink-mid text-center">
             Press{" "}
             <kbd className="inline-flex items-center rounded border border-line/70 bg-surface-sunken/70 px-1.5 py-0.5 text-[10px] font-medium text-ink font-mono">
               Esc

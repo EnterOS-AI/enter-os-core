@@ -97,7 +97,7 @@ function AgentCardSection({ workspaceId }: { workspaceId: string }) {
               {JSON.stringify(card, null, 2)}
             </pre>
           ) : (
-            <div className="text-[10px] text-ink-soft">No agent card</div>
+            <div className="text-[10px] text-ink-mid">No agent card</div>
           )}
           {success && <div className="mt-2 px-2 py-1 bg-green-900/30 border border-green-800 rounded text-[10px] text-good">Updated</div>}
           <button type="button" onClick={() => { setDraft(JSON.stringify(card || {}, null, 2)); setEditing(true); setError(null); setSuccess(false); }}
@@ -635,16 +635,16 @@ export function ConfigTab({ workspaceId }: Props) {
   const isDirty = (rawMode ? rawDraft !== originalYaml : toYaml(config) !== originalYaml) || providerDirty;
 
   if (loading) {
-    return <div className="p-4 text-xs text-ink-soft">Loading config...</div>;
+    return <div className="p-4 text-xs text-ink-mid">Loading config...</div>;
   }
 
   return (
     <div className="flex flex-col h-full">
       {/* Mode toggle */}
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-line/40 bg-surface-sunken/30">
-        <span className="text-[10px] text-ink-soft">config.yaml</span>
+        <span className="text-[10px] text-ink-mid">config.yaml</span>
         <label className="flex items-center gap-1.5 cursor-pointer">
-          <span className="text-[9px] text-ink-soft">Raw YAML</span>
+          <span className="text-[9px] text-ink-mid">Raw YAML</span>
           <input
             type="checkbox"
             checked={rawMode}
@@ -677,7 +677,7 @@ export function ConfigTab({ workspaceId }: Props) {
           <Section title="General">
             <TextInput label="Name" value={config.name} onChange={(v) => update("name", v)} />
             <div>
-              <label htmlFor={descriptionId} className="text-[10px] text-ink-soft block mb-1">Description</label>
+              <label htmlFor={descriptionId} className="text-[10px] text-ink-mid block mb-1">Description</label>
               <textarea
                 id={descriptionId}
                 value={config.description}
@@ -689,7 +689,7 @@ export function ConfigTab({ workspaceId }: Props) {
             <div className="grid grid-cols-2 gap-3">
               <TextInput label="Version" value={config.version} onChange={(v) => update("version", v)} mono />
               <div>
-                <label htmlFor={tierId} className="text-[10px] text-ink-soft block mb-1">Tier</label>
+                <label htmlFor={tierId} className="text-[10px] text-ink-mid block mb-1">Tier</label>
                 <select
                   id={tierId}
                   value={config.tier}
@@ -707,7 +707,7 @@ export function ConfigTab({ workspaceId }: Props) {
 
           <Section title="Runtime">
             <div>
-              <label htmlFor={runtimeId} className="text-[10px] text-ink-soft block mb-1">Runtime</label>
+              <label htmlFor={runtimeId} className="text-[10px] text-ink-mid block mb-1">Runtime</label>
               <select
                 id={runtimeId}
                 value={config.runtime || ""}
@@ -791,7 +791,7 @@ export function ConfigTab({ workspaceId }: Props) {
               // workspace_secrets MODEL_PROVIDER override.
               <div className="space-y-3">
                 <div>
-                  <label className="text-[10px] text-ink-soft block mb-1">Model</label>
+                  <label className="text-[10px] text-ink-mid block mb-1">Model</label>
                   <input
                     type="text"
                     value={currentModelId}
@@ -808,9 +808,9 @@ export function ConfigTab({ workspaceId }: Props) {
                   />
                 </div>
                 <div>
-                  <label htmlFor={`${runtimeId}-provider`} className="text-[10px] text-ink-soft block mb-1">
+                  <label htmlFor={`${runtimeId}-provider`} className="text-[10px] text-ink-mid block mb-1">
                     Provider
-                    <span className="ml-1 text-ink-soft">
+                    <span className="ml-1 text-ink-mid">
                       (override — leave empty to auto-derive from model slug)
                     </span>
                   </label>
@@ -859,7 +859,7 @@ export function ConfigTab({ workspaceId }: Props) {
               onChange={(v) => updateNested("runtime_config" as keyof ConfigData, "required_env", v)}
               placeholder="variable NAME (e.g. ANTHROPIC_API_KEY) — not the value"
             />
-            <p className="text-[10px] text-ink-soft mt-1">
+            <p className="text-[10px] text-ink-mid mt-1">
               This declares which env var <em>names</em> the workspace needs.
               Set the actual values in the <strong>Secrets</strong> section
               below — those are encrypted and mounted into the container at
@@ -867,7 +867,7 @@ export function ConfigTab({ workspaceId }: Props) {
             </p>
             {currentModelSpec?.required_env?.length &&
               !arraysEqual(config.runtime_config?.required_env ?? [], currentModelSpec.required_env) && (
-              <div className="text-[10px] text-ink-soft mt-1 flex items-center gap-2">
+              <div className="text-[10px] text-ink-mid mt-1 flex items-center gap-2">
                 <span>
                   Template suggests{" "}
                   <code className="text-ink-mid">{currentModelSpec.required_env.join(", ")}</code>{" "}
@@ -890,9 +890,9 @@ export function ConfigTab({ workspaceId }: Props) {
             (config.runtime_config?.model || config.model || "").toLowerCase().includes("anthropic")) && (
             <Section title="Claude Settings" defaultOpen={false}>
               <div>
-                <label htmlFor={effortId} className="text-[10px] text-ink-soft block mb-1">
+                <label htmlFor={effortId} className="text-[10px] text-ink-mid block mb-1">
                   Effort
-                  <span className="ml-1 text-ink-soft">(output_config.effort — Opus 4.7+)</span>
+                  <span className="ml-1 text-ink-mid">(output_config.effort — Opus 4.7+)</span>
                 </label>
                 <select
                   id={effortId}
@@ -910,9 +910,9 @@ export function ConfigTab({ workspaceId }: Props) {
                 </select>
               </div>
               <div>
-                <label htmlFor={taskBudgetId} className="text-[10px] text-ink-soft block mb-1">
+                <label htmlFor={taskBudgetId} className="text-[10px] text-ink-mid block mb-1">
                   Task Budget (tokens)
-                  <span className="ml-1 text-ink-soft">(output_config.task_budget.total — 0 = unset)</span>
+                  <span className="ml-1 text-ink-mid">(output_config.task_budget.total — 0 = unset)</span>
                 </label>
                 <input
                   id={taskBudgetId}
@@ -938,7 +938,7 @@ export function ConfigTab({ workspaceId }: Props) {
               showing the misnamed list-input affordance. */}
 
           <Section title="Prompt Files" defaultOpen={false}>
-            <p className="text-[10px] text-ink-soft px-1 pb-1">
+            <p className="text-[10px] text-ink-mid px-1 pb-1">
               Markdown files that compose this workspace&apos;s system prompt.
               Loaded in order at boot from the workspace config dir
               (e.g. <code className="font-mono">system-prompt.md</code>,{' '}
@@ -966,7 +966,7 @@ export function ConfigTab({ workspaceId }: Props) {
 
           <Section title="Sandbox" defaultOpen={false}>
             <div>
-              <label htmlFor={sandboxBackendId} className="text-[10px] text-ink-soft block mb-1">Backend</label>
+              <label htmlFor={sandboxBackendId} className="text-[10px] text-ink-mid block mb-1">Backend</label>
               <select
                 id={sandboxBackendId}
                 value={config.sandbox?.backend || "docker"}

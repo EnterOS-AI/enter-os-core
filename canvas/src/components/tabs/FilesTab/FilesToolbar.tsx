@@ -39,7 +39,7 @@ export function FilesToolbar({
           <option value="/workspace">/workspace</option>
           <option value="/plugins">/plugins</option>
         </select>
-        <span className="text-[10px] text-ink-soft">{fileCount} files</span>
+        <span className="text-[10px] text-ink-mid">{fileCount} files</span>
       </div>
       <div className="flex gap-1.5">
         {root === "/configs" && (
@@ -62,7 +62,7 @@ export function FilesToolbar({
             </button>
           </>
         )}
-        <button type="button" onClick={onDownloadAll} aria-label="Download all files" className="text-[10px] text-ink-soft hover:text-ink-mid" title="Download all files">
+        <button type="button" onClick={onDownloadAll} aria-label="Download all files" className="text-[10px] text-ink-mid hover:text-ink-mid" title="Download all files">
           Export
         </button>
         {root === "/configs" && (
@@ -70,7 +70,7 @@ export function FilesToolbar({
             Clear
           </button>
         )}
-        <button type="button" onClick={onRefresh} aria-label="Refresh file list" className="text-[10px] text-ink-soft hover:text-ink-mid" title="Refresh">
+        <button type="button" onClick={onRefresh} aria-label="Refresh file list" className="text-[10px] text-ink-mid hover:text-ink-mid" title="Refresh">
           ↻
         </button>
       </div>

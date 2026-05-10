@@ -101,9 +101,9 @@ function SecretRow({ label, secretKey, isSet, scope, globalMode, onSave, onDelet
         <div className="min-w-0">
           <div className="text-[10px] text-ink-mid">{label}</div>
           <div className="flex items-center gap-2 mt-0.5">
-            <span className="text-[9px] font-mono text-ink-soft">{secretKey}</span>
+            <span className="text-[9px] font-mono text-ink-mid">{secretKey}</span>
             {isSet && (
-              <span className="text-[9px] font-mono text-ink-soft tracking-widest" title="Value is set (encrypted)">
+              <span className="text-[9px] font-mono text-ink-mid tracking-widest" title="Value is set (encrypted)">
                 •••••
               </span>
             )}
@@ -159,7 +159,7 @@ function CustomSecretRow({ secretKey, scope, globalMode, onSave, onDelete }: {
           <span className={`text-[10px] font-mono ${globalMode ? "text-warm" : scope === "global" ? "text-ink-mid" : "text-accent"}`}>
             {secretKey}
           </span>
-          <span className="text-[9px] font-mono text-ink-soft tracking-widest ml-2">•••••</span>
+          <span className="text-[9px] font-mono text-ink-mid tracking-widest ml-2">•••••</span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <span className="text-[10px] text-good">Set</span>
@@ -288,7 +288,7 @@ export function SecretsSection({ workspaceId, requiredEnv }: { workspaceId: stri
   return (
     <Section title="Secrets & API Keys" defaultOpen={false}>
       {loading ? (
-        <div className="text-[10px] text-ink-soft">Loading secrets...</div>
+        <div className="text-[10px] text-ink-mid">Loading secrets...</div>
       ) : (
         <div className="space-y-2">
           {error && <div className="px-2 py-1 bg-red-900/30 border border-red-800 rounded text-[10px] text-bad">{error}</div>}
@@ -369,7 +369,7 @@ export function SecretsSection({ workspaceId, requiredEnv }: { workspaceId: stri
             </button>
           )}
 
-          <div className="text-[9px] text-ink-soft pt-1">
+          <div className="text-[9px] text-ink-mid pt-1">
             Values are encrypted and never exposed to the browser.
             {globalMode
               ? " Global keys are shared across all workspaces. Restart workspaces to apply changes."

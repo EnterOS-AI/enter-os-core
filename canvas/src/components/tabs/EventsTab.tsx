@@ -62,7 +62,7 @@ export function EventsTab({ workspaceId }: Props) {
   }, [loadEvents]);
 
   if (loading && events.length === 0) {
-    return <div className="p-4 text-xs text-ink-soft">Loading events...</div>;
+    return <div className="p-4 text-xs text-ink-mid">Loading events...</div>;
   }
 
   return (
@@ -88,7 +88,7 @@ export function EventsTab({ workspaceId }: Props) {
       )}
 
       {!error && events.length === 0 ? (
-        <p className="text-xs text-ink-soft text-center py-4">No events yet</p>
+        <p className="text-xs text-ink-mid text-center py-4">No events yet</p>
       ) : (
         <div className="space-y-1">
           {events.map((event) => {
@@ -115,10 +115,10 @@ export function EventsTab({ workspaceId }: Props) {
                   >
                     {event.event_type}
                   </span>
-                  <span className="text-[9px] text-ink-soft ml-auto">
+                  <span className="text-[9px] text-ink-mid ml-auto">
                     {formatTime(event.created_at)}
                   </span>
-                  <span aria-hidden="true" className="text-[10px] text-ink-soft">
+                  <span aria-hidden="true" className="text-[10px] text-ink-mid">
                     {isOpen ? "▼" : "▶"}
                   </span>
                 </button>
@@ -128,7 +128,7 @@ export function EventsTab({ workspaceId }: Props) {
                     <pre className="text-[10px] text-ink-mid bg-surface-sunken rounded p-2 overflow-x-auto max-h-40">
                       {JSON.stringify(event.payload, null, 2)}
                     </pre>
-                    <div className="mt-1 text-[9px] text-ink-soft font-mono">
+                    <div className="mt-1 text-[9px] text-ink-mid font-mono">
                       ID: {event.id}
                     </div>
                   </div>

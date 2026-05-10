@@ -81,7 +81,7 @@ export function TokensTab({ workspaceId }: TokensTabProps) {
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-sm font-semibold text-ink">API Tokens</h3>
-          <p className="text-[10px] text-ink-soft mt-0.5">
+          <p className="text-[10px] text-ink-mid mt-0.5">
             Bearer tokens for authenticating API calls to this workspace.
           </p>
         </div>
@@ -129,13 +129,13 @@ export function TokensTab({ workspaceId }: TokensTabProps) {
 
       {/* Token list */}
       {loading ? (
-        <div role="status" aria-live="polite" className="flex items-center justify-center gap-2 py-6 text-ink-soft text-xs">
+        <div role="status" aria-live="polite" className="flex items-center justify-center gap-2 py-6 text-ink-mid text-xs">
           <Spinner /> Loading tokens...
         </div>
       ) : tokens.length === 0 ? (
         <div className="text-center py-6">
-          <p className="text-xs text-ink-soft">No active tokens</p>
-          <p className="text-[10px] text-ink-soft mt-1">
+          <p className="text-xs text-ink-mid">No active tokens</p>
+          <p className="text-[10px] text-ink-mid mt-1">
             Create a token to authenticate API calls.
           </p>
         </div>
@@ -150,7 +150,7 @@ export function TokensTab({ workspaceId }: TokensTabProps) {
                 <code className="text-[11px] font-mono text-ink-mid bg-surface-sunken/60 px-1.5 py-0.5 rounded">
                   {t.prefix}...
                 </code>
-                <div className="text-[9px] text-ink-soft space-x-3">
+                <div className="text-[9px] text-ink-mid space-x-3">
                   <span>Created {formatAge(t.created_at)}</span>
                   {t.last_used_at && (
                     <span>Last used {formatAge(t.last_used_at)}</span>

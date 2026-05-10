@@ -338,7 +338,7 @@ export function CreateWorkspaceButton() {
           <Dialog.Title className="text-base font-semibold text-ink mb-1">
             Create Workspace
           </Dialog.Title>
-          <p className="text-xs text-ink-soft mb-5">
+          <p className="text-xs text-ink-mid mb-5">
             Add a new workspace node to the canvas
           </p>
 
@@ -376,7 +376,7 @@ export function CreateWorkspaceButton() {
               />
               <div className="text-xs">
                 <div className="text-ink font-medium">External agent (bring your own compute)</div>
-                <div className="text-ink-soft mt-0.5">
+                <div className="text-ink-mid mt-0.5">
                   Skip the container. We&apos;ll return a workspace_id + auth token + ready-to-paste snippet so an agent running on your laptop / server / CI can register via A2A.
                 </div>
               </div>
@@ -456,7 +456,7 @@ export function CreateWorkspaceButton() {
               <p className="text-[11px] font-semibold text-violet-400 uppercase tracking-wide">
                 Hermes Provider
               </p>
-              <p className="text-[11px] text-ink-soft -mt-1">
+              <p className="text-[11px] text-ink-mid -mt-1">
                 Choose the AI provider and paste your API key. The key is
                 stored as an encrypted workspace secret.
               </p>
@@ -534,7 +534,7 @@ export function CreateWorkspaceButton() {
                     (m) => <option key={m} value={m} />,
                   )}
                 </datalist>
-                <p className="text-[10px] text-ink-soft mt-1">
+                <p className="text-[10px] text-ink-mid mt-1">
                   Slug determines which provider hermes routes to at install time.
                 </p>
               </div>
@@ -626,7 +626,7 @@ function InputField({
         className={`w-full bg-surface-card/60 border border-line/50 rounded-lg px-3 py-2 text-sm text-ink placeholder-ink-soft focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/20 transition-colors ${mono ? "font-mono text-xs" : ""}`}
       />
       {helper && (
-        <p className="mt-1 text-xs text-ink-soft">{helper}</p>
+        <p className="mt-1 text-xs text-ink-mid">{helper}</p>
       )}
     </div>
   );

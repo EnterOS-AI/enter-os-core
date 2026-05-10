@@ -157,7 +157,7 @@ export function PurchaseSuccessModal() {
         </div>
 
         <div className="flex items-center justify-between gap-3 px-6 py-3 border-t border-line bg-surface/50">
-          <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-ink-soft">
+          <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-ink-mid">
             auto-dismiss · {AUTO_DISMISS_MS / 1000}s
           </span>
           <button

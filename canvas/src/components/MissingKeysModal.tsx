@@ -421,7 +421,7 @@ function ProviderPickerModal({
                     <div className="text-[11px] text-ink-mid font-medium">
                       {getKeyLabel(entry.key)}
                     </div>
-                    <div className="text-[9px] font-mono text-ink-soft">{entry.key}</div>
+                    <div className="text-[9px] font-mono text-ink-mid">{entry.key}</div>
                   </div>
                   {entry.saved && (
                     <span className="text-[9px] text-good bg-emerald-900/30 px-1.5 py-0.5 rounded flex items-center gap-1">
@@ -675,7 +675,7 @@ function AllKeysModal({
                   <div className="text-[11px] text-ink-mid font-medium">
                     {getKeyLabel(entry.key)}
                   </div>
-                  <div className="text-[9px] font-mono text-ink-soft">{entry.key}</div>
+                  <div className="text-[9px] font-mono text-ink-mid">{entry.key}</div>
                 </div>
                 {entry.saved && (
                   <span className="text-[9px] text-good bg-emerald-900/30 px-1.5 py-0.5 rounded flex items-center gap-1">

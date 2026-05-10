@@ -311,7 +311,7 @@ export function ContextMenu() {
             aria-hidden="true"
             className={`w-1.5 h-1.5 rounded-full ${statusDotClass(contextMenu.nodeData.status)}`}
           />
-          <span className="text-[10px] text-ink-soft">{contextMenu.nodeData.status}</span>
+          <span className="text-[10px] text-ink-mid">{contextMenu.nodeData.status}</span>
         </div>
       </div>
 

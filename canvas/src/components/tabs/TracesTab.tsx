@@ -48,7 +48,7 @@ export function TracesTab({ workspaceId }: Props) {
   }, [loadTraces]);
 
   if (loading) {
-    return <div className="p-4 text-xs text-ink-soft">Loading traces...</div>;
+    return <div className="p-4 text-xs text-ink-mid">Loading traces...</div>;
   }
 
   return (
@@ -60,7 +60,7 @@ export function TracesTab({ workspaceId }: Props) {
           onClick={loadTraces}
           // Added focus-visible ring; previous version was hover-only,
           // invisible to keyboard users.
-          className="text-[10px] text-ink-soft hover:text-ink-mid rounded-sm px-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          className="text-[10px] text-ink-mid hover:text-ink-mid rounded-sm px-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           Refresh
         </button>
@@ -75,9 +75,9 @@ export function TracesTab({ workspaceId }: Props) {
       {traces.length === 0 && !error ? (
         <div className="text-center py-8">
           <div className="text-2xl opacity-20 mb-2" aria-hidden="true">--</div>
-          <p className="text-xs text-ink-soft">No traces yet</p>
-          <details className="mt-2 text-[10px] text-ink-soft">
-            <summary className="cursor-pointer text-ink-soft hover:text-ink-mid">How to enable tracing</summary>
+          <p className="text-xs text-ink-mid">No traces yet</p>
+          <details className="mt-2 text-[10px] text-ink-mid">
+            <summary className="cursor-pointer text-ink-mid hover:text-ink-mid">How to enable tracing</summary>
             <p className="mt-1">
               Set <code className="font-mono text-ink-mid">LANGFUSE_HOST</code>, <code className="font-mono text-ink-mid">LANGFUSE_PUBLIC_KEY</code>, <code className="font-mono text-ink-mid">LANGFUSE_SECRET_KEY</code> as workspace secrets to enable tracing.
             </p>
@@ -108,20 +108,20 @@ export function TracesTab({ workspaceId }: Props) {
                   }`} />
                   <div className="flex-1 min-w-0">
                     <div className="text-[11px] text-ink truncate">{trace.name || "trace"}</div>
-                    <div className="text-[9px] text-ink-soft">{formatTime(trace.timestamp)}</div>
+                    <div className="text-[9px] text-ink-mid">{formatTime(trace.timestamp)}</div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     {trace.latency != null && (
-                      <span className="text-[9px] text-ink-soft tabular-nums">
+                      <span className="text-[9px] text-ink-mid tabular-nums">
                         {trace.latency > 1000 ? `${(trace.latency / 1000).toFixed(1)}s` : `${trace.latency}ms`}
                       </span>
                     )}
                     {trace.usage?.total != null && (
-                      <span className="text-[9px] text-ink-soft tabular-nums">
+                      <span className="text-[9px] text-ink-mid tabular-nums">
                         {trace.usage.total} tok
                       </span>
                     )}
-                    <span aria-hidden="true" className="text-[9px] text-ink-soft">
+                    <span aria-hidden="true" className="text-[9px] text-ink-mid">
                       {isOpen ? "▼" : "▶"}
                     </span>
                   </div>
@@ -131,7 +131,7 @@ export function TracesTab({ workspaceId }: Props) {
                   <div id={panelId} className="px-3 pb-2 space-y-2 border-t border-line/30">
                     {trace.input && (
                       <div>
-                        <div className="text-[9px] text-ink-soft uppercase tracking-wider mt-2 mb-1">Input</div>
+                        <div className="text-[9px] text-ink-mid uppercase tracking-wider mt-2 mb-1">Input</div>
                         <pre className="text-[9px] text-ink-mid bg-surface-sunken rounded p-2 overflow-x-auto max-h-32">
                           {String(typeof trace.input === "string" ? trace.input : JSON.stringify(trace.input, null, 2))}
                         </pre>
@@ -139,18 +139,18 @@ export function TracesTab({ workspaceId }: Props) {
                     )}
                     {trace.output && (
                       <div>
-                        <div className="text-[9px] text-ink-soft uppercase tracking-wider mb-1">Output</div>
+                        <div className="text-[9px] text-ink-mid uppercase tracking-wider mb-1">Output</div>
                         <pre className="text-[9px] text-ink-mid bg-surface-sunken rounded p-2 overflow-x-auto max-h-32">
                           {String(typeof trace.output === "string" ? trace.output : JSON.stringify(trace.output, null, 2))}
                         </pre>
                       </div>
                     )}
                     {trace.totalCost != null && (
-                      <div className="text-[9px] text-ink-soft">
+                      <div className="text-[9px] text-ink-mid">
                         Cost: ${trace.totalCost.toFixed(6)}
                       </div>
                     )}
-                    <div className="text-[8px] text-ink-soft font-mono select-all">
+                    <div className="text-[8px] text-ink-mid font-mono select-all">
                       {trace.id}
                     </div>
                   </div>

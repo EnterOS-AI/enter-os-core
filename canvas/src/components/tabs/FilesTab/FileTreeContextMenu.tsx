@@ -132,7 +132,7 @@ export function FileTreeContextMenu({ x, y, items, onClose }: Props) {
               : "w-full text-left px-3 py-1 text-ink-mid hover:bg-surface-card hover:text-ink focus:bg-surface-card focus:text-ink focus:outline-none disabled:opacity-40 disabled:pointer-events-none transition-colors"
           }
         >
-          {item.icon && <span className="inline-block w-4 mr-1.5 text-ink-soft">{item.icon}</span>}
+          {item.icon && <span className="inline-block w-4 mr-1.5 text-ink-mid">{item.icon}</span>}
           {item.label}
         </button>
       ))}
