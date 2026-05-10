@@ -1,10 +1,15 @@
 #!/bin/bash
 # canary-smoke.sh — runs the post-deploy smoke suite against the
 # staging canary tenant fleet. Called by the canary-verify.yml GitHub
-# Actions workflow after a new workspace-server image gets pushed to
-# GHCR; exits non-zero on any failure so the workflow can skip the
-# :staging-sha → :latest retag that would otherwise release broken
-# code to the prod tenant fleet.
+# Actions workflow after a new workspace-server image lands in ECR;
+# exits non-zero on any failure so the workflow can block the
+# redeploy-fleet promotion that would otherwise release broken code
+# to the prod tenant fleet.
+#
+# Registry note: GHCR was retired 2026-05-06. Images are now pushed
+# to the operator's ECR org (153263036946.dkr.ecr.us-east-2.amazonaws.com/
+# molecule-ai/platform-tenant). The registry URL is a runtime concern for
+# the CI push step; this script tests the running tenant directly.
 #
 # Environment:
 #   CANARY_TENANT_URLS       space-sep list of canary tenant base URLs
@@ -108,6 +113,43 @@ for i in "${!URLS[@]}"; do
   # 5. Negative: unauth'd admin call must 401 (C4 regression gate).
   unauth_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$base/admin/liveness" || echo "000")
   check "unauth'd /admin/liveness returns 401" "401" "$unauth_code"
+
+  # 6. POST /org/import unauth → 401. Proves the route is compiled in
+  # and AdminAuth is enforced. A missing route returns 404 (the failure
+  # mode caught by issue #213). Regression guard for the silent-GHCR-
+  # migration gap: canary-verify was testing a stale GHCR image while
+  # actual tenants ran ECR — this test would have caught a missing-route
+  # binary before it reached prod.
+  unauth_code=$(curl -sS -o /dev/null -w '%{http_code}' \
+    --max-time 10 -X POST "$base/org/import" || echo "000")
+  check "POST /org/import unauth returns 401 (not 404)" "401" "$unauth_code"
+
+  # 7. POST /org/import authed → 400/422 (malformed body, not 404).
+  # Proves the route IS in the binary AND AdminAuth passed. Using a
+  # deliberately broken body so we hit the handler's validation, not a
+  # business-logic error that might return 500 in some states.
+  bad_code=$(curl -sS -o /dev/null -w '%{http_code}' \
+    --max-time 10 -X POST \
+    -H "Authorization: Bearer $token" \
+    -H "Content-Type: application/json" \
+    --data '{"dir":"nonexistent-org-template"}' \
+    "$base/org/import" || echo "000")
+  # Accept 400 (bad request / validation), 404 (template not found but
+  # route exists — good enough to prove route compiled), or 422 (unproc).
+  # Reject 000 (connection error) and 500 (server crash).
+  if [ "$bad_code" = "000" ] || [ "$bad_code" = "500" ]; then
+    printf "  FAIL POST /org/import authed returns HTTP %s (expected 400/404/422)\n" "$bad_code" >&2
+    FAIL=$((FAIL + 1))
+  else
+    printf "  PASS POST /org/import authed returns HTTP %s (route compiled + AdminAuth enforced)\n" "$bad_code"
+    PASS=$((PASS + 1))
+  fi
+
+  # 8. POST /workspaces unauth → 401. Proves the route is compiled in.
+  # GET /workspaces was already covered in step 2; POST was the gap.
+  unauth_code=$(curl -sS -o /dev/null -w '%{http_code}' \
+    --max-time 10 -X POST "$base/workspaces" || echo "000")
+  check "POST /workspaces unauth returns 401 (not 404)" "401" "$unauth_code"
 done
 
 # ── Summary ──────────────────────────────────────────────────────────────

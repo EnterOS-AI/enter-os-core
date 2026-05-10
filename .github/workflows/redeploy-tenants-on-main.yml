@@ -3,9 +3,9 @@ name: redeploy-tenants-on-main
 # Auto-refresh prod tenant EC2s after every main merge.
 #
 # Why this workflow exists: publish-workspace-server-image builds and
-# pushes a new platform-tenant:latest + :<sha> to GHCR on every merge
-# to main, but running tenants pulled their image once at boot and
-# never re-pull. Users see stale code indefinitely.
+# pushes a new platform-tenant :<sha> to ECR on every merge to main,
+# but running tenants pulled their image once at boot and never re-pull.
+# Users see stale code indefinitely.
 #
 # This workflow closes the gap by calling the control-plane admin
 # endpoint that performs a canary-first, batched, health-gated rolling
@@ -13,12 +13,18 @@ name: redeploy-tenants-on-main
 # molecule-controlplane as POST /cp/admin/tenants/redeploy-fleet
 # (feat/tenant-auto-redeploy, landing alongside this workflow).
 #
+# Registry: ECR (153263036946.dkr.ecr.us-east-2.amazonaws.com/
+# molecule-ai/platform-tenant). GHCR was retired 2026-05-07 during the
+# Gitea suspension migration. The canary-verify.yml promote step now
+# uses the same redeploy-fleet endpoint (fixes the silent-GHCR gap).
+#
 # Runtime ordering:
-#   1. publish-workspace-server-image completes → new :latest in GHCR.
-#   2. This workflow fires via workflow_run, waits 30s for GHCR's
-#      CDN to propagate the new tag to the region the tenants pull from.
-#   3. Calls redeploy-fleet with canary_slug=hongming and a 60s
-#      soak. Canary proves the image boots; batches follow.
+#   1. publish-workspace-server-image completes → new :staging-<sha> in ECR.
+#   2. This workflow fires via workflow_run, calls redeploy-fleet with
+#      target_tag=staging-<sha>. No CDN propagation wait needed —
+#      ECR image manifest is consistent immediately after push.
+#   3. Calls redeploy-fleet with canary_slug (if set) and a soak
+#      period. Canary proves the image boots; batches follow.
 #   4. Any failure aborts the rollout and leaves older tenants on the
 #      prior image — safer default than half-and-half state.
 #
@@ -108,13 +114,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - name: Wait for GHCR tag propagation
-        # GHCR's edge cache takes ~15-30s to consistently serve the new
-        # manifest after the registry accepts the push. Without this
-        # sleep, the first tenant's docker pull sometimes races and
-        # fetches the previous digest; sleeping is the cheapest way to
-        # reduce that without polling GHCR for the new digest.
-        run: sleep 30
+      - name: Note on ECR propagation
+        # ECR image manifests are consistent immediately after push — no
+        # CDN cache to wait for. The old GHCR-based workflow had a 30s
+        # sleep to avoid race conditions; ECR makes that unnecessary.
+        run: echo "ECR image available immediately after push — proceeding."
 
       - name: Compute target tag
         id: tag
