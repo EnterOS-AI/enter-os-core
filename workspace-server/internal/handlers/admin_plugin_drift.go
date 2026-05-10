@@ -8,7 +8,6 @@ package handlers
 //   POST /admin/plugin-updates/:id/apply — apply a queued drift update
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"

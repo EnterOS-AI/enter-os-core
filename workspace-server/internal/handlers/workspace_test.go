@@ -537,17 +537,15 @@ func TestWorkspaceCreate_ExternalURL_SSRFSafe(t *testing.T) {
 		WithArgs(sqlmock.AnyArg(), "Ext Agent", nil, 3, "external", sqlmock.AnyArg(), (*string)(nil), nil, "none", (*int64)(nil), models.DefaultMaxConcurrentTasks, "push").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
-	// External URL update (SSRF-safe public URL passes validateAgentURL).
+	// External URL update (localhost is explicitly allowed by validateAgentURL).
 	mock.ExpectExec("UPDATE workspaces SET url").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	// CacheURL is non-fatal but still called.
-	mock.ExpectExec("SELECT").
-		WillReturnRows(sqlmock.NewRows([]string{"ok"}).AddRow("ok"))
+	// CacheURL is non-fatal — uses Redis (db.RDB, set by setupTestRedis), not the DB.
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 
-	body := `{"name":"Ext Agent","runtime":"external","external":true,"url":"https://agent.example.com/a2a"}`
+	body := `{"name":"Ext Agent","runtime":"external","external":true,"url":"http://localhost:8000"}`
 	c.Request = httptest.NewRequest("POST", "/workspaces", bytes.NewBufferString(body))
 	c.Request.Header.Set("Content-Type", "application/json")
 
