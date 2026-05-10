@@ -121,7 +121,7 @@ curl -fsS -X POST "{{PLATFORM_URL}}/registry/register" \
 // operators whose external agent IS a Claude Code session (laptop or
 // remote dev VM); routes the workspace's A2A traffic into the running
 // Claude Code session as conversation turns via MCP. The plugin source
-// lives at github.com/Molecule-AI/molecule-mcp-claude-channel — polling
+// lives at git.moleculesai.app/molecule-ai/molecule-mcp-claude-channel — polling
 // based, no tunnel required (uses /workspaces/:id/activity?since_secs=,
 // platform-side support shipped in #2300).
 const externalChannelTemplate = `# Claude Code channel — bridges this workspace's A2A traffic into your
@@ -134,8 +134,8 @@ const externalChannelTemplate = `# Claude Code channel — bridges this workspac
 #    The plugin is NOT on Anthropic's default allowlist, so a one-time
 #    marketplace-add is needed before install:
 #
-#      /plugin marketplace add Molecule-AI/molecule-mcp-claude-channel
-#      /plugin install molecule@molecule-mcp-claude-channel
+#      /plugin marketplace add https://git.moleculesai.app/molecule-ai/molecule-mcp-claude-channel.git
+#      /plugin install molecule@molecule-channel
 #
 #    Then either run /reload-plugins or restart Claude Code so the
 #    plugin is registered.
@@ -154,7 +154,7 @@ chmod 600 ~/.claude/channels/molecule/.env
 #    flag to opt in — without it, you'll see "not on the approved channels
 #    allowlist" on startup.
 claude --dangerously-load-development-channels \
-  --channels plugin:molecule@molecule-mcp-claude-channel
+  --channels plugin:molecule@molecule-channel
 
 # You should see on stderr:
 #   molecule channel: connected — watching 1 workspace(s) at {{PLATFORM_URL}}
@@ -176,7 +176,7 @@ claude --dangerously-load-development-channels \
 # add the plugin to allowedChannelPlugins in claude.ai admin settings.
 #
 # Multi-workspace: comma-separate IDs and tokens (same order). See
-# https://github.com/Molecule-AI/molecule-mcp-claude-channel for
+# https://git.moleculesai.app/molecule-ai/molecule-mcp-claude-channel for
 # pairing flow, push-mode upgrade, and v0.2 roadmap.
 
 # Need help?
@@ -258,7 +258,7 @@ claude mcp add molecule -s user -- env \
 // externalPythonTemplate uses molecule-sdk-python's RemoteAgentClient +
 // A2AServer (PR #13 in that repo). Until the SDK cuts a v0.y release
 // to PyPI the snippet pins git+main.
-const externalPythonTemplate = `# pip install 'git+https://github.com/Molecule-AI/molecule-sdk-python.git@main'
+const externalPythonTemplate = `# pip install 'git+https://git.moleculesai.app/molecule-ai/molecule-sdk-python.git@main'
 
 import asyncio
 from molecule_agent import RemoteAgentClient, A2AServer
@@ -307,7 +307,7 @@ if __name__ == "__main__":
 // A2A traffic into the running hermes gateway as platform messages
 // via the molecule-channel plugin.
 //
-// The plugin (Molecule-AI/hermes-channel-molecule) is a hermes
+// The plugin (molecule-ai/hermes-channel-molecule on Gitea) is a hermes
 // platform adapter that:
 //   1. Spawns ``python -m molecule_runtime.a2a_mcp_server`` as a
 //      stdio MCP subprocess (separate from any hermes-side MCP
@@ -336,7 +336,7 @@ const externalHermesChannelTemplate = `# Hermes channel — bridges this workspa
 #
 # 1. Install the runtime + plugin:
 pip install molecule-ai-workspace-runtime
-pip install 'git+https://github.com/Molecule-AI/hermes-channel-molecule.git'
+pip install 'git+https://git.moleculesai.app/molecule-ai/hermes-channel-molecule.git'
 
 # 2. Export the workspace credentials:
 export MOLECULE_WORKSPACE_ID={{WORKSPACE_ID}}
@@ -366,7 +366,7 @@ hermes gateway --replace
 # by the plugin's molecule_runtime MCP subprocess).
 #
 # Source + issue tracker:
-# https://github.com/Molecule-AI/hermes-channel-molecule
+# https://git.moleculesai.app/molecule-ai/hermes-channel-molecule
 
 # Need help?
 #   Documentation: https://doc.moleculesai.app/docs/guides/external-agent-registration
