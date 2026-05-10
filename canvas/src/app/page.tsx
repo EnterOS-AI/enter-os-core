@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Canvas } from "@/components/Canvas";
 import { Legend } from "@/components/Legend";
 import { CommunicationOverlay } from "@/components/CommunicationOverlay";
+import { MobileApp } from "@/components/mobile/MobileApp";
 import { Spinner } from "@/components/Spinner";
 import { connectSocket, disconnectSocket } from "@/store/socket";
 import { useCanvasStore } from "@/store/canvas";
@@ -14,6 +15,23 @@ export default function Home() {
   const hydrationError = useCanvasStore((s) => s.hydrationError);
   const setHydrationError = useCanvasStore((s) => s.setHydrationError);
   const [hydrating, setHydrating] = useState(true);
+  // < 640px viewport renders the dedicated mobile shell instead of the
+  // desktop canvas. Tri-state: `null` until matchMedia has resolved,
+  // then `true|false`. While null we keep the existing loading spinner
+  // up — that way mobile devices never flash the desktop tree (which
+  // they would if we defaulted to `false` and only flipped post-mount).
+  const [isMobile, setIsMobile] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) {
+      setIsMobile(false);
+      return;
+    }
+    const mq = window.matchMedia("(max-width: 639px)");
+    const update = () => setIsMobile(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
   // Distinct from hydrationError: platform-down is its own UX path
   // (different copy, different action — the user's next step is to
   // check local services, not to retry the API call). Tracked
@@ -51,7 +69,10 @@ export default function Home() {
     };
   }, []);
 
-  if (hydrating) {
+  // Hold the spinner while data hydrates OR while the viewport
+  // resolution hasn't settled yet (avoids a desktop-tree flash on
+  // mobile devices between SSR-paint and matchMedia).
+  if (hydrating || isMobile === null) {
     return (
       <div className="fixed inset-0 flex items-center justify-center bg-surface">
         <div role="status" aria-live="polite" className="flex flex-col items-center gap-3">
@@ -64,6 +85,32 @@ export default function Home() {
 
   if (platformDown) {
     return <PlatformDownDiagnostic />;
+  }
+
+  if (isMobile) {
+    return (
+      <>
+        <MobileApp />
+        {hydrationError && (
+          <div
+            role="alert"
+            data-testid="hydration-error"
+            className="fixed inset-0 flex flex-col items-center justify-center bg-surface text-ink-mid gap-4 z-[9999] px-6"
+          >
+            <p className="text-ink-mid text-sm text-center">{hydrationError}</p>
+            <button
+              onClick={() => {
+                setHydrationError(null);
+                window.location.reload();
+              }}
+              className="px-4 py-2 bg-accent-strong hover:bg-accent text-white rounded-md text-sm"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+      </>
+    );
   }
 
   return (

@@ -154,13 +154,13 @@ export function Toolbar() {
 
   return (
     <div
-      className="fixed top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 bg-surface-sunken/80 backdrop-blur-md border border-line/60 rounded-xl px-4 py-2 shadow-xl shadow-black/20 transition-[margin-left] duration-200"
+      className="fixed top-3 z-20 flex items-center gap-3 bg-surface-sunken/80 backdrop-blur-md border border-line/60 rounded-xl px-3 sm:px-4 py-2 shadow-xl shadow-black/20 transition-[margin-left] duration-200 left-2 right-2 translate-x-0 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 overflow-x-auto sm:overflow-visible [&>*]:shrink-0"
       style={toolbarOffsetStyle}
     >
-      {/* Logo / Title */}
-      <div className="flex items-center gap-2 pr-3 border-r border-line/60">
+      {/* Logo / Title — title text drops on mobile to reclaim space */}
+      <div className="flex items-center gap-2 sm:pr-3 sm:border-r sm:border-line/60">
         <img src="/molecule-icon.png" alt="Molecule AI" className="w-5 h-5" />
-        <span className="text-[11px] font-semibold text-ink-mid tracking-wide">Molecule AI</span>
+        <span className="hidden sm:inline text-[11px] font-semibold text-ink-mid tracking-wide">Molecule AI</span>
       </div>
 
       {/* Status pills + workspace total in one segment — previously two
@@ -179,15 +179,15 @@ export function Toolbar() {
         {counts.failed > 0 && (
           <StatusPill color={statusDotClass("failed")} count={counts.failed} label="failed" />
         )}
-        <span className="text-ink-mid" aria-hidden="true">·</span>
-        <span className="text-[10px] text-ink-mid whitespace-nowrap">
+        <span className="hidden sm:inline text-ink-mid" aria-hidden="true">·</span>
+        <span className="hidden sm:inline text-[10px] text-ink-mid whitespace-nowrap">
           {counts.roots} workspace{counts.roots !== 1 ? "s" : ""}
           {counts.children > 0 && <span className="text-ink-mid"> + {counts.children} sub</span>}
         </span>
       </div>
 
       {/* WebSocket connection status */}
-      <div className="pl-3 border-l border-line/60">
+      <div className="sm:pl-3 sm:border-l sm:border-line/60">
         <WsStatusPill status={wsStatus} />
       </div>
 
