@@ -66,10 +66,25 @@ async def delegate_task(workspace_id: str, task: str) -> str:
             )
             data = a2a_resp.json()
             if "result" in data:
-                parts = data["result"].get("parts", [])
-                return parts[0].get("text", "(no text)") if parts else str(data["result"])
+                result = data["result"]
+                parts = result.get("parts", []) if isinstance(result, dict) else []
+                if parts and isinstance(parts[0], dict):
+                    return parts[0].get("text", "(no text)")
+                # Empty parts list (e.g. {"parts": []}) should return str(result),
+                # not "(no text)" — preserves pre-fix behavior (#279 regression fix).
+                if isinstance(result, dict) and result.get("parts") == []:
+                    return str(result)
+                return str(result) if isinstance(result, str) else "(no text)"
             elif "error" in data:
-                return f"Error: {data['error'].get('message', str(data['error']))}"
+                err = data["error"]
+                msg = ""
+                if isinstance(err, dict):
+                    msg = err.get("message", "")
+                elif isinstance(err, str):
+                    msg = err
+                else:
+                    msg = str(err)
+                return f"Error: {msg}"
             return str(data)
         except Exception as e:
             return f"Error sending A2A message: {e}"
