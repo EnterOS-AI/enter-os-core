@@ -88,6 +88,7 @@ PR: `fix/ink-soft-wcag-contrast`.
 - Arrow keys move selected node 10px (50px with Shift) — keyboard node drag (PR #182) ✅
 - `Cmd/Ctrl+Arrow` resize selected node (↑↓ height, ←→ width, 10px, Shift 2px) ✅
 - Hierarchy navigation (Enter/Shift+Enter), z-order (Cmd+]/[), zoom-to-team (Z) ✅
+- Toolbar help dialog ("Shortcuts & tips") documents all shortcuts + mouse interactions ✅
 
 ### Focus Management ✅ (strong)
 - Skip link → `#canvas-main` ✅

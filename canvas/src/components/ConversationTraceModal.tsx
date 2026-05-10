@@ -13,7 +13,8 @@ interface Props {
   onClose: () => void;
 }
 
-function extractMessageText(body: Record<string, unknown> | null): string {
+/** Exported for unit testing — see ConversationTraceModal.test.ts */
+export function extractMessageText(body: Record<string, unknown> | null): string {
   if (!body) return "";
   try {
     // Simple task format from MCP server: {task: "..."}

@@ -1,0 +1,155 @@
+name: publish-workspace-server-image
+
+# Gitea Actions port of .github/workflows/publish-workspace-server-image.yml.
+#
+# Ported 2026-05-10 (issue #228). Key differences from the GitHub version:
+#   - Gitea Actions reads .gitea/workflows/, not .github/workflows/
+#   - Dropped `environment:` declarations — Gitea Actions does not support
+#     named environments (used by GitHub OIDC token gates)
+#   - Replaced `github.ref_name` (GitHub-only) with `${GITHUB_REF#refs/heads/}`
+#     — Gitea Actions exposes GITHUB_REF in the same format as GitHub Actions
+#   - docker/setup-buildx-action and aws-actions/configure-aws-credentials are
+#     GitHub Marketplace actions; they are installed by Gitea Actions runners and
+#     work identically here
+#   - All other variables (GITHUB_SHA, GITHUB_REPOSITORY, GITHUB_OUTPUT,
+#     secrets.*) use the same syntax as GitHub Actions
+#
+# Image tags produced:
+#   :staging-<sha> — per-commit digest, stable for canary verify
+#   :staging-latest — tracks most recent build on this branch
+#
+# ECR target: 153263036946.dkr.ecr.us-east-2.amazonaws.com/molecule-ai/*
+# Required secrets: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AUTO_SYNC_TOKEN
+
+on:
+  push:
+    branches: [staging, main]
+    paths:
+      - 'workspace-server/**'
+      - 'canvas/**'
+      - 'manifest.json'
+      - 'scripts/**'
+      - '.gitea/workflows/publish-workspace-server-image.yml'
+  workflow_dispatch:
+
+# Serialize per-branch so two rapid staging pushes don't race the same
+# :staging-latest tag retag. Allow staging and main to run in parallel
+# (different GITHUB_REF → different concurrency group) since they
+# produce different :staging-<sha> tags and last-write-wins on
+# :staging-latest is acceptable across branches.
+#
+# cancel-in-progress: false → in-flight builds finish; the next push's
+# build queues. This avoids a partially-pushed image.
+concurrency:
+  group: publish-workspace-server-image-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: 153263036946.dkr.ecr.us-east-2.amazonaws.com/molecule-ai/platform
+  TENANT_IMAGE_NAME: 153263036946.dkr.ecr.us-east-2.amazonaws.com/molecule-ai/platform-tenant
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Pre-clone manifest deps before docker build.
+      #
+      # Why: workspace-template-* repos on Gitea are private. The pre-fix
+      # Dockerfile.tenant ran `git clone` inside an in-image stage with no
+      # auth path — every CI build failed. We clone in the trusted CI
+      # context where AUTO_SYNC_TOKEN is available and Dockerfile.tenant
+      # just COPYs from .tenant-bundle-deps/.
+      #
+      # Token: AUTO_SYNC_TOKEN is the devops-engineer persona PAT.
+      # clone-manifest.sh embeds it as basic-auth for the clones, then
+      # strips .git dirs — the token never enters the image.
+      - name: Pre-clone manifest deps
+        env:
+          MOLECULE_GITEA_TOKEN: ${{ secrets.AUTO_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MOLECULE_GITEA_TOKEN}" ]; then
+            echo "::error::AUTO_SYNC_TOKEN secret is empty"
+            exit 1
+          fi
+          mkdir -p .tenant-bundle-deps
+          bash scripts/clone-manifest.sh \
+            manifest.json \
+            .tenant-bundle-deps/workspace-configs-templates \
+            .tenant-bundle-deps/org-templates \
+            .tenant-bundle-deps/plugins
+          ws_count=$(find .tenant-bundle-deps/workspace-configs-templates -mindepth 1 -maxdepth 1 -type d | wc -l)
+          org_count=$(find .tenant-bundle-deps/org-templates -mindepth 1 -maxdepth 1 -type d | wc -l)
+          plugins_count=$(find .tenant-bundle-deps/plugins -mindepth 1 -maxdepth 1 -type d | wc -l)
+          echo "Cloned: ws=$ws_count org=$org_count plugins=$plugins_count"
+
+      - name: Compute tags
+        id: tags
+        run: |
+          echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      # Build + push platform image (inline ECR auth — mirrors the operator-host
+      # approach; credentials come from GITHUB_SECRET_AWS_ACCESS_KEY_ID /
+      # GITHUB_SECRET_AWS_SECRET_ACCESS_KEY in Gitea Actions).
+      - name: Build & push platform image to ECR (staging-<sha> + staging-latest)
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          TAG_SHA: staging-${{ steps.tags.outputs.sha }}
+          TAG_LATEST: staging-latest
+          GIT_SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-2
+        run: |
+          set -euo pipefail
+          ECR_REGISTRY="${IMAGE_NAME%%/*}"
+          aws ecr get-login-password --region us-east-2 | \
+            docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+          docker build \
+            --file ./workspace-server/Dockerfile \
+            --build-arg GIT_SHA="${GIT_SHA}" \
+            --label "org.opencontainers.image.source=https://github.com/${REPO}" \
+            --label "org.opencontainers.image.revision=${GIT_SHA}" \
+            --label "org.opencontainers.image.description=Molecule AI platform — pending canary verify" \
+            --tag "${IMAGE_NAME}:${TAG_SHA}" \
+            --tag "${IMAGE_NAME}:${TAG_LATEST}" \
+            .
+          docker push "${IMAGE_NAME}:${TAG_SHA}"
+          docker push "${IMAGE_NAME}:${TAG_LATEST}"
+
+      # Build + push tenant image (Go platform + Next.js canvas in one image).
+      - name: Build & push tenant image to ECR (staging-<sha> + staging-latest)
+        env:
+          TENANT_IMAGE_NAME: ${{ env.TENANT_IMAGE_NAME }}
+          TAG_SHA: staging-${{ steps.tags.outputs.sha }}
+          TAG_LATEST: staging-latest
+          GIT_SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-2
+        run: |
+          set -euo pipefail
+          ECR_REGISTRY="${TENANT_IMAGE_NAME%%/*}"
+          aws ecr get-login-password --region us-east-2 | \
+            docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+          docker build \
+            --file ./workspace-server/Dockerfile.tenant \
+            --build-arg NEXT_PUBLIC_PLATFORM_URL= \
+            --build-arg GIT_SHA="${GIT_SHA}" \
+            --label "org.opencontainers.image.source=https://github.com/${REPO}" \
+            --label "org.opencontainers.image.revision=${GIT_SHA}" \
+            --label "org.opencontainers.image.description=Molecule AI tenant platform + canvas — pending canary verify" \
+            --tag "${TENANT_IMAGE_NAME}:${TAG_SHA}" \
+            --tag "${TENANT_IMAGE_NAME}:${TAG_LATEST}" \
+            .
+          docker push "${TENANT_IMAGE_NAME}:${TAG_SHA}"
+          docker push "${TENANT_IMAGE_NAME}:${TAG_LATEST}"

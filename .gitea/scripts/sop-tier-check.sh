@@ -285,12 +285,26 @@ _passed_clauses=""
 _failed_clauses=""
 
 for _raw_clause in $EXPR; do
-  # Normalise: strip parens, split on comma, trim whitespace.
-  _clause=$(echo "$_raw_clause" | tr -d '()' | tr ',' '\n' | tr -d '[:space:]' | grep -v '^$')
+  # Normalise: strip parens, replace commas with spaces so bash word-split
+  # can iterate the OR-set members. The previous form
+  #   _clause=$(echo ... | tr ',' '\n' | tr -d '[:space:]' | grep -v '^$')
+  # collapsed every member into one concatenated token because
+  # `tr -d '[:space:]'` strips the very newlines that just separated them
+  # ("engineers,managers,ceo" -> "engineersmanagersceo"), so the OR-clause
+  # only ever evaluated as a single nonsense team name and never matched
+  # APPROVER_TEAMS. Fixed in #229: leave the comma-separated members as
+  # space-separated tokens for `for _t in $_clause`.
+  _no_parens=${_raw_clause//[()]/}
+  _clause=${_no_parens//,/ }
   _clause_passed="no"
   _clause_names=""
   for _t in $_clause; do
-    _clause_names="${_clause_names:+, }${_t}"
+    # Append (don't overwrite) team name to the human-readable accumulator.
+    # The previous form `_clause_names="${_clause_names:+, }${_t}"`
+    # rewrote the variable on every iteration, so the FAIL message only
+    # ever showed the LAST team. Fixed: prepend prior value before the
+    # comma-separator, then append the new team name.
+    _clause_names="${_clause_names}${_clause_names:+, }${_t}"
     # Skip teams not yet in Gitea (qa??? / security??? placeholders).
     [[ "$_t" == *"???" ]] && debug "clause \"$_t\": skipped (team pending creation)" && continue
     [ -z "${TEAM_ID[$_t]:-}" ] && debug "clause \"$_t\": no ID resolved, skipping" && continue
@@ -311,11 +325,12 @@ for _raw_clause in $EXPR; do
   _label=$(echo "$_raw_clause" | tr -d '()' | tr ',' '/' | tr -d '[:space:]' | sed 's/???//g')
 
   if [ "$_clause_passed" = "yes" ]; then
-    _passed_clauses="${_passed_clauses:+, }$_label"
+    # Append (don't overwrite) — same accumulator bug as _clause_names above.
+    _passed_clauses="${_passed_clauses}${_passed_clauses:+, }$_label"
     echo "::notice::clause [$_label]: PASS — satisfied by approving reviewer(s)"
   else
-    _failed_clauses="${_failed_clauses:+, }$_label"
-    echo "::error::clause [$_label]: FAIL — no approving reviewer belongs to any of these teams${_clause_names}. Set SOP_DEBUG=1 to see per-team probe results."
+    _failed_clauses="${_failed_clauses}${_failed_clauses:+, }$_label"
+    echo "::error::clause [$_label]: FAIL — no approving reviewer belongs to any of these teams (${_clause_names}). Set SOP_DEBUG=1 to see per-team probe results."
   fi
 done
 
