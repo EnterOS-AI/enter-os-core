@@ -4,8 +4,9 @@ include:
 
 services:
   # --- Infrastructure ---
+  # digest-pinned 2026-05-10 (sha256:4941ef97aaa2633ce9808f7766f8b8d746dd039ce8c51ca6da185c3dc63ab579, linux/amd64)
   postgres:
-    image: postgres:16-alpine
+    image: postgres@sha256:4941ef97aaa2633ce9808f7766f8b8d746dd039ce8c51ca6da185c3dc63ab579
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-dev}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev}
@@ -25,7 +26,7 @@ services:
       retries: 10
 
   langfuse-db-init:
-    image: postgres:16-alpine
+    image: postgres@sha256:4941ef97aaa2633ce9808f7766f8b8d746dd039ce8c51ca6da185c3dc63ab579
     depends_on:
       postgres:
         condition: service_healthy
@@ -46,8 +47,9 @@ services:
     networks:
       - molecule-core-net
 
+  # digest-pinned 2026-05-10 (sha256:b1addbe72465a718643cff9e60a58e6df1841e29d6d7d60c9a85d8d72f08d1a7, linux/amd64)
   redis:
-    image: redis:7-alpine
+    image: redis@sha256:b1addbe72465a718643cff9e60a58e6df1841e29d6d7d60c9a85d8d72f08d1a7
     command: ["redis-server", "--notify-keyspace-events", "KEA"]
     ports:
       - "6379:6379"
@@ -63,8 +65,9 @@ services:
       retries: 10
 
   # --- Observability ---
+  # digest-pinned 2026-05-10 (sha256:5b296e0ba1da74efea3143c773ddd60245f249fb7c72eb1d866c2d6ebc759fbe, linux/amd64)
   langfuse-clickhouse:
-    image: clickhouse/clickhouse-server:24-alpine
+    image: clickhouse/clickhouse-server@sha256:5b296e0ba1da74efea3143c773ddd60245f249fb7c72eb1d866c2d6ebc759fbe
     environment:
       CLICKHOUSE_DB: langfuse
       CLICKHOUSE_USER: langfuse
@@ -79,8 +82,9 @@ services:
       timeout: 5s
       retries: 10
 
+  # digest-pinned 2026-05-10 (sha256:e7aafd3ccf721821b40f8b2251220b4bb8af5e4877b5c5a8846af5b3318aaf1d, linux/amd64)
   langfuse:
-    image: langfuse/langfuse:2
+    image: langfuse/langfuse@sha256:e7aafd3ccf721821b40f8b2251220b4bb8af5e4877b5c5a8846af5b3318aaf1d
     depends_on:
       langfuse-clickhouse:
         condition: service_healthy
@@ -239,6 +243,8 @@ services:
     # First-time local setup or testing unreleased changes — build from source:
     #   docker compose build canvas && docker compose up -d canvas
     # Note: ECR images require AWS auth — `aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin 153263036946.dkr.ecr.us-east-2.amazonaws.com` before pull.
+    # Digest-pin requires: aws ecr describe-images --repository-name molecule-ai/canvas --image-tags latest --query 'imageDetails[0].imageDigest'
+    # TODO: pin canvas ECR image digest once AWS creds are available in CI.
     image: 153263036946.dkr.ecr.us-east-2.amazonaws.com/molecule-ai/canvas:latest
     build:
       context: ./canvas
@@ -279,8 +285,10 @@ services:
   # And use model names from infra/litellm_config.yml (e.g. "claude-opus-4-5",
   # "gpt-4o", "openrouter/deepseek-r1", "ollama/llama3.2").
   # Edit infra/litellm_config.yml to add/remove providers and models.
+  # digest-pinned 2026-05-10 (sha256:7c311546c25e7bb6e8cafede9fcd3d0d622ac636b5c9418befaa32e85dfb0186)
+  # Refresh: curl -sI https://ghcr.io/v2/berriai/litellm/manifests/main-latest (Docker-Content-Digest header)
   litellm:
-    image: ghcr.io/berriai/litellm:main-latest
+    image: ghcr.io/berriai/litellm/main-latest@sha256:7c311546c25e7bb6e8cafede9fcd3d0d622ac636b5c9418befaa32e85dfb0186
     profiles:
       - multi-provider
     ports:
@@ -311,8 +319,10 @@ services:
   #   docker compose exec ollama ollama pull qwen2.5-coder:7b
   # Then set MODEL_PROVIDER=ollama:llama3.2 in your workspace config.yaml
   # Workspace agents reach Ollama at http://ollama:11434 (internal Docker network).
+  # digest-pinned 2026-05-10 (sha256:90bd8ed1ad1853fbfb1ef5835f9d7a24fe890e05ace521e2d8d7a6f56bb667dd, linux/amd64)
+  # Refresh: curl -s https://hub.docker.com/v2/repositories/ollama/ollama/tags/latest | python3 -c "import json,sys; ..."
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama@sha256:90bd8ed1ad1853fbfb1ef5835f9d7a24fe890e05ace521e2d8d7a6f56bb667dd
     profiles:
       - local-models
     ports:

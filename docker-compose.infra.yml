@@ -1,6 +1,7 @@
 services:
+  # digest-pinned 2026-05-10 (sha256:4941ef97aaa2633ce9808f7766f8b8d746dd039ce8c51ca6da185c3dc63ab579, linux/amd64)
   postgres:
-    image: postgres:16-alpine
+    image: postgres@sha256:4941ef97aaa2633ce9808f7766f8b8d746dd039ce8c51ca6da185c3dc63ab579
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-dev}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev}
@@ -17,7 +18,7 @@ services:
       retries: 10
 
   langfuse-db-init:
-    image: postgres:16-alpine
+    image: postgres@sha256:4941ef97aaa2633ce9808f7766f8b8d746dd039ce8c51ca6da185c3dc63ab579
     depends_on:
       postgres:
         condition: service_healthy
@@ -36,8 +37,9 @@ services:
           psql -h postgres -U "$${POSTGRES_USER}" -d postgres -c "CREATE DATABASE langfuse"
         fi
 
+  # digest-pinned 2026-05-10 (sha256:b1addbe72465a718643cff9e60a58e6df1841e29d6d7d60c9a85d8d72f08d1a7, linux/amd64)
   redis:
-    image: redis:7-alpine
+    image: redis@sha256:b1addbe72465a718643cff9e60a58e6df1841e29d6d7d60c9a85d8d72f08d1a7
     command: ["redis-server", "--notify-keyspace-events", "KEA"]
     ports:
       - "6379:6379"
@@ -49,8 +51,9 @@ services:
       timeout: 5s
       retries: 10
 
+  # digest-pinned 2026-05-10 (sha256:5b296e0ba1da74efea3143c773ddd60245f249fb7c72eb1d866c2d6ebc759fbe, linux/amd64)
   clickhouse:
-    image: clickhouse/clickhouse-server:24-alpine
+    image: clickhouse/clickhouse-server@sha256:5b296e0ba1da74efea3143c773ddd60245f249fb7c72eb1d866c2d6ebc759fbe
     environment:
       CLICKHOUSE_DB: langfuse
       CLICKHOUSE_USER: langfuse
@@ -64,8 +67,9 @@ services:
       retries: 10
 
   # dev-only: no-auth on 0.0.0.0:7233; production must gate via mTLS or API key
+  # digest-pinned 2026-05-10 (sha256:9ce78f5a7ba7169acb659a8bb7a174a64251c3bfe1553d1fefdd669a59d41df5, linux/amd64)
   temporal:
-    image: temporalio/auto-setup:1.25
+    image: temporalio/auto-setup@sha256:9ce78f5a7ba7169acb659a8bb7a174a64251c3bfe1553d1fefdd669a59d41df5
     depends_on:
       postgres:
         condition: service_healthy
@@ -85,8 +89,9 @@ services:
       timeout: 5s
       retries: 10
 
+  # digest-pinned 2026-05-10 (sha256:7be8d6e41d4846ccb718c4f35956c9557512f8085e94a73954286a4e95113703, linux/amd64)
   temporal-ui:
-    image: temporalio/ui:2.31.2
+    image: temporalio/ui@sha256:7be8d6e41d4846ccb718c4f35956c9557512f8085e94a73954286a4e95113703
     depends_on:
       - temporal
     environment:
@@ -95,8 +100,9 @@ services:
     ports:
       - "8233:8080"
 
+  # digest-pinned 2026-05-10 (sha256:e7aafd3ccf721821b40f8b2251220b4bb8af5e4877b5c5a8846af5b3318aaf1d, linux/amd64)
   langfuse-web:
-    image: langfuse/langfuse:2
+    image: langfuse/langfuse@sha256:e7aafd3ccf721821b40f8b2251220b4bb8af5e4877b5c5a8846af5b3318aaf1d
     depends_on:
       clickhouse:
         condition: service_healthy
