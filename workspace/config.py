@@ -1,11 +1,14 @@
 """Load workspace configuration from config.yaml."""
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -381,6 +384,47 @@ def _derive_provider_from_model(model: str) -> str:
     return ""
 
 
+_legacy_model_provider_warned = False
+
+
+def _picked_model_from_env(default: str) -> str:
+    """Resolve the operator-picked model id from env; newest name wins.
+
+    Precedence: ``MOLECULE_MODEL`` (canonical, unambiguous) → ``MODEL`` →
+    ``MODEL_PROVIDER`` (legacy) → ``default`` (the YAML ``model:`` field).
+
+    ``MODEL_PROVIDER`` is **misleadingly named**: it carries the picked
+    *model id*, never the LLM provider — the provider lives in
+    ``LLM_PROVIDER`` / the YAML ``provider:`` field. The legacy path stays
+    so canvas Save+Restart, the workspace-server secret-mint path, and
+    persona env files that set it keep working, but if it's the *only* one
+    set we log a deprecation once — the misnomer keeps biting (e.g. setting
+    ``MODEL_PROVIDER=claude-code`` expecting it to select the claude-code
+    *runtime* — it doesn't, ``runtime:`` does — after which the claude CLI
+    404s on ``--model claude-code``). Set ``MODEL``/``MOLECULE_MODEL`` to
+    an id from ``runtime_config.models[].id`` (e.g. ``opus``, ``sonnet``,
+    ``claude-opus-4-7``, ``MiniMax-M2.7-highspeed``) instead.
+    """
+    global _legacy_model_provider_warned
+    for name in ("MOLECULE_MODEL", "MODEL"):
+        v = (os.environ.get(name) or "").strip()
+        if v:
+            return v
+    legacy = (os.environ.get("MODEL_PROVIDER") or "").strip()
+    if legacy:
+        if not _legacy_model_provider_warned:
+            logger.warning(
+                "MODEL_PROVIDER=%r is deprecated and misleadingly named — it "
+                "sets the picked *model id*, not the LLM provider (that's "
+                "LLM_PROVIDER / the YAML `provider:` field). Set MODEL (or "
+                "MOLECULE_MODEL) to an id from runtime_config.models instead.",
+                legacy,
+            )
+            _legacy_model_provider_warned = True
+        return legacy
+    return default
+
+
 _EVENT_LOG_VALID_BACKENDS = {"memory", "disabled"}
 
 
@@ -445,8 +489,10 @@ def load_config(config_path: Optional[str] = None) -> WorkspaceConfig:
     with open(config_file) as f:
         raw = yaml.safe_load(f) or {}
 
-    # Override model from env if provided
-    model = os.environ.get("MODEL_PROVIDER", raw.get("model", "anthropic:claude-opus-4-7"))
+    # Operator-picked model from env (canvas / secret-mint / persona env),
+    # falling back to the YAML `model:` field. See _picked_model_from_env for
+    # the precedence (MOLECULE_MODEL > MODEL > legacy MODEL_PROVIDER).
+    model = _picked_model_from_env(raw.get("model", "anthropic:claude-opus-4-7"))
 
     # Resolve top-level provider with this priority chain:
     #   1. ``LLM_PROVIDER`` env var (canvas Save+Restart sets this so the
@@ -517,8 +563,9 @@ def load_config(config_path: Optional[str] = None) -> WorkspaceConfig:
             required_env=runtime_raw.get("required_env", []),
             timeout=runtime_raw.get("timeout", 0),
             # Picked-model precedence (priority order):
-            #   1. MODEL_PROVIDER env var — canvas-picked model, plumbed via
-            #      workspace-server's secret-mint path or the universal
+            #   1. operator-picked model from env — MOLECULE_MODEL > MODEL >
+            #      (legacy) MODEL_PROVIDER, plumbed via canvas Save+Restart,
+            #      workspace-server's secret-mint path, or the universal
             #      MODEL/MODEL_PROVIDER env from applyRuntimeModelEnv. The
             #      operator's canvas selection MUST win over the template's
             #      baked-in default; previously the template's
@@ -527,13 +574,12 @@ def load_config(config_path: Optional[str] = None) -> WorkspaceConfig:
             #      surfaced 2026-05-02 during E2E).
             #   2. runtime_raw.model — explicit YAML override in the
             #      template's runtime_config.
-            #   3. top-level `model` — already honors MODEL_PROVIDER (line
-            #      359) but only when YAML lacks a top-level `model:`. This
-            #      is the SaaS restart case (CP regenerates a minimal
+            #   3. top-level `model` (already env-resolved above). This is
+            #      the SaaS restart case (CP regenerates a minimal
             #      config.yaml on every boot, dropping runtime_config.model).
             # Centralising here means EVERY adapter gets the override for
             # free — no per-adapter env-reading code required.
-            model=os.environ.get("MODEL_PROVIDER") or runtime_raw.get("model") or model,
+            model=_picked_model_from_env(runtime_raw.get("model") or model),
             # Same fallback shape as ``model`` above: an explicit
             # ``runtime_config.provider`` wins; otherwise inherit the
             # top-level resolved provider so adapters see a single

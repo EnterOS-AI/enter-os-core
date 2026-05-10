@@ -1,10 +1,12 @@
 """Tests for config.py — workspace configuration loading."""
 
+import logging
 import os
 
 import pytest
 import yaml
 
+import config
 from config import (
     A2AConfig,
     ComplianceConfig,
@@ -15,6 +17,17 @@ from config import (
     WorkspaceConfig,
     load_config,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clean_model_env(monkeypatch):
+    """Every test starts with no MODEL* env vars set and the legacy-name
+    deprecation latch reset, so picked-model resolution is deterministic
+    regardless of the CI shell environment or test ordering."""
+    for name in ("MOLECULE_MODEL", "MODEL", "MODEL_PROVIDER"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(config, "_legacy_model_provider_warned", False, raising=False)
+    yield
 
 
 def test_load_config_basic(tmp_path):
@@ -162,6 +175,80 @@ def test_runtime_config_model_env_wins_over_explicit_yaml(tmp_path, monkeypatch)
     # though YAML had an explicit different value. This is the
     # intentional inversion — the canvas pick beats the template.
     assert cfg.runtime_config.model == "minimax/MiniMax-M2.7"
+
+
+def test_picked_model_MODEL_env_wins_over_legacy_MODEL_PROVIDER(tmp_path, monkeypatch):
+    """MODEL (the correctly-named env var) beats the legacy MODEL_PROVIDER.
+
+    Regression for the 2026-05-10 dev-team incident: lead persona env files
+    set MODEL=claude-opus-4-7 (the intended model) AND MODEL_PROVIDER=claude-code
+    (mistaking MODEL_PROVIDER for "the runtime"). The old code read
+    MODEL_PROVIDER → the claude CLI got `--model claude-code` → 404. MODEL must
+    win so the operator's intended value lands at both levels.
+    """
+    monkeypatch.setenv("MODEL", "opus")
+    monkeypatch.setenv("MODEL_PROVIDER", "claude-code")
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(
+        yaml.dump({"model": "anthropic:claude-opus-4-7",
+                   "runtime_config": {"model": "sonnet"}})
+    )
+    cfg = load_config(str(tmp_path))
+    assert cfg.model == "opus"
+    assert cfg.runtime_config.model == "opus"
+
+
+def test_picked_model_MOLECULE_MODEL_wins_over_MODEL(tmp_path, monkeypatch):
+    """MOLECULE_MODEL (the unambiguous canonical name) wins over MODEL, which
+    in turn wins over the legacy MODEL_PROVIDER."""
+    monkeypatch.setenv("MOLECULE_MODEL", "claude-opus-4-7")
+    monkeypatch.setenv("MODEL", "sonnet")
+    monkeypatch.setenv("MODEL_PROVIDER", "claude-code")
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(yaml.dump({"model": "openai:gpt-4o"}))
+    cfg = load_config(str(tmp_path))
+    assert cfg.model == "claude-opus-4-7"
+    assert cfg.runtime_config.model == "claude-opus-4-7"
+
+
+def test_picked_model_MODEL_env_overrides_yaml(tmp_path, monkeypatch):
+    """MODEL env overrides the YAML `model:` field — same role MODEL_PROVIDER
+    had, now under the correctly-named var."""
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(yaml.dump({"model": "openai:gpt-4o"}))
+    monkeypatch.setenv("MODEL", "google:gemini-2.0-flash")
+    cfg = load_config(str(tmp_path))
+    assert cfg.model == "google:gemini-2.0-flash"
+
+
+def test_legacy_MODEL_PROVIDER_still_honored_but_warns(tmp_path, monkeypatch, caplog):
+    """MODEL_PROVIDER alone still resolves the model (back-compat: canvas
+    Save+Restart, secret-mint, existing persona env files keep working) but
+    logs a one-time deprecation pointing at the misnomer."""
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(yaml.dump({"model": "openai:gpt-4o"}))
+    monkeypatch.setenv("MODEL_PROVIDER", "MiniMax-M2.7-highspeed")
+    with caplog.at_level(logging.WARNING):
+        cfg = load_config(str(tmp_path))
+    assert cfg.model == "MiniMax-M2.7-highspeed"
+    assert cfg.runtime_config.model == "MiniMax-M2.7-highspeed"
+    assert any(
+        "MODEL_PROVIDER" in r.getMessage() and "deprecated" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_no_deprecation_when_MODEL_is_set(tmp_path, monkeypatch, caplog):
+    """When MODEL is set, MODEL_PROVIDER is ignored entirely and NOT warned
+    about — a workspace that already does it right shouldn't get nagged."""
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(yaml.dump({"model": "openai:gpt-4o"}))
+    monkeypatch.setenv("MODEL", "opus")
+    monkeypatch.setenv("MODEL_PROVIDER", "claude-code")
+    with caplog.at_level(logging.WARNING):
+        cfg = load_config(str(tmp_path))
+    assert cfg.model == "opus"
+    assert not any("MODEL_PROVIDER" in r.getMessage() for r in caplog.records)
 
 
 def test_runtime_config_model_picks_up_env_via_top_level(tmp_path, monkeypatch):
