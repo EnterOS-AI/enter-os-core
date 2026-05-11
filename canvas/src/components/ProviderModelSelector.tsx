@@ -437,7 +437,7 @@ export function ProviderModelSelector({
                     handleModelChange(selected.models[0]?.id ?? "");
                   }
                 }}
-                className="text-[9px] text-accent hover:text-accent mt-0.5"
+                className="text-[9px] text-accent hover:text-accent mt-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface rounded"
               >
                 ← back to model list
               </button>

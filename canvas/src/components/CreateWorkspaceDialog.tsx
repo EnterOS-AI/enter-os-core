@@ -411,7 +411,7 @@ export function CreateWorkspaceButton() {
                     tabIndex={tier === t.value ? 0 : -1}
                     onClick={() => setTier(t.value)}
                     onKeyDown={(e) => handleRadioKeyDown(e, idx)}
-                    className={`py-2 rounded-lg text-center transition-colors ${
+                    className={`py-2 rounded-lg text-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 ${
                       tier === t.value
                         ? "bg-accent-strong/20 border border-accent/50 text-accent"
                         : "bg-surface-card/60 border border-line/40 text-ink-mid hover:text-ink-mid hover:border-line"

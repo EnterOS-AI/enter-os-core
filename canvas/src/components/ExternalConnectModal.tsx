@@ -198,7 +198,7 @@ export function ExternalConnectModal({ info, onClose }: Props) {
                 role="tab"
                 aria-selected={tab === t}
                 onClick={() => setTab(t)}
-                className={`px-3 py-2 text-sm border-b-2 -mb-px transition-colors ${
+                className={`px-3 py-2 text-sm border-b-2 -mb-px transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface ${
                   tab === t
                     ? "border-accent text-ink"
                     : "border-transparent text-ink-mid hover:text-ink-mid"
@@ -309,7 +309,7 @@ export function ExternalConnectModal({ info, onClose }: Props) {
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-sm rounded-lg bg-surface-card hover:bg-surface-card text-ink"
+              className="px-4 py-2 text-sm rounded-lg bg-surface-card hover:bg-surface-card text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
             >
               I&apos;ve saved it — close
             </button>
@@ -339,7 +339,7 @@ function SnippetBlock({
         <button
           type="button"
           onClick={onCopy}
-          className="text-xs px-2 py-1 rounded bg-accent-strong/80 hover:bg-accent text-white"
+          className="text-xs px-2 py-1 rounded bg-accent-strong/80 hover:bg-accent text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
         >
           {copied ? "Copied!" : "Copy"}
         </button>
@@ -376,7 +376,7 @@ function Field({
         type="button"
         onClick={onCopy}
         disabled={!value}
-        className="text-xs px-2 py-1 rounded bg-surface-card hover:bg-surface-card text-ink disabled:opacity-40"
+        className="text-xs px-2 py-1 rounded bg-surface-card hover:bg-surface-card text-ink disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
       >
         {copied ? "Copied!" : "Copy"}
       </button>
