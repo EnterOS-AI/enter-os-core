@@ -228,7 +228,7 @@ def signal_2_reviews(pr_number: int, repo: str) -> dict:
                     "review_id": r["id"],
                     "user": r["user"]["login"],
                     "commit_id": r.get("commit_id", ""),
-                    "created_at": r["created_at"],
+                    "created_at": r.get("submitted_at") or r.get("created_at", ""),
                 }
             )
     return {
@@ -276,7 +276,7 @@ def signal_3_staleness(pr_number: int, repo: str) -> dict:
                         "review_commit": review_commit,
                         "pr_head": head_sha,
                         "age_hours": round(age_seconds / 3600, 1),
-                        "created_at": r["created_at"],
+                        "created_at": r.get("submitted_at") or r.get("created_at", ""),
                     }
                 )
     return {
