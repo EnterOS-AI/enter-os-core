@@ -77,6 +77,13 @@ jobs:
           # works if we never check out PR HEAD. Same SHA the workflow
           # itself was loaded from.
           ref: ${{ github.event.pull_request.base.sha }}
+      - name: Install jq
+        # Gitea Actions runners (ubuntu-latest label) do not bundle jq.
+        # The script uses jq extensively for all JSON parsing; install it
+        # before the script runs. Using -qq for quiet output — diagnostic
+        # info is already captured via SOP_DEBUG=1 on failure.
+        run: apt-get update -qq && apt-get install -y -qq jq
+
       - name: Verify tier label + reviewer team membership
         env:
           # SOP_TIER_CHECK_TOKEN is the org-level secret for the
