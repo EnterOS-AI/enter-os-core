@@ -1,0 +1,138 @@
+name: publish-canvas-image
+
+# Ported from .github/workflows/publish-canvas-image.yml on 2026-05-11 per RFC
+# internal#219 §1 sweep. Differences from the GitHub version:
+#   - Dropped `workflow_dispatch.inputs` (Gitea 1.22.6 parser rejects them
+#     per feedback_gitea_workflow_dispatch_inputs_unsupported).
+#   - Dropped `merge_group:` (no Gitea merge queue).
+#   - Dropped `environment:` blocks (Gitea has no environments).
+#   - Workflow-level env.GITHUB_SERVER_URL pinned per
+#     feedback_act_runner_github_server_url.
+#   - `continue-on-error: true` on each job (RFC §1 contract).
+#   - **Open question for review**: this workflow pushes the canvas
+#     image to `ghcr.io`. GHCR was retired during the 2026-05-06
+#     Gitea migration in favor of ECR (per canary-verify.yml header
+#     notes). The image may not be consumable post-migration. Two
+#     options for follow-up: (a) retarget to
+#     `153263036946.dkr.ecr.us-east-2.amazonaws.com/molecule-ai/canvas`,
+#     or (b) retire this workflow entirely and route canvas deploys
+#     via the operator-host build path. tier:low + continue-on-error
+#     means failed pushes do not block PRs.
+#
+
+# Builds and pushes the canvas Docker image to GHCR whenever a commit lands
+# on main that touches canvas code. Previously canvas changes were visible in
+# CI (npm run build passed) but the live container was never updated —
+# operators had to manually run `docker compose build canvas` each time.
+#
+# Mirror of publish-platform-image.yml, adapted for the Next.js canvas layer.
+# See that workflow for inline notes on macOS Keychain isolation and QEMU.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # Only rebuild when canvas source changes — saves GHA minutes on
+      # platform-only / docs-only / MCP-only merges.
+      - 'canvas/**'
+      - '.gitea/workflows/publish-canvas-image.yml'
+  # NOTE (Gitea port): the original GitHub workflow had a
+  # `workflow_dispatch:` manual trigger for the
+  # non-canvas-merge-but-need-fresh-image scenario. Dropped in the
+  # Gitea port (1.22.6 parser-finicky). Manual rebuilds require
+  # pushing an empty commit to canvas/ or running the operator-host
+  # build directly.
+
+permissions:
+  contents: read
+  packages: write  # required to push to ghcr.io/${{ github.repository_owner }}/*
+
+env:
+  IMAGE_NAME: ghcr.io/molecule-ai/canvas
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  build-and-push:
+    name: Build & push canvas image
+    runs-on: ubuntu-latest
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      # Health check: verify Docker daemon is accessible before attempting any
+      # build steps. This fails loudly at step 1 when the runner's docker.sock
+      # is inaccessible rather than silently continuing to the build step
+      # where docker build fails deep in ECR auth with a cryptic error.
+      - name: Verify Docker daemon access
+        run: |
+          set -euo pipefail
+          echo "::group::Docker daemon health check"
+          docker info 2>&1 | head -5 || {
+            echo "::error::Docker daemon is not accessible at /var/run/docker.sock"
+            echo "::error::Check: (1) daemon running, (2) runner user in docker group, (3) sock perms 660+"
+            exit 1
+          }
+          echo "Docker daemon OK"
+          echo "::endgroup::"
+
+      - name: Compute tags
+        id: tags
+        shell: bash
+        run: |
+          echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve build args
+        id: build_args
+        # Priority: workflow_dispatch input > repo secret > hardcoded default.
+        # NEXT_PUBLIC_* env vars are baked into the JS bundle at build time by
+        # Next.js — they cannot be changed at runtime without a full rebuild.
+        # For local docker-compose deployments the defaults (localhost:8080)
+        # work as-is; production deployments should set CANVAS_PLATFORM_URL
+        # and CANVAS_WS_URL as repository secrets.
+        #
+        # Inputs are passed via env vars (not direct ${{ }} interpolation) to
+        # prevent shell injection from workflow_dispatch string inputs.
+        shell: bash
+        env:
+          INPUT_PLATFORM_URL: ${{ github.event.inputs.platform_url }}
+          SECRET_PLATFORM_URL: ${{ secrets.CANVAS_PLATFORM_URL }}
+          INPUT_WS_URL: ${{ github.event.inputs.ws_url }}
+          SECRET_WS_URL: ${{ secrets.CANVAS_WS_URL }}
+        run: |
+          PLATFORM_URL="${INPUT_PLATFORM_URL:-${SECRET_PLATFORM_URL:-http://localhost:8080}}"
+          WS_URL="${INPUT_WS_URL:-${SECRET_WS_URL:-ws://localhost:8080/ws}}"
+
+          echo "platform_url=${PLATFORM_URL}" >> "$GITHUB_OUTPUT"
+          echo "ws_url=${WS_URL}" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push canvas image to GHCR
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: ./canvas
+          file: ./canvas/Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            NEXT_PUBLIC_PLATFORM_URL=${{ steps.build_args.outputs.platform_url }}
+            NEXT_PUBLIC_WS_URL=${{ steps.build_args.outputs.ws_url }}
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:sha-${{ steps.tags.outputs.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.description=Molecule AI canvas (Next.js 15 + React Flow)
