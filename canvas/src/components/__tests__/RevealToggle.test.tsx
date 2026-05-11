@@ -6,11 +6,12 @@
  * aria-label, title text, onToggle callback.
  */
 import React from "react";
-import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { RevealToggle } from "../ui/RevealToggle";
 
 describe("RevealToggle — render", () => {
+  afterEach(cleanup);
   it("renders a button element", () => {
     render(<RevealToggle revealed={false} onToggle={vi.fn()} />);
     expect(screen.getByRole("button")).toBeTruthy();

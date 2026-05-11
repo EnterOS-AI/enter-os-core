@@ -16,6 +16,8 @@ vi.mock("@/components/Toaster", () => ({
   showToast: vi.fn(),
 }));
 
+afterEach(cleanup);
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const pendingApproval = (id = "a1", workspaceId = "ws-1"): {

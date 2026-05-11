@@ -6,9 +6,11 @@
  * aria-live for error, icon rendering.
  */
 import React from "react";
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { render, screen, cleanup } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
 import { ValidationHint } from "../ui/ValidationHint";
+
+afterEach(cleanup);
 
 describe("ValidationHint — error state", () => {
   it("renders error message when error is a non-null string", () => {
@@ -43,7 +45,9 @@ describe("ValidationHint — valid state", () => {
 
   it("includes the checkmark icon in valid state", () => {
     render(<ValidationHint error={null} showValid={true} />);
-    expect(screen.getByText(/✓ Valid format/)).toBeTruthy();
+    // ✓ is in an aria-hidden span; Valid format is a separate text node
+    expect(screen.getByText(/✓/)).toBeTruthy();
+    expect(screen.getByText("Valid format")).toBeTruthy();
   });
 
   it("uses the valid class on the paragraph element", () => {

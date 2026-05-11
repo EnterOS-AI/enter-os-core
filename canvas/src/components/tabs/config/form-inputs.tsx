@@ -127,13 +127,20 @@ export function TagList({ label, values, onChange, placeholder }: { label: strin
 
 export function Section({ title, children, defaultOpen = true }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
+  const contentId = `section-content-${title.toLowerCase().replace(/\s+/g, "-")}`;
   return (
     <div className="border border-line rounded mb-2">
-      <button type="button" onClick={() => setOpen(!open)} className="w-full flex items-center justify-between px-3 py-1.5 text-[10px] text-ink-mid hover:text-ink bg-surface-sunken/50">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        aria-controls={contentId}
+        className="w-full flex items-center justify-between px-3 py-1.5 text-[10px] text-ink-mid hover:text-ink bg-surface-sunken/50"
+      >
         <span className="font-medium uppercase tracking-wider">{title}</span>
-        <span>{open ? "▾" : "▸"}</span>
+        <span aria-hidden="true">{open ? "▾" : "▸"}</span>
       </button>
-      {open && <div className="p-3 space-y-3">{children}</div>}
+      {open && <div id={contentId} className="p-3 space-y-3">{children}</div>}
     </div>
   );
 }

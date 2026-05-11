@@ -6,11 +6,12 @@
  * icon presence, className variants, no render when passed invalid status.
  */
 import React from "react";
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { render, screen, cleanup } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
 import { StatusBadge } from "../ui/StatusBadge";
 
 describe("StatusBadge — render", () => {
+  afterEach(cleanup);
   it("renders verified status with ✓ icon", () => {
     render(<StatusBadge status="verified" />);
     const badge = screen.getByRole("status");
