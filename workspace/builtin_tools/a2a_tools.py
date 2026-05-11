@@ -9,6 +9,13 @@ import uuid
 
 import httpx
 
+# OFFSEC-003: peer-controlled text MUST be wrapped with sanitize_a2a_result
+# before being returned to the LLM. This module's delegate_task() is one of
+# the trust-boundary entry points where peer output crosses into our agent's
+# context — same surface as a2a_tools_delegation.py:325 (fixed via #492).
+# Issue #537.
+from _sanitize_a2a import sanitize_a2a_result
+
 PLATFORM_URL = os.environ.get("PLATFORM_URL", "http://host.docker.internal:8080")
 WORKSPACE_ID = os.environ.get("WORKSPACE_ID", "")
 
@@ -69,12 +76,14 @@ async def delegate_task(workspace_id: str, task: str) -> str:
                 result = data["result"]
                 parts = result.get("parts", []) if isinstance(result, dict) else []
                 if parts and isinstance(parts[0], dict):
-                    return parts[0].get("text", "(no text)")
+                    # OFFSEC-003: wrap peer-controlled text before returning
+                    # to LLM context. Issue #537.
+                    return sanitize_a2a_result(parts[0].get("text", "(no text)"))
                 # Empty parts list (e.g. {"parts": []}) should return str(result),
                 # not "(no text)" — preserves pre-fix behavior (#279 regression fix).
                 if isinstance(result, dict) and result.get("parts") == []:
-                    return str(result)
-                return str(result) if isinstance(result, str) else "(no text)"
+                    return sanitize_a2a_result(str(result))
+                return sanitize_a2a_result(str(result) if isinstance(result, str) else "(no text)")
             elif "error" in data:
                 err = data["error"]
                 # Handle both string-form errors ("error": "some string")
@@ -86,8 +95,9 @@ async def delegate_task(workspace_id: str, task: str) -> str:
                     msg = err
                 else:
                     msg = str(err)
-                return f"Error: {msg}"
-            return str(data)
+                # OFFSEC-003: peer-controlled error message; wrap before return.
+                return sanitize_a2a_result(f"Error: {msg}")
+            return sanitize_a2a_result(str(data))
         except Exception as e:
             return f"Error sending A2A message: {e}"
 
