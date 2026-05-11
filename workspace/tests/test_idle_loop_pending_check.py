@@ -4,77 +4,82 @@ The idle loop skips sending the idle prompt when DELEGATION_RESULTS_FILE
 contains unconsumed results, preventing the agent from composing a stale tick
 before processing pending delegation notifications from the heartbeat.
 
-Source: workspace/main.py:_run_idle_loop() pending-results guard.
+Source: ``workspace/main.py:_check_delegation_results_pending()`` (extracted from
+``_run_idle_loop()`` guard; see PR #432 follow-up).
+
+The guard is extracted into a module-level function so unit tests call the
+real production logic directly — not a mirror copy.  This avoids the
+test-mirror anti-pattern (issue #401) where a copied implementation
+drifts from the production code it is supposed to test.
 """
 from __future__ import annotations
 
+import io
 import json
+from unittest.mock import patch
 
-import pytest
-
-
-def check_results_pending(file_path: str) -> bool:
-    """Mirror the guard logic from workspace/main.py:_run_idle_loop().
-
-    Returns True if the results file exists and is non-empty,
-    meaning the idle loop should skip this tick.
-    """
-    try:
-        with open(file_path) as rf:
-            rf.seek(0)
-            content = rf.read().strip()
-        return bool(content)
-    except FileNotFoundError:
-        return False
+from main import _check_delegation_results_pending
 
 
 class TestIdleLoopPendingCheck:
-    """Tests for the idle-loop pending-delegation-results guard."""
+    """Tests for the idle-loop pending-delegation-results guard.
 
-    def test_no_file_means_proceed(self, tmp_path):
+    Each test patches ``builtins.open`` so ``_check_delegation_results_pending``
+    reads the controlled payload instead of the real DELEGATION_RESULTS_FILE.
+    No filesystem side-effects.
+    """
+
+    def _patch_open(self, payload: str | None):
+        """Patch builtins.open for _check_delegation_results_pending.
+
+        Args:
+            payload: file contents to return. None → FileNotFoundError.
+        """
+        if payload is None:
+            return patch("builtins.open", side_effect=FileNotFoundError)
+        else:
+            fake_file = io.StringIO(payload)
+            return patch("builtins.open", return_value=fake_file)
+
+    def test_no_file_means_proceed(self):
         """No delegation results file → idle loop fires normally."""
-        results_file = tmp_path / "delegation_results.jsonl"
-        assert not check_results_pending(str(results_file))
+        with self._patch_open(None):
+            assert _check_delegation_results_pending() is False
 
-    def test_empty_file_means_proceed(self, tmp_path):
+    def test_empty_file_means_proceed(self):
         """Empty file → no pending results → idle loop fires."""
-        results_file = tmp_path / "delegation_results.jsonl"
-        results_file.write_text("", encoding="utf-8")
-        assert not check_results_pending(str(results_file))
+        with self._patch_open(""):
+            assert _check_delegation_results_pending() is False
 
-    def test_whitespace_only_file_means_proceed(self, tmp_path):
+    def test_whitespace_only_file_means_proceed(self):
         """File with only whitespace → treated as empty → idle loop fires."""
-        results_file = tmp_path / "delegation_results.jsonl"
-        results_file.write_text("  \n  ", encoding="utf-8")
-        assert not check_results_pending(str(results_file))
+        with self._patch_open("  \n  "):
+            assert _check_delegation_results_pending() is False
 
-    def test_single_result_means_skip(self, tmp_path):
+    def test_single_result_means_skip(self):
         """File with one delegation result → skip idle tick."""
-        results_file = tmp_path / "delegation_results.jsonl"
-        results_file.write_text(
+        payload = (
             json.dumps({
                 "status": "completed",
                 "delegation_id": "del-abc",
                 "summary": "Done",
-            }) + "\n",
-            encoding="utf-8",
+            }) + "\n"
         )
-        assert check_results_pending(str(results_file))
+        with self._patch_open(payload):
+            assert _check_delegation_results_pending() is True
 
-    def test_multiple_results_means_skip(self, tmp_path):
+    def test_multiple_results_means_skip(self):
         """File with multiple delegation results → skip idle tick."""
-        results_file = tmp_path / "delegation_results.jsonl"
-        results_file.write_text(
+        payload = (
             json.dumps({"status": "completed", "delegation_id": "del-1", "summary": "A"})
             + "\n"
             + json.dumps({"status": "failed", "delegation_id": "del-2", "summary": "B"})
-            + "\n",
-            encoding="utf-8",
+            + "\n"
         )
-        assert check_results_pending(str(results_file))
+        with self._patch_open(payload):
+            assert _check_delegation_results_pending() is True
 
-    def test_file_with_only_newline_means_proceed(self, tmp_path):
+    def test_file_with_only_newline_means_proceed(self):
         """File with only a newline character → stripped to empty → fires."""
-        results_file = tmp_path / "delegation_results.jsonl"
-        results_file.write_text("\n", encoding="utf-8")
-        assert not check_results_pending(str(results_file))
+        with self._patch_open("\n"):
+            assert _check_delegation_results_pending() is False

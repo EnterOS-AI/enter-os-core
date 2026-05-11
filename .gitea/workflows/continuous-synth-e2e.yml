@@ -56,7 +56,7 @@ on:
     #   2. Avoid colliding with the existing :15 sweep-cf-orphans
     #      and :45 sweep-cf-tunnels — both hit the CF API and we
     #      don't want to fight for rate-limit tokens.
-    #   3. Avoid the :30 heavy slot (canary-staging /30, sweep-aws-
+    #   3. Avoid the :30 heavy slot (staging-smoke /30, sweep-aws-
     #      secrets, sweep-stale-e2e-orgs every :15) — multiple
     #      overlapping cron registrations on the same minute is part
     #      of what GH drops under load.

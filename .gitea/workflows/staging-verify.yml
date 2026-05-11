@@ -1,6 +1,8 @@
-name: canary-verify
+name: Staging verify
 
-# Ported from .github/workflows/canary-verify.yml on 2026-05-11 per RFC
+# Renamed from canary-verify.yml on 2026-05-11 per Hongming directive
+# ("canary naming changed to staging for all"). Originally ported from
+# .github/workflows/canary-verify.yml on 2026-05-11 per RFC
 # internal#219 §1 sweep. Differences from the GitHub version:
 #   - Dropped `workflow_dispatch.inputs` (Gitea 1.22.6 parser rejects them
 #     per feedback_gitea_workflow_dispatch_inputs_unsupported).
@@ -23,13 +25,22 @@ name: canary-verify
 # digest. On red, :latest stays on the prior known-good digest and
 # prod is untouched.
 #
+# Terminology note (2026-05-11): The deployment STRATEGY here is still
+# called "canary release" (a small subset of tenants gets the new image
+# first, the rest follow on green). The "canary" word stays for the
+# pre-fan-out cohort concept (see docs/architecture/canary-release.md
+# and CANARY_SLUG in redeploy-tenants-on-*.yml). What changed is the
+# FILE NAME and the SECRETS feeding this workflow — both are renamed
+# to drop the redundant "canary-" prefix that conflated workflow
+# identity with deployment strategy.
+#
 # Registry note (2026-05-10): This workflow previously used GHCR
 # (ghcr.io/molecule-ai/platform-tenant) — that registry was retired
 # during the 2026-05-06 Gitea suspension migration when publish-
 # workspace-server-image.yml switched to the operator's ECR org
 # (153263036946.dkr.ecr.us-east-2.amazonaws.com/molecule-ai/
 # platform-tenant). The GHCR → ECR migration was never applied to
-# this file, so canary-verify was silently smoke-testing the stale
+# this file, so this workflow was silently smoke-testing the stale
 # GHCR image while the actual staging/prod tenants ran the ECR image.
 # Result: smoke tests could not catch a broken ECR build. Fix:
 #   - Wait step: reads SHA from running canary /health (tenant-
@@ -43,8 +54,9 @@ name: canary-verify
 #     to ECR on staging and main merges.
 #   - Canary tenants are configured to pull :staging-<sha> from ECR
 #     (TENANT_IMAGE env set to the ECR :staging-<sha> tag).
-#   - Repo secrets CANARY_TENANT_URLS / CANARY_ADMIN_TOKENS /
-#     CANARY_CP_SHARED_SECRET are populated.
+#   - Repo secrets MOLECULE_STAGING_TENANT_URLS /
+#     MOLECULE_STAGING_ADMIN_TOKENS / MOLECULE_STAGING_CP_SHARED_SECRET
+#     are populated.
 
 on:
   workflow_run:
@@ -65,7 +77,7 @@ env:
   GITHUB_SERVER_URL: https://git.moleculesai.app
 
 jobs:
-  canary-smoke:
+  staging-smoke:
     # Skip when the upstream workflow failed — no image to test against.
     # workflow_dispatch trigger dropped in this Gitea port; only the
     # workflow_run path remains.
@@ -97,15 +109,15 @@ jobs:
         # other registry — the canary is telling us what it's actually
         # running, which is the ground truth for smoke testing.
         env:
-          CANARY_TENANT_URLS: ${{ secrets.CANARY_TENANT_URLS }}
+          MOLECULE_STAGING_TENANT_URLS: ${{ secrets.MOLECULE_STAGING_TENANT_URLS }}
           EXPECTED_SHA: ${{ steps.compute.outputs.sha }}
         run: |
-          if [ -z "$CANARY_TENANT_URLS" ]; then
+          if [ -z "$MOLECULE_STAGING_TENANT_URLS" ]; then
             echo "No canary URLs configured — falling back to 60s wait"
             sleep 60
             exit 0
           fi
-          IFS=',' read -ra URLS <<< "$CANARY_TENANT_URLS"
+          IFS=',' read -ra URLS <<< "$MOLECULE_STAGING_TENANT_URLS"
           MAX_WAIT=420  # 7 minutes
           INTERVAL=30
           ELAPSED=0
@@ -129,7 +141,7 @@ jobs:
           done
           echo "Timeout after ${MAX_WAIT}s — proceeding anyway (smoke suite will validate)"
 
-      - name: Run canary smoke suite
+      - name: Run staging smoke suite
         id: smoke
         # Graceful-skip when no canary fleet is configured (Phase 2 not yet
         # stood up — see molecule-controlplane/docs/canary-tenants.md).
@@ -138,29 +150,29 @@ jobs:
         # promote-latest.yml is the release gate while canary is absent.
         # Once the fleet is real: delete the early-exit branch.
         env:
-          CANARY_TENANT_URLS: ${{ secrets.CANARY_TENANT_URLS }}
-          CANARY_ADMIN_TOKENS: ${{ secrets.CANARY_ADMIN_TOKENS }}
-          CANARY_CP_BASE_URL: https://staging-api.moleculesai.app
-          CANARY_CP_SHARED_SECRET: ${{ secrets.CANARY_CP_SHARED_SECRET }}
+          MOLECULE_STAGING_TENANT_URLS: ${{ secrets.MOLECULE_STAGING_TENANT_URLS }}
+          MOLECULE_STAGING_ADMIN_TOKENS: ${{ secrets.MOLECULE_STAGING_ADMIN_TOKENS }}
+          MOLECULE_STAGING_CP_BASE_URL: https://staging-api.moleculesai.app
+          MOLECULE_STAGING_CP_SHARED_SECRET: ${{ secrets.MOLECULE_STAGING_CP_SHARED_SECRET }}
         run: |
           set -euo pipefail
-          if [ -z "${CANARY_TENANT_URLS:-}" ] \
-            || [ -z "${CANARY_ADMIN_TOKENS:-}" ] \
-            || [ -z "${CANARY_CP_SHARED_SECRET:-}" ]; then
+          if [ -z "${MOLECULE_STAGING_TENANT_URLS:-}" ] \
+            || [ -z "${MOLECULE_STAGING_ADMIN_TOKENS:-}" ] \
+            || [ -z "${MOLECULE_STAGING_CP_SHARED_SECRET:-}" ]; then
             {
-              echo "## ⚠️ canary-verify skipped"
+              echo "## ⚠️ staging-verify skipped"
               echo
-              echo "One or more canary secrets are unset (\`CANARY_TENANT_URLS\`, \`CANARY_ADMIN_TOKENS\`, \`CANARY_CP_SHARED_SECRET\`)."
+              echo "One or more canary secrets are unset (\`MOLECULE_STAGING_TENANT_URLS\`, \`MOLECULE_STAGING_ADMIN_TOKENS\`, \`MOLECULE_STAGING_CP_SHARED_SECRET\`)."
               echo "Phase 2 canary fleet has not been stood up yet —"
               echo "see [canary-tenants.md](https://git.moleculesai.app/molecule-ai/molecule-controlplane/blob/main/docs/canary-tenants.md)."
               echo
               echo "**Skipped — promote-to-latest will NOT auto-fire.** Dispatch \`promote-latest.yml\` manually when ready."
             } >> "$GITHUB_STEP_SUMMARY"
             echo "ran=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::canary-verify: skipped — no canary fleet configured"
+            echo "::notice::staging-verify: skipped — no canary fleet configured"
             exit 0
           fi
-          bash scripts/canary-smoke.sh
+          bash scripts/staging-smoke.sh
           echo "ran=true" >> "$GITHUB_OUTPUT"
 
       - name: Summary on failure
@@ -173,7 +185,7 @@ jobs:
             echo ":latest stays pinned to the prior good digest — prod is untouched."
             echo
             echo "Fix forward and merge again, or investigate the specific failed"
-            echo "assertions in the canary-smoke step log above."
+            echo "assertions in the staging-smoke step log above."
           } >> "$GITHUB_STEP_SUMMARY"
 
   promote-to-latest:
@@ -188,13 +200,13 @@ jobs:
     # silently promoting a stale GHCR image while actual prod tenants
     # pulled from ECR. Canary smoke tests were GHCR-targeted and could
     # not catch a broken ECR build.
-    needs: canary-smoke
-    if: ${{ needs.canary-smoke.result == 'success' && needs.canary-smoke.outputs.smoke_ran == 'true' }}
+    needs: staging-smoke
+    if: ${{ needs.staging-smoke.result == 'success' && needs.staging-smoke.outputs.smoke_ran == 'true' }}
     runs-on: ubuntu-latest
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
     continue-on-error: true
     env:
-      SHA: ${{ needs.canary-smoke.outputs.sha }}
+      SHA: ${{ needs.staging-smoke.outputs.sha }}
       CP_URL: ${{ vars.CP_URL || 'https://staging-api.moleculesai.app' }}
       # CP_ADMIN_API_TOKEN gates write access to the redeploy endpoint.
       # Stored at the repo level so all workflows pick it up automatically.
@@ -264,9 +276,9 @@ jobs:
       - name: Summary
         run: |
           {
-            echo "## Canary verified — :latest promoted via CP redeploy-fleet"
+            echo "## Staging verified — :latest promoted via CP redeploy-fleet"
             echo ""
-            echo "- **Target tag:** \`staging-${{ needs.canary-smoke.outputs.sha }}\`"
+            echo "- **Target tag:** \`staging-${{ needs.staging-smoke.outputs.sha }}\`"
             echo "- **Registry:** ECR (\`${TENANT_IMAGE_NAME}\`)"
             echo "- **Canary slug:** \`${CANARY_SLUG:-<none>}\` (soak ${SOAK_SECONDS}s)"
             echo "- **Batch size:** ${BATCH_SIZE:-3}"

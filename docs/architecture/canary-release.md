@@ -2,7 +2,7 @@
 
 How a workspace-server code change reaches the prod tenant fleet — and how to stop it if something's wrong.
 
-> **⚠️ State note (2026-04-22):** this doc describes the **intended design**. As of this write, the canary fleet described below is **not actually running** — no canary tenants are provisioned, `CANARY_TENANT_URLS` / `CANARY_ADMIN_TOKENS` / `CANARY_CP_SHARED_SECRET` are empty in repo secrets, and `canary-verify.yml` fails every run.
+> **⚠️ State note (2026-04-22, secret names refreshed 2026-05-11):** this doc describes the **intended design**. As of this write, the canary fleet described below is **not actually running** — no canary tenants are provisioned, `MOLECULE_STAGING_TENANT_URLS` / `MOLECULE_STAGING_ADMIN_TOKENS` / `MOLECULE_STAGING_CP_SHARED_SECRET` are empty in repo secrets, and `staging-verify.yml` (formerly `canary-verify.yml`) fails every run.
 >
 > Current merges gate on manual `promote-latest.yml` dispatches, not canary. See [molecule-controlplane/docs/canary-tenants.md](https://git.moleculesai.app/molecule-ai/molecule-controlplane/src/branch/main/docs/canary-tenants.md) for the Phase 1 code work that's already shipped + the Phase 2 plan for actually standing up the fleet + a "should we even do this now?" decision framework.
 >
@@ -22,7 +22,7 @@ publish-workspace-server-image.yml   ← pushes :staging-<sha> ONLY
 Canary tenants auto-update to :staging-<sha>
       │   (5-min auto-updater cycle on each canary EC2)
       ▼
-canary-verify.yml waits 6 min, runs scripts/canary-smoke.sh
+staging-verify.yml waits 6 min, runs scripts/staging-smoke.sh
       │
       ├─► GREEN → crane tag :staging-<sha> → :latest
       │                                       │
@@ -42,7 +42,7 @@ Canary tenants are configured to pull `:staging-<sha>` (not `:latest`) via `TENA
 
 ## Smoke suite
 
-`scripts/canary-smoke.sh` hits each canary tenant (URL + ADMIN_TOKEN pair) and asserts:
+`scripts/staging-smoke.sh` hits each canary tenant (URL + ADMIN_TOKEN pair) and asserts:
 
 - `/admin/liveness` returns a subsystems map (tenant booted, AdminAuth reachable)
 - `/workspaces` returns a JSON array (wsAuth + DB healthy)
@@ -59,8 +59,8 @@ Expand by editing the script — each `check "name" "expected" "$response"` call
 3. Re-trigger provision (or delete + recreate if the org was already provisioned into staging) — the fresh EC2 lands in the canary AWS account (see internal runbook for the specific ID)
 
 Then set repo secrets:
-- `CANARY_TENANT_URLS` — append the new tenant's URL
-- `CANARY_ADMIN_TOKENS` — append its ADMIN_TOKEN in the same position
+- `MOLECULE_STAGING_TENANT_URLS` — append the new tenant's URL
+- `MOLECULE_STAGING_ADMIN_TOKENS` — append its ADMIN_TOKEN in the same position
 
 ## Rolling back `:latest`
 

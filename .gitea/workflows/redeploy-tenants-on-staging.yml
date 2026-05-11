@@ -21,7 +21,7 @@ name: redeploy-tenants-on-staging
 #
 # Mirror of redeploy-tenants-on-main.yml, with the staging-CP host and
 # the :staging-latest tag. Sister workflow exists for prod (rolls
-# :latest after canary-verify). Both share the same shape — just
+# :latest after staging-verify). Both share the same shape — just
 # different CP_URL + target_tag + admin token secret.
 #
 # Why this workflow exists: publish-workspace-server-image now builds
@@ -336,7 +336,7 @@ jobs:
           # crashes on startup), not a teardown race. Hard-fail.
           #
           # Floor only applies when TOTAL_VERIFIED >= 4 — below that, the
-          # canary-verify step is the actual gate for "all tenants down"
+          # staging-verify step is the actual gate for "all tenants down"
           # detection (it runs against the canary first and aborts the
           # rollout if the canary fails to come up). Without the >=4 gate,
           # a 1-tenant fleet (e.g. a single ephemeral e2e-* tenant on a

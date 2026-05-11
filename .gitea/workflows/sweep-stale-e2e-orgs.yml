@@ -99,7 +99,8 @@ jobs:
 
           # Filter:
           #   1. slug starts with one of the ephemeral test prefixes:
-          #        - 'e2e-'    — covers e2e-canary-, e2e-canvas-*, etc.
+          #        - 'e2e-'    — covers e2e-smoke- (formerly e2e-canary-),
+          #                      e2e-canvas-*, etc.
           #        - 'rt-e2e-' — runtime-test harness fixtures (RFC #2251);
           #                      missing this prefix left two such tenants
           #                      orphaned 8h on staging (2026-05-03), then

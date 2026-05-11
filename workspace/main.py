@@ -48,6 +48,27 @@ def get_machine_ip() -> str:  # pragma: no cover
         return "127.0.0.1"
 
 
+def _check_delegation_results_pending() -> bool:
+    """Check if there are unconsumed delegation results waiting.
+
+    Reads ``DELEGATION_RESULTS_FILE``.  Returns ``True`` if the file
+    exists and contains non-whitespace content (after stripping) — meaning
+    the idle loop should skip this tick.  Returns ``False`` if the file is
+    absent, empty, or contains only whitespace.
+
+    The extracted form lets unit tests call this directly rather than mirroring
+    the logic (anti-pattern flagged as #401).
+    """
+    from heartbeat import DELEGATION_RESULTS_FILE
+
+    try:
+        with open(DELEGATION_RESULTS_FILE) as rf:
+            rf.seek(0)
+            return bool(rf.read().strip())
+    except FileNotFoundError:
+        return False
+
+
 # Re-exported from transcript_auth for the inline /transcript handler.
 # Separate module keeps the security-critical gate import-light + unit-testable.
 from transcript_auth import transcript_authorized as _transcript_authorized
@@ -678,20 +699,15 @@ async def main():  # pragma: no cover
                 # heartbeat's own self-message wake the agent after results are
                 # written. The agent then sees the results in _prepare_prompt()
                 # and processes them before composing.
-                from heartbeat import DELEGATION_RESULTS_FILE as _DRF
-                try:
-                    with open(_DRF) as _rf:
-                        _rf.seek(0)
-                        _content = _rf.read().strip()
-                    if _content:
-                        print(
-                            f"Idle loop: skipping — {len(_content)} bytes of unconsumed "
-                            f"delegation results pending (heartbeat will notify agent)",
-                            flush=True,
-                        )
-                        continue
-                except FileNotFoundError:
-                    pass  # No results file — normal, proceed with idle prompt
+                # Guard logic extracted to _check_delegation_results_pending() for
+                # direct unit-testing (#401 follow-up).
+                if _check_delegation_results_pending():
+                    print(
+                        "Idle loop: skipping — unconsumed delegation results pending "
+                        "(heartbeat will notify agent)",
+                        flush=True,
+                    )
+                    continue
 
                 # Self-post the idle prompt via the platform A2A proxy (same
                 # path as initial_prompt). The agent's own concurrency control

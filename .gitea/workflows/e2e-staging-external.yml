@@ -89,7 +89,10 @@ jobs:
 
     env:
       MOLECULE_CP_URL: https://staging-api.moleculesai.app
-      MOLECULE_ADMIN_TOKEN: ${{ secrets.MOLECULE_STAGING_ADMIN_TOKEN }}
+      # 2026-05-11: secret canonicalised from MOLECULE_STAGING_ADMIN_TOKEN
+      # (dead in org secret store) to CP_STAGING_ADMIN_API_TOKEN per
+      # internal#322 — see this PR for the cross-workflow sweep.
+      MOLECULE_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
       E2E_RUN_ID: "${{ github.run_id }}-${{ github.run_attempt }}"
       E2E_KEEP_ORG: ${{ github.event.inputs.keep_org && '1' || '0' }}
       E2E_STALE_WAIT_SECS: ${{ github.event.inputs.stale_wait_secs || '180' }}
@@ -104,7 +107,7 @@ jobs:
             # missing — silent skip would mask infra rot. Manual dispatch
             # gets the same hard-fail; an operator running this on a fork
             # without secrets configured needs to know up-front.
-            echo "::error::MOLECULE_STAGING_ADMIN_TOKEN secret not set (Railway staging CP_ADMIN_API_TOKEN)"
+            echo "::error::CP_STAGING_ADMIN_API_TOKEN secret not set (Railway staging CP_ADMIN_API_TOKEN)"
             exit 2
           fi
           echo "Admin token present ✓"
@@ -129,7 +132,7 @@ jobs:
       - name: Teardown safety net (runs on cancel/failure)
         if: always()
         env:
-          ADMIN_TOKEN: ${{ secrets.MOLECULE_STAGING_ADMIN_TOKEN }}
+          ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
         run: |
           set +e
           orgs=$(curl -sS "$MOLECULE_CP_URL/cp/admin/orgs" \

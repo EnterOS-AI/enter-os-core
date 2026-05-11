@@ -11,7 +11,7 @@ name: publish-canvas-image
 #   - `continue-on-error: true` on each job (RFC §1 contract).
 #   - **Open question for review**: this workflow pushes the canvas
 #     image to `ghcr.io`. GHCR was retired during the 2026-05-06
-#     Gitea migration in favor of ECR (per canary-verify.yml header
+#     Gitea migration in favor of ECR (per staging-verify.yml header
 #     notes). The image may not be consumable post-migration. Two
 #     options for follow-up: (a) retarget to
 #     `153263036946.dkr.ecr.us-east-2.amazonaws.com/molecule-ai/canvas`,

@@ -43,10 +43,18 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          # Fetch full tag list so the bump logic can sanity-check against
-          # what's already in this repo (catches collision with prior
-          # manual tag pushes).
-          fetch-depth: 0
+          # Shallow clone — depth 1 is enough for the workspace-diff check.
+          # Tags needed for the collision check below are fetched explicitly
+          # in the next step, bypassing the runner-network timeout that
+          # full-history fetch triggers on Gitea Actions runners
+          # (runbooks/gitea-operational-quirks.md §runner-network-isolation).
+          fetch-depth: 1
+
+      - name: Fetch tags for collision check
+        # fetch-depth: 1 gets only the most recent commit's refs, not the
+        # tag that points at it. Do a targeted tag fetch so git tag --list
+        # below can detect collision with prior manual pushes.
+        run: git fetch origin --tags --depth=1
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
