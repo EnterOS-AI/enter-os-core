@@ -1,6 +1,6 @@
 """Tests for a2a_executor.py — LangGraph-to-A2A bridge with SSE streaming."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -68,12 +68,16 @@ async def test_text_extraction_from_parts():
     context = _make_context([part1, part2], "ctx-123")
     eq = _make_event_queue()
 
-    await executor.execute(context, eq)
+    # Isolate from real delegation results file — a leftover file would inject
+    # OFFSEC-003 boundary markers that break the assertion.
+    import executor_helpers
+    with patch.object(executor_helpers, "read_delegation_results", return_value=""):
+        await executor.execute(context, eq)
 
-    agent.astream_events.assert_called_once()
-    call_args = agent.astream_events.call_args
-    messages = call_args[0][0]["messages"]
-    assert messages[-1] == ("human", "Hello World")
+        agent.astream_events.assert_called_once()
+        call_args = agent.astream_events.call_args
+        messages = call_args[0][0]["messages"]
+        assert messages[-1] == ("human", "Hello World")
 
 
 @pytest.mark.asyncio

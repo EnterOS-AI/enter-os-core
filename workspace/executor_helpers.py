@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from _sanitize_a2a import sanitize_a2a_result  # noqa: E402
 from builtin_tools.security import _redact_secrets
 
 if TYPE_CHECKING:
@@ -204,12 +205,25 @@ def read_delegation_results() -> str:
         except json.JSONDecodeError:
             continue
         status = record.get("status", "?")
-        summary = record.get("summary", "")
-        preview = record.get("response_preview", "")
-        parts.append(f"- [{status}] {summary}")
-        if preview:
-            parts.append(f"  Response: {preview[:200]}")
-    return "\n".join(parts)
+        # Both summary and response_preview come from peer-supplied A2A response
+        # text (platform truncates to 80/200 bytes before writing). Sanitize
+        # BEFORE truncating so boundary markers embedded by a malicious peer
+        # are escaped before the 80/200-char limit cuts off any closing marker.
+        raw_summary = record.get("summary", "")
+        raw_preview = record.get("response_preview", "")
+        # sanitize_a2a_result wraps in boundary markers + escapes any markers
+        # already in the content (OFFSEC-003). After escaping, truncate to
+        # stay within the 80/200-char limits.
+        safe_summary = sanitize_a2a_result(raw_summary)[:80]
+        parts.append(f"- [{status}] {safe_summary}")
+        if raw_preview:
+            safe_preview = sanitize_a2a_result(raw_preview)[:200]
+            parts.append(f"  Response: {safe_preview}")
+    if not parts:
+        return ""
+    # OFFSEC-003: wrap in boundary markers to establish trust boundary
+    # so any content AFTER this block is clearly NOT from a peer.
+    return "[A2A_RESULT_FROM_PEER]\n" + "\n".join(parts) + "\n[/A2A_RESULT_FROM_PEER]"
 
 
 # ========================================================================
