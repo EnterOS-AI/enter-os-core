@@ -1,0 +1,262 @@
+name: Harness Replays
+
+# Ported from .github/workflows/harness-replays.yml on 2026-05-11 per RFC
+# internal#219 §1 sweep. Differences from the GitHub version:
+#   - Dropped `workflow_dispatch.inputs` (Gitea 1.22.6 parser rejects them
+#     per feedback_gitea_workflow_dispatch_inputs_unsupported).
+#   - Dropped `merge_group:` (no Gitea merge queue).
+#   - Dropped `environment:` blocks (Gitea has no environments).
+#   - Workflow-level env.GITHUB_SERVER_URL pinned per
+#     feedback_act_runner_github_server_url.
+#   - `continue-on-error: true` on each job (RFC §1 contract).
+#
+
+# Boots tests/harness (production-shape compose topology with TenantGuard,
+# /cp/* proxy, canvas proxy, real production Dockerfile.tenant) and runs
+# every replay under tests/harness/replays/. Fails the PR if any replay
+# fails.
+#
+# Why this exists: 2026-04-30 we shipped #2398 which added /buildinfo as
+# a public route in router.go but forgot to add it to TenantGuard's
+# allowlist. The handler-level test in buildinfo_test.go constructed a
+# minimal gin engine without TenantGuard — green. The harness's
+# buildinfo-stale-image.sh replay would have caught it (cf-proxy doesn't
+# inject X-Molecule-Org-Id, so the curl path is identical to production's
+# redeploy verifier), but no one ran the harness pre-merge. The bug
+# shipped; the redeploy verifier silently soft-warned every tenant as
+# "unreachable" for ~1 day before being noticed.
+#
+# This gate makes "did you actually run the harness?" a CI invariant
+# instead of a memory-discipline thing.
+#
+# Trigger model — match e2e-api.yml: always FIRES on push/pull_request
+# to staging+main, real work is gated per-step on detect-changes output.
+# One job → one check run → branch-protection-clean (the SKIPPED-in-set
+# trap from PR #2264 is documented in e2e-api.yml's e2e-api job comment).
+
+on:
+  push:
+    branches: [main, staging]
+    paths:
+      - 'workspace-server/**'
+      - 'canvas/**'
+      - 'tests/harness/**'
+      - '.gitea/workflows/harness-replays.yml'
+  pull_request:
+    branches: [main, staging]
+    paths:
+      - 'workspace-server/**'
+      - 'canvas/**'
+      - 'tests/harness/**'
+      - '.gitea/workflows/harness-replays.yml'
+concurrency:
+  # Per-SHA grouping. Per-ref kept hitting the auto-promote-staging
+  # cancellation deadlock — see e2e-api.yml's concurrency block for
+  # the 2026-04-28 incident that codified this pattern.
+  group: harness-replays-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    continue-on-error: true
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - id: decide
+        run: |
+          # workflow_dispatch: always run (manual trigger)
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "debug=manual-trigger" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Determine the base commit to diff against.
+          # For pull_request: use base.sha (the merge-base with main/staging).
+          # For push: use github.event.before (the previous tip of the branch).
+          # Fallback for new branches (all-zeros SHA): run everything.
+          if [ "${{ github.event_name }}" = "pull_request" ] && \
+             [ -n "${{ github.event.pull_request.base.sha }}" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          elif [ -n "${{ github.event.before }}" ] && \
+               ! echo "${{ github.event.before }}" | grep -qE '^0+$'; then
+            BASE="${{ github.event.before }}"
+          else
+            # New branch or github.event.before unavailable — run everything.
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "debug=new-branch-fallback" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # GitHub Actions and Gitea Actions both expose github.sha for HEAD.
+          DIFF=$(git diff --name-only "$BASE" "${{ github.sha }}" 2>/dev/null)
+          echo "debug=diff-base=$BASE diff-files=$DIFF" >> "$GITHUB_OUTPUT"
+
+          if echo "$DIFF" | grep -qE '^workspace-server/|^canvas/|^tests/harness/|^.gitea/workflows/harness-replays\.yml$'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ONE job that always runs. Real work is gated per-step on
+  # detect-changes.outputs.run so an unrelated PR (e.g. doc-only
+  # change to molecule-controlplane wired here later) emits the
+  # required check without spending CI cycles. Single-job pattern
+  # matches e2e-api.yml — see that workflow's comment for why a
+  # job-level `if: false` would block branch protection via the
+  # SKIPPED-in-set bug.
+  harness-replays:
+    needs: detect-changes
+    name: Harness Replays
+    runs-on: ubuntu-latest
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - name: No-op pass (paths filter excluded this commit)
+        if: needs.detect-changes.outputs.run != 'true'
+        run: |
+          echo "No workspace-server / canvas / tests/harness / workflow changes — Harness Replays gate satisfied without running."
+          echo "::notice::Harness Replays no-op pass (paths filter excluded this commit)."
+          echo "::notice::Debug: ${{ needs.detect-changes.outputs.debug }}"
+
+      - if: needs.detect-changes.outputs.run == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Log what files were detected so future failures include the diff.
+      - name: Log detected changes
+        if: needs.detect-changes.outputs.run == 'true'
+        run: |
+          echo "::notice::detect-changes debug: ${{ needs.detect-changes.outputs.debug }}"
+
+      # github-app-auth sibling-checkout removed 2026-05-07 (#157):
+      # the plugin was dropped + Dockerfile.tenant no longer COPYs it.
+
+      # Pre-clone manifest deps before docker compose builds the tenant
+      # image (Task #173 followup — same pattern as
+      # publish-workspace-server-image.yml's "Pre-clone manifest deps"
+      # step).
+      #
+      # Why pre-clone here too: tests/harness/compose.yml builds tenant-alpha
+      # and tenant-beta from workspace-server/Dockerfile.tenant with
+      # context=../.. (repo root). That Dockerfile expects
+      # .tenant-bundle-deps/{workspace-configs-templates,org-templates,plugins}
+      # to be present at build context root (post-#173 it COPYs from there
+      # instead of running an in-image clone — the in-image clone failed
+      # with "could not read Username for https://git.moleculesai.app"
+      # because there's no auth path inside the build sandbox).
+      #
+      # Without this step harness-replays fails before any replay runs,
+      # with `failed to calculate checksum of ref ...
+      # "/.tenant-bundle-deps/plugins": not found`. Caught by run #892
+      # (main, 2026-05-07T20:28:53Z) and run #964 (staging — same
+      # symptom, different root cause: staging still has the in-image
+      # clone path, hits the auth error directly).
+      #
+      # 2026-05-08 sub-finding (#192): the clone step ALSO fails when
+      # any referenced workspace-template repo is private and the
+      # AUTO_SYNC_TOKEN bearer (devops-engineer persona) lacks read
+      # access. Root cause: 5 of 9 workspace-template repos
+      # (openclaw, codex, crewai, deepagents, gemini-cli) had been
+      # marked private with no team grant. Resolution: flipped them
+      # to public per `feedback_oss_first_repo_visibility_default`
+      # (the OSS surface should be public). Layer-3 (customer-private +
+      # marketplace third-party repos) tracked separately in
+      # internal#102.
+      #
+      # Token shape matches publish-workspace-server-image.yml: AUTO_SYNC_TOKEN
+      # is the devops-engineer persona PAT, NOT the founder PAT (per
+      # `feedback_per_agent_gitea_identity_default`). clone-manifest.sh
+      # embeds it as basic-auth for the duration of the clones and strips
+      # .git directories — the token never enters the resulting image.
+      - name: Pre-clone manifest deps
+        if: needs.detect-changes.outputs.run == 'true'
+        env:
+          MOLECULE_GITEA_TOKEN: ${{ secrets.AUTO_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MOLECULE_GITEA_TOKEN}" ]; then
+            echo "::error::AUTO_SYNC_TOKEN secret is empty — register the devops-engineer persona PAT in repo Actions secrets"
+            exit 1
+          fi
+          mkdir -p .tenant-bundle-deps
+          bash scripts/clone-manifest.sh \
+            manifest.json \
+            .tenant-bundle-deps/workspace-configs-templates \
+            .tenant-bundle-deps/org-templates \
+            .tenant-bundle-deps/plugins
+          # Sanity-check counts so a silent partial clone fails fast
+          # instead of producing a half-empty image.
+          ws_count=$(find .tenant-bundle-deps/workspace-configs-templates -mindepth 1 -maxdepth 1 -type d | wc -l)
+          org_count=$(find .tenant-bundle-deps/org-templates -mindepth 1 -maxdepth 1 -type d | wc -l)
+          plugins_count=$(find .tenant-bundle-deps/plugins -mindepth 1 -maxdepth 1 -type d | wc -l)
+          echo "Cloned: ws=$ws_count org=$org_count plugins=$plugins_count"
+
+      - name: Install Python deps for replays
+        # peer-discovery-404 (and future replays) eval Python against the
+        # running tenant — importing workspace/a2a_client.py pulls in
+        # httpx. tests/harness/requirements.txt holds just the HTTP-client
+        # surface to keep CI install fast (~3s) vs the full
+        # workspace/requirements.txt (~30s).
+        if: needs.detect-changes.outputs.run == 'true'
+        run: pip install -r tests/harness/requirements.txt
+
+      - name: Run all replays against the harness
+        # run-all-replays.sh: boot via up.sh → seed via seed.sh → run
+        # every replays/*.sh → tear down via down.sh on EXIT (trap).
+        # Non-zero exit on any replay failure.
+        #
+        # KEEP_UP=1: without this, the script's trap-on-EXIT tears
+        # down containers immediately on failure, leaving the dump
+        # step below with nothing to dump (verified on PR #2410's
+        # first run — tenant became unhealthy, trap fired, dump
+        # step saw empty containers). Keeping them up lets the
+        # failure path collect tenant/cp-stub/cf-proxy logs. The
+        # always-run "Force teardown" step does the actual cleanup.
+        if: needs.detect-changes.outputs.run == 'true'
+        working-directory: tests/harness
+        env:
+          KEEP_UP: "1"
+        run: ./run-all-replays.sh
+
+      - name: Dump compose logs on failure
+        # SECRETS_ENCRYPTION_KEY: docker compose validates the entire compose
+        # file even for read-only `logs` calls. up.sh generates a per-run key
+        # and exports it to its OWN shell — this step runs in a fresh shell
+        # that wouldn't see it, so without a placeholder the validate step
+        # errors before logs print (verified against PR #2492's first run:
+        # "required variable SECRETS_ENCRYPTION_KEY is missing a value").
+        # A placeholder is fine — we're only reading log streams, not booting.
+        if: failure() && needs.detect-changes.outputs.run == 'true'
+        working-directory: tests/harness
+        env:
+          SECRETS_ENCRYPTION_KEY: dump-logs-placeholder
+        run: |
+          echo "=== docker compose ps ==="
+          docker compose -f compose.yml ps || true
+          echo "=== tenant-alpha logs ==="
+          docker compose -f compose.yml logs tenant-alpha || true
+          echo "=== tenant-beta logs ==="
+          docker compose -f compose.yml logs tenant-beta || true
+          echo "=== cp-stub logs ==="
+          docker compose -f compose.yml logs cp-stub || true
+          echo "=== cf-proxy logs ==="
+          docker compose -f compose.yml logs cf-proxy || true
+          echo "=== postgres-alpha logs (last 100) ==="
+          docker compose -f compose.yml logs --tail 100 postgres-alpha || true
+          echo "=== postgres-beta logs (last 100) ==="
+          docker compose -f compose.yml logs --tail 100 postgres-beta || true
+
+      - name: Force teardown
+        # We pass KEEP_UP=1 to run-all-replays.sh so the dump step
+        # above sees real containers — that means we own teardown
+        # explicitly here. Always run.
+        if: always() && needs.detect-changes.outputs.run == 'true'
+        working-directory: tests/harness
+        run: ./down.sh || true
