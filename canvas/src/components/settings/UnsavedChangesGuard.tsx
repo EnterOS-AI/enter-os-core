@@ -1,5 +1,6 @@
 'use client';
 
+import { useRef } from 'react';
 import * as AlertDialog from '@radix-ui/react-alert-dialog';
 
 interface UnsavedChangesGuardProps {
@@ -21,8 +22,22 @@ export function UnsavedChangesGuard({
   onKeepEditing,
   onDiscard,
 }: UnsavedChangesGuardProps) {
+  const pendingDiscard = useRef(false);
+
   return (
-    <AlertDialog.Root open={open} onOpenChange={(o) => { if (!o) onKeepEditing(); }}>
+    <AlertDialog.Root
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) {
+          if (pendingDiscard.current) {
+            pendingDiscard.current = false;
+            onDiscard();
+          } else {
+            onKeepEditing();
+          }
+        }
+      }}
+    >
       <AlertDialog.Portal>
         <AlertDialog.Overlay className="guard-dialog__overlay" />
         <AlertDialog.Content className="guard-dialog">
@@ -36,7 +51,13 @@ export function UnsavedChangesGuard({
               </button>
             </AlertDialog.Cancel>
             <AlertDialog.Action asChild>
-              <button type="button" className="guard-dialog__discard-btn">
+              <button
+                type="button"
+                className="guard-dialog__discard-btn"
+                onClick={() => {
+                  pendingDiscard.current = true;
+                }}
+              >
                 Discard
               </button>
             </AlertDialog.Action>
