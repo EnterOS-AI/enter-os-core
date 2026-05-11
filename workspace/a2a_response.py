@@ -194,7 +194,7 @@ def parse(data: Any) -> Variant:
             method,
             data.get("queue_id", "?"),
         )
-        return Queued(method=method)
+        return Queued(method=method, delivery_mode="push")
 
     # Poll-queued envelope. Both keys must be present — the workspace
     # server sets them together; if only one is present the body is
