@@ -40,10 +40,16 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true  # Never block on our own detector failing
     steps:
-      - name: Check out base branch (for the script)
+      - name: Check out PR branch (head) for the script
+        # NOTE: we intentionally check out the HEAD/PR branch here — not the base.
+        # This is required so that script fixes in PR branches (e.g. the self-loop
+        # exclusion in signal_6_ci) are actually used when evaluating that PR.
+        # Security: this job runs with continue-on-error: true and does not
+        # execute arbitrary PR code — it only runs the gate-check script which
+        # is read-only (API reads + JSON stdout).
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
-          ref: ${{ github.event.pull_request.base.sha || github.ref_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Run gate-check-v3 (single PR mode)
         if: github.event_name == 'pull_request_target' || github.event.inputs.pr_number != ''
