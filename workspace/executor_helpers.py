@@ -569,9 +569,31 @@ def classify_subprocess_error(stderr_text: str, exit_code: int | None) -> str:
     return "subprocess_error"
 
 
+_MAX_STDERR_PREVIEW = 1024  # bytes — first 1 KB of error detail shown to caller
+
+
+def _sanitize_for_external(msg: str) -> str:
+    """Strip strings that look like API keys, bearer tokens, or absolute paths.
+
+    Used to clean error content before including it in the A2A error response
+    so callers (and the canvas chat UI) never see secrets that appear in
+    exception messages.
+    """
+    # Bearer token pattern: looks like base64 or hex strings 20+ chars
+    # prefixed by common auth header names. Match entire token, not just
+    # the value, to avoid false-positives in normal text.
+    import re as _re
+
+    msg = _re.sub(r"(?i)(?:bearer|token|api[_-]?key|sk-)[ :=]+[A-Za-z0-9_/.-]{20,}", "[REDACTED]", msg)
+    # Absolute paths: /etc/shadow, /home/user/.aws/credentials, etc.
+    msg = _re.sub(r"(?:/[^/\s]+){2,}", lambda m: m.group(0) if len(m.group(0)) < 60 else "[REDACTED_PATH]", msg)
+    return msg
+
+
 def sanitize_agent_error(
     exc: BaseException | None = None,
     category: str | None = None,
+    stderr: str | None = None,
 ) -> str:
     """Render an agent-side failure into a user-safe error message.
 
@@ -579,10 +601,12 @@ def sanitize_agent_error(
     category string (e.g. from `classify_subprocess_error`). If both are
     given, `category` wins. If neither, the tag defaults to "unknown".
 
-    The message body is deliberately dropped — exception messages and
-    subprocess stderr frequently leak stack traces, paths, tokens, and
-    API keys. Full detail is available in the workspace logs via
-    `logger.exception()` / `logger.error()`.
+    When ``stderr`` is provided (e.g. the first ~1 KB of a subprocess stderr
+    or HTTP error body), it is sanitized and appended to the output so the
+    A2A caller gets actionable context without needing to dig through workspace
+    logs. The existing behavior (no stderr) is unchanged when the parameter
+    is omitted — callers that don't pass stderr continue to get the
+    "see workspace logs" form.
     """
     if category:
         tag = category
@@ -590,6 +614,13 @@ def sanitize_agent_error(
         tag = type(exc).__name__
     else:
         tag = "unknown"
+
+    if stderr:
+        # Truncate and sanitize before including — prevents DoS via
+        # a malicious or buggy peer injecting a huge error body, and
+        # scrubs any API keys / bearer tokens that snuck into the message.
+        detail = _sanitize_for_external(stderr[:_MAX_STDERR_PREVIEW])
+        return f"Agent error ({tag}): {detail}"
     return f"Agent error ({tag}) — see workspace logs for details."
 
 

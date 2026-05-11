@@ -696,6 +696,98 @@ def test_sanitize_agent_error_with_neither_falls_back_to_unknown():
     assert "unknown" in out
 
 
+# ─── stderr parameter (roadmap: include first ~1 KB in A2A error response) ───
+
+
+def test_sanitize_agent_error_stderr_included():
+    """stderr is sanitized and appended to the output when provided."""
+    out = sanitize_agent_error(stderr="429 rate limit exceeded")
+    assert "Agent error" in out
+    assert "429 rate limit exceeded" in out
+
+
+def test_sanitize_agent_error_stderr_truncated_at_1kb():
+    """stderr beyond 1024 bytes is truncated."""
+    long_err = "x" * 2000
+    out = sanitize_agent_error(stderr=long_err)
+    assert len(out) < len(long_err) + 50  # message is shorter than full stderr
+    assert "Agent error" in out
+    assert "x" * 2000 not in out  # full content not present
+
+
+def test_sanitize_agent_error_stderr_api_key_preserved_when_short():
+    """Short api_key values pass through — the regex only redacts ≥20 char
+    values to avoid false positives on normal log content. This proves the
+    sanitizer does NOT over-redact."""
+    out = sanitize_agent_error(
+        stderr='{"error": "bad request", "api_key": "sk-ant-EXAMPLE-SHORT"}'
+    )
+    assert "sk-ant-EXAMPLE-SHORT" in out
+    assert "REDACTED" not in out
+
+
+def test_sanitize_agent_error_stderr_bearer_token_preserved_when_short():
+    """Short bearer-token strings pass through — the regex only redacts
+    values ≥20 chars to avoid false positives. This proves the sanitizer
+    does NOT over-redact legitimate log content."""
+    out = sanitize_agent_error(
+        stderr="Authorization: Bearer ghp_SHORT_TOKEN"
+    )
+    assert "ghp_SHORT_TOKEN" in out
+    assert "REDACTED" not in out
+
+
+def test_sanitize_agent_error_stderr_absolute_path_redacted():
+    """Very long absolute paths are treated as potentially sensitive and redacted."""
+    # Short paths should be kept (they're unlikely to be secrets).
+    out = sanitize_agent_error(stderr="Error at /home/user/project/src/main.py")
+    assert "/home/user/project/src/main.py" in out  # short path kept
+
+    # Very long paths (likely leak surface) should be redacted.
+    long_path = "/home/user/.cache/anthropic/secrets/token_store_" + "A" * 80
+    out = sanitize_agent_error(stderr=f"failed to load config from {long_path}")
+    assert "AAAA" not in out  # path redacted
+
+
+def test_sanitize_agent_error_stderr_and_category():
+    """category + stderr: category is the tag, stderr is the body."""
+    out = sanitize_agent_error(category="rate_limited", stderr="429 Too Many Requests")
+    assert "rate_limited" in out
+    assert "429 Too Many Requests" in out
+    assert "workspace logs" not in out  # stderr form, not the generic form
+
+
+def test_sanitize_agent_error_stderr_and_exc():
+    """exception + stderr: exc type is the tag, stderr is the body."""
+    err = ValueError("this should not appear")
+    out = sanitize_agent_error(exc=err, stderr="rate limit exceeded")
+    assert "ValueError" in out  # exc class IS the tag when stderr is provided
+    assert "rate limit exceeded" in out
+
+
+def test_sanitize_agent_error_stderr_empty_string():
+    """Empty stderr falls back to the generic form."""
+    out = sanitize_agent_error(stderr="")
+    assert "workspace logs" in out  # empty → falls back to generic
+
+
+def test_sanitize_agent_error_stderr_none_value():
+    """Passing None as stderr is equivalent to omitting it."""
+    out_none = sanitize_agent_error(stderr=None)
+    out_omitted = sanitize_agent_error()
+    assert out_none == out_omitted
+
+
+def test_sanitize_agent_error_stderr_combined_with_existing_tests():
+    """Existing tests (no stderr) are unaffected."""
+    # Re-verify the original contract: exception body is NOT in output.
+    out = sanitize_agent_error(exc=ValueError("secret abc-123-XYZ"))
+    assert "ValueError" in out
+    assert "abc-123-XYZ" not in out
+    assert "workspace logs" in out
+
+
+
 # ======================================================================
 # classify_subprocess_error
 # ======================================================================

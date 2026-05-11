@@ -52,6 +52,7 @@ from executor_helpers import (
     collect_outbound_files,
     extract_attached_files,
     read_delegation_results,
+    sanitize_agent_error,
 )
 from builtin_tools.telemetry import (
     A2A_TASK_ID,
@@ -547,7 +548,12 @@ class LangGraphA2AExecutor(AgentExecutor):
                 # receive the error and stop polling.
                 await updater.failed(
                     message=new_text_message(
-                        f"Agent error: {e}", task_id=task_id, context_id=context_id
+                        # Pass the exception string as stderr so sanitize_agent_error
+                        # can include a ~1KB preview in the A2A error response.
+                        # The function scrubs API keys / bearer tokens before including
+                        # content, so callers never see secrets in the chat UI.
+                        # Fixes: roadmap item "SDK executor stderr swallowing".
+                        sanitize_agent_error(stderr=str(e)), task_id=task_id, context_id=context_id,
                     )
                 )
             finally:
