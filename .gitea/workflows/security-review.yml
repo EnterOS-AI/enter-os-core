@@ -1,0 +1,67 @@
+# security-review — non-author APPROVE from the `security` Gitea team
+# required to merge.
+#
+# RFC#324 Step 1 of 5 (workflow-add). Mirror of `qa-review.yml`; differs
+# only in TEAM=security, TEAM_ID=21, and the slash-command name.
+#
+# See `qa-review.yml` header for the full A1-α / A1.1 / A4 / A5 design
+# rationale; everything below is identical in shape.
+
+name: security-review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  approved:
+    # See qa-review.yml header for full A1-α / A1.1 (v1.3 — informational
+    # log only, NOT a gate) / A4 / A5 design rationale.
+    if: |
+      github.event_name == 'pull_request_target' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request != null &&
+       startsWith(github.event.comment.body, '/security-recheck'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Privilege check (A1.1 — INFORMATIONAL log only, NOT a gate)
+        # RFC#324 v1.3 §A1.1: does NOT gate subsequent steps. See
+        # qa-review.yml for full rationale. Eval is read-only/idempotent
+        # so re-running on a non-collaborator comment is harmless.
+        if: github.event_name == 'issue_comment'
+        env:
+          GITEA_TOKEN: ${{ secrets.RFC_324_TEAM_READ_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          login="${{ github.event.comment.user.login }}"
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: token ${GITEA_TOKEN}" \
+            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/collaborators/${login}")
+          if [ "$code" = "204" ]; then
+            echo "::notice::Recheck from ${login} (collaborator=true)"
+          else
+            echo "::notice::Recheck from ${login} (collaborator=false, HTTP ${code}) — proceeding with read-only eval anyway"
+          fi
+
+      - name: Check out BASE ref (A4 — never PR-head)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Evaluate security-review
+        env:
+          GITEA_TOKEN: ${{ secrets.RFC_324_TEAM_READ_TOKEN || secrets.GITHUB_TOKEN }}
+          GITEA_HOST: git.moleculesai.app
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          TEAM: security
+          TEAM_ID: '21'
+          REVIEW_CHECK_DEBUG: '0'
+          REVIEW_CHECK_STRICT: '0'
+        run: bash .gitea/scripts/review-check.sh
