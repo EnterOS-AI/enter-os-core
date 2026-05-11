@@ -52,7 +52,12 @@ env:
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest
+    # NOTE: infra-sre must register a `docker` label on every act-runner that
+    # mounts /var/run/docker.sock (group=docker, socket perms 660+). Jobs without
+    # the `docker` label land on runners that lack the socket and fail here.
+    # molecule-runner-1 (no socket) vs molecule-runner-4 (socket) — coin-flip
+    # without this label gate.  See issue #576.
+    runs-on: [ubuntu-latest, docker]
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -68,8 +73,10 @@ jobs:
         run: |
           set -euo pipefail
           echo "::group::Docker daemon health check"
+          echo "Runner: ${HOSTNAME:-unknown}"
           docker info 2>&1 | head -5 || {
             echo "::error::Docker daemon is not accessible at /var/run/docker.sock"
+            echo "::error::Runner: ${HOSTNAME:-unknown}"
             echo "::error::Check: (1) daemon is running, (2) runner user is in docker group, (3) sock permissions are 660+"
             exit 1
           }
