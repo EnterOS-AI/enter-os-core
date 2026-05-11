@@ -346,7 +346,7 @@ func (g *gitFetcher) Fetch(ctx context.Context, rootDir, host, repoPath, ref str
 	// MkdirTemp creates the dir; git clone refuses to clone into a
 	// non-empty dir. Remove + recreate empty.
 	os.RemoveAll(tmpDir)
-	cloneAndConfig := append(gitArgs("clone", "--quiet", "--depth=1", "-b", ref, cloneURL, tmpDir))
+	cloneAndConfig := gitArgs("clone", "--quiet", "--depth=1", "-b", ref, cloneURL, tmpDir)
 	cmd := exec.CommandContext(ctx, "git", cloneAndConfig...)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
