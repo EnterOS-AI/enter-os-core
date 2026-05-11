@@ -2018,6 +2018,131 @@ func TestLogA2ASuccess_ErrorStatus(t *testing.T) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// logA2ADelegationResult — fix #376: proxy-path delegation results
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestLogA2ADelegationResult_Smoke verifies that a successful delegation result
+// fires an INSERT with activity_type='delegation', method='delegate_result',
+// and status='completed'. The response text is extracted from result.data.text.
+func TestLogA2ADelegationResult_Smoke(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	handler := NewWorkspaceHandler(newTestBroadcaster(), nil, "http://localhost:8080", t.TempDir())
+
+	// logA2ADelegationResult has no SELECT for workspace name (unlike logA2ASuccess).
+	// It fires the INSERT directly in a goroutine.
+	mock.ExpectExec(`^INSERT INTO activity_logs`).
+		WithArgs(
+			"ws-caller",                  // workspace_id  ($1)
+			"ws-caller",                  // source_id     ($2)
+			"ws-target",                  // target_id     ($3)
+			"Delegation completed",       // summary       ($4)
+			sqlmock.AnyArg(),             // request_body  ($5)
+			sqlmock.AnyArg(),             // response_body ($6)
+			"completed",                  // status        ($7)
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	handler.logA2ADelegationResult(
+		context.Background(),
+		"ws-caller", "ws-target",
+		[]byte(`{"method":"delegate_task","params":{"data":{"delegation_id":"del-abc123"}}}`),
+		[]byte(`{"jsonrpc":"2.0","id":"1","result":{"data":{"text":"the answer"}}}`),
+		200,
+	)
+	time.Sleep(80 * time.Millisecond)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestLogA2ADelegationResult_FailedStatus verifies that a 4xx/5xx response
+// from the target is recorded with status='failed' and summary='Delegation failed'.
+func TestLogA2ADelegationResult_FailedStatus(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	handler := NewWorkspaceHandler(newTestBroadcaster(), nil, "http://localhost:8080", t.TempDir())
+
+	mock.ExpectExec(`^INSERT INTO activity_logs`).
+		WithArgs(
+			"ws-a", "ws-a", "ws-b",
+			"Delegation failed",
+			sqlmock.AnyArg(),
+			sqlmock.AnyArg(),
+			"failed",
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	handler.logA2ADelegationResult(
+		context.Background(),
+		"ws-a", "ws-b",
+		[]byte(`{"method":"delegate_task","params":{"data":{"delegation_id":"del-xyz"}}}`),
+		[]byte(`{"jsonrpc":"2.0","id":"2","error":{"code":-32600,"message":"bad request"}}`),
+		400,
+	)
+	time.Sleep(80 * time.Millisecond)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestLogA2ADelegationResult_NoDelegationID skips the INSERT when the
+// request body carries no delegation_id (logically impossible but defensive).
+func TestLogA2ADelegationResult_NoDelegationID(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	handler := NewWorkspaceHandler(newTestBroadcaster(), nil, "http://localhost:8080", t.TempDir())
+
+	// No ExpectExec — the function must return early without any DB write.
+
+	handler.logA2ADelegationResult(
+		context.Background(),
+		"ws-x", "ws-y",
+		[]byte(`{"method":"delegate_task","params":{"data":{}}}`),
+		[]byte(`{}`),
+		200,
+	)
+	time.Sleep(80 * time.Millisecond)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unexpected DB call: %v", err)
+	}
+}
+
+// TestLogA2ADelegationResult_TextFromResultText verifies that when the
+// response text lives at result.text (flat JSON-RPC), it is still captured.
+func TestLogA2ADelegationResult_TextFromResultText(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	handler := NewWorkspaceHandler(newTestBroadcaster(), nil, "http://localhost:8080", t.TempDir())
+
+	mock.ExpectExec(`^INSERT INTO activity_logs`).
+		WithArgs(
+			"ws-1", "ws-1", "ws-2",
+			"Delegation completed",
+			sqlmock.AnyArg(),
+			sqlmock.AnyArg(),
+			"completed",
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	handler.logA2ADelegationResult(
+		context.Background(),
+		"ws-1", "ws-2",
+		[]byte(`{"method":"delegate_task","params":{"data":{"delegation_id":"del-flat"}}}`),
+		[]byte(`{"jsonrpc":"2.0","id":"3","result":{"text":"flat response"}}`),
+		200,
+	)
+	time.Sleep(80 * time.Millisecond)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // A2A auto-wake: hibernated workspace (#711)
 // ──────────────────────────────────────────────────────────────────────────────
 
