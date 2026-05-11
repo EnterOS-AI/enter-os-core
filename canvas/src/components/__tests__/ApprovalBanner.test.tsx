@@ -41,6 +41,10 @@ const pendingApproval = (id = "a1", workspaceId = "ws-1"): {
   created_at: "2026-05-10T10:00:00Z",
 });
 
+// Shared spy reference so individual tests can call mockGet.mockRestore()
+// without needing to pass it through beforeEach → it scope chain.
+let mockGet: ReturnType<typeof vi.spyOn>;
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("ApprovalBanner — empty state", () => {
@@ -71,7 +75,7 @@ describe("ApprovalBanner — empty state", () => {
 describe("ApprovalBanner — renders approval cards", () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    vi.spyOn(api, "get").mockResolvedValueOnce([
+    mockGet = vi.spyOn(api, "get").mockResolvedValueOnce([
       pendingApproval("a1"),
       pendingApproval("a2", "ws-2"),
     ]);
@@ -87,6 +91,7 @@ describe("ApprovalBanner — renders approval cards", () => {
     await act(async () => { await vi.runOnlyPendingTimersAsync(); });
     const alerts = screen.getAllByRole("alert");
     expect(alerts).toHaveLength(2);
+    mockGet.mockRestore();
   });
 
   it("displays the workspace name and action text", async () => {
