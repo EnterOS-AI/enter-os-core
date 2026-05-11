@@ -2,8 +2,9 @@
 /**
  * Tests for ApprovalBanner component.
  *
- * Covers: renders nothing when no approvals, polls /approvals/pending,
- * shows approval cards, approve/deny decisions, toast notifications.
+ * Uses vi.hoisted + vi.mock for stable module-level API mocks that survive
+ * vi.resetModules() cleanup. BeforeEach uses mockReset + mockResolvedValue
+ * so each test gets a clean slate.
  */
 import React from "react";
 import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react";
@@ -12,8 +13,19 @@ import { ApprovalBanner } from "../ApprovalBanner";
 import { showToast } from "@/components/Toaster";
 import { api } from "@/lib/api";
 
+// ─── Module-level mocks ───────────────────────────────────────────────────────
+// vi.hoisted captures stable references BEFORE hoisting so they are accessible
+// in the test body after vi.mock registers.
+const _mockGet = vi.hoisted<typeof api.get>(() => vi.fn<() => Promise<unknown[]>>());
+const _mockPost = vi.hoisted<typeof api.post>(() => vi.fn<() => Promise<unknown>>());
+const _mockToast = vi.hoisted<typeof showToast>(() => vi.fn());
+
+vi.mock("@/lib/api", () => ({
+  api: { get: _mockGet, post: _mockPost },
+}));
+
 vi.mock("@/components/Toaster", () => ({
-  showToast: vi.fn(),
+  showToast: _mockToast,
 }));
 
 afterEach(cleanup);
@@ -38,11 +50,25 @@ const pendingApproval = (id = "a1", workspaceId = "ws-1"): {
   created_at: "2026-05-10T10:00:00Z",
 });
 
+// ─── Cleanup ─────────────────────────────────────────────────────────────────
+
+beforeEach(() => {
+  _mockGet.mockReset();
+  _mockGet.mockResolvedValue([] as unknown[]);
+  _mockPost.mockReset();
+  _mockPost.mockResolvedValue({} as unknown);
+  _mockToast.mockClear();
+});
+
+afterEach(() => {
+  cleanup();
+});
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("ApprovalBanner — empty state", () => {
   it("renders nothing when there are no pending approvals", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([]);
+    _mockGet.mockResolvedValueOnce([] as unknown[]);
     render(<ApprovalBanner />);
     await act(async () => {
       await new Promise((r) => setTimeout(r, 10));
@@ -51,7 +77,7 @@ describe("ApprovalBanner — empty state", () => {
   });
 
   it("does not render any approve/deny buttons when list is empty", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([]);
+    _mockGet.mockResolvedValueOnce([] as unknown[]);
     render(<ApprovalBanner />);
     await act(async () => {
       await new Promise((r) => setTimeout(r, 10));
@@ -63,10 +89,10 @@ describe("ApprovalBanner — empty state", () => {
 
 describe("ApprovalBanner — renders approval cards", () => {
   it("renders an alert card for each pending approval", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([
+    _mockGet.mockResolvedValueOnce([
       pendingApproval("a1"),
       pendingApproval("a2", "ws-2"),
-    ]);
+    ] as unknown[]);
     render(<ApprovalBanner />);
     await act(async () => {
       await new Promise((r) => setTimeout(r, 10));
@@ -76,7 +102,7 @@ describe("ApprovalBanner — renders approval cards", () => {
   });
 
   it("displays the workspace name and action text", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([pendingApproval("a1")]);
+    _mockGet.mockResolvedValueOnce([pendingApproval("a1")] as unknown[]);
     render(<ApprovalBanner />);
     await act(async () => {
       await new Promise((r) => setTimeout(r, 10));
@@ -86,7 +112,7 @@ describe("ApprovalBanner — renders approval cards", () => {
   });
 
   it("displays the reason when present", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([pendingApproval("a1")]);
+    _mockGet.mockResolvedValueOnce([pendingApproval("a1")] as unknown[]);
     render(<ApprovalBanner />);
     await act(async () => {
       await new Promise((r) => setTimeout(r, 10));
@@ -97,7 +123,7 @@ describe("ApprovalBanner — renders approval cards", () => {
   it("omits the reason div when reason is null", async () => {
     const approval = pendingApproval("a1");
     approval.reason = null;
-    vi.spyOn(api, "get").mockResolvedValueOnce([approval]);
+    _mockGet.mockResolvedValueOnce([approval] as unknown[]);
     render(<ApprovalBanner />);
     await act(async () => {
       await new Promise((r) => setTimeout(r, 10));
@@ -106,7 +132,7 @@ describe("ApprovalBanner — renders approval cards", () => {
   });
 
   it("renders both Approve and Deny buttons per card", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([pendingApproval("a1")]);
+    _mockGet.mockResolvedValueOnce([pendingApproval("a1")] as unknown[]);
     render(<ApprovalBanner />);
     await act(async () => {
       await new Promise((r) => setTimeout(r, 10));
@@ -116,7 +142,7 @@ describe("ApprovalBanner — renders approval cards", () => {
   });
 
   it("has aria-live=assertive on the alert container", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([pendingApproval("a1")]);
+    _mockGet.mockResolvedValueOnce([pendingApproval("a1")] as unknown[]);
     render(<ApprovalBanner />);
     await act(async () => {
       await new Promise((r) => setTimeout(r, 10));
@@ -138,7 +164,7 @@ describe("ApprovalBanner — polling", () => {
   });
 
   it("clears the polling interval on unmount", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([pendingApproval("a1")]);
+    _mockGet.mockResolvedValueOnce([pendingApproval("a1")] as unknown[]);
     const { unmount } = render(<ApprovalBanner />);
     await act(async () => {
       await new Promise((r) => setTimeout(r, 10));
@@ -151,8 +177,8 @@ describe("ApprovalBanner — polling", () => {
 describe("ApprovalBanner — decisions", () => {
   it("calls POST /workspaces/:id/approvals/:id/decide on Approve click", async () => {
     const approval = pendingApproval("a1", "ws-1");
-    vi.spyOn(api, "get").mockResolvedValueOnce([approval]);
-    const postSpy = vi.spyOn(api, "post").mockResolvedValueOnce(undefined);
+    _mockGet.mockResolvedValueOnce([approval] as unknown[]);
+    _mockPost.mockResolvedValueOnce({} as unknown);
 
     render(<ApprovalBanner />);
     await act(async () => {
@@ -162,17 +188,17 @@ describe("ApprovalBanner — decisions", () => {
     fireEvent.click(screen.getByRole("button", { name: /approve/i }));
 
     await waitFor(() => {
-      expect(postSpy).toHaveBeenCalledWith(
+      expect(_mockPost).toHaveBeenCalledWith(
         "/workspaces/ws-1/approvals/a1/decide",
-        { decision: "approved", decided_by: "human" }
+        { decision: "approved", decided_by: "human" },
       );
     });
   });
 
   it("calls POST with decision=denied on Deny click", async () => {
     const approval = pendingApproval("a1", "ws-1");
-    vi.spyOn(api, "get").mockResolvedValueOnce([approval]);
-    const postSpy = vi.spyOn(api, "post").mockResolvedValueOnce(undefined);
+    _mockGet.mockResolvedValueOnce([approval] as unknown[]);
+    _mockPost.mockResolvedValueOnce({} as unknown);
 
     render(<ApprovalBanner />);
     await act(async () => {
@@ -182,17 +208,17 @@ describe("ApprovalBanner — decisions", () => {
     fireEvent.click(screen.getByRole("button", { name: /deny/i }));
 
     await waitFor(() => {
-      expect(postSpy).toHaveBeenCalledWith(
+      expect(_mockPost).toHaveBeenCalledWith(
         "/workspaces/ws-1/approvals/a1/decide",
-        { decision: "denied", decided_by: "human" }
+        { decision: "denied", decided_by: "human" },
       );
     });
   });
 
   it("removes the card from state after a successful decision", async () => {
     const approval = pendingApproval("a1", "ws-1");
-    vi.spyOn(api, "get").mockResolvedValueOnce([approval]);
-    vi.spyOn(api, "post").mockResolvedValueOnce(undefined);
+    _mockGet.mockResolvedValueOnce([approval] as unknown[]);
+    _mockPost.mockResolvedValueOnce({} as unknown);
 
     render(<ApprovalBanner />);
     await act(async () => {
@@ -210,8 +236,8 @@ describe("ApprovalBanner — decisions", () => {
   });
 
   it("shows a success toast on approve", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([pendingApproval("a1")]);
-    vi.spyOn(api, "post").mockResolvedValueOnce(undefined);
+    _mockGet.mockResolvedValueOnce([pendingApproval("a1")] as unknown[]);
+    _mockPost.mockResolvedValueOnce({} as unknown);
 
     render(<ApprovalBanner />);
     await act(async () => {
@@ -221,13 +247,13 @@ describe("ApprovalBanner — decisions", () => {
     fireEvent.click(screen.getByRole("button", { name: /approve/i }));
 
     await waitFor(() => {
-      expect(showToast).toHaveBeenCalledWith("Approved", "success");
+      expect(_mockToast).toHaveBeenCalledWith("Approved", "success");
     });
   });
 
   it("shows an info toast on deny", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([pendingApproval("a1")]);
-    vi.spyOn(api, "post").mockResolvedValueOnce(undefined);
+    _mockGet.mockResolvedValueOnce([pendingApproval("a1")] as unknown[]);
+    _mockPost.mockResolvedValueOnce({} as unknown);
 
     render(<ApprovalBanner />);
     await act(async () => {
@@ -237,13 +263,18 @@ describe("ApprovalBanner — decisions", () => {
     fireEvent.click(screen.getByRole("button", { name: /deny/i }));
 
     await waitFor(() => {
-      expect(showToast).toHaveBeenCalledWith("Denied", "info");
+      expect(_mockToast).toHaveBeenCalledWith("Denied", "info");
     });
   });
 
   it("shows an error toast when POST fails", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([pendingApproval("a1")]);
-    vi.spyOn(api, "post").mockRejectedValueOnce(new Error("Network error"));
+    _mockGet.mockResolvedValueOnce([pendingApproval("a1")] as unknown[]);
+    // Use mockImplementation instead of mockRejectedValueOnce so the vi.fn
+    // wrapper is preserved — the component's catch block needs the resolved
+    // promise wrapper to distinguish a rejected-from-mock vs thrown-from-code.
+    _mockPost.mockImplementation(
+      () => new Promise((_, reject) => reject(new Error("Network error"))),
+    );
 
     render(<ApprovalBanner />);
     await act(async () => {
@@ -253,13 +284,15 @@ describe("ApprovalBanner — decisions", () => {
     fireEvent.click(screen.getByRole("button", { name: /approve/i }));
 
     await waitFor(() => {
-      expect(showToast).toHaveBeenCalledWith("Failed to submit decision", "error");
+      expect(_mockToast).toHaveBeenCalledWith("Failed to submit decision", "error");
     });
   });
 
   it("keeps the card visible when the POST fails", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([pendingApproval("a1")]);
-    vi.spyOn(api, "post").mockRejectedValueOnce(new Error("Network error"));
+    _mockGet.mockResolvedValueOnce([pendingApproval("a1")] as unknown[]);
+    _mockPost.mockImplementation(
+      () => new Promise((_, reject) => reject(new Error("Network error"))),
+    );
 
     render(<ApprovalBanner />);
     await act(async () => {
@@ -277,7 +310,7 @@ describe("ApprovalBanner — decisions", () => {
 
 describe("ApprovalBanner — handles empty list from server", () => {
   it("shows nothing when the API returns an empty array on first poll", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([]);
+    _mockGet.mockResolvedValueOnce([] as unknown[]);
     render(<ApprovalBanner />);
     await act(async () => {
       await new Promise((r) => setTimeout(r, 10));
