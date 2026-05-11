@@ -34,7 +34,7 @@ name: Harness Replays
 # One job → one check run → branch-protection-clean (the SKIPPED-in-set
 # trap from PR #2264 is documented in e2e-api.yml's e2e-api job comment).
 
-on:
+"on":
   push:
     branches: [main, staging]
     paths:
@@ -68,36 +68,15 @@ jobs:
       run: ${{ steps.decide.outputs.run }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Fetch base branch tip for diff
-        continue-on-error: true
-        run: |
-          # With the default fetch-depth: 1, actions/checkout only fetches the
-          # PR head commit. The base commit is NOT in the local history, so
-          # `git diff "$BASE" "$GITHUB_SHA"` fails. Fetch the base branch at
-          # depth 1 — the base commit is the immediate parent of the PR head
-          # on the base branch, so depth=1 is sufficient.
-          #
-          # Network: Gitea Actions runner (5.78.80.188) cannot reach the git
-          # remote over HTTPS (confirmed: git fetch times out at ~15s). The runner
-          # is on the same host as Gitea, but the container network namespace
-          # cannot reach the Gitea HTTPS endpoint.
-          #
-          # Fallback: if the base commit does not exist locally, skip the diff
-          # and set run=true (always run harness). This is safe: PRs where the
-          # base is unavailable still run the harness (correct), PRs where the
-          # base IS available get the correct path-based diff.
-          #
-          # Timeout: 20s. If the fetch completes, great. If it times out, the
-          # step exits non-zero and we fall through to run=true.
-          if timeout 20 git fetch origin "${{ github.event.pull_request.base.ref }}" --depth=1; then
-            echo "::notice::base branch fetched successfully"
-          else
-            echo "::warning::git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1 timed out"
-            echo "::warning::Skipping diff — detect-changes will run the harness unconditionally."
-          fi
+        with:
+          # Shallow clone — we use the Gitea Compare API for changed-file
+          # detection, not local git diff. The base SHA is supplied via
+          # GitHub event variables, so no local history is needed.
+          fetch-depth: 1
       - id: decide
-        continue-on-error: true
         run: |
+          set -euo pipefail
+
           # workflow_dispatch: always run (manual trigger)
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
@@ -105,16 +84,21 @@ jobs:
             exit 0
           fi
 
-          # Determine the base commit to diff against.
-          # For pull_request: use base.sha (the merge-base with main/staging).
-          # For push: use github.event.before (the previous tip of the branch).
-          # Fallback for new branches (all-zeros SHA): run everything.
-          if [ "${{ github.event_name }}" = "pull_request" ] && \
-             [ -n "${{ github.event.pull_request.base.sha }}" ]; then
-            BASE="${{ github.event.pull_request.base.sha }}"
+          # Determine base and head refs for the Compare API call.
+          # Gitea Compare API requires branch/tag names (SHAs return BaseNotExist).
+          # Pull request: base.ref + head.ref are in the event payload.
+          # Push: github.ref → extract branch name for the Compare API.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.ref }}"
+            HEAD="${{ github.event.pull_request.head.ref }}"
           elif [ -n "${{ github.event.before }}" ] && \
                ! echo "${{ github.event.before }}" | grep -qE '^0+$'; then
-            BASE="${{ github.event.before }}"
+            # Extract branch name from refs/heads/main -> main
+            BASE_REF="${GITHUB_REF#refs/heads/}"
+            BASE_REF="${BASE_REF:-main}"
+            HEAD_REF="${GITHUB_REF#refs/heads/}"
+            BASE="$BASE_REF"
+            HEAD="$HEAD_REF"
           else
             # New branch or github.event.before unavailable — run everything.
             echo "run=true" >> "$GITHUB_OUTPUT"
@@ -122,17 +106,28 @@ jobs:
             exit 0
           fi
 
-          # GitHub Actions and Gitea Actions both expose github.sha for HEAD.
-          # git diff exits 1 when BASE is not in local history (e.g. shallow
-          # checkout where the base commit was never fetched). Capture and
-          # swallow that exit code — the empty diff means "run everything".
-          # The runner network cannot reach the git remote (confirmed: git fetch
-          # times out at ~15s), so a failed fetch is expected and we always fall
-          # through to the unconditional run=true below.
-          DIFF=$(git diff --name-only "$BASE" "${{ github.sha }}" 2>/dev/null) || true
-          echo "debug=diff-base=$BASE diff-files=$DIFF" >> "$GITHUB_OUTPUT"
+          # Call Gitea Compare API to get the list of changed files.
+          # This is a Gitea-to-Gitea API call from within the Gitea Actions
+          # runner — it hits the local Gitea process, not the external network.
+          # No git network access needed from the runner container
+          # (runbooks/gitea-operational-quirks.md §runner-network-isolation).
+          #
+          # API shape: GET /repos/{owner}/{repo}/compare/{base}...{head}
+          # Returns { commits: [{ files: [{filename}] }] } — files are
+          # nested inside commits (Gitea quirk, not at top level).
+          RESP=$(curl -sS --fail --max-time 30 \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/json" \
+            "$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD")
+          # compare-api-diff-files.py: extracts filenames from Gitea Compare API
+          # JSON. Script extracted from workflow to avoid YAML parser choking on
+          # nested Python indentation (pyyaml safe_load interprets it as YAML
+          # structure). See runbooks/gitea-operational-quirks.md §large-repo-fetch.
+          DIFF_FILES=$(echo "$RESP" | bash .gitea/scripts/compare-api-diff-files.py 2>/dev/null || true)
 
-          if echo "$DIFF" | grep -qE '^workspace-server/|^canvas/|^tests/harness/|^.gitea/workflows/harness-replays\.yml$'; then
+          echo "debug=diff-base=$BASE diff-files=$DIFF_FILES" >> "$GITHUB_OUTPUT"
+
+          if echo "$DIFF_FILES" | grep -qE '^workspace-server/|^canvas/|^tests/harness/|^.gitea/workflows/harness-replays\.yml$'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
