@@ -10,9 +10,15 @@ import { render, screen, fireEvent, cleanup, act } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { Tooltip } from "../Tooltip";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 describe("Tooltip — render", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
   it("renders children without showing tooltip on mount", () => {
     render(
       <Tooltip text="Hello world">
@@ -225,11 +231,12 @@ describe("Tooltip — aria-describedby", () => {
         <button type="button">Hover me</button>
       </Tooltip>
     );
+    // The aria-describedby is on the wrapper div, not the button child
     const btn = screen.getByRole("button");
-    const describedBy = btn.getAttribute("aria-describedby");
+    const wrapper = btn.parentElement as HTMLElement;
+    const describedBy = wrapper.getAttribute("aria-describedby");
     expect(describedBy).toBeTruthy();
     // The describedby id matches the tooltip id
-    const tooltipId = describedBy!.replace(/.*?:\s*/, "");
-    expect(document.getElementById(tooltipId)).toBeTruthy();
+    expect(document.getElementById(describedBy!)).toBeTruthy();
   });
 });

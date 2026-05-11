@@ -70,6 +70,7 @@ export function KeyValueField({
         aria-label={ariaLabel}
         autoComplete="off"
         spellCheck={false}
+        role="textbox"
       />
       <RevealToggle
         revealed={revealed}
