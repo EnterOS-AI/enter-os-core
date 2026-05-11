@@ -54,6 +54,18 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+
+def _platform_url() -> str:
+    """Return the platform URL, defaulting to host.docker.internal.
+
+    The workspace runtime always runs inside a Docker container, so
+    ``localhost`` refers to the container itself, not the platform host.
+    The platform API is only reachable via ``host.docker.internal`` from
+    within a workspace container, regardless of how the container was started.
+    """
+    return os.environ.get("PLATFORM_URL", "http://host.docker.internal:8080")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
@@ -79,12 +91,12 @@ async def _fetch_latest_checkpoint(workspace_id: str) -> Optional[dict]:
         workspace_id: The workspace to query.
 
     Reads:
-        PLATFORM_URL  Platform base URL (default ``http://localhost:8080``).
+        PLATFORM_URL  Platform base URL (default ``http://host.docker.internal:8080``).
     """
     try:
         from platform_auth import auth_headers as _auth_headers  # type: ignore[import]
 
-        platform_url = os.environ.get("PLATFORM_URL", "http://localhost:8080")
+        platform_url = _platform_url()
         url = f"{platform_url}/workspaces/{workspace_id}/checkpoints/latest"
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(url, headers=_auth_headers())
@@ -125,12 +137,12 @@ async def _save_checkpoint(
         payload:       Optional JSON-serialisable dict stored as JSONB.
 
     Reads:
-        PLATFORM_URL   Platform base URL (default ``http://localhost:8080``).
+        PLATFORM_URL   Platform base URL (default ``http://host.docker.internal:8080``).
     """
     try:
         from platform_auth import auth_headers as _auth_headers  # type: ignore[import]
 
-        platform_url = os.environ.get("PLATFORM_URL", "http://localhost:8080")
+        platform_url = _platform_url()
         url = f"{platform_url}/workspaces/{workspace_id}/checkpoints"
         body: dict = {
             "workflow_id": workflow_id,

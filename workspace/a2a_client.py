@@ -26,10 +26,10 @@ _WORKSPACE_ID_raw = os.environ.get("WORKSPACE_ID")
 if not _WORKSPACE_ID_raw:
     raise RuntimeError("WORKSPACE_ID environment variable is required but not set")
 WORKSPACE_ID = _WORKSPACE_ID_raw
-if os.path.exists("/.dockerenv") or os.environ.get("DOCKER_VERSION"):
-    PLATFORM_URL = os.environ.get("PLATFORM_URL", "http://host.docker.internal:8080")
-else:
-    PLATFORM_URL = os.environ.get("PLATFORM_URL", "http://localhost:8080")
+# Platform URL: always host.docker.internal inside containers. The platform API
+# is only reachable via the Docker network mesh from inside a workspace
+# container regardless of the runtime environment (Docker/host).
+PLATFORM_URL = os.environ.get("PLATFORM_URL", "http://host.docker.internal:8080")
 
 # Cache workspace ID → name mappings (populated by list_peers calls)
 _peer_names: dict[str, str] = {}
