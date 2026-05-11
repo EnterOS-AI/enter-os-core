@@ -77,13 +77,18 @@ jobs:
         run: python -m pip install --quiet 'PyYAML==6.0.2'
       - name: Run drift detector
         env:
-          # GITEA_TOKEN reads protection + writes issues. molecule-core
-          # uses `SOP_TIER_CHECK_TOKEN` as the org-level secret name for
-          # read-only Gitea API access from CI (set by audit-force-merge
-          # and sop-tier-check too). Falls back to the auto-injected
-          # GITHUB_TOKEN if the org-level secret isn't set
-          # (transitional repos).
-          GITEA_TOKEN: ${{ secrets.SOP_TIER_CHECK_TOKEN || secrets.GITHUB_TOKEN }}
+          # DRIFT_BOT_TOKEN is owned by mc-drift-bot, a least-privilege
+          # Gitea persona whose ONLY job is reading branch_protections
+          # and posting the [ci-drift] tracking issue. The endpoint
+          # `GET /repos/.../branch_protections/{branch}` requires
+          # repo-ADMIN role (Gitea 1.22.6) — SOP_TIER_CHECK_TOKEN and the
+          # auto-injected GITHUB_TOKEN do NOT have it (read-only / write
+          # without admin), so the previous fallback chain 403'd.
+          # Mirrors the controlplane fix landed in CP PR#134.
+          # Provisioning trail: internal#329 (audit) + parent pattern
+          # internal#327 (publish-runtime-bot). Per
+          # `feedback_per_agent_gitea_identity_default`.
+          GITEA_TOKEN: ${{ secrets.DRIFT_BOT_TOKEN }}
           GITEA_HOST: git.moleculesai.app
           REPO: ${{ github.repository }}
           # Branches whose protection we compare against. molecule-core
