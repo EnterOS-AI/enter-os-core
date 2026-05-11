@@ -36,6 +36,10 @@ on:
       - staging
     paths:
       - "workspace/**"
+  # Manual dispatch — useful when Gitea Actions API (/actions/*) is
+  # unreachable (e.g. act_runner 404 on Gitea 1.22.6) and we cannot
+  # re-trigger via curl.
+  workflow_dispatch:
 
 permissions:
   contents: write  # required to push tags back
@@ -76,9 +80,15 @@ jobs:
   # watchdog, which is the desired signal for infrastructure degradation.
   bump-and-tag:
     runs-on: ubuntu-latest
-    # This job only fires on main/staging pushes (not on PR events) because
-    # the pull_request trigger above routes to pr-validate instead.
-    if: github.event.pull_request.base.ref == ''
+    # Only fire on push events (main/staging after PR merge). Pull_request
+    # events are handled by pr-validate above; we do NOT bump on every
+    # push-synchronize because that would race with the PR head.
+    #
+    # NOTE: the prior condition `github.event.pull_request.base.ref == ''`
+    # was broken — on a PR-merge push in Gitea Actions, the pull_request
+    # context is still attached (base.ref='main'), so the condition always
+    # evaluated to false and bump-and-tag was permanently skipped.
+    if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
