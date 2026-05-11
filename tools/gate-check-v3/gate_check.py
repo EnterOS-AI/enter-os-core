@@ -304,9 +304,11 @@ def signal_6_ci(pr_number: int, repo: str, branch: str = "main") -> dict:
     ci_state = combined.get("state", "null")
 
     # Individual check statuses
+    # Gitea Actions uses "status" (pending/success/failure) not "state" for
+    # individual check entries. "state" is null for pending runs.
     check_statuses = {}
     for s in combined.get("statuses") or []:
-        check_statuses[s["context"]] = s.get("state", "null")
+        check_statuses[s["context"]] = s.get("status", "pending")
 
     # Try to get branch protection for required checks
     required_checks = []
