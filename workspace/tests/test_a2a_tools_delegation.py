@@ -189,28 +189,38 @@ class TestPollingPathSanitization:
     from untrusted peer content (OFFSEC-003).
     """
 
-    def test_completed_response_sanitized(self):
-        """_delegate_sync_via_polling returns sanitize_a2a_result(...), which
-        wraps in boundary markers. tool_delegate_task wraps AGAIN, so the
-        final result contains the wrapped content."""
+    def test_completed_response_sanitized(self, monkeypatch):
+        """_delegate_sync_via_polling returns sanitize_a2a_result(text) — plain
+        escaped text, no boundary markers. tool_delegate_task then wraps it in
+        _A2A_BOUNDARY_START/END (OFFSEC-003) so the agent can distinguish
+        trusted own output from untrusted peer-supplied content.
+
+        _A2A_RESULT_FROM_PEER markers are added by send_a2a_message (the
+        messaging path), not by the polling path.
+        """
         import asyncio
         import a2a_tools_delegation as d
 
-        # _delegate_sync_via_polling returns sanitize_a2a_result(text), i.e.
-        # the escaped (no boundary) form. tool_delegate_task wraps once more.
-        async def fake_delegate_sync(ws_id, task, src):
-            return "[A2A_RESULT_FROM_PEER]\nSanitized peer reply.\n[/A2A_RESULT_FROM_PEER]"
+        monkeypatch.setenv("DELEGATION_SYNC_VIA_INBOX", "1")
 
-        async def fake_discover(ws_id):
+        # _delegate_sync_via_polling returns plain sanitized text (no boundary
+        # markers). It is the caller's responsibility to wrap it.
+        async def fake_delegate_sync(ws_id, task, src):
+            return "Sanitized peer reply."
+
+        # discover_peer signature: (target_id, source_workspace_id=None)
+        async def fake_discover(ws_id, source_workspace_id=None):
             return {"id": ws_id, "url": "http://x/a2a", "name": "Peer"}
 
-        d._delegate_sync_via_polling = fake_delegate_sync
-        d.discover_peer = fake_discover
+        # Must use monkeypatch.setattr — direct assignment does not replace
+        # module-level 'from module import name' bindings resolved at call time.
+        monkeypatch.setattr(d, "_delegate_sync_via_polling", fake_delegate_sync)
+        monkeypatch.setattr(d, "discover_peer", fake_discover)
 
         result = asyncio.run(d.tool_delegate_task("ws-peer", "do it"))
-        # tool_delegate_task wraps the already-wrapped polling result in
-        # another layer of boundary markers.
-        assert "[A2A_RESULT_FROM_PEER]" in result
-        assert "[/A2A_RESULT_FROM_PEER]" in result
+        # tool_delegate_task wraps the sanitized text in _A2A_BOUNDARY_START/END
+        # (NOT _A2A_RESULT_FROM_PEER — that marker is for the messaging path).
+        assert d._A2A_BOUNDARY_START in result
+        assert d._A2A_BOUNDARY_END in result
         assert "Sanitized peer reply" in result
 
