@@ -74,6 +74,16 @@ jobs:
           # GitHub event variables, so no local history is needed.
           fetch-depth: 1
       - id: decide
+        env:
+          # Pass via env block — env values bypass shell quoting so single
+          # quotes in merge-commit messages (e.g. "Merge pull request 'fix: ...'
+          # from branch into main") cannot break the bash parser. The prior
+          # `echo '${{ toJSON(...) }}'` form broke on every main-push because
+          # every main commit is a merge commit with single quotes in the
+          # message body — the embedded `'` ended the single-quoted shell string
+          # mid-JSON, and a subsequent `(` (e.g. in `(#523)`) was parsed as a
+          # subshell, causing "syntax error near unexpected token `('".
+          COMMITS_JSON: ${{ toJSON(github.event.commits) }}
         run: |
           set -euo pipefail
 
@@ -98,7 +108,7 @@ jobs:
             # Gitea Compare API rejects SHA-to-branch comparisons (BaseNotExist),
             # so we use the commits array instead. This array contains all commits
             # in the push, each with their added/removed/modified file lists.
-            echo '${{ toJSON(github.event.commits) }}' \
+            printf '%s' "$COMMITS_JSON" \
               | bash .gitea/scripts/push-commits-diff-files.py \
               > .push-diff-files.txt 2>/dev/null || true
             DIFF_FILES=$(cat .push-diff-files.txt 2>/dev/null || true)
