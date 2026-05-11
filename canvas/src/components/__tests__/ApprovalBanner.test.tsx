@@ -41,9 +41,10 @@ const pendingApproval = (id = "a1", workspaceId = "ws-1"): {
   created_at: "2026-05-10T10:00:00Z",
 });
 
-// Shared spy reference so individual tests can call mockGet.mockRestore()
-// without needing to pass it through beforeEach → it scope chain.
+// Shared spy references so individual tests can reset or reject the POST mock
+// without needing to call spyOn again (which would create a duplicate spy).
 let mockGet: ReturnType<typeof vi.spyOn>;
+let mockPost: ReturnType<typeof vi.spyOn>;
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
@@ -139,8 +140,8 @@ describe("ApprovalBanner — renders approval cards", () => {
 describe("ApprovalBanner — decisions", () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    vi.spyOn(api, "get").mockResolvedValueOnce([pendingApproval("a1")]);
-    vi.spyOn(api, "post").mockResolvedValue({});
+    mockGet = vi.spyOn(api, "get").mockResolvedValueOnce([pendingApproval("a1")]);
+    mockPost = vi.spyOn(api, "post").mockResolvedValue({});
   });
 
   afterEach(() => {
@@ -196,7 +197,7 @@ describe("ApprovalBanner — decisions", () => {
   });
 
   it("shows an error toast when POST fails", async () => {
-    vi.mocked(api.post).mockRejectedValueOnce(new Error("Network error"));
+    mockPost.mockReset().mockRejectedValue(new Error("Network error"));
     render(<ApprovalBanner />);
     await act(async () => { await vi.runOnlyPendingTimersAsync(); });
     fireEvent.click(screen.getAllByRole("button", { name: /approve/i })[0]);
@@ -208,8 +209,9 @@ describe("ApprovalBanner — decisions", () => {
   });
 
   it("keeps the card visible when the POST fails", async () => {
-    // Use mockRejectedValueOnce on the same spy as beforeEach (don't call spyOn again)
-    vi.mocked(api.post).mockRejectedValueOnce(new Error("Network error"));
+    // Reset the post mock before rejecting so the beforeEach's resolved value
+    // is gone and we get a clean rejection instead of a resolved→rejected queue.
+    mockPost.mockReset().mockRejectedValue(new Error("Network error"));
     render(<ApprovalBanner />);
     await act(async () => { await vi.runOnlyPendingTimersAsync(); });
     fireEvent.click(screen.getAllByRole("button", { name: /approve/i })[0]);
