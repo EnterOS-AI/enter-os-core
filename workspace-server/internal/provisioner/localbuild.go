@@ -111,11 +111,12 @@ type LocalBuildOptions struct {
 
 	// remoteHeadSha + dockerBuild + gitClone are seams for tests; if
 	// nil, the production implementations are used.
-	remoteHeadSha func(ctx context.Context, opts *LocalBuildOptions, runtime string) (string, error)
-	gitClone      func(ctx context.Context, opts *LocalBuildOptions, runtime, dest string) error
-	dockerBuild   func(ctx context.Context, opts *LocalBuildOptions, contextDir, tag string) error
-	dockerHasTag  func(ctx context.Context, tag string) (bool, error)
-	dockerTag     func(ctx context.Context, src, dst string) error
+	remoteHeadSha     func(ctx context.Context, opts *LocalBuildOptions, runtime string) (string, error)
+	gitClone          func(ctx context.Context, opts *LocalBuildOptions, runtime, dest string) error
+	dockerBuild       func(ctx context.Context, opts *LocalBuildOptions, contextDir, tag string) error
+	dockerHasTag      func(ctx context.Context, tag string) (bool, error)
+	dockerTag         func(ctx context.Context, src, dst string) error
+	preflightLocalBuild func() error
 }
 
 func newDefaultLocalBuildOptions() *LocalBuildOptions {
@@ -185,6 +186,15 @@ var ensureLocalImageHook = EnsureLocalImage
 func ensureLocalImageWithOpts(ctx context.Context, runtime string, opts *LocalBuildOptions) (string, error) {
 	if !IsKnownRuntime(runtime) {
 		return "", fmt.Errorf("local-build: refusing to build unknown runtime %q (must be one of %v)", runtime, knownRuntimes)
+	}
+
+	// Fail-fast with an actionable error before acquiring the per-runtime lock.
+	preflight := opts.preflightLocalBuild
+	if preflight == nil {
+		preflight = preflightLocalBuildProd
+	}
+	if err := preflight(); err != nil {
+		return "", err
 	}
 
 	lock := runtimeBuildLock(runtime)
@@ -425,6 +435,33 @@ func parseGiteaBranchHeadSha(body []byte) (string, error) {
 		return "", fmt.Errorf("Gitea returned suspiciously short sha %q", sha)
 	}
 	return sha, nil
+}
+
+// preflightLocalBuildProd checks that the `docker` and `git` binaries are
+// on PATH before any build/clone operations run. Without this check the
+// first exec call produces a cryptic "executable file not found" error that
+// gives no actionable recovery guidance.
+func preflightLocalBuildProd() error {
+	dockerPath, dockerErr := exec.LookPath("docker")
+	gitPath, gitErr := exec.LookPath("git")
+	if dockerErr != nil || gitErr != nil {
+		return fmt.Errorf(
+			"local-build mode requires `docker` and `git` on PATH in the platform container; "+
+				"found: docker=%s, git=%s. "+
+				"Fix: either install both, OR set MOLECULE_IMAGE_REGISTRY so local-build mode is bypassed",
+			maybeMissing(dockerPath, dockerErr),
+			maybeMissing(gitPath, gitErr),
+		)
+	}
+	return nil
+}
+
+// maybeMissing returns the path if found, or "<missing>" if err is not nil.
+func maybeMissing(path string, err error) string {
+	if err != nil {
+		return "<missing>"
+	}
+	return path
 }
 
 // gitCloneProd shallow-clones the runtime's template repo into dest.

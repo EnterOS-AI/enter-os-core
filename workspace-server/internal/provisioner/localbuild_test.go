@@ -24,6 +24,9 @@ func makeTestOpts(t *testing.T) *LocalBuildOptions {
 		RepoPrefix: "https://git.test/molecule-ai/molecule-ai-workspace-template-",
 		Platform:   "linux/amd64",
 		HTTPClient: &http.Client{},
+		preflightLocalBuild: func() error {
+			return nil // tests bypass the real PATH check
+		},
 		remoteHeadSha: func(ctx context.Context, opts *LocalBuildOptions, runtime string) (string, error) {
 			return "abcdef0123456789abcdef0123456789abcdef01", nil
 		},
@@ -625,6 +628,41 @@ func TestProvisionerStartUsesLocalBuild_LocalMode(t *testing.T) {
 	// reaching ContainerCreate. Pinning the boolean here means a refactor
 	// that flips the sense (e.g. `if src.Mode == RegistryModeSaaS`) is
 	// caught by this test.
+}
+
+// TestEnsureLocalImage_Hooks preflightLocalBuild — when preflight fails,
+func TestEnsureLocalImage_PreflightFailsIfDockerMissing(t *testing.T) {
+	opts := makeTestOpts(t)
+	opts.preflightLocalBuild = func() error {
+		return fmt.Errorf(
+			"local-build mode requires `docker` and `git` on PATH in the platform container; " +
+				"found: docker=<missing>, git=<missing>. " +
+				"Fix: either install both, OR set MOLECULE_IMAGE_REGISTRY so local-build mode is bypassed")
+	}
+	_, err := ensureLocalImageWithOpts(context.Background(), "claude-code", opts)
+	if err == nil {
+		t.Fatalf("expected preflight error, got nil")
+	}
+	if !strings.Contains(err.Error(), "local-build mode requires") {
+		t.Errorf("error = %v, want preflight failure message", err)
+	}
+	if !strings.Contains(err.Error(), "MOLECULE_IMAGE_REGISTRY") {
+		t.Errorf("error = %v, want recovery hint mentioning MOLECULE_IMAGE_REGISTRY", err)
+	}
+}
+
+// TestEnsureLocalImage_PreflightOKPassesThrough — when preflight returns
+// nil, execution proceeds normally.
+func TestEnsureLocalImage_PreflightOKPassesThrough(t *testing.T) {
+	opts := makeTestOpts(t)
+	opts.preflightLocalBuild = func() error { return nil }
+	tag, err := ensureLocalImageWithOpts(context.Background(), "claude-code", opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(tag, "abcdef012345") {
+		t.Errorf("tag = %q, want sha in it", tag)
+	}
 }
 
 // TestEnsureLocalImageHook_DefaultIsRealFunction — pin that the
