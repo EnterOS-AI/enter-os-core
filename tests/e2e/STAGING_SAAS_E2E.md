@@ -7,11 +7,11 @@ Four workflows + a shared bash harness that together cover the SaaS stack end to
 | Workflow | Cadence | Wall time | Scope |
 |---|---|---|---|
 | `e2e-staging-saas.yml` | push + nightly 07:00 UTC | ~20 min | Full API: org → tenant → 2 workspaces → A2A → HMA → delegation → leak check |
-| `canary-staging.yml` | every 30 min | ~8 min | Minimum smoke + self-managed alert issue |
+| `staging-smoke.yml` | every 30 min | ~8 min | Minimum smoke + self-managed alert issue |
 | `e2e-staging-canvas.yml` | push + weekly Sunday 08:00 | ~25 min | All 13 canvas workspace-panel tabs via Playwright |
 | `e2e-staging-sanity.yml` | weekly Monday 06:00 | ~10 min | Intentional-failure: teardown safety-net self-check |
 
-`tests/e2e/test_staging_full_saas.sh` is the shared harness all workflows invoke (with `E2E_MODE={full|canary}` and `E2E_INTENTIONAL_FAILURE={0|1}` toggles).
+`tests/e2e/test_staging_full_saas.sh` is the shared harness all workflows invoke (with `E2E_MODE={full|smoke}` and `E2E_INTENTIONAL_FAILURE={0|1}` toggles).
 
 ### Full-SaaS checklist (sections)
 
@@ -82,7 +82,7 @@ bash tests/e2e/test_staging_full_saas.sh
 ## Cost
 
 - Full run: ~20 min, ~$0.007
-- Canary (48/day): ~$0.06/day
+- Smoke (48/day): ~$0.06/day
 - Canvas (few/week): ~$0.01/day
 - Sanity (weekly): ~$0.002/week
 - **Total staging burn: < $0.15/day** at expected CI load

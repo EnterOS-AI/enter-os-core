@@ -32,7 +32,7 @@ name: redeploy-tenants-on-main
 #
 # Registry: ECR (153263036946.dkr.ecr.us-east-2.amazonaws.com/
 # molecule-ai/platform-tenant). GHCR was retired 2026-05-07 during the
-# Gitea suspension migration. The canary-verify.yml promote step now
+# Gitea suspension migration. The staging-verify.yml promote step now
 # uses the same redeploy-fleet endpoint (fixes the silent-GHCR gap).
 #
 # Runtime ordering:
@@ -104,7 +104,7 @@ jobs:
         #      `staging-<sha>` to roll back to a known-good build.
         #   2. Default → `staging-<short_head_sha>`. The just-published
         #      digest. Bypasses the `:latest` retag path that's currently
-        #      dead (canary-verify soft-skips without canary fleet, so
+        #      dead (staging-verify soft-skips without canary fleet, so
         #      the only thing retagging `:latest` today is the manual
         #      promote-latest.yml — last run 2026-04-28). Auto-trigger
         #      from workflow_run uses workflow_run.head_sha; manual
@@ -359,7 +359,7 @@ jobs:
 
           # Belt-and-suspenders sanity floor: same logic as the staging
           # variant — see that file's comment for the full rationale.
-          # Floor only applies when fleet >= 4; below that, canary-verify
+          # Floor only applies when fleet >= 4; below that, staging-verify
           # is the actual gate.
           TOTAL_VERIFIED=${#SLUGS[@]}
           if [ $TOTAL_VERIFIED -ge 4 ] && [ $UNREACHABLE_COUNT -gt $((TOTAL_VERIFIED / 2)) ]; then

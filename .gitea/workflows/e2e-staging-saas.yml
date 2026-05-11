@@ -95,7 +95,7 @@ jobs:
       # ANTHROPIC_BASE_URL to api.minimax.io/anthropic and reads
       # MINIMAX_API_KEY at boot — separate billing account so an
       # OpenAI quota collapse no longer wedges the gate. Mirrors the
-      # canary-staging.yml + continuous-synth-e2e.yml migrations.
+      # staging-smoke.yml + continuous-synth-e2e.yml migrations.
       E2E_MINIMAX_API_KEY: ${{ secrets.MOLECULE_STAGING_MINIMAX_API_KEY }}
       # Direct-Anthropic alternative for operators who don't want to
       # set up a MiniMax account (priority below MiniMax — first

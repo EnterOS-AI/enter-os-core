@@ -27,7 +27,11 @@
 #   E2E_PROVISION_TIMEOUT_SECS   default 900 (15 min cold EC2 budget)
 #   E2E_KEEP_ORG                 1 → skip teardown (debugging only)
 #   E2E_RUN_ID                   Slug suffix; CI: ${GITHUB_RUN_ID}
-#   E2E_MODE                     full (default) | canary
+#   E2E_MODE                     full (default) | smoke
+#                                (legacy alias `canary` still accepted —
+#                                 mapped to `smoke` for back-compat with
+#                                 any in-flight runner picking up an older
+#                                 workflow checkout)
 #   E2E_INTENTIONAL_FAILURE      1 → poison tenant token mid-run so the
 #                                script fails; the EXIT trap MUST still
 #                                tear down cleanly (and exit 4 on leak).
@@ -49,15 +53,23 @@ RUNTIME="${E2E_RUNTIME:-hermes}"
 PROVISION_TIMEOUT_SECS="${E2E_PROVISION_TIMEOUT_SECS:-900}"
 RUN_ID_SUFFIX="${E2E_RUN_ID:-$(date +%H%M%S)-$$}"
 MODE="${E2E_MODE:-full}"
+# `canary` is a legacy alias for `smoke` retained for back-compat with
+# any in-flight runner picking up an older workflow checkout during the
+# 2026-05-11 canary→staging rename rollout. Both map to the same slug
+# prefix below. Remove the `canary` alias after one week of no-old-mode
+# observations.
+if [ "$MODE" = "canary" ]; then
+  MODE="smoke"
+fi
 case "$MODE" in
-  full|canary) ;;
-  *) echo "E2E_MODE must be 'full' or 'canary' (got: $MODE)" >&2; exit 2 ;;
+  full|smoke) ;;
+  *) echo "E2E_MODE must be 'full' or 'smoke' (got: $MODE)" >&2; exit 2 ;;
 esac
 
-# Canary runs get a distinct prefix so their safety-net sweeper only
+# Smoke runs get a distinct slug prefix so their safety-net sweeper only
 # touches their own runs, not in-flight full runs.
-if [ "$MODE" = "canary" ]; then
-  SLUG="e2e-canary-$(date +%Y%m%d)-${RUN_ID_SUFFIX}"
+if [ "$MODE" = "smoke" ]; then
+  SLUG="e2e-smoke-$(date +%Y%m%d)-${RUN_ID_SUFFIX}"
 else
   SLUG="e2e-$(date +%Y%m%d)-${RUN_ID_SUFFIX}"
 fi

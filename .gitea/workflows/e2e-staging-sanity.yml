@@ -11,11 +11,11 @@ name: E2E Staging Sanity (leak-detection self-check)
 #   - `continue-on-error: true` on the job (RFC §1 contract).
 #
 # Periodic assertion that the teardown safety nets in e2e-staging-saas
-# and canary-staging actually work. Runs the E2E harness with
-# E2E_INTENTIONAL_FAILURE=1, which poisons the tenant admin token after
-# the org is provisioned. The workspace-provision step then fails, the
-# script exits non-zero, and the EXIT trap + workflow always()-step
-# must still tear down cleanly.
+# and staging-smoke (formerly canary-staging) actually work. Runs the
+# E2E harness with E2E_INTENTIONAL_FAILURE=1, which poisons the tenant
+# admin token after the org is provisioned. The workspace-provision
+# step then fails, the script exits non-zero, and the EXIT trap +
+# workflow always()-step must still tear down cleanly.
 
 on:
   schedule:
@@ -43,7 +43,7 @@ jobs:
     env:
       MOLECULE_CP_URL: https://staging-api.moleculesai.app
       MOLECULE_ADMIN_TOKEN: ${{ secrets.MOLECULE_STAGING_ADMIN_TOKEN }}
-      E2E_MODE: canary
+      E2E_MODE: smoke
       E2E_RUNTIME: hermes
       E2E_RUN_ID: "sanity-${{ github.run_id }}"
       E2E_INTENTIONAL_FAILURE: "1"
@@ -127,8 +127,14 @@ jobs:
           import json, sys
           d = json.load(sys.stdin)
           today = __import__('datetime').date.today().strftime('%Y%m%d')
+          # Match both the new e2e-smoke- prefix (post-2026-05-11 rename)
+          # and the legacy e2e-canary- prefix for one rollout cycle so
+          # any in-flight org provisioned under the old prefix on an
+          # older runner checkout still gets cleaned up. Remove the
+          # canary fallback after one week of no-old-prefix observations.
+          prefixes = (f'e2e-smoke-{today}-sanity-', f'e2e-canary-{today}-sanity-')
           candidates = [o['slug'] for o in d.get('orgs', [])
-                        if o.get('slug','').startswith(f'e2e-canary-{today}-sanity-')
+                        if any(o.get('slug','').startswith(p) for p in prefixes)
                         and o.get('status') not in ('purged',)]
           print('\n'.join(candidates))
           " 2>/dev/null)
