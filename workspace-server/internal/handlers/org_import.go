@@ -490,8 +490,13 @@ func (h *OrgHandler) createWorkspaceTree(ws OrgWorkspace, parentID *string, absX
 			// 1. Org root .env (shared defaults)
 			parseEnvFile(filepath.Join(orgBaseDir, ".env"), envVars)
 			// 2. Workspace-specific .env (overrides)
+			// SECURITY: ws.FilesDir is untrusted YAML input — guard against CWE-22
+			// traversal so a crafted filesDir like "../../../etc" cannot escape orgBaseDir.
 			if ws.FilesDir != "" {
-				parseEnvFile(filepath.Join(orgBaseDir, ws.FilesDir, ".env"), envVars)
+				if safeFilesDir, err := resolveInsideRoot(orgBaseDir, ws.FilesDir); err == nil {
+					parseEnvFile(filepath.Join(safeFilesDir, ".env"), envVars)
+				}
+				// Traversal rejection: silently skip — callers expect partial env on failure.
 			}
 		}
 		// Store as workspace secrets via DB (encrypted if key is set, raw otherwise)

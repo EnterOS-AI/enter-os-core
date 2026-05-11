@@ -1,0 +1,453 @@
+# Ported from .github/workflows/ci.yml on 2026-05-11 per RFC internal#219 §1.
+# continue-on-error: true on every job; follow-up PR will flip required after
+# surfaced bugs are fixed (per RFC §1 — "surface broken workflows without
+# blocking"). The four-surface migration audit
+# (feedback_gitea_actions_migration_audit_pattern) was performed against this
+# port:
+#
+#   1. YAML — dropped `merge_group` trigger (no Gitea merge queue); no
+#      `workflow_dispatch.inputs` to drop (Gitea 1.22.6 rejects those —
+#      feedback_gitea_workflow_dispatch_inputs_unsupported); no `environment:`
+#      blocks; kept `runs-on: ubuntu-latest` (Gitea runner pool advertises
+#      this label per agent_labels in action_runner table). Workflow-level
+#      env.GITHUB_SERVER_URL set as belt-and-suspenders against runner
+#      defaults (feedback_act_runner_github_server_url).
+#
+#   2. Cache — `actions/upload-artifact@v3.2.2` was already pinned to v3 for
+#      Gitea act_runner v0.6 compatibility (a comment in the original called
+#      this out). v4+ is incompatible with Gitea 1.22.x. No `actions/cache`
+#      usage to audit. `actions/setup-python@v6` `cache: pip` is left in
+#      place — works against Gitea's built-in cache server when runner.cache
+#      is configured (currently is, /opt/molecule/runners/config.yaml).
+#
+#   3. Token — workflow uses no custom dispatch tokens. The auto-injected
+#      `GITHUB_TOKEN` (which Gitea aliases to a runner-scoped token) is
+#      sufficient for `actions/checkout` against this same repo.
+#
+#   4. Docs — no docs/scripts reference github.com URLs that need swapping.
+#      The canvas-deploy-reminder step writes a `ghcr.io/...` image
+#      reference into the step summary text — that's documentation prose
+#      pointing at the ECR-mirrored canvas image and stays unchanged for
+#      this port (a separate cleanup if ghcr→ECR sweep is in scope).
+#
+# Cross-links:
+#   - RFC: internal#219 (CI/CD hard-gate hardening)
+#   - Reference port style: molecule-controlplane/.gitea/workflows/ci.yml
+#   - Bugs that may surface immediately and are tracked separately:
+#     internal#214 (Go-side vanity-import / go.sum drift, if any)
+#   - Phase 4 (this PR's follow-up): flip `continue-on-error: false` once
+#     surfaced defects are fixed, then add `all-required` aggregator
+#     sentinel (RFC §2) and PATCH branch protection (Phase 4 scope).
+
+name: CI
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main, staging]
+  # `merge_group` (GitHub merge-queue trigger) dropped — Gitea has no merge
+  # queue. The .github/ original retains it; this Gitea-side copy drops it.
+
+# Cancel in-progress CI runs when a new commit arrives on the same ref.
+# Stale runs queue up otherwise. PR refs and main/staging refs each get
+# their own group because github.ref differs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Belt-and-suspenders against the runner-default trap
+  # (feedback_act_runner_github_server_url). Runners are configured with
+  # this env via /opt/molecule/runners/config.yaml runner.envs, but pinning
+  # at the workflow level protects against a runner regenerated without
+  # the config file (feedback_act_runner_needs_config_file_env).
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  # Detect which paths changed so downstream jobs can skip when only
+  # docs/markdown files were modified.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking
+    # the PR. Follow-up PR flips this off after the surfaced defects
+    # (if any) are triaged.
+    continue-on-error: true
+    outputs:
+      platform: ${{ steps.check.outputs.platform }}
+      canvas: ${{ steps.check.outputs.canvas }}
+      python: ${{ steps.check.outputs.python }}
+      scripts: ${{ steps.check.outputs.scripts }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - id: check
+        run: |
+          # For PR events: diff against the base branch (not HEAD~1 of the branch,
+          # which may be unrelated after force-pushes). When a push updates a PR,
+          # both pull_request and push events fire — prefer the PR base so that
+          # the diff is always computed against the actual merge base, not the
+          # previous SHA on the branch which may be on a different history line.
+          BASE="${GITHUB_BASE_REF:-${{ github.event.before }}}"
+          # GITHUB_BASE_REF is set for PR events (the base branch name).
+          # For pull_request events we use the stored base.sha; for push events
+          # (or when base.sha is unavailable) fall back to github.event.before.
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ -n "${{ github.event.pull_request.base.sha }}" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          fi
+          # Fallback: if BASE is empty or all zeros (new branch), run everything
+          if [ -z "$BASE" ] || echo "$BASE" | grep -qE '^0+$'; then
+            echo "platform=true" >> "$GITHUB_OUTPUT"
+            echo "canvas=true" >> "$GITHUB_OUTPUT"
+            echo "python=true" >> "$GITHUB_OUTPUT"
+            echo "scripts=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Both .github/workflows/ci.yml AND .gitea/workflows/ci.yml count
+          # as "this workflow changed" — either edit should force-run every
+          # downstream job. The Gitea port follows the same shape as the
+          # GitHub original so behavior matches when triggered on either
+          # platform.
+          DIFF=$(git diff --name-only "$BASE" HEAD 2>/dev/null || echo ".gitea/workflows/ci.yml")
+          echo "platform=$(echo "$DIFF" | grep -qE '^workspace-server/|^\.gitea/workflows/ci\.yml$|^\.github/workflows/ci\.yml$' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "canvas=$(echo "$DIFF" | grep -qE '^canvas/|^\.gitea/workflows/ci\.yml$|^\.github/workflows/ci\.yml$' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "python=$(echo "$DIFF" | grep -qE '^workspace/|^\.gitea/workflows/ci\.yml$|^\.github/workflows/ci\.yml$' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "scripts=$(echo "$DIFF" | grep -qE '^tests/e2e/|^scripts/|^infra/scripts/|^\.gitea/workflows/ci\.yml$|^\.github/workflows/ci\.yml$' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+  # Platform (Go) — Go build/vet/test/lint + coverage gates. The always-run
+  # + per-step gating shape preserves the GitHub-side required-check name
+  # contract (so when this Gitea port becomes a required check in Phase 4,
+  # the name match works on PRs that don't touch workspace-server/).
+  platform-build:
+    name: Platform (Go)
+    needs: changes
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: workspace-server
+    steps:
+      - if: needs.changes.outputs.platform != 'true'
+        working-directory: .
+        run: echo "No platform/** changes — skipping real build steps; this job always runs to satisfy the required-check name on branch protection."
+      - if: needs.changes.outputs.platform == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - if: needs.changes.outputs.platform == 'true'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 'stable'
+      - if: needs.changes.outputs.platform == 'true'
+        run: go mod download
+      - if: needs.changes.outputs.platform == 'true'
+        run: go build ./cmd/server
+      # CLI (molecli) moved to standalone repo: git.moleculesai.app/molecule-ai/molecule-cli
+      - if: needs.changes.outputs.platform == 'true'
+        run: go vet ./... || true
+      - if: needs.changes.outputs.platform == 'true'
+        name: Run golangci-lint
+        run: golangci-lint run --timeout 3m ./... || true
+      - if: needs.changes.outputs.platform == 'true'
+        name: Run tests with race detection and coverage
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - if: needs.changes.outputs.platform == 'true'
+        name: Per-file coverage report
+        # Advisory — lists every source file with its coverage so reviewers
+        # can see at-a-glance where gaps are. Sorted ascending so the worst
+        # offenders float to the top. Does NOT fail the build; the hard
+        # gate is the threshold check below. (#1823)
+        run: |
+          echo "=== Per-file coverage (worst first) ==="
+          go tool cover -func=coverage.out \
+            | grep -v '^total:' \
+            | awk '{file=$1; sub(/:[0-9][0-9.]*:.*/, "", file); pct=$NF; gsub(/%/,"",pct); s[file]+=pct; c[file]++}
+                   END {for (f in s) printf "%6.1f%%  %s\n", s[f]/c[f], f}' \
+            | sort -n
+
+      - if: needs.changes.outputs.platform == 'true'
+        name: Check coverage thresholds
+        # Enforces two gates from #1823 Layer 1:
+        #   1. Total floor (25% — ratchet plan in COVERAGE_FLOOR.md).
+        #   2. Per-file floor — non-test .go files in security-critical
+        #      paths with coverage <10% fail the build, UNLESS the file
+        #      path is listed in .coverage-allowlist.txt (acknowledged
+        #      historical debt with a tracking issue + expiry).
+        run: |
+          set -e
+          TOTAL_FLOOR=25
+          # Security-critical paths where a 0%-coverage file is a real risk.
+          CRITICAL_PATHS=(
+            "internal/handlers/tokens"
+            "internal/handlers/workspace_provision"
+            "internal/handlers/a2a_proxy"
+            "internal/handlers/registry"
+            "internal/handlers/secrets"
+            "internal/middleware/wsauth"
+            "internal/crypto"
+          )
+
+          TOTAL=$(go tool cover -func=coverage.out | grep '^total:' | awk '{print $3}' | sed 's/%//')
+          echo "Total coverage: ${TOTAL}%"
+          if awk "BEGIN{exit !($TOTAL < $TOTAL_FLOOR)}"; then
+            echo "::error::Total coverage ${TOTAL}% is below the ${TOTAL_FLOOR}% floor. See COVERAGE_FLOOR.md for ratchet plan."
+            exit 1
+          fi
+
+          # Aggregate per-file coverage → /tmp/perfile.txt: "<fullpath> <pct>"
+          go tool cover -func=coverage.out \
+            | grep -v '^total:' \
+            | awk '{file=$1; sub(/:[0-9][0-9.]*:.*/, "", file); pct=$NF; gsub(/%/,"",pct); s[file]+=pct; c[file]++}
+                   END {for (f in s) printf "%s %.1f\n", f, s[f]/c[f]}' \
+            > /tmp/perfile.txt
+
+          # Build allowlist — paths relative to workspace-server, one per line.
+          # Lines starting with # are comments.
+          ALLOWLIST=""
+          if [ -f ../.coverage-allowlist.txt ]; then
+            ALLOWLIST=$(grep -vE '^(#|[[:space:]]*$)' ../.coverage-allowlist.txt || true)
+          fi
+
+          FAILED=0
+          WARNED=0
+          for path in "${CRITICAL_PATHS[@]}"; do
+            while read -r file pct; do
+              [[ "$file" == *_test.go ]] && continue
+              [[ "$file" == *"$path"* ]] || continue
+              awk "BEGIN{exit !($pct < 10)}" || continue
+
+              # Strip the package-import prefix so we can match .coverage-allowlist.txt
+              # entries written as paths relative to workspace-server/.
+              # Handle both module paths: platform/workspace-server/... and platform/...
+              rel=$(echo "$file" | sed 's|^github.com/molecule-ai/molecule-monorepo/platform/workspace-server/||; s|^github.com/molecule-ai/molecule-monorepo/platform/||')
+
+              if echo "$ALLOWLIST" | grep -qxF "$rel"; then
+                echo "::warning file=workspace-server/$rel::Critical file at ${pct}% coverage (allowlisted, #1823) — fix before expiry."
+                WARNED=$((WARNED+1))
+              else
+                echo "::error file=workspace-server/$rel::Critical file at ${pct}% coverage — must be >=10% (target 80%). See #1823. To acknowledge as known debt, add this path to .coverage-allowlist.txt."
+                FAILED=$((FAILED+1))
+              fi
+            done < /tmp/perfile.txt
+          done
+
+          echo ""
+          echo "Critical-path check: $FAILED new failures, $WARNED allowlisted warnings."
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo ""
+            echo "$FAILED security-critical file(s) have <10% test coverage and are"
+            echo "NOT in the allowlist. These paths handle auth, tokens, secrets, or"
+            echo "workspace provisioning — a 0% file here is the exact gap that let"
+            echo "CWE-22, CWE-78, KI-005 slip through in past incidents. Either:"
+            echo "  (a) add tests to raise coverage above 10%, or"
+            echo "  (b) add the path to .coverage-allowlist.txt with an expiry date"
+            echo "      and a tracking issue reference."
+            exit 1
+          fi
+
+  # Canvas (Next.js) — required check, always runs. Same always-run +
+  # per-step gating shape as platform-build. The two-job-sharing-name
+  # pattern attempted in PR #2321 doesn't satisfy branch protection
+  # (SKIPPED siblings count as not-passed regardless of SUCCESS
+  # siblings — verified empirically on PR #2314).
+  canvas-build:
+    name: Canvas (Next.js)
+    needs: changes
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: canvas
+    steps:
+      - if: needs.changes.outputs.canvas != 'true'
+        working-directory: .
+        run: echo "No canvas/** changes — skipping real build steps; this job always runs to satisfy the required-check name on branch protection."
+      - if: needs.changes.outputs.canvas == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - if: needs.changes.outputs.canvas == 'true'
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22'
+      - if: needs.changes.outputs.canvas == 'true'
+        run: rm -f package-lock.json && npm install
+      - if: needs.changes.outputs.canvas == 'true'
+        run: npm run build
+      - if: needs.changes.outputs.canvas == 'true'
+        name: Run tests with coverage
+        # Coverage instrumentation is configured in canvas/vitest.config.ts
+        # (provider: v8, reporters: text + html + json-summary). Step 2 of
+        # #1815 — wires coverage into CI so we get a baseline visible on
+        # every PR. No threshold gate yet; thresholds dial in (Step 3, also
+        # tracked in #1815) after the team sees what current coverage is.
+        run: npx vitest run --coverage
+      - name: Upload coverage summary as artifact
+        if: needs.changes.outputs.canvas == 'true' && always()
+        # Pinned to v3 for Gitea act_runner v0.6 compatibility — v4+ uses
+        # the GHES 3.10+ artifact protocol that Gitea 1.22.x does NOT
+        # implement, surfacing as `GHESNotSupportedError: @actions/artifact
+        # v2.0.0+, upload-artifact@v4+ and download-artifact@v4+ are not
+        # currently supported on GHES`. Drop this pin when Gitea ships
+        # the v4 protocol (tracked: post-Gitea-1.23 followup).
+        uses: actions/upload-artifact@c6a366c94c3e0affe28c06c8df20a878f24da3cf # v3.2.2
+        with:
+          name: canvas-coverage-${{ github.run_id }}
+          path: canvas/coverage/
+          retention-days: 7
+          if-no-files-found: warn
+
+  # Shellcheck (E2E scripts) — required check, always runs.
+  shellcheck:
+    name: Shellcheck (E2E scripts)
+    needs: changes
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - if: needs.changes.outputs.scripts != 'true'
+        run: echo "No tests/e2e/ or infra/scripts/ changes — skipping real shellcheck; this job always runs to satisfy the required-check name on branch protection."
+      - if: needs.changes.outputs.scripts == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - if: needs.changes.outputs.scripts == 'true'
+        name: Run shellcheck on tests/e2e/*.sh and infra/scripts/*.sh
+        # shellcheck is pre-installed on ubuntu-latest runners (via apt).
+        # infra/scripts/ is included because setup.sh + nuke.sh gate the
+        # README quickstart — a shellcheck regression there silently breaks
+        # new-user onboarding. scripts/ is intentionally excluded until its
+        # pre-existing SC3040/SC3043 warnings are cleaned up.
+        run: |
+          find tests/e2e infra/scripts -type f -name '*.sh' -print0 \
+            | xargs -0 shellcheck --severity=warning
+
+      - if: needs.changes.outputs.scripts == 'true'
+        name: Lint cleanup-trap hygiene (RFC #2873)
+        run: bash tests/e2e/lint_cleanup_traps.sh
+
+      - if: needs.changes.outputs.scripts == 'true'
+        name: Run E2E bash unit tests (no live infra)
+        run: |
+          bash tests/e2e/test_model_slug.sh
+
+  canvas-deploy-reminder:
+    name: Canvas Deploy Reminder
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    needs: [changes, canvas-build]
+    # Only fires on direct pushes to main (i.e. after staging→main promotion).
+    if: needs.changes.outputs.canvas == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Write deploy reminder to step summary
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+          # github.server_url resolves via the workflow-level env override
+          # to the Gitea instance, so the RUN_URL points at the Gitea run
+          # page (not github.com). See feedback_act_runner_github_server_url.
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # Write body to a temp file — avoids backtick escaping in shell.
+          cat > /tmp/deploy-reminder.md << 'BODY'
+          ## Canvas build passed — deploy required
+
+          The `publish-canvas-image` workflow is now building a fresh Docker image
+          (`ghcr.io/molecule-ai/canvas:latest`) in the background.
+
+          Once it completes (~3–5 min), apply on the host machine with:
+          ```bash
+          cd <runner-workspace>
+          git pull origin main
+          docker compose pull canvas && docker compose up -d canvas
+          ```
+
+          If you need to rebuild from local source instead (e.g. testing unreleased
+          changes or a new `NEXT_PUBLIC_*` URL), use:
+          ```bash
+          docker compose build canvas && docker compose up -d canvas
+          ```
+          BODY
+          printf '\n> Posted automatically by CI · commit `%s` · [build log](%s)\n' \
+            "$COMMIT_SHA" "$RUN_URL" >> /tmp/deploy-reminder.md
+
+          # Gitea has no commit-comments API; write to GITHUB_STEP_SUMMARY,
+          # which both GitHub Actions and Gitea Actions render as the
+          # workflow run's summary page. (#75 / PR-D)
+          cat /tmp/deploy-reminder.md >> "$GITHUB_STEP_SUMMARY"
+
+  # Python Lint & Test — required check, always runs.
+  python-lint:
+    name: Python Lint & Test
+    needs: changes
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      WORKSPACE_ID: test
+    defaults:
+      run:
+        working-directory: workspace
+    steps:
+      - if: needs.changes.outputs.python != 'true'
+        working-directory: .
+        run: echo "No workspace/** changes — skipping real lint+test; this job always runs to satisfy the required-check name on branch protection."
+      - if: needs.changes.outputs.python == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - if: needs.changes.outputs.python == 'true'
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: workspace/requirements.txt
+      - if: needs.changes.outputs.python == 'true'
+        run: pip install -r requirements.txt pytest pytest-asyncio pytest-cov sqlalchemy>=2.0.0
+      # Coverage flags + fail-under floor moved into workspace/pytest.ini
+      # (issue #1817) so local `pytest` and CI use identical config.
+      - if: needs.changes.outputs.python == 'true'
+        run: python -m pytest --tb=short
+
+      - if: needs.changes.outputs.python == 'true'
+        name: Per-file critical-path coverage (MCP / inbox / auth)
+        # MCP-critical Python files have a per-file floor on top of the
+        # 86% total floor in pytest.ini. See issue #2790 for full rationale.
+        run: |
+          set -e
+          PER_FILE_FLOOR=75
+          CRITICAL_FILES=(
+            "a2a_mcp_server.py"
+            "mcp_cli.py"
+            "a2a_tools.py"
+            "a2a_tools_inbox.py"
+            "inbox.py"
+            "platform_auth.py"
+          )
+
+          # pytest already wrote .coverage; emit a JSON view scoped to
+          # the critical files so jq/python can read the per-file pct
+          # without parsing tabular text.
+          INCLUDES=$(printf '*%s,' "${CRITICAL_FILES[@]}")
+          INCLUDES="${INCLUDES%,}"
+          python -m coverage json -o /tmp/critical-cov.json --include="$INCLUDES"
+
+          FAILED=0
+          for f in "${CRITICAL_FILES[@]}"; do
+            pct=$(jq -r --arg f "$f" '.files | to_entries | map(select(.key == $f)) | .[0].value.summary.percent_covered // "MISSING"' /tmp/critical-cov.json)
+            if [ "$pct" = "MISSING" ]; then
+              echo "::error file=workspace/$f::No coverage data — file may have moved or test exclusion mis-set."
+              FAILED=$((FAILED+1))
+              continue
+            fi
+            echo "$f: ${pct}%"
+            if awk "BEGIN{exit !($pct < $PER_FILE_FLOOR)}"; then
+              echo "::error file=workspace/$f::${pct}% < ${PER_FILE_FLOOR}% per-file floor (MCP critical path). See COVERAGE_FLOOR.md."
+              FAILED=$((FAILED+1))
+            fi
+          done
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo ""
+            echo "$FAILED MCP critical-path file(s) below the ${PER_FILE_FLOOR}% per-file floor."
+            echo "These paths handle multi-tenant routing, auth tokens, and inbox dispatch."
+            echo "A coverage drop here is the same risk shape as Go-side tokens/secrets files"
+            echo "dropping below 10% (see COVERAGE_FLOOR.md). Either:"
+            echo "  (a) add tests to raise coverage back above ${PER_FILE_FLOOR}%, or"
+            echo "  (b) if this is unavoidable historical debt, file an issue and propose"
+            echo "      adjusting the floor with rationale in COVERAGE_FLOOR.md."
+            exit 1
+          fi
