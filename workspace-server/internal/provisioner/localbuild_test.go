@@ -43,6 +43,10 @@ func makeTestOpts(t *testing.T) *LocalBuildOptions {
 		dockerTag: func(ctx context.Context, src, dst string) error {
 			return nil
 		},
+		// checkTool: skip the real LookPath in tests (docker/git may not be on PATH
+		// in the CI environment). Tests that exercise tool-not-found behaviour
+		// override this stub explicitly.
+		checkTool: func(tool string) error { return nil },
 	}
 }
 
@@ -84,6 +88,50 @@ func TestEnsureLocalImage_CacheHit(t *testing.T) {
 	}
 	if buildCount != 0 {
 		t.Errorf("cache hit triggered %d builds, want 0", buildCount)
+	}
+}
+
+// TestEnsureLocalImage_MissingTool_Docker — pre-flight catches a missing
+// docker binary before any cryptic exec-not-found error propagates up.
+// The error must mention both the missing tool and the escape-hatch hint.
+func TestEnsureLocalImage_MissingTool_Docker(t *testing.T) {
+	opts := makeTestOpts(t)
+	opts.checkTool = func(tool string) error {
+		if tool == "docker" {
+			return errors.New(`"docker" not found on PATH`)
+		}
+		return nil
+	}
+	_, err := ensureLocalImageWithOpts(context.Background(), "claude-code", opts)
+	if err == nil {
+		t.Fatalf("expected error for missing docker")
+	}
+	if !strings.Contains(err.Error(), "docker") {
+		t.Errorf("error = %v, want one mentioning docker", err)
+	}
+	if !strings.Contains(err.Error(), "MOLECULE_IMAGE_REGISTRY") {
+		t.Errorf("error = %v, want one mentioning MOLECULE_IMAGE_REGISTRY", err)
+	}
+}
+
+// TestEnsureLocalImage_MissingTool_Git — same for a missing git binary.
+func TestEnsureLocalImage_MissingTool_Git(t *testing.T) {
+	opts := makeTestOpts(t)
+	opts.checkTool = func(tool string) error {
+		if tool == "git" {
+			return errors.New(`"git" not found on PATH`)
+		}
+		return nil
+	}
+	_, err := ensureLocalImageWithOpts(context.Background(), "claude-code", opts)
+	if err == nil {
+		t.Fatalf("expected error for missing git")
+	}
+	if !strings.Contains(err.Error(), "git") {
+		t.Errorf("error = %v, want one mentioning git", err)
+	}
+	if !strings.Contains(err.Error(), "MOLECULE_IMAGE_REGISTRY") {
+		t.Errorf("error = %v, want one mentioning MOLECULE_IMAGE_REGISTRY", err)
 	}
 }
 

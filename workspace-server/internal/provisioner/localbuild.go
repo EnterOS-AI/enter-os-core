@@ -109,13 +109,16 @@ type LocalBuildOptions struct {
 	// http.DefaultClient with a 30s timeout.
 	HTTPClient *http.Client
 
-	// remoteHeadSha + dockerBuild + gitClone are seams for tests; if
-	// nil, the production implementations are used.
+	// remoteHeadSha + dockerBuild + gitClone + checkTool are seams for tests;
+	// if nil, the production implementations are used.
 	remoteHeadSha func(ctx context.Context, opts *LocalBuildOptions, runtime string) (string, error)
 	gitClone      func(ctx context.Context, opts *LocalBuildOptions, runtime, dest string) error
 	dockerBuild   func(ctx context.Context, opts *LocalBuildOptions, contextDir, tag string) error
 	dockerHasTag  func(ctx context.Context, tag string) (bool, error)
 	dockerTag     func(ctx context.Context, src, dst string) error
+	// checkTool validates that the named binary is on PATH. nil = production
+	// LookPath check; tests override to skip or mock.
+	checkTool func(tool string) error
 }
 
 func newDefaultLocalBuildOptions() *LocalBuildOptions {
@@ -182,6 +185,20 @@ func EnsureLocalImage(ctx context.Context, runtime string) (string, error) {
 // production code.
 var ensureLocalImageHook = EnsureLocalImage
 
+// checkToolOnPath verifies tool is on PATH and returns its absolute path,
+// or a descriptive error. Used for pre-flight validation before the
+// clone/build cold path.
+func checkToolOnPath(tool string) (string, error) {
+	path, err := exec.LookPath(tool)
+	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return "", fmt.Errorf("local-build: %q not found on PATH — local-build mode requires both docker and git; either install them, or set MOLECULE_IMAGE_REGISTRY so local-build is bypassed", tool)
+		}
+		return "", fmt.Errorf("local-build: LookPath(%q) failed: %w", tool, err)
+	}
+	return path, nil
+}
+
 func ensureLocalImageWithOpts(ctx context.Context, runtime string, opts *LocalBuildOptions) (string, error) {
 	if !IsKnownRuntime(runtime) {
 		return "", fmt.Errorf("local-build: refusing to build unknown runtime %q (must be one of %v)", runtime, knownRuntimes)
@@ -190,6 +207,20 @@ func ensureLocalImageWithOpts(ctx context.Context, runtime string, opts *LocalBu
 	lock := runtimeBuildLock(runtime)
 	lock.Lock()
 	defer lock.Unlock()
+
+	// Pre-flight: both docker and git are required even on the cache-hit
+	// path (docker is used for image inspect + tag). Fail fast with a clear
+	// message rather than a cryptic "exec: docker: executable file not found".
+	checkFn := opts.checkTool
+	if checkFn == nil {
+		checkFn = checkToolOnPath
+	}
+	if err := checkFn("docker"); err != nil {
+		return "", fmt.Errorf("local-build: %w; set MOLECULE_IMAGE_REGISTRY to bypass local-build mode", err)
+	}
+	if err := checkFn("git"); err != nil {
+		return "", fmt.Errorf("local-build: %w; set MOLECULE_IMAGE_REGISTRY to bypass local-build mode", err)
+	}
 
 	// 1. HEAD lookup → cache key.
 	headFn := opts.remoteHeadSha
