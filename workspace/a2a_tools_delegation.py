@@ -322,7 +322,8 @@ async def tool_delegate_task(
             f"You should either: (1) try a different peer, (2) handle this task yourself, "
             f"or (3) inform the user that {peer_name} is unavailable and provide your best answer."
         )
-    return result
+    # OFFSEC-003: wrap peer result in trust boundary before returning to agent context
+    return sanitize_a2a_result(result)
 
 
 async def tool_delegate_task_async(
