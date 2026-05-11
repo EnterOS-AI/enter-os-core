@@ -12,7 +12,7 @@
  * window.location.search in the jsdom environment.
  */
 import React from "react";
-import { render, screen, fireEvent, cleanup, act } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, act, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PurchaseSuccessModal } from "../PurchaseSuccessModal";
 
@@ -30,9 +30,13 @@ function clearSearch() {
   setSearch("");
 }
 
-// Helper: wait for dialog to appear (real timers)
+// Helper: wait for the dialog to appear after React useEffect batch.
+// Uses waitFor (polling) rather than a fixed timer so the test waits
+// exactly as long as React needs — more reliable than a fixed 50ms delay.
 async function waitForDialog() {
-  await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+  await waitFor(() => {
+    expect(screen.queryByRole("dialog")).toBeTruthy();
+  }, { timeout: 2000 });
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -104,6 +108,7 @@ describe("PurchaseSuccessModal — render conditions", () => {
 describe("PurchaseSuccessModal — dismiss", () => {
   beforeEach(() => {
     setSearch("?purchase_success=1&item=TestItem");
+    vi.useRealTimers(); // use real timers throughout so waitFor + setTimeout are synchronous-friendly
   });
 
   afterEach(() => {
@@ -116,52 +121,45 @@ describe("PurchaseSuccessModal — dismiss", () => {
   it("closes the dialog when the close button is clicked", async () => {
     render(<PurchaseSuccessModal />);
     await waitForDialog();
-    expect(screen.getByRole("dialog")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
-    await waitForDialog();
+    await act(async () => { await new Promise((r) => setTimeout(r, 100)); });
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("closes the dialog when the backdrop is clicked", async () => {
     render(<PurchaseSuccessModal />);
     await waitForDialog();
-    expect(screen.getByRole("dialog")).toBeTruthy();
     const backdrop = document.body.querySelector('[aria-hidden="true"]');
     if (backdrop) fireEvent.click(backdrop);
-    await waitForDialog();
+    await act(async () => { await new Promise((r) => setTimeout(r, 100)); });
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("closes on Escape key", async () => {
     render(<PurchaseSuccessModal />);
     await waitForDialog();
-    expect(screen.getByRole("dialog")).toBeTruthy();
     fireEvent.keyDown(window, { key: "Escape" });
-    await waitForDialog();
+    await act(async () => { await new Promise((r) => setTimeout(r, 100)); });
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   // Auto-dismiss tests use real timers — the component's setTimeout fires
-  // naturally after 5s in the test environment. vi.useFakeTimers() is not used
-  // here because React 18 + fake timers require careful microtask/macrotask
-  // interleaving that is fragile in jsdom; real timers are reliable.
+  // naturally after 5s in the test environment.
   it("auto-dismisses after 5 seconds", async () => {
     render(<PurchaseSuccessModal />);
     await waitForDialog();
-    expect(screen.getByRole("dialog")).toBeTruthy();
-    // The component's AUTO_DISMISS_MS = 5000ms. In jsdom, setTimeout fires
-    // reliably. Wait long enough for 2 dismiss cycles to ensure the first fires.
-    await act(async () => { await new Promise((r) => setTimeout(r, 11000)); });
+    // AUTO_DISMISS_MS = 5000ms. Wait 6s to ensure dismiss has fired + React updated.
+    await act(async () => { await new Promise((r) => setTimeout(r, 6000)); });
     expect(screen.queryByRole("dialog")).toBeNull();
-  }, 15000); // extended timeout for real-timer wait
+  }, 10000);
 
   it("does not auto-dismiss before 5 seconds", async () => {
     render(<PurchaseSuccessModal />);
     await waitForDialog();
-    expect(screen.getByRole("dialog")).toBeTruthy();
+    const dialog = screen.getByRole("dialog");
     // Wait 4s — just under the 5s auto-dismiss threshold
     await act(async () => { await new Promise((r) => setTimeout(r, 4000)); });
-    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeTruthy();
   });
 });
 
@@ -210,27 +208,28 @@ describe("PurchaseSuccessModal — accessibility", () => {
 
   it("has aria-modal=true on the dialog", async () => {
     render(<PurchaseSuccessModal />);
-    await waitForDialog();
-    const dialog = screen.getByRole("dialog");
-    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    await waitFor(() => {
+      expect(screen.getByRole("dialog").getAttribute("aria-modal")).toBe("true");
+    });
   });
 
   it("has aria-labelledby pointing to the title", async () => {
     render(<PurchaseSuccessModal />);
-    await waitForDialog();
-    const dialog = screen.getByRole("dialog");
-    const labelledby = dialog.getAttribute("aria-labelledby");
-    expect(labelledby).toBeTruthy();
-    expect(document.getElementById(labelledby!)).toBeTruthy();
-    expect(document.getElementById(labelledby!)?.textContent).toMatch(/purchase successful/i);
+    await waitFor(() => {
+      const dialog = screen.getByRole("dialog");
+      const labelledby = dialog.getAttribute("aria-labelledby");
+      expect(labelledby).toBeTruthy();
+      expect(document.getElementById(labelledby!)).toBeTruthy();
+      expect(document.getElementById(labelledby!)?.textContent).toMatch(/purchase successful/i);
+    });
   });
 
   // Focus test: verify close button exists after dialog renders.
   // We test presence (not focus) since rAF focus is tricky in jsdom.
   it("moves focus to the close button on open", async () => {
     render(<PurchaseSuccessModal />);
-    await act(async () => { await new Promise((r) => setTimeout(r, 100)); });
-    // Use getByRole which is more reliable than querySelector
-    expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
+    });
   });
 });
