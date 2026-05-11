@@ -12,7 +12,24 @@ name: publish-runtime
 #   - Replaced `github.ref_name` (GitHub-only) with `${GITHUB_REF#refs/tags/}`
 #     — Gitea Actions exposes github.ref (the full ref) but not ref_name
 #   - Dropped `merge_group` trigger (Gitea has no merge queue)
-#   - Dropped `staging` branch trigger (no staging branch exists in this repo)
+#
+# 2026-05-10 (issue #348): originally restored `staging`/`main` branch +
+# `workspace/**` path-filter trigger in PR #349.
+#
+# 2026-05-11 (issue #351): REVERTED the branches+paths trigger from THIS
+# file. Bundling `paths` with `tags` under a single `on.push` key caused
+# Gitea Actions to never dispatch the workflow for tag-push events (0
+# runs in `action_run` for workflow_id='publish-runtime.yml' since the
+# port, including the runtime-v1.0.0 tag — which is why PyPI is still at
+# 0.1.129 despite a v1.0.0 Gitea tag existing).
+#
+# The auto-bump-on-workspace-edit trigger now lives in
+# `.gitea/workflows/publish-runtime-autobump.yml`. That file computes the
+# next version from PyPI's latest and pushes a `runtime-v$VERSION` tag,
+# which THIS file then picks up via the tags-only trigger below.
+#
+# This decoupling means Gitea's path-vs-tag evaluator never has to
+# disambiguate — each file has a single unambiguous trigger shape.
 #
 # PyPI publishing: requires PYPI_TOKEN repository secret (or org-level secret).
 # Set via: repo Settings → Actions → Variables and Secrets → New Secret.
@@ -65,10 +82,9 @@ jobs:
             VERSION="${GITHUB_REF#refs/tags/runtime-v}"
           else
             # Fallback: derive from PyPI latest + patch bump.
-            # (The staging-push auto-bump trigger is dropped on Gitea —
-            # no staging branch exists. This fallback path is kept for
-            # robustness if a future automation uses workflow_dispatch without
-            # an explicit version input.)
+            # Used by the restored `push.branches: [main, staging]` +
+            # `paths: workspace/**` auto-bump trigger (issue #348). Also kept
+            # for workflow_dispatch invocations that omit the version input.
             LATEST=$(curl -fsS --retry 3 https://pypi.org/pypi/molecule-ai-workspace-runtime/json \
               | python -c "import sys,json; print(json.load(sys.stdin)['info']['version'])")
             MAJOR=$(echo "$LATEST" | cut -d. -f1)
