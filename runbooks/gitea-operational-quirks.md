@@ -8,36 +8,36 @@ runbooks.
 
 ---
 
-## Gitea 1.22.6 runner network isolation
+## Large repo causes fetch timeout on Gitea Actions runner
 
 ### Finding
 
-The Gitea Actions runner (container on host `5.78.80.188`) cannot reach the
-git remote (`https://git.moleculesai.app`) over HTTPS from inside the runner
-container. Any `git fetch`, `git clone`, or `git push` command that contacts
-the remote times out at 12–15 s.
+The Gitea Actions runner (container on host `5.78.80.188`) can reach the git
+remote (`https://git.moleculesai.app`) over HTTPS — a single-commit shallow
+fetch (`--depth=1`) succeeds in ~16 s. However, fetching the **full compressed
+repo history** (~75+ MB) exceeds the runner's network timeout window (~15 s).
 
-This is **not a Gitea Actions bug** — it is an operator-level network policy
-where the runner container's network namespace is restricted from reaching the
-Gitea host HTTPS endpoint. The runner can reach external hosts (GitHub,
-Docker Hub, PyPI) normally.
+This is **not a Gitea Actions bug** and **not a network isolation policy** —
+it is a repo-size constraint. The runner can reach external hosts (GitHub,
+Docker Hub, PyPI) without issue.
 
 ### Impact
 
-Workflows that rely on `git fetch origin <ref>` or `actions/checkout` with
-`fetch-depth: 0` (full history) will hang or time out.
+Workflows that rely on `actions/checkout` with `fetch-depth: 0` (full history)
+or `git clone` will time out.
 
 Specifically:
 - `actions/checkout@v*` with `fetch-depth: 0` hangs (fetching full repo
-  history takes >30 s before hitting the timeout).
-- `git fetch origin main --depth=1` times out at ~15 s.
-- `git clone <url>` times out at ~15 s.
+  history takes >15 s before hitting the timeout).
+- `git clone <url>` hangs for the same reason.
+- `git fetch origin <ref> --depth=1` **succeeds** in ~16 s — this is the
+  working pattern.
 
 ### Affected workflows
 
 | Workflow | Issue | Workaround |
 |---|---|---|
-| `harness-replays.yml` detect-changes job | `git fetch origin main --depth=1` times out | Added `timeout 20` + graceful fallback to `run=true` (always run harness) per PR #441 |
+| `harness-replays.yml` detect-changes job | `fetch-depth: 0` + `git clone` time out | Added `timeout 20 git fetch origin base.ref --depth=1` + `continue-on-error: true` + fallback to `run=true` per PR #441 |
 | `publish-workspace-server-image.yml` | In-image `git clone` of workspace templates | Pre-clone manifest deps before compose build (Task #173 pattern) |
 | Any workflow using `fetch-depth: 0` | Full history fetch times out | Use `fetch-depth: 1` + explicit `git fetch` for needed refs |
 
@@ -46,15 +46,17 @@ Specifically:
 ```bash
 # From inside the runner (add as a debug step):
 timeout 20 git fetch origin main --depth=1
-# If this times out: runner cannot reach git remote
+# If this SUCCEEDS (~16s): runner can reach the git remote — the repo is
+#   too large for full-history fetch.
+# If this times out: true network isolation (unlikely; check firewall rules).
 ```
 
 ### Verification
 
-Confirmed 2026-05-11 by running `timeout 20 git fetch origin main --depth=1`
-in the `detect-changes` job of `harness-replays.yml` — consistently times
-out at 15 s. Runner can reach `https://api.github.com` and `https://pypi.org`
-without issue.
+Confirmed 2026-05-11 by running `timeout 20 git fetch origin base.ref --depth=1`
+in the `detect-changes` job of `harness-replays.yml` — **succeeds in ~16 s**.
+Runner can reach `https://api.github.com` and `https://pypi.org` without issue,
+confirming this is a repo-size constraint, not network isolation.
 
 ### References
 
@@ -139,12 +141,51 @@ files. Secrets and variables are repo-level.
 
 ---
 
-## `fetch-depth: 0` on `actions/checkout` times out
+## Gitea combined status reports `failure` when all contexts are `null`
 
-`actions/checkout` with `fetch-depth: 0` triggers a full repo history fetch
-which exceeds the runner's network timeout to the git remote (~15 s).
+### Finding
 
-**Workaround**: Use `fetch-depth: 1` (default) and add explicit
-`git fetch origin <ref> --depth=1` for any additional refs needed.
+When ALL individual status contexts for a commit have `state: null` (no runner
+has reported yet), Gitea reports the combined commit status as `failure`. This
+is a Gitea Actions bug — it conflates "no status reported yet" with "failed".
 
-**Reference**: PR #441 detect-changes fetch step.
+### Impact
+
+- The `main-red-watchdog` workflow opens a `[main-red]` issue for every
+  scheduled workflow run where the combined state is `failure` — even when
+  the failure is entirely due to Gitea's combined-status bug.
+- This causes spurious `[main-red]` issues that waste SRE time investigating
+  non-existent failures.
+- **This is especially confusing for `schedule:`-only workflows** (canary,
+  sweep jobs, synth-E2E): Gitea attributes their scheduled runs to `main`'s
+  HEAD commit, so if a scheduled run fires while all contexts are still
+  `state: null`, the watchdog opens a `[main-red]` issue on the latest main
+  commit even though that commit itself is perfectly fine.
+
+### How to diagnose
+
+Always check the **individual context `state` fields**, not the combined
+`state`/`combined_state`. In the `/repos/{org}/{repo}/commits/{sha}/statuses`
+API response, look for `"state": null` on every entry — if all are null, the
+combined `failure` is Gitea's bug, not a real CI failure.
+
+```json
+{
+  "combined_state": "failure",   // ← Gitea bug when all are null
+  "contexts": [
+    { "context": "CI / Lint", "state": null },  // still running
+    { "context": "CI / Test", "state": null }   // still running
+  ]
+}
+```
+
+### Affected workflows
+
+All workflows, but especially `schedule:`-only workflows that run on `main`.
+The main-red-watchdog (`.gitea/workflows/main-red-watchdog.yml`) is the
+primary consumer of combined status and is affected.
+
+### References
+
+- Issue #481: first real-world case of this bug (2026-05-11)
+- `feedback_no_such_thing_as_flakes`: watchdog directive
