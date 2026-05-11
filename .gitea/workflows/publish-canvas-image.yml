@@ -54,7 +54,11 @@ env:
 jobs:
   build-and-push:
     name: Build & push canvas image
-    runs-on: ubuntu-latest
+    # NOTE: infra-sre must register a `docker` label on every act-runner that
+    # mounts /var/run/docker.sock (group=docker, socket perms 660+). Jobs without
+    # the `docker` label land on runners that lack the socket and fail here.
+    # See issue #576.
+    runs-on: [ubuntu-latest, docker]
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
     continue-on-error: true
     steps:
@@ -79,8 +83,10 @@ jobs:
         run: |
           set -euo pipefail
           echo "::group::Docker daemon health check"
+          echo "Runner: ${HOSTNAME:-unknown}"
           docker info 2>&1 | head -5 || {
             echo "::error::Docker daemon is not accessible at /var/run/docker.sock"
+            echo "::error::Runner: ${HOSTNAME:-unknown}"
             echo "::error::Check: (1) daemon running, (2) runner user in docker group, (3) sock perms 660+"
             exit 1
           }
