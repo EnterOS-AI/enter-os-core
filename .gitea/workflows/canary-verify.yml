@@ -62,8 +62,6 @@ env:
   TENANT_IMAGE_NAME: 153263036946.dkr.ecr.us-east-2.amazonaws.com/molecule-ai/platform-tenant
   # CP endpoint for redeploy-fleet (used in promote step below).
   CP_URL: ${{ vars.CP_URL || 'https://staging-api.moleculesai.app' }}
-
-env:
   GITHUB_SERVER_URL: https://git.moleculesai.app
 
 jobs:
