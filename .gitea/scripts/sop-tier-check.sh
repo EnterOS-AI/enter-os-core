@@ -44,6 +44,32 @@
 
 set -euo pipefail
 
+# Ensure jq is available. Runners may not have it pre-installed, and the
+# workflow-level jq install can fail on runners with network restrictions
+# (GitHub releases not reachable). This fallback is idempotent — no-op
+# when jq is already on PATH.
+if ! command -v jq >/dev/null 2>&1; then
+  echo "::notice::jq not found on PATH — attempting install..."
+  # Download jq binary; fall back to apt-get. Use subshell to isolate
+  # from set -e so a failed install doesn't exit the script.
+  (
+    timeout 60 curl -sSL \
+      "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64" \
+      -o /usr/local/bin/jq \
+    && chmod +x /usr/local/bin/jq \
+    && echo "::notice::jq binary installed: $(/usr/local/bin/jq --version)" \
+  ) || {
+    apt-get update -qq && apt-get install -y -qq jq \
+    && echo "::notice::jq apt-installed: $(jq --version)"
+  }
+  # Verify jq is now available; if not, exit with clear error
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "::error::jq installation failed — neither binary download nor apt-get succeeded."
+    echo "::error::sop-tier-check requires jq for all JSON API parsing."
+    exit 1
+  fi
+fi
+
 debug() {
   if [ "${SOP_DEBUG:-}" = "1" ]; then
     echo "  [debug] $*" >&2
