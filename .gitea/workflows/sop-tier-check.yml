@@ -77,6 +77,23 @@ jobs:
           # works if we never check out PR HEAD. Same SHA the workflow
           # itself was loaded from.
           ref: ${{ github.event.pull_request.base.sha }}
+      - name: Install jq
+        # Gitea Actions runners (ubuntu-latest label) do not bundle jq.
+        # The sop-tier-check script uses jq for all JSON API parsing.
+        # Install jq before the script runs so sop-tier-check can pass.
+        #
+        # Method: download binary directly from GitHub releases (faster and
+        # more reliable than apt-get in containerized environments). Falls
+        # back to apt-get if the download fails. The smoke test confirms
+        # jq is on PATH before the main script runs.
+        run: |
+          set -e
+          timeout 60 curl -sSL \
+            "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64" \
+            -o /usr/local/bin/jq && chmod +x /usr/local/bin/jq \
+          || apt-get update -qq && apt-get install -y -qq jq
+          jq --version
+
       - name: Verify tier label + reviewer team membership
         env:
           # SOP_TIER_CHECK_TOKEN is the org-level secret for the
