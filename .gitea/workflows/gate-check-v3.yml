@@ -23,17 +23,14 @@ on:
   schedule:
     # Hourly: refresh all open PRs
     - cron: '8 * * * *'
+  # NOTE: `workflow_dispatch.inputs` block intentionally omitted.
+  # Gitea 1.22.6 parser rejects `workflow_dispatch.inputs.X` with
+  # "unknown on type" — it mis-treats the inputs sub-keys as top-level
+  # `on:` event types. Dropping the inputs block restores parsing.
+  # Manual dispatch from the Gitea UI works without the inputs schema
+  # (github.event.inputs.X returns empty); the script falls back to
+  # iterating all open PRs when PR_NUMBER is empty.
   workflow_dispatch:
-    inputs:
-      pr_number:
-        description: 'PR number to check (omit for all open PRs)'
-        required: false
-        type: string
-      post_comment:
-        description: 'Post comment on PR'
-        required: false
-        type: string
-        default: 'true'
 
 env:
   GITHUB_SERVER_URL: https://git.moleculesai.app
