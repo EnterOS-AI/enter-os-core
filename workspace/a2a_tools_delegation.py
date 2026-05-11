@@ -47,6 +47,7 @@ from a2a_client import (
     send_a2a_message,
 )
 from a2a_tools_rbac import auth_headers_for_heartbeat as _auth_headers_for_heartbeat
+from _sanitize_a2a import sanitize_a2a_result
 
 
 # RFC #2829 PR-5 cutover constants. The poll cadence + timeout are
