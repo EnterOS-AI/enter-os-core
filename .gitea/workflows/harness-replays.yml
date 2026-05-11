@@ -85,20 +85,22 @@ jobs:
           fi
 
           # Determine base and head refs for the Compare API call.
-          # Gitea Compare API requires branch/tag names (SHAs return BaseNotExist).
-          # Pull request: base.ref + head.ref are in the event payload.
-          # Push: github.ref → extract branch name for the Compare API.
+          # Gitea Compare API accepts branch names OR commit SHAs as base/head.
+          # Pull request: base.ref + head.ref are in the event payload (branch names).
+          # Push: github.event.before (SHA of previous tip) as BASE, $GITHUB_REF
+          #       (branch name) as HEAD. These are different, so the Compare API
+          #       returns the actual diff — unlike the broken form which set both
+          #       BASE and HEAD to the same branch name, making
+          #       "compare/main...main" always return zero files.
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             BASE="${{ github.event.pull_request.base.ref }}"
             HEAD="${{ github.event.pull_request.head.ref }}"
           elif [ -n "${{ github.event.before }}" ] && \
                ! echo "${{ github.event.before }}" | grep -qE '^0+$'; then
-            # Extract branch name from refs/heads/main -> main
-            BASE_REF="${GITHUB_REF#refs/heads/}"
-            BASE_REF="${BASE_REF:-main}"
+            # Push event: BASE = previous tip (SHA), HEAD = current branch name.
+            BASE="${{ github.event.before }}"
             HEAD_REF="${GITHUB_REF#refs/heads/}"
-            BASE="$BASE_REF"
-            HEAD="$HEAD_REF"
+            HEAD="${HEAD_REF:-main}"
           else
             # New branch or github.event.before unavailable — run everything.
             echo "run=true" >> "$GITHUB_OUTPUT"
