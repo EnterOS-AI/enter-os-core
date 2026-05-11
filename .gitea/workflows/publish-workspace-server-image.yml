@@ -96,8 +96,11 @@ jobs:
           # 2026-05-08 migration). The token is only needed for private repos.
           # Do NOT require it — a missing secret would fail the build unnecessarily.
           mkdir -p .tenant-bundle-deps
+          # Strip JSON5 comments before jq parsing — Integration Tester appends
+          # `// Triggered by ...` which breaks `jq` in clone-manifest.sh.
+          sed '/^[[:space:]]*\/\//d' manifest.json > .manifest-stripped.json
           bash scripts/clone-manifest.sh \
-            manifest.json \
+            .manifest-stripped.json \
             .tenant-bundle-deps/workspace-configs-templates \
             .tenant-bundle-deps/org-templates \
             .tenant-bundle-deps/plugins
