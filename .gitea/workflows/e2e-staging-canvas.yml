@@ -124,7 +124,10 @@ jobs:
     env:
       CANVAS_E2E_STAGING: '1'
       MOLECULE_CP_URL: https://staging-api.moleculesai.app
-      MOLECULE_ADMIN_TOKEN: ${{ secrets.MOLECULE_STAGING_ADMIN_TOKEN }}
+      # 2026-05-11: secret canonicalised from MOLECULE_STAGING_ADMIN_TOKEN
+      # (dead in org secret store) to CP_STAGING_ADMIN_API_TOKEN per
+      # internal#322 — see this PR for the cross-workflow sweep.
+      MOLECULE_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
 
     defaults:
       run:
@@ -145,7 +148,7 @@ jobs:
         if: needs.detect-changes.outputs.canvas == 'true'
         run: |
           if [ -z "$MOLECULE_ADMIN_TOKEN" ]; then
-            echo "::error::Missing MOLECULE_STAGING_ADMIN_TOKEN"
+            echo "::error::Missing CP_STAGING_ADMIN_API_TOKEN"
             exit 2
           fi
 
@@ -207,7 +210,7 @@ jobs:
       - name: Teardown safety net
         if: always() && needs.detect-changes.outputs.canvas == 'true'
         env:
-          ADMIN_TOKEN: ${{ secrets.MOLECULE_STAGING_ADMIN_TOKEN }}
+          ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
         run: |
           set +e
           STATE_FILE=".playwright-staging-state.json"

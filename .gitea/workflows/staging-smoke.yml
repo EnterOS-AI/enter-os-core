@@ -52,8 +52,20 @@ jobs:
   smoke:
     name: Staging SaaS smoke
     runs-on: ubuntu-latest
-    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
-    continue-on-error: true
+    # NOTE: Phase 3 (RFC #219 §1) `continue-on-error: true` removed
+    # 2026-05-11. The "surface broken workflows without blocking"
+    # rationale was correctly applied to advisory/lint workflows but
+    # wrong for this smoke — it is the 30-min canary cadence for the
+    # entire staging SaaS stack, and silent failure here masks the
+    # exact regressions the smoke exists to surface (AMI rot, CF cert
+    # drift, WorkOS session breakage, secret rotations). Same class of
+    # failure as PR#461 (`sweep-stale-e2e-orgs`) where Phase-3 silent
+    # failure leaked EC2. The four other `e2e-staging-*` workflows
+    # KEEP `continue-on-error: true` per RFC #219 §1 — they are
+    # advisory and matrix-style; this one is the canary. A follow-up
+    # `notify-failure` step below also surfaces breakage to ops even
+    # if branch-protection wiring is adjusted to keep this off the
+    # required-checks list.
     # 25 min headroom over the 15-min TLS-readiness deadline in
     # tests/e2e/test_staging_full_saas.sh (#2107). Without the buffer
     # the job is killed at the wall-clock 15:00 mark BEFORE the bash
@@ -65,7 +77,10 @@ jobs:
 
     env:
       MOLECULE_CP_URL: https://staging-api.moleculesai.app
-      MOLECULE_ADMIN_TOKEN: ${{ secrets.MOLECULE_STAGING_ADMIN_TOKEN }}
+      # 2026-05-11: secret canonicalised from MOLECULE_STAGING_ADMIN_TOKEN
+      # (dead in org secret store) to CP_STAGING_ADMIN_API_TOKEN per
+      # internal#322 — see this PR for the cross-workflow sweep.
+      MOLECULE_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
       # MiniMax is the smoke's PRIMARY LLM auth path post-2026-05-04.
       # Switched from hermes+OpenAI after #2578 (the staging OpenAI key
       # account went over quota and stayed dead for 36+ hours, taking
@@ -111,7 +126,7 @@ jobs:
       - name: Verify admin token present
         run: |
           if [ -z "$MOLECULE_ADMIN_TOKEN" ]; then
-            echo "::error::MOLECULE_STAGING_ADMIN_TOKEN not set"
+            echo "::error::CP_STAGING_ADMIN_API_TOKEN not set"
             exit 2
           fi
 
@@ -241,7 +256,7 @@ jobs:
       - name: Teardown safety net
         if: always()
         env:
-          ADMIN_TOKEN: ${{ secrets.MOLECULE_STAGING_ADMIN_TOKEN }}
+          ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
         run: |
           set +e
           # Slug prefix matches what test_staging_full_saas.sh emits
@@ -316,3 +331,16 @@ jobs:
             echo "::warning::smoke teardown left ${#leaks[@]} leak(s): ${leaks[*]}"
           fi
           exit 0
+
+      - name: Notify on smoke failure
+        # Fail-loud companion to dropping `continue-on-error: true`.
+        # The Open-issue-on-failure step above handles the human-facing
+        # alert; this step emits a clearly-tagged ::error:: line that
+        # log-tail consumers (Loki SOPRefireRule, orchestrator triage
+        # loop) can grep on. Mirrors PR#461's sweep-stale-e2e-orgs
+        # pattern. Runs AFTER the teardown safety net (which is
+        # if: always()) so failures don't suppress cleanup.
+        if: failure()
+        run: |
+          echo "::error::staging-smoke FAILED — staging SaaS canary is red. See prior step logs + the auto-filed alert issue. Common causes: (a) CP_STAGING_ADMIN_API_TOKEN secret missing/rotated, (b) staging-api.moleculesai.app 5xx, (c) MiniMax/Anthropic LLM key dead, (d) AMI/CF/WorkOS drift. The 30-min cron will retry, but a chronic red here indicates the staging SaaS stack is broken end-to-end."
+          exit 1

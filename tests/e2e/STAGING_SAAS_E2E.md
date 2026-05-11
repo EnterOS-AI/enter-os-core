@@ -49,7 +49,15 @@ Runs the harness with `E2E_INTENTIONAL_FAILURE=1`, which poisons the tenant admi
 
 Set in **Settings → Secrets and variables → Actions → Repository secrets**:
 
-### `MOLECULE_STAGING_ADMIN_TOKEN`
+### `CP_STAGING_ADMIN_API_TOKEN`
+
+> **Historical-rename note (2026-05-11):** previously named
+> `MOLECULE_STAGING_ADMIN_TOKEN`. Canonicalised to
+> `CP_STAGING_ADMIN_API_TOKEN` per internal#322 (the Railway staging
+> service exposes it as `CP_ADMIN_API_TOKEN`; the `CP_*` repo-secret
+> prefix matches the upstream env name + makes the service it talks
+> to obvious in workflow YAMLs). See the original PR for the
+> cross-workflow sweep.
 
 The `CP_ADMIN_API_TOKEN` env currently set on the Railway staging molecule-platform → controlplane service.
 

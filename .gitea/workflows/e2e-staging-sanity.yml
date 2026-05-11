@@ -42,7 +42,10 @@ jobs:
 
     env:
       MOLECULE_CP_URL: https://staging-api.moleculesai.app
-      MOLECULE_ADMIN_TOKEN: ${{ secrets.MOLECULE_STAGING_ADMIN_TOKEN }}
+      # 2026-05-11: secret canonicalised from MOLECULE_STAGING_ADMIN_TOKEN
+      # (dead in org secret store) to CP_STAGING_ADMIN_API_TOKEN per
+      # internal#322 — see this PR for the cross-workflow sweep.
+      MOLECULE_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
       E2E_MODE: smoke
       E2E_RUNTIME: hermes
       E2E_RUN_ID: "sanity-${{ github.run_id }}"
@@ -54,7 +57,7 @@ jobs:
       - name: Verify admin token present
         run: |
           if [ -z "$MOLECULE_ADMIN_TOKEN" ]; then
-            echo "::error::MOLECULE_STAGING_ADMIN_TOKEN not set"
+            echo "::error::CP_STAGING_ADMIN_API_TOKEN not set"
             exit 2
           fi
 
@@ -118,7 +121,7 @@ jobs:
       - name: Teardown safety net
         if: always()
         env:
-          ADMIN_TOKEN: ${{ secrets.MOLECULE_STAGING_ADMIN_TOKEN }}
+          ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
         run: |
           set +e
           orgs=$(curl -sS "$MOLECULE_CP_URL/cp/admin/orgs" \

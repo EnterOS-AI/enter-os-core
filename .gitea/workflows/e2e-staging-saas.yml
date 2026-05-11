@@ -86,7 +86,10 @@ jobs:
       # Single admin-bearer secret drives provision + tenant-token
       # retrieval + teardown. Configure in
       # Settings → Secrets and variables → Actions → Repository secrets.
-      MOLECULE_ADMIN_TOKEN: ${{ secrets.MOLECULE_STAGING_ADMIN_TOKEN }}
+      # 2026-05-11: secret canonicalised from MOLECULE_STAGING_ADMIN_TOKEN
+      # (dead in org secret store) to CP_STAGING_ADMIN_API_TOKEN per
+      # internal#322 — see this PR for the cross-workflow sweep.
+      MOLECULE_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
       # MiniMax is the PRIMARY LLM auth path post-2026-05-04. Switched
       # from hermes+OpenAI default after #2578 (the staging OpenAI key
       # account went over quota and stayed dead for 36+ hours, taking
@@ -122,7 +125,7 @@ jobs:
       - name: Verify admin token present
         run: |
           if [ -z "$MOLECULE_ADMIN_TOKEN" ]; then
-            echo "::error::MOLECULE_STAGING_ADMIN_TOKEN secret not set (Railway staging CP_ADMIN_API_TOKEN)"
+            echo "::error::CP_STAGING_ADMIN_API_TOKEN secret not set (Railway staging CP_ADMIN_API_TOKEN)"
             exit 2
           fi
           echo "Admin token present ✓"
@@ -189,7 +192,7 @@ jobs:
       - name: Teardown safety net (runs on cancel/failure)
         if: always()
         env:
-          ADMIN_TOKEN: ${{ secrets.MOLECULE_STAGING_ADMIN_TOKEN }}
+          ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
         run: |
           # Best-effort: find any e2e-YYYYMMDD-* orgs matching this run and
           # nuke them. Catches the case where the script died before
