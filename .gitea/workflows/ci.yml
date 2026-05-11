@@ -451,3 +451,77 @@ jobs:
             echo "      adjusting the floor with rationale in COVERAGE_FLOOR.md."
             exit 1
           fi
+
+  all-required:
+    # Aggregator sentinel — RFC internal#219 §2 (Phase 4 — closes internal#286).
+    #
+    # Single stable required-status name that branch protection points at;
+    # CI churns underneath in `needs:` without any protection edits. Mirrors
+    # the molecule-controlplane Phase 2a impl shipped in CP PR#112 and
+    # referenced by `internal#286` ("Phase 4 is a single small PR... mirrors
+    # CP's existing one").
+    #
+    # Closes the failure mode where status_check_contexts on molecule-core/main
+    # only listed `Secret scan` + `sop-tier-check` (the 2 meta-gates), so real
+    # `Platform (Go)` / `Canvas (Next.js)` / `Python Lint & Test` / `Shellcheck`
+    # red silently merged through. See internal#286 for the three concrete
+    # tonight-of-2026-05-11 incidents that prompted the emergency bump.
+    #
+    # Three properties of this job each close a failure mode:
+    #
+    #  1. `if: always()` — runs even when an upstream fails. Without it the
+    #     sentinel is `skipped` and protection treats that as missing → merge
+    #     ungated.
+    #
+    #  2. Assertion is `result == "success"` per dep, NOT `!= "failure"`.
+    #     A `skipped` upstream (job gated by `if:` evaluating false, matrix
+    #     entry that couldn't run) must NOT silently pass through.
+    #     `skipped`-as-green is exactly the failure mode this gate closes.
+    #
+    #  3. `needs:` is the canonical list of "what counts as required."
+    #     status_check_contexts will reference only `ci/all-required` (Step 5
+    #     follow-up — branch-protection PATCH is Owners-tier per
+    #     `feedback_never_admin_merge_bypass`, separate PR); a new job is
+    #     added simply by listing it in `needs:` here.
+    #     `.gitea/workflows/ci-required-drift.yml` files a [ci-drift] issue
+    #     hourly if this list diverges from status_check_contexts or from
+    #     audit-force-merge.yml's REQUIRED_CHECKS env (RFC §4 + §6).
+    #
+    # Excluded from `needs:`: `canvas-deploy-reminder` — gated by
+    # `if: ... github.event_name == 'push' && github.ref == 'refs/heads/main'`,
+    # so on PR events it's legitimately `skipped`. The drift detector
+    # explicitly excludes `github.event_name`-gated jobs from F1 (see
+    # `.gitea/scripts/ci-required-drift.py::ci_job_names`).
+    #
+    # NOTE: `continue-on-error: true` is intentionally NOT set here — Phase 3
+    # (parent PR for ci.yml port, RFC §1) sets it on the underlying build
+    # jobs to surface defects without blocking. The sentinel itself must
+    # hard-fail; that's the whole point.
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    needs:
+      - changes
+      - platform-build
+      - canvas-build
+      - shellcheck
+      - python-lint
+    if: always()
+    steps:
+      - name: Assert every required dependency succeeded
+        run: |
+          set -euo pipefail
+          # `needs.*.result` is one of: success | failure | cancelled | skipped
+          # We assert success per dep (not != failure) — see RFC §2 reasoning above.
+          results='${{ toJSON(needs) }}'
+          echo "$results"
+          echo "$results" | python3 -c '
+          import json, sys
+          ns = json.load(sys.stdin)
+          bad = [(k, v.get("result")) for k, v in ns.items() if v.get("result") != "success"]
+          if bad:
+              print(f"FAIL: jobs not green:", file=sys.stderr)
+              for k, r in bad:
+                  print(f"  - {k}: {r}", file=sys.stderr)
+              sys.exit(1)
+          print(f"OK: all {len(ns)} required jobs succeeded")
+          '
