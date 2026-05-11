@@ -211,16 +211,28 @@ def signal_1_comment_scan(pr_number: int, repo: str) -> dict:
             "verdict": latest["verdict"] if latest else "MISSING",
         }
 
-    # Compute gate verdict: APPROVED or N/A counts as pass
+    # Compute gate verdict using tier-specific logic:
+    # - tier:low / tier:high (OR gate): ANY positive = CLEAR, ANY negative = BLOCKED
+    # - tier:medium (AND gate): ALL must be positive = CLEAR, ANY negative = BLOCKED
     verdicts = [f["verdict"] for f in findings.values()]
     if not verdicts:
         gate_verdict = "N/A"
-    elif all(v in POSITIVE_VERDICTS for v in verdicts):
-        gate_verdict = "CLEAR"
-    elif any(v == "MISSING" for v in verdicts):
-        gate_verdict = "INCOMPLETE"
+    elif tier in ("tier:low", "tier:high"):
+        # OR gate: one positive is enough
+        if any(v in POSITIVE_VERDICTS for v in verdicts):
+            gate_verdict = "CLEAR"
+        elif any(v in ("BLOCKED", "CHANGES_REQUESTED", "COMMENT") for v in verdicts):
+            gate_verdict = "BLOCKED"
+        else:
+            gate_verdict = "INCOMPLETE"
     else:
-        gate_verdict = "BLOCKED"
+        # AND gate (tier:medium): all must be positive
+        if all(v in POSITIVE_VERDICTS for v in verdicts):
+            gate_verdict = "CLEAR"
+        elif any(v in ("BLOCKED", "CHANGES_REQUESTED", "COMMENT") for v in verdicts):
+            gate_verdict = "BLOCKED"
+        else:
+            gate_verdict = "INCOMPLETE"
 
     return {"signal": "agent_tag_comments", "results": findings, "verdict": gate_verdict, "tier": tier}
 
