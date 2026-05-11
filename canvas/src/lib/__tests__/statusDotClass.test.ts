@@ -55,10 +55,10 @@ describe("statusDotClass", () => {
 
 describe("TIER_CONFIG", () => {
   it("has entries for all four tier levels", () => {
-    expect(TIER_CONFIG).toHaveProperty(1);
-    expect(TIER_CONFIG).toHaveProperty(2);
-    expect(TIER_CONFIG).toHaveProperty(3);
-    expect(TIER_CONFIG).toHaveProperty(4);
+    expect(TIER_CONFIG).toHaveProperty("1");
+    expect(TIER_CONFIG).toHaveProperty("2");
+    expect(TIER_CONFIG).toHaveProperty("3");
+    expect(TIER_CONFIG).toHaveProperty("4");
   });
 
   it("each tier has label, color, and border fields", () => {
