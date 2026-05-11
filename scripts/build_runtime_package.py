@@ -50,6 +50,7 @@ from pathlib import Path
 # without updating this set), which broke every workspace startup with
 # `ModuleNotFoundError: No module named 'transcript_auth'`.
 TOP_LEVEL_MODULES = {
+    "_sanitize_a2a",
     "a2a_cli",
     "a2a_client",
     "a2a_executor",
