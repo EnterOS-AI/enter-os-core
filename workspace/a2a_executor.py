@@ -51,6 +51,7 @@ from shared_runtime import (
 from executor_helpers import (
     collect_outbound_files,
     extract_attached_files,
+    read_delegation_results,
 )
 from builtin_tools.telemetry import (
     A2A_TASK_ID,
@@ -215,6 +216,17 @@ class LangGraphA2AExecutor(AgentExecutor):
           3. Message(final_text)                      — terminal event
         """
         user_input = extract_message_text(context)
+        # Inject delegation results from prior turns. Heartbeat writes
+        # completed delegation rows to DELEGATION_RESULTS_FILE and sends
+        # a self-message to wake the agent; this consumes the file and
+        # surfaces the results as context so the agent can act on them
+        # without needing an explicit check_task_status call.
+        # Results are prepended so they are visible even when the
+        # self-message text is overwritten by a subsequent user message.
+        pending_results = read_delegation_results()
+        if pending_results:
+            logger.info("A2A execute: injecting %d delegation result(s)", pending_results.count("\n") + 1)
+            user_input = f"[Delegation results available]\n{pending_results}\n\n{user_input}"
         # Pull attached files from A2A message parts (kind: "file") and
         # append a manifest to the prompt so the agent knows they exist.
         # LangGraph tools (filesystem, bash, skills) can then open the
