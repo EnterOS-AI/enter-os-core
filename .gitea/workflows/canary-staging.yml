@@ -1,0 +1,310 @@
+name: Canary — staging SaaS smoke (every 30 min)
+
+# Ported from .github/workflows/canary-staging.yml on 2026-05-11 per RFC
+# internal#219 §1 sweep. Differences from the GitHub version:
+#   - Dropped `workflow_dispatch.inputs` (Gitea 1.22.6 parser rejects them
+#     per feedback_gitea_workflow_dispatch_inputs_unsupported).
+#   - Dropped `merge_group:` (no Gitea merge queue).
+#   - Dropped `environment:` blocks (Gitea has no environments).
+#   - Workflow-level env.GITHUB_SERVER_URL pinned per
+#     feedback_act_runner_github_server_url.
+#   - `continue-on-error: true` on each job (RFC §1 contract).
+#
+
+# Minimum viable health check: provisions one Hermes workspace on a fresh
+# staging org, sends one A2A message, verifies PONG, tears down. ~8 min
+# wall clock. Pages on failure by opening a GitHub issue; auto-closes the
+# issue on the next green run.
+#
+# The full-SaaS workflow (e2e-staging-saas.yml) covers the broader surface
+# but runs only on provisioning-critical pushes + nightly — this one
+# catches drift in the 30-min window between those runs (AMI health, CF
+# cert rotation, WorkOS session stability, etc.).
+#
+# Lean mode: E2E_MODE=canary skips the child workspace + HMA memory +
+# peers/activity checks. One parent workspace + one A2A turn is enough
+# to signal "SaaS stack end-to-end is alive."
+
+on:
+  schedule:
+    # Every 30 min. Cron on GitHub-hosted runners has a known drift of
+    # a few minutes under load — that's fine for a canary.
+    - cron: '*/30 * * * *'
+# Serialise with the full-SaaS workflow so they don't contend for the
+# same org-create quota on staging. Different group key from
+# e2e-staging-saas since we don't mind queueing canaries behind one
+# full run, but two canaries SHOULD queue against each other.
+concurrency:
+  group: canary-staging
+  cancel-in-progress: false
+
+permissions:
+  # Needed to open / close the alerting issue.
+  issues: write
+  contents: read
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  canary:
+    name: Canary smoke
+    runs-on: ubuntu-latest
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    continue-on-error: true
+    # 25 min headroom over the 15-min TLS-readiness deadline in
+    # tests/e2e/test_staging_full_saas.sh (#2107). Without the buffer
+    # the job is killed at the wall-clock 15:00 mark BEFORE the bash
+    # `fail` + diagnostic burst can fire, leaving every cancellation
+    # silent. Sibling staging E2E jobs run at 20-45 min — keeping
+    # canary tighter than them so a true wedge still surfaces here
+    # first.
+    timeout-minutes: 25
+
+    env:
+      MOLECULE_CP_URL: https://staging-api.moleculesai.app
+      MOLECULE_ADMIN_TOKEN: ${{ secrets.MOLECULE_STAGING_ADMIN_TOKEN }}
+      # MiniMax is the canary's PRIMARY LLM auth path post-2026-05-04.
+      # Switched from hermes+OpenAI after #2578 (the staging OpenAI key
+      # account went over quota and stayed dead for 36+ hours, taking
+      # the canary red the entire time). claude-code template's
+      # `minimax` provider routes ANTHROPIC_BASE_URL to
+      # api.minimax.io/anthropic and reads MINIMAX_API_KEY at boot —
+      # ~5-10x cheaper per token than gpt-4.1-mini AND on a separate
+      # billing account, so OpenAI quota collapse no longer wedges the
+      # canary. Mirrors the migration continuous-synth-e2e.yml made on
+      # 2026-05-03 (#265) for the same reason. tests/e2e/test_staging_
+      # full_saas.sh branches SECRETS_JSON on which key is present —
+      # MiniMax wins when set.
+      E2E_MINIMAX_API_KEY: ${{ secrets.MOLECULE_STAGING_MINIMAX_API_KEY }}
+      # Direct-Anthropic alternative for operators who don't want to
+      # set up a MiniMax account (priority below MiniMax — first
+      # non-empty wins in test_staging_full_saas.sh's secrets-injection
+      # block). See #2578 PR comment for the rationale.
+      E2E_ANTHROPIC_API_KEY: ${{ secrets.MOLECULE_STAGING_ANTHROPIC_API_KEY }}
+      # OpenAI fallback — kept wired so an operator-dispatched run with
+      # E2E_RUNTIME=hermes overridden via workflow_dispatch can still
+      # exercise the OpenAI path without re-editing the workflow.
+      E2E_OPENAI_API_KEY: ${{ secrets.MOLECULE_STAGING_OPENAI_KEY }}
+      E2E_MODE: canary
+      E2E_RUNTIME: claude-code
+      # Pin the canary to a specific MiniMax model rather than relying
+      # on the per-runtime default (which could resolve to "sonnet" →
+      # direct Anthropic and defeat the cost saving). M2.7-highspeed
+      # is "Token Plan only" but cheap-per-token and fast.
+      E2E_MODEL_SLUG: MiniMax-M2.7-highspeed
+      E2E_RUN_ID: "canary-${{ github.run_id }}"
+      # Debug-only: when an operator dispatches with keep_on_failure=true,
+      # the canary script's E2E_KEEP_ORG=1 path skips teardown so the
+      # tenant org + EC2 stay alive for SSM-based log capture. Cron runs
+      # never set this (the input only exists on workflow_dispatch) so
+      # unattended cron always tears down. See molecule-core#129
+      # failure mode #1 — capturing the actual exception requires
+      # docker logs from the live container.
+      E2E_KEEP_ORG: ${{ github.event.inputs.keep_on_failure == 'true' && '1' || '0' }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Verify admin token present
+        run: |
+          if [ -z "$MOLECULE_ADMIN_TOKEN" ]; then
+            echo "::error::MOLECULE_STAGING_ADMIN_TOKEN not set"
+            exit 2
+          fi
+
+      - name: Verify LLM key present
+        run: |
+          # Per-runtime key check — claude-code uses MiniMax; hermes /
+          # langgraph (operator-dispatched only) use OpenAI. Hard-fail
+          # rather than soft-skip per the lesson from synth E2E #2578:
+          # an empty key silently falls through to the wrong
+          # SECRETS_JSON branch and the canary fails 5 min later with
+          # a confusing auth error instead of the clean "secret
+          # missing" message at the top.
+          case "${E2E_RUNTIME}" in
+            claude-code)
+              # Either MiniMax OR direct-Anthropic works — first
+              # non-empty wins in the test script's secrets-injection
+              # priority chain. Operators only need to set ONE of these
+              # secrets; we don't force a choice between them.
+              if [ -n "${E2E_MINIMAX_API_KEY:-}" ]; then
+                required_secret_name="MOLECULE_STAGING_MINIMAX_API_KEY"
+                required_secret_value="${E2E_MINIMAX_API_KEY}"
+              elif [ -n "${E2E_ANTHROPIC_API_KEY:-}" ]; then
+                required_secret_name="MOLECULE_STAGING_ANTHROPIC_API_KEY"
+                required_secret_value="${E2E_ANTHROPIC_API_KEY}"
+              else
+                required_secret_name="MOLECULE_STAGING_MINIMAX_API_KEY or MOLECULE_STAGING_ANTHROPIC_API_KEY"
+                required_secret_value=""
+              fi
+              ;;
+            langgraph|hermes)
+              required_secret_name="MOLECULE_STAGING_OPENAI_KEY"
+              required_secret_value="${E2E_OPENAI_API_KEY:-}"
+              ;;
+            *)
+              echo "::warning::Unknown E2E_RUNTIME='${E2E_RUNTIME}' — skipping LLM-key check"
+              required_secret_name=""
+              required_secret_value="present"
+              ;;
+          esac
+          if [ -n "$required_secret_name" ] && [ -z "$required_secret_value" ]; then
+            echo "::error::${required_secret_name} secret not set for runtime=${E2E_RUNTIME} — A2A will fail at request time with 'No LLM provider configured'"
+            exit 2
+          fi
+          echo "LLM key present ✓ (runtime=${E2E_RUNTIME}, key=${required_secret_name}, len=${#required_secret_value})"
+
+      - name: Canary run
+        id: canary
+        run: bash tests/e2e/test_staging_full_saas.sh
+
+      # Alerting: open a sticky issue on the FIRST failure; comment on
+      # subsequent failures; auto-close on next green. Comment-on-existing
+      # de-duplicates so a single open issue accumulates the streak —
+      # ops sees one issue with N comments rather than N issues.
+      #
+      # Why no consecutive-failures threshold (e.g., wait 3 runs before
+      # filing): the prior threshold check used
+      # `github.rest.actions.listWorkflowRuns()` which Gitea 1.22.6 does
+      # not expose (returns 404). On Gitea Actions the threshold call
+      # ALWAYS failed, breaking the entire alerting step and going days
+      # silent on real regressions (38h+ chronic red on 2026-05-07/08
+      # before this fix; tracked in molecule-core#129). Filing on first
+      # failure is also better UX — we want to know about the first red,
+      # not wait 90 min for it to "count." Real flakes get one issue +
+      # a quick close-on-green; persistent reds accumulate comments.
+      - name: Open issue on failure (Gitea API)
+        if: failure()
+        env:
+          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ env.GITHUB_SERVER_URL }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          API="${SERVER_URL%/}/api/v1"
+          TITLE="Canary failing: staging SaaS smoke"
+          RUN_URL="${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
+
+          EXISTING=$(curl -fsS -H "Authorization: token $GITEA_TOKEN" \
+            "${API}/repos/${REPO}/issues?state=open&type=issues&limit=50" \
+            | jq -r --arg t "$TITLE" '.[] | select(.title==$t) | .number' | head -1)
+
+          if [ -n "$EXISTING" ]; then
+            curl -fsS -X POST -H "Authorization: token $GITEA_TOKEN" -H "Content-Type: application/json" \
+              "${API}/repos/${REPO}/issues/${EXISTING}/comments" \
+              -d "$(jq -nc --arg run "$RUN_URL" '{body: ("Canary still failing. " + $run)}')" >/dev/null
+            echo "Commented on existing issue #${EXISTING}"
+          else
+            NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            BODY=$(jq -nc --arg t "$TITLE" --arg now "$NOW" --arg run "$RUN_URL" \
+              '{title: $t, body: ("Canary run failed at " + $now + ".\n\nRun: " + $run + "\n\nThis issue auto-closes on the next green canary run. Consecutive failures add a comment here rather than a new issue.")}')
+            curl -fsS -X POST -H "Authorization: token $GITEA_TOKEN" -H "Content-Type: application/json" \
+              "${API}/repos/${REPO}/issues" -d "$BODY" >/dev/null
+            echo "Opened canary failure issue (first red)"
+          fi
+
+      - name: Auto-close canary issue on success (Gitea API)
+        if: success()
+        env:
+          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ env.GITHUB_SERVER_URL }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          API="${SERVER_URL%/}/api/v1"
+          TITLE="Canary failing: staging SaaS smoke"
+
+          NUMS=$(curl -fsS -H "Authorization: token $GITEA_TOKEN" \
+            "${API}/repos/${REPO}/issues?state=open&type=issues&limit=50" \
+            | jq -r --arg t "$TITLE" '.[] | select(.title==$t) | .number')
+
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          for N in $NUMS; do
+            curl -fsS -X POST -H "Authorization: token $GITEA_TOKEN" -H "Content-Type: application/json" \
+              "${API}/repos/${REPO}/issues/${N}/comments" \
+              -d "$(jq -nc --arg now "$NOW" '{body: ("Canary recovered at " + $now + ". Closing.")}')" >/dev/null
+            curl -fsS -X PATCH -H "Authorization: token $GITEA_TOKEN" -H "Content-Type: application/json" \
+              "${API}/repos/${REPO}/issues/${N}" -d '{"state":"closed"}' >/dev/null
+            echo "Closed recovered canary issue #${N}"
+          done
+
+      - name: Teardown safety net
+        if: always()
+        env:
+          ADMIN_TOKEN: ${{ secrets.MOLECULE_STAGING_ADMIN_TOKEN }}
+        run: |
+          set +e
+          # Slug prefix matches what test_staging_full_saas.sh emits
+          # in canary mode:
+          #   SLUG="e2e-canary-$(date +%Y%m%d)-${RUN_ID_SUFFIX}"
+          # Earlier this was `e2e-{today}-canary-` — that was the
+          # full-mode pattern (date FIRST, mode SECOND); canary slugs
+          # have mode FIRST, date SECOND. The mismatch silently
+          # never matched, leaving every cancelled-canary EC2 alive
+          # until the once-an-hour sweep eventually caught it
+          # (incident 2026-04-26 21:03Z: 1h25m EC2 leak before manual
+          # cleanup; same gap on three earlier cancellations today).
+          orgs=$(curl -sS "$MOLECULE_CP_URL/cp/admin/orgs" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" 2>/dev/null \
+            | python3 -c "
+          import json, sys, os, datetime
+          run_id = os.environ.get('GITHUB_RUN_ID', '')
+          d = json.load(sys.stdin)
+          # Scope to slugs from THIS canary run when GITHUB_RUN_ID is
+          # available; the canary workflow sets E2E_RUN_ID='canary-\${run_id}'
+          # so the slug suffix is '-canary-\${run_id}-...'. Mirrors the
+          # full-mode safety net's per-run scoping (e2e-staging-saas.yml)
+          # added after the 2026-04-21 cross-run cleanup incident.
+          # Sweep both today AND yesterday's UTC dates so a run that
+          # crosses midnight still cleans up its own slug — see the
+          # 2026-04-26→27 canvas-safety-net incident.
+          today = datetime.date.today()
+          yesterday = today - datetime.timedelta(days=1)
+          dates = (today.strftime('%Y%m%d'), yesterday.strftime('%Y%m%d'))
+          if run_id:
+              prefixes = tuple(f'e2e-canary-{d}-canary-{run_id}' for d in dates)
+          else:
+              prefixes = tuple(f'e2e-canary-{d}-' for d in dates)
+          candidates = [o['slug'] for o in d.get('orgs', [])
+                        if any(o.get('slug','').startswith(p) for p in prefixes)
+                        and o.get('status') not in ('purged',)]
+          print('\n'.join(candidates))
+          " 2>/dev/null)
+          # Per-slug DELETE with HTTP-code verification. The previous
+          # `... >/dev/null || true` swallowed every failure, so a 5xx
+          # or timeout from CP looked identical to "successfully cleaned
+          # up" and the tenant kept eating ~2 vCPU until the hourly
+          # stale sweep caught it (up to 2h later). Now we capture the
+          # response code and surface non-2xx as a workflow warning, so
+          # the run page shows which slug leaked. We still don't `exit 1`
+          # on cleanup failure — a single-canary cleanup miss shouldn't
+          # fail-flag the canary itself when the actual smoke check
+          # passed. The sweep-stale-e2e-orgs cron (now every 15 min,
+          # 30-min threshold) is the safety net for whatever slips past.
+          # See molecule-controlplane#420.
+          leaks=()
+          for slug in $orgs; do
+            # Tempfile-routed -w + set +e/-e prevents curl-exit-code
+            # pollution of the captured status (lint-curl-status-capture.yml).
+            set +e
+            curl -sS -o /tmp/canary-cleanup.out -w "%{http_code}" \
+              -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
+              -H "Authorization: Bearer $ADMIN_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"confirm\":\"$slug\"}" >/tmp/canary-cleanup.code
+            set -e
+            code=$(cat /tmp/canary-cleanup.code 2>/dev/null || echo "000")
+            if [ "$code" = "200" ] || [ "$code" = "204" ]; then
+              echo "[teardown] deleted $slug (HTTP $code)"
+            else
+              echo "::warning::canary teardown for $slug returned HTTP $code — sweep-stale-e2e-orgs will catch it within ~45 min. Body: $(head -c 300 /tmp/canary-cleanup.out 2>/dev/null)"
+              leaks+=("$slug")
+            fi
+          done
+          if [ ${#leaks[@]} -gt 0 ]; then
+            echo "::warning::canary teardown left ${#leaks[@]} leak(s): ${leaks[*]}"
+          fi
+          exit 0

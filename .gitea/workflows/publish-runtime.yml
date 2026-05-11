@@ -207,13 +207,23 @@ jobs:
 
           # Stage (b): download wheel + SHA256 compare against what we built.
           # Catches Fastly stale-content serving old bytes under a new version URL.
-          HASH=$(python -m pip download \
-                    --no-deps \
-                    --no-cache-dir \
-                    --dest /tmp/wheel-probe \
-                    "molecule-ai-workspace-runtime==${RUNTIME_VERSION}" \
-                    2>/dev/null \
-                 && sha256sum /tmp/wheel-probe/*.whl | awk '{print $1}')
+          #
+          # Caught run 5196 (first-ever successful publish, 2026-05-11): the
+          # previous one-liner `HASH=$(pip download ... && sha256sum ...)`
+          # captured pip's stdout (`Collecting molecule-ai-workspace-runtime
+          # ==X.Y.Z`) into HASH, then the SHA comparison failed against the
+          # leaked `Collecting...` string. `2>/dev/null` silences stderr but
+          # NOT stdout; pip writes its progress to stdout by default.
+          # Fix: split into two steps, silence pip's stdout explicitly, capture
+          # only sha256sum's output into HASH.
+          python -m pip download \
+            --no-deps \
+            --no-cache-dir \
+            --dest /tmp/wheel-probe \
+            --quiet \
+            "molecule-ai-workspace-runtime==${RUNTIME_VERSION}" \
+            >/dev/null 2>&1
+          HASH=$(sha256sum /tmp/wheel-probe/*.whl | awk '{print $1}')
           if [ "$HASH" != "$EXPECTED_SHA256" ]; then
             echo "::error::PyPI propagated $RUNTIME_VERSION but wheel content SHA256 mismatch."
             echo "::error::Expected: $EXPECTED_SHA256"
