@@ -43,11 +43,17 @@ on:
     tags:
       - "runtime-v*"
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Version to publish (e.g. 0.1.6). Required for manual dispatch."
-        required: true
-        type: string
+  # 2026-05-11 (root cause of #351 / 0 runs ever):
+  # Gitea 1.22.6's workflow parser rejects `workflow_dispatch.inputs.version`
+  # with "unknown on type" — it mis-treats the inputs sub-keys as top-level
+  # `on:` event types. Log line:
+  #   actions/workflows.go:DetectWorkflows() [W] ignore invalid workflow
+  #   "publish-runtime.yml": unknown on type: map["version": {...}]
+  # That `[W] ignore invalid workflow` is silent UX — the workflow never
+  # registers, so it never fires for ANY event (push.tags included).
+  # Removing the inputs block restores parsing. Manual dispatch from the
+  # Gitea UI now triggers the PyPI auto-bump fallback in `Derive version`
+  # below (no `inputs.version` to read).
 
 permissions:
   contents: read
@@ -72,19 +78,15 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Derive version (tag, manual input, or PyPI auto-bump)
+      - name: Derive version (tag or PyPI auto-bump)
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.version }}"
-          elif echo "$GITHUB_REF" | grep -q "^refs/tags/runtime-v"; then
+          if echo "$GITHUB_REF" | grep -q "^refs/tags/runtime-v"; then
             # Tag is `runtime-vX.Y.Z` — strip the prefix.
             VERSION="${GITHUB_REF#refs/tags/runtime-v}"
           else
-            # Fallback: derive from PyPI latest + patch bump.
-            # Used by the restored `push.branches: [main, staging]` +
-            # `paths: workspace/**` auto-bump trigger (issue #348). Also kept
-            # for workflow_dispatch invocations that omit the version input.
+            # workflow_dispatch path (no inputs supported on Gitea 1.22.6) or
+            # any other non-tag trigger: derive from PyPI latest + patch bump.
             LATEST=$(curl -fsS --retry 3 https://pypi.org/pypi/molecule-ai-workspace-runtime/json \
               | python -c "import sys,json; print(json.load(sys.stdin)['info']['version'])")
             MAJOR=$(echo "$LATEST" | cut -d. -f1)
