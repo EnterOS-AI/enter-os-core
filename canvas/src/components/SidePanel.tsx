@@ -63,9 +63,21 @@ export function SidePanel() {
       ? parsed
       : SIDEPANEL_DEFAULT_WIDTH;
   });
+  // On mobile (< 640px viewport) the configured width exceeds the screen,
+  // so the panel renders off-canvas-left. Force full-viewport width and
+  // disable resize on small screens; restore configured width on desktop.
+  const [isMobile, setIsMobile] = useState(false);
   useEffect(() => {
-    setSidePanelWidth(width);
-  }, [width, setSidePanelWidth]);
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(max-width: 639px)");
+    const update = () => setIsMobile(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+  useEffect(() => {
+    setSidePanelWidth(isMobile ? 0 : width);
+  }, [width, isMobile, setSidePanelWidth]);
   const widthRef = useRef(width); // tracks live drag value for the mouseup handler
   const dragging = useRef(false);
   const startX = useRef(0);
@@ -137,24 +149,28 @@ export function SidePanel() {
 
   return (
     <div
-      className="fixed top-0 right-0 h-full bg-surface/95 backdrop-blur-xl border-l border-line/50 flex flex-col z-50 shadow-2xl shadow-black/50 animate-in slide-in-from-right duration-200"
-      style={{ width }}
+      className={`fixed top-0 right-0 h-full bg-surface/95 backdrop-blur-xl border-line/50 flex flex-col z-50 shadow-2xl shadow-black/50 animate-in slide-in-from-right duration-200 ${
+        isMobile ? "left-0 w-screen" : "border-l"
+      }`}
+      style={isMobile ? undefined : { width }}
     >
-      {/* Resize handle */}
-      <div
-        role="separator"
-        aria-label="Resize workspace panel"
-        aria-valuenow={width}
-        aria-valuemin={SIDEPANEL_MIN_WIDTH}
-        aria-valuemax={SIDEPANEL_MAX_WIDTH}
-        aria-orientation="vertical"
-        tabIndex={0}
-        onMouseDown={onMouseDown}
-        onKeyDown={onResizeKeyDown}
-        className="absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-accent/30 active:bg-accent/50 transition-colors z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-inset"
-      />
+      {/* Resize handle — desktop only (no point resizing a full-screen mobile panel) */}
+      {!isMobile && (
+        <div
+          role="separator"
+          aria-label="Resize workspace panel"
+          aria-valuenow={width}
+          aria-valuemin={SIDEPANEL_MIN_WIDTH}
+          aria-valuemax={SIDEPANEL_MAX_WIDTH}
+          aria-orientation="vertical"
+          tabIndex={0}
+          onMouseDown={onMouseDown}
+          onKeyDown={onResizeKeyDown}
+          className="absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-accent/30 active:bg-accent/50 transition-colors z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-inset"
+        />
+      )}
       {/* Header */}
-      <div className="flex items-center justify-between px-5 py-4 border-b border-line/40 bg-surface-sunken/30">
+      <div className="flex items-center justify-between px-4 sm:px-5 py-4 border-b border-line/40 bg-surface-sunken/30">
         <div className="flex items-center gap-3 min-w-0">
           <div className="relative">
             <StatusDot status={node.data.status} size="md" />
@@ -190,7 +206,7 @@ export function SidePanel() {
       </div>
 
       {/* Capability summary */}
-      <div className="px-5 py-3 border-b border-line/40 bg-surface-sunken/20">
+      <div className="px-4 sm:px-5 py-3 border-b border-line/40 bg-surface-sunken/20">
         <div className="flex flex-wrap gap-2">
           <MetaPill label="Tier" value={`T${node.data.tier}`} />
           <MetaPill label="Runtime" value={capability.runtime || "unknown"} />
@@ -295,8 +311,8 @@ export function SidePanel() {
       </div>
 
       {/* Footer — workspace ID */}
-      <div className="px-5 py-2 border-t border-line/40 bg-surface-sunken/20">
-        <span className="text-[9px] font-mono text-ink-mid select-all">
+      <div className="px-4 sm:px-5 py-2 border-t border-line/40 bg-surface-sunken/20">
+        <span className="text-[9px] font-mono text-ink-mid select-all block truncate">
           {selectedNodeId}
         </span>
       </div>
