@@ -360,7 +360,7 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
                 setDebouncedQuery('');
               }}
               aria-label="Clear search"
-              className="absolute right-2 text-ink-mid hover:text-ink transition-colors text-sm leading-none"
+              className="absolute right-2 text-ink-mid hover:text-ink transition-colors text-sm leading-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface rounded"
             >
               ×
             </button>
@@ -381,7 +381,7 @@ export function MemoryInspectorPanel({ workspaceId }: Props) {
           type="button"
           onClick={loadEntries}
           disabled={pluginUnavailable}
-          className="px-2 py-1 text-[11px] bg-surface-card hover:bg-surface-card text-ink-mid rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          className="px-2 py-1 text-[11px] bg-surface-card hover:bg-surface-card text-ink-mid rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
           aria-label="Refresh memories"
         >
           ↻ Refresh
@@ -515,7 +515,7 @@ function MemoryEntryRow({ entry, onDelete }: MemoryEntryRowProps) {
       {/* Header row */}
       <button
         type="button"
-        className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-surface-card/30 transition-colors"
+        className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-surface-card/30 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
         onClick={() => setExpanded((prev) => !prev)}
         aria-expanded={expanded}
         aria-controls={bodyId}
@@ -629,7 +629,7 @@ function MemoryEntryRow({ entry, onDelete }: MemoryEntryRowProps) {
                 onDelete();
               }}
               aria-label="Forget memory"
-              className="text-[10px] px-2 py-0.5 bg-red-950/40 hover:bg-red-900/50 border border-red-900/30 rounded text-bad transition-colors shrink-0"
+              className="text-[10px] px-2 py-0.5 bg-red-950/40 hover:bg-red-900/50 border border-red-900/30 rounded text-bad transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
             >
               Forget
             </button>

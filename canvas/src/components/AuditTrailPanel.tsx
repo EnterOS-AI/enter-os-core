@@ -142,7 +142,7 @@ export function AuditTrailPanel({ workspaceId }: Props) {
             key={f.id}
             onClick={() => setFilter(f.id)}
             aria-pressed={filter === f.id}
-            className={`px-2 py-1 text-[10px] rounded-md font-medium transition-all shrink-0 ${
+            className={`px-2 py-1 text-[10px] rounded-md font-medium transition-all shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface ${
               filter === f.id
                 ? "bg-surface-card text-ink ring-1 ring-zinc-600"
                 : "text-ink-mid hover:text-ink-mid hover:bg-surface-card/60"
@@ -155,7 +155,7 @@ export function AuditTrailPanel({ workspaceId }: Props) {
         <button
           type="button"
           onClick={loadEntries}
-          className="px-2 py-1 text-[10px] bg-surface-card hover:bg-surface-card text-ink-mid rounded transition-colors shrink-0"
+          className="px-2 py-1 text-[10px] bg-surface-card hover:bg-surface-card text-ink-mid rounded transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
           aria-label="Refresh audit trail"
         >
           ↻
@@ -195,7 +195,7 @@ export function AuditTrailPanel({ workspaceId }: Props) {
                   type="button"
                   onClick={loadMore}
                   disabled={loadingMore}
-                  className="px-4 py-2 text-[11px] bg-surface-card hover:bg-surface-card disabled:opacity-50 disabled:cursor-not-allowed text-ink-mid rounded-lg transition-colors"
+                  className="px-4 py-2 text-[11px] bg-surface-card hover:bg-surface-card disabled:opacity-50 disabled:cursor-not-allowed text-ink-mid rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
                 >
                   {loadingMore ? "Loading…" : "Load more"}
                 </button>

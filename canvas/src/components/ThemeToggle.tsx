@@ -54,7 +54,7 @@ export function ThemeToggle({ className = "" }: { className?: string }) {
             aria-label={opt.label}
             onClick={() => setTheme(opt.value)}
             className={
-              "flex h-6 w-6 items-center justify-center rounded transition-colors " +
+              "flex h-6 w-6 items-center justify-center rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface " +
               (active
                 ? "bg-surface-elevated text-ink shadow-sm"
                 : "text-ink-mid hover:text-ink-mid")

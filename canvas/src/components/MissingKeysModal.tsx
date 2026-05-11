@@ -632,7 +632,7 @@ function AllKeysModal({
     <div className="fixed inset-0 z-[60] flex items-center justify-center">
       <div
         className="absolute inset-0 bg-black/70 backdrop-blur-sm"
-        aria-hidden="true"
+        aria-label="Dismiss modal"
         onClick={onCancel}
       />
 
@@ -706,7 +706,7 @@ function AllKeysModal({
                     type="button"
                     onClick={() => handleSaveKey(index)}
                     disabled={!entry.value.trim() || entry.saving}
-                    className="px-3 py-1.5 bg-accent-strong hover:bg-accent text-[11px] rounded text-white disabled:opacity-30 transition-colors shrink-0"
+                    className="px-3 py-1.5 bg-accent-strong hover:bg-accent text-[11px] rounded text-white disabled:opacity-30 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
                   >
                     {entry.saving ? "..." : "Save"}
                   </button>
@@ -730,7 +730,7 @@ function AllKeysModal({
               <button
                 type="button"
                 onClick={onOpenSettings}
-                className="text-[11px] text-accent hover:text-accent transition-colors"
+                className="text-[11px] text-accent hover:text-accent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface rounded"
               >
                 Open Settings Panel
               </button>
@@ -740,7 +740,7 @@ function AllKeysModal({
             <button
               type="button"
               onClick={onCancel}
-              className="px-3.5 py-1.5 text-[12px] text-ink-mid hover:text-ink bg-surface-card hover:bg-surface-card border border-line rounded-lg transition-colors"
+              className="px-3.5 py-1.5 text-[12px] text-ink-mid hover:text-ink bg-surface-card hover:bg-surface-card border border-line rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
             >
               Cancel Deploy
             </button>
@@ -748,7 +748,7 @@ function AllKeysModal({
               type="button"
               onClick={handleAddKeysAndDeploy}
               disabled={!allSaved || anySaving}
-              className="px-3.5 py-1.5 text-[12px] bg-accent-strong hover:bg-accent text-white rounded-lg transition-colors disabled:opacity-40"
+              className="px-3.5 py-1.5 text-[12px] bg-accent-strong hover:bg-accent text-white rounded-lg transition-colors disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
             >
               {anySaving ? "Saving..." : allSaved ? "Deploy" : "Add Keys"}
             </button>
