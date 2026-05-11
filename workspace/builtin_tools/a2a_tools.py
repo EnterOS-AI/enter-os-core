@@ -77,6 +77,8 @@ async def delegate_task(workspace_id: str, task: str) -> str:
                 return str(result) if isinstance(result, str) else "(no text)"
             elif "error" in data:
                 err = data["error"]
+                # Handle both string-form errors ("error": "some string")
+                # and object-form errors ("error": {"message": "...", "code": ...}).
                 msg = ""
                 if isinstance(err, dict):
                     msg = err.get("message", "")

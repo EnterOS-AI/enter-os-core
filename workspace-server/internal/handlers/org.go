@@ -800,6 +800,10 @@ func (h *OrgHandler) Import(c *gin.Context) {
 						orphanIDs = append(orphanIDs, orphanID)
 					}
 				}
+				if err := rows.Err(); err != nil {
+					log.Printf("Org import reconcile: orphan query rows.Err: %v", err)
+					reconcileErrs = append(reconcileErrs, fmt.Sprintf("orphan query rows.Err: %v", err))
+				}
 				rows.Close()
 
 				for _, oid := range orphanIDs {
