@@ -92,10 +92,9 @@ jobs:
           MOLECULE_GITEA_TOKEN: ${{ secrets.AUTO_SYNC_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${MOLECULE_GITEA_TOKEN}" ]; then
-            echo "::error::AUTO_SYNC_TOKEN secret is empty"
-            exit 1
-          fi
+          # clone-manifest.sh supports anonymous cloning for public repos (post-
+          # 2026-05-08 migration). The token is only needed for private repos.
+          # Do NOT require it — a missing secret would fail the build unnecessarily.
           mkdir -p .tenant-bundle-deps
           bash scripts/clone-manifest.sh \
             manifest.json \
