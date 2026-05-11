@@ -105,8 +105,12 @@ export function ConfirmDialog({
   // (e.g. parents with transform, filter, will-change that break position:fixed).
   return createPortal(
     <div className="fixed inset-0 z-[9999] flex items-center justify-center">
-      {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onCancel} />
+      {/* Backdrop — interactive dismiss area; accessible name for screen readers (WCAG 4.1.2) */}
+      <div
+        className="absolute inset-0 bg-black/60 backdrop-blur-sm cursor-pointer"
+        aria-label="Dismiss dialog"
+        onClick={onCancel}
+      />
 
       {/* Dialog — role="dialog" + aria-modal prevent interaction with background */}
       <div
