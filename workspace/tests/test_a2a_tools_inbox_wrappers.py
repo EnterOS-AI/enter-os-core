@@ -30,7 +30,15 @@ def _require_workspace_id(monkeypatch):
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # Use asyncio.run() to create a fresh event loop each call.
+    # Previously used asyncio.get_event_loop().run_until_complete(), which
+    # pollutes the shared loop when pytest-asyncio is active in other
+    # test files in the same suite — pytest-asyncio manages its own loop
+    # per async test, and get_event_loop() in a sync context can return
+    # that shared loop, causing "loop already running" errors in the
+    # full suite (14 tests pass in isolation, fail in full suite).
+    # asyncio.run() creates a new loop, avoiding the conflict.
+    return asyncio.run(coro)
 
 
 # ---------------------------------------------------------------------------

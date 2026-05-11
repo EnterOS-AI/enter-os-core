@@ -32,11 +32,9 @@ on:
       - '.gitea/workflows/publish-workspace-server-image.yml'
   workflow_dispatch:
 
-# Serialize per-branch so two rapid staging pushes don't race the same
-# :staging-latest tag retag. Allow staging and main to run in parallel
-# (different GITHUB_REF → different concurrency group) since they
-# produce different :staging-<sha> tags and last-write-wins on
-# :staging-latest is acceptable across branches.
+# Serialize per-branch so two rapid main pushes don't race the same
+# :staging-latest tag retag. Allow parallel runs as they produce
+# different :staging-<sha> tags and last-write-wins on :staging-latest.
 #
 # cancel-in-progress: false → in-flight builds finish; the next push's
 # build queues. This avoids a partially-pushed image.
