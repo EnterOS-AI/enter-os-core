@@ -11,6 +11,8 @@ import { describe, expect, it, vi } from "vitest";
 import { RevealToggle } from "../ui/RevealToggle";
 
 describe("RevealToggle — render", () => {
+  // Scope all queries to container to avoid button ambiguity from other
+  // components in the shared jsdom environment.
   it("renders a button element", () => {
     const { container } = render(<RevealToggle revealed={false} onToggle={vi.fn()} />);
     expect(container.querySelector("button")).toBeTruthy();

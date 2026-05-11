@@ -10,6 +10,8 @@ import { describe, expect, it } from "vitest";
 import { Spinner } from "../Spinner";
 
 describe("Spinner — size variants", () => {
+  // Use getAttribute("class") instead of .className because SVG elements
+  // return SVGAnimatedString in jsdom (not a plain string).
   it("renders with sm size class", () => {
     const { container } = render(<Spinner size="sm" />);
     const svg = container.querySelector("svg");

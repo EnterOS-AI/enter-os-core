@@ -90,7 +90,11 @@ export function ConsoleModal({ workspaceId, workspaceName, open, onClose }: Prop
 
   return createPortal(
     <div className="fixed inset-0 z-[9999] flex items-center justify-center">
-      <div aria-hidden="true" className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+      <div
+        className="absolute inset-0 bg-black/70 backdrop-blur-sm cursor-pointer"
+        onClick={onClose}
+        aria-label="Close terminal"
+      />
       <div
         role="dialog"
         aria-modal="true"

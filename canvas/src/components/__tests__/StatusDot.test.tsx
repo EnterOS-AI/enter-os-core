@@ -10,12 +10,25 @@
  *   - aria-hidden="true" and role="img" for accessibility
  *   - provisioning status carries motion-safe:animate-pulse for the pulsing effect
  *   - glow class applied when STATUS_CONFIG declares one
+ *
+ * NOTE: role="img" with aria-hidden="true" is invisible to getByRole in jsdom
+ * (Testing Library only finds accessible elements by default). Use
+ * container.querySelector with getAttribute instead.
  */
 import { describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";
 import React from "react";
 
 import { StatusDot } from "../StatusDot";
+
+function getDot(status: string, size?: "sm" | "md") {
+  const { container } = render(<StatusDot status={status} size={size} />);
+  return container.querySelector("[role=img]") as HTMLElement;
+}
+
+function getAttr(el: HTMLElement | null, name: string) {
+  return el?.getAttribute(name) ?? "";
+}
 
 describe("StatusDot — snapshot", () => {
   it("renders with online status", () => {

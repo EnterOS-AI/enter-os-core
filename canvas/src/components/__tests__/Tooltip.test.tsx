@@ -31,33 +31,33 @@ describe("Tooltip — render", () => {
         <button type="button">Hover me</button>
       </Tooltip>
     );
-    expect(screen.getByRole("button", { name: "Hover me" })).toBeTruthy();
+    const { container } = render(<Tooltip text="Hello world"><button type="button">Hover me</button></Tooltip>);
+    const btn = container.querySelector("button");
+    expect(btn).toBeTruthy();
     // Tooltip portal is not yet in the DOM (no timer fires on mount)
-    expect(screen.queryByRole("tooltip")).toBeNull();
+    expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
   });
 
   it("does not render the tooltip portal when text is empty string", () => {
-    render(
+    const { container } = render(
       <Tooltip text="">
         <button type="button">Hover me</button>
       </Tooltip>
     );
-    // Move mouse over trigger
-    fireEvent.mouseEnter(screen.getByRole("button"));
+    fireEvent.mouseEnter(container.querySelector("button")!);
     act(() => {
       vi.advanceTimersByTime(500);
     });
-    expect(screen.queryByRole("tooltip")).toBeNull();
+    expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
   });
 
   it("mounts the tooltip into a portal attached to document.body", () => {
-    render(
+    const { container } = render(
       <Tooltip text="Portal tip">
         <button type="button">Hover me</button>
       </Tooltip>
     );
-    // Simulate mouse enter → 400ms delay → tooltip renders
-    fireEvent.mouseEnter(screen.getByRole("button"));
+    fireEvent.mouseEnter(container.querySelector("button")!);
     act(() => {
       vi.advanceTimersByTime(500);
     });
@@ -230,7 +230,7 @@ describe("Tooltip — Esc dismiss (WCAG 1.4.13)", () => {
     act(() => {
       vi.advanceTimersByTime(500);
     });
-    expect(screen.queryByRole("tooltip")).toBeTruthy();
+    expect(document.body.querySelector('[role="tooltip"]')).toBeTruthy();
 
     act(() => {
       fireEvent.keyDown(window, { key: "Enter" });

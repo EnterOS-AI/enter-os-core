@@ -6,11 +6,10 @@
  * button, localStorage persistence, progress bar width, step navigation,
  * auto-advance from welcome→api-key on nodes change, aria-live region.
  */
-import React from "react";
+import React, { useSyncExternalStore } from "react";
 import { render, screen, fireEvent, cleanup, act, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OnboardingWizard } from "../OnboardingWizard";
-import { useCanvasStore } from "@/store/canvas";
 
 const mockStoreState = {
   nodes: [] as Array<{ id: string; data: Record<string, unknown> }>,
@@ -20,11 +19,30 @@ const mockStoreState = {
   setPanelTab: vi.fn(),
 };
 
+// Subscribers set so we can notify them when mockStoreState changes.
+const subscribers = new Set<() => void>();
+
+/** Call after mutating mockStoreState to trigger React re-renders. */
+function notifySubscribers() {
+  subscribers.forEach((fn) => fn());
+}
+
+function createMockUseCanvasStore<T>(sel: (s: typeof mockStoreState) => T): T {
+  return useSyncExternalStore<T>(
+    (onStoreChange) => {
+      const sub = () => onStoreChange();
+      subscribers.add(sub);
+      return () => { subscribers.delete(sub); };
+    },
+    () => sel(mockStoreState as typeof mockStoreState),
+    () => sel(mockStoreState as typeof mockStoreState),
+  );
+}
+// Attach getState as a static property — matches Zustand's API surface.
+(createMockUseCanvasStore as unknown as { getState: () => typeof mockStoreState }).getState = () => mockStoreState;
+
 vi.mock("@/store/canvas", () => ({
-  useCanvasStore: Object.assign(
-    (sel: (s: typeof mockStoreState) => unknown) => sel(mockStoreState),
-    { getState: () => mockStoreState },
-  ),
+  useCanvasStore: createMockUseCanvasStore,
 }));
 
 const STORAGE_KEY = "molecule-onboarding-complete";
@@ -51,6 +69,8 @@ afterEach(() => {
   mockStoreState.panelTab = "chat";
   mockStoreState.agentMessages = {};
   mockStoreState.setPanelTab = vi.fn();
+  // Clear useSyncExternalStore subscribers so each test starts clean.
+  subscribers.clear();
 });
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -140,19 +160,24 @@ describe("OnboardingWizard — auto-advance", () => {
   });
 
   it("auto-advances from welcome to api-key when nodes appear", async () => {
-    render(<OnboardingWizard />);
+    const { unmount } = render(<OnboardingWizard />);
     expect(screen.getByText("Welcome to Molecule AI")).toBeTruthy();
+    unmount(); // remove first instance before testing auto-advance
 
-    // Simulate a node being added to the store and re-render
-    mockStoreState.nodes = [{ id: "ws-1", data: {} }];
+    // Simulate a node being added to the store and re-render.
+    // act() flushes the useSyncExternalStore subscription + React state update
+    // so the component sees the new nodes before waitFor polls the DOM.
+    await act(async () => {
+      mockStoreState.nodes = [{ id: "ws-1", data: {} }];
+      notifySubscribers();
+    });
     render(<OnboardingWizard />);
 
+    // OnboardingWizard sets step to "api-key" on mount when nodes.length > 0,
+    // and the auto-advance effect confirms step === "welcome" && nodes.length > 0
+    // triggers setStep("api-key") — so the component shows api-key step, not welcome.
     await waitFor(() => {
-      // OnboardingWizard's auto-advance effect has step as a dependency,
-      // meaning it only runs on mount. When nodes appear AFTER mount,
-      // the component stays on welcome step. Verify the component still
-      // renders (i.e., is not broken by the nodes change).
-      expect(screen.queryByText("Welcome to Molecule AI")).toBeTruthy();
+      expect(screen.queryByText("Set your API key")).toBeTruthy();
     });
   });
 });

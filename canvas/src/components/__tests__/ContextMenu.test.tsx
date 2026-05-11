@@ -212,7 +212,7 @@ describe("ContextMenu — menu items", () => {
     expect(screen.getByRole("menuitem", { name: /terminal/i })).toBeTruthy();
   });
 
-  it("hides Chat and Terminal for offline nodes", () => {
+  it("Chat and Terminal are disabled for offline nodes", () => {
     openMenu({ nodeData: { name: "Bob", status: "offline", tier: 2, role: "analyst" } });
     render(<ContextMenu />);
     // Chat and Terminal are rendered in the DOM even for offline nodes.

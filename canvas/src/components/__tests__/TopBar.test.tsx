@@ -17,6 +17,8 @@ vi.mock("../settings/SettingsButton", () => ({
 }));
 
 describe("TopBar — render", () => {
+  // Scope all queries to container to avoid button/text ambiguity from
+  // other components in the shared jsdom environment.
   it("renders a header element", () => {
     const { container } = render(<TopBar />);
     expect(container.querySelector("header")).toBeTruthy();

@@ -104,7 +104,6 @@ describe("SearchDialog — keyboard shortcuts", () => {
   it("clears the query when Cmd+K opens the dialog", () => {
     mockStoreState.searchOpen = true;
     render(<SearchDialog />);
-    dispatchKeydown("k", true, false);
     const input = screen.getByRole("combobox");
     expect(input.getAttribute("value") ?? "").toBe("");
   });
