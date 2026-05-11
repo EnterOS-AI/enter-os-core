@@ -20,8 +20,8 @@
 # Env vars required:
 #   CF_API_TOKEN        — Cloudflare token with zone:dns:edit
 #   CF_ZONE_ID          — the zone (moleculesai.app)
-#   CP_PROD_ADMIN_TOKEN — CP admin bearer for api.moleculesai.app
-#   CP_STAGING_ADMIN_TOKEN — CP admin bearer for staging-api.moleculesai.app
+#   CP_ADMIN_API_TOKEN — CP admin bearer for api.moleculesai.app
+#   CP_STAGING_ADMIN_API_TOKEN — CP admin bearer for staging-api.moleculesai.app
 #   AWS_*               — standard AWS creds (default region us-east-2)
 #
 # Exit codes:
@@ -58,21 +58,21 @@ need() {
 }
 need CF_API_TOKEN
 need CF_ZONE_ID
-need CP_PROD_ADMIN_TOKEN
-need CP_STAGING_ADMIN_TOKEN
+need CP_ADMIN_API_TOKEN
+need CP_STAGING_ADMIN_API_TOKEN
 
 log() { echo "[$(date -u +%H:%M:%S)] $*"; }
 
 # --- Gather live sets ------------------------------------------------------
 
 log "Fetching CP prod org slugs..."
-PROD_SLUGS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_PROD_ADMIN_TOKEN" \
+PROD_SLUGS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_ADMIN_API_TOKEN" \
   "https://api.moleculesai.app/cp/admin/orgs?limit=500" \
   | python3 -c "import json,sys; print(' '.join(o['slug'] for o in json.load(sys.stdin).get('orgs',[])))")
 log "  prod orgs: $(echo "$PROD_SLUGS" | wc -w | tr -d ' ')"
 
 log "Fetching CP staging org slugs..."
-STAGING_SLUGS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_STAGING_ADMIN_TOKEN" \
+STAGING_SLUGS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_STAGING_ADMIN_API_TOKEN" \
   "https://staging-api.moleculesai.app/cp/admin/orgs?limit=500" \
   | python3 -c "import json,sys; print(' '.join(o['slug'] for o in json.load(sys.stdin).get('orgs',[])))")
 log "  staging orgs: $(echo "$STAGING_SLUGS" | wc -w | tr -d ' ')"

@@ -11,6 +11,9 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    networks:
+      - molecule-core-net
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dev}"]
       interval: 2s
@@ -25,6 +28,8 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-dev}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev}
+    networks:
+      - molecule-core-net
     command:
       - /bin/sh
       - -c
@@ -45,6 +50,9 @@ services:
       - "6379:6379"
     volumes:
       - redisdata:/data
+    networks:
+      - molecule-core-net
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
@@ -52,7 +60,7 @@ services:
       retries: 10
 
   # digest-pinned 2026-05-10 (sha256:5b296e0ba1da74efea3143c773ddd60245f249fb7c72eb1d866c2d6ebc759fbe, linux/amd64)
-  clickhouse:
+  langfuse-clickhouse:
     image: clickhouse/clickhouse-server@sha256:5b296e0ba1da74efea3143c773ddd60245f249fb7c72eb1d866c2d6ebc759fbe
     environment:
       CLICKHOUSE_DB: langfuse
@@ -60,6 +68,8 @@ services:
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-langfuse-dev}
     volumes:
       - clickhousedata:/var/lib/clickhouse
+    networks:
+      - molecule-core-net
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:8123/ping || exit 1"]
       interval: 5s
@@ -99,29 +109,6 @@ services:
       TEMPORAL_CORS_ORIGINS: http://localhost:8233
     ports:
       - "8233:8080"
-
-  # digest-pinned 2026-05-10 (sha256:e7aafd3ccf721821b40f8b2251220b4bb8af5e4877b5c5a8846af5b3318aaf1d, linux/amd64)
-  langfuse-web:
-    image: langfuse/langfuse@sha256:e7aafd3ccf721821b40f8b2251220b4bb8af5e4877b5c5a8846af5b3318aaf1d
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-      langfuse-db-init:
-        condition: service_completed_successfully
-    environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-dev}:${POSTGRES_PASSWORD:-dev}@postgres:5432/langfuse
-      # Langfuse v2 expects the HTTP interface (port 8123). The previous
-      # clickhouse://...:9000 native-protocol URL is rejected with
-      # "ClickHouse URL protocol must be either http or https".
-      CLICKHOUSE_URL: http://clickhouse:8123
-      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
-      CLICKHOUSE_USER: langfuse
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-langfuse-dev}
-      NEXTAUTH_SECRET: ${LANGFUSE_SECRET:-changeme-langfuse-secret}
-      NEXTAUTH_URL: http://localhost:3001
-      SALT: ${LANGFUSE_SALT:-changeme-langfuse-salt}
-    ports:
-      - "3001:3000"
 
 networks:
   default:

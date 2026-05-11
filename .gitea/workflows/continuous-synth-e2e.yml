@@ -147,7 +147,7 @@ jobs:
       # E2E_RUNTIME=langgraph or =hermes and still have a working
       # canary path. The script picks the right blob shape based on
       # which key is non-empty.
-      E2E_OPENAI_API_KEY: ${{ secrets.MOLECULE_STAGING_OPENAI_KEY }}
+      E2E_OPENAI_API_KEY: ${{ secrets.MOLECULE_STAGING_OPENAI_API_KEY }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -175,7 +175,7 @@ jobs:
 
           # LLM-key requirement is per-runtime: claude-code accepts
           # EITHER MiniMax OR direct-Anthropic (whichever is set first),
-          # langgraph + hermes use OpenAI (MOLECULE_STAGING_OPENAI_KEY).
+          # langgraph + hermes use OpenAI (MOLECULE_STAGING_OPENAI_API_KEY).
           case "${E2E_RUNTIME}" in
             claude-code)
               if [ -n "${E2E_MINIMAX_API_KEY:-}" ]; then
@@ -190,7 +190,7 @@ jobs:
               fi
               ;;
             langgraph|hermes)
-              required_secret_name="MOLECULE_STAGING_OPENAI_KEY"
+              required_secret_name="MOLECULE_STAGING_OPENAI_API_KEY"
               required_secret_value="${E2E_OPENAI_API_KEY:-}"
               ;;
             *)

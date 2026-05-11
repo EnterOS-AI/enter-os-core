@@ -40,8 +40,8 @@
 #
 # Env vars required:
 #   AWS_REGION              — region the secrets live in (default: us-east-1)
-#   CP_PROD_ADMIN_TOKEN     — CP admin bearer for api.moleculesai.app
-#   CP_STAGING_ADMIN_TOKEN  — CP admin bearer for staging-api.moleculesai.app
+#   CP_ADMIN_API_TOKEN     — CP admin bearer for api.moleculesai.app
+#   CP_STAGING_ADMIN_API_TOKEN  — CP admin bearer for staging-api.moleculesai.app
 #   AWS_ACCESS_KEY_ID,      — IAM principal with secretsmanager:ListSecrets
 #   AWS_SECRET_ACCESS_KEY     and secretsmanager:DeleteSecret. Note: the
 #                             prod molecule-cp principal does NOT have
@@ -88,8 +88,8 @@ need() {
     exit 1
   fi
 }
-need CP_PROD_ADMIN_TOKEN
-need CP_STAGING_ADMIN_TOKEN
+need CP_ADMIN_API_TOKEN
+need CP_STAGING_ADMIN_API_TOKEN
 need AWS_ACCESS_KEY_ID
 need AWS_SECRET_ACCESS_KEY
 
@@ -107,13 +107,13 @@ log() { echo "[$(date -u +%H:%M:%S)] $*"; }
 # response includes both `id` and `slug`; we extract `id` here.
 
 log "Fetching CP prod org ids..."
-PROD_IDS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_PROD_ADMIN_TOKEN" \
+PROD_IDS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_ADMIN_API_TOKEN" \
   "https://api.moleculesai.app/cp/admin/orgs?limit=500" \
   | python3 -c "import json,sys; print(' '.join(o['id'] for o in json.load(sys.stdin).get('orgs',[])))")
 log "  prod orgs: $(echo "$PROD_IDS" | wc -w | tr -d ' ')"
 
 log "Fetching CP staging org ids..."
-STAGING_IDS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_STAGING_ADMIN_TOKEN" \
+STAGING_IDS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_STAGING_ADMIN_API_TOKEN" \
   "https://staging-api.moleculesai.app/cp/admin/orgs?limit=500" \
   | python3 -c "import json,sys; print(' '.join(o['id'] for o in json.load(sys.stdin).get('orgs',[])))")
 log "  staging orgs: $(echo "$STAGING_IDS" | wc -w | tr -d ' ')"

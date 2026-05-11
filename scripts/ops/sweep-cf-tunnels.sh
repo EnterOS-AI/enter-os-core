@@ -31,8 +31,8 @@
 #                          token must include the tunnel scope.)
 #   CF_ACCOUNT_ID       — the account that owns the tunnels (visible
 #                          in dash.cloudflare.com URL path)
-#   CP_PROD_ADMIN_TOKEN — CP admin bearer for api.moleculesai.app
-#   CP_STAGING_ADMIN_TOKEN — CP admin bearer for staging-api.moleculesai.app
+#   CP_ADMIN_API_TOKEN — CP admin bearer for api.moleculesai.app
+#   CP_STAGING_ADMIN_API_TOKEN — CP admin bearer for staging-api.moleculesai.app
 #
 # Exit codes:
 #   0  — dry-run completed or sweep executed successfully
@@ -72,21 +72,21 @@ need() {
 }
 need CF_API_TOKEN
 need CF_ACCOUNT_ID
-need CP_PROD_ADMIN_TOKEN
-need CP_STAGING_ADMIN_TOKEN
+need CP_ADMIN_API_TOKEN
+need CP_STAGING_ADMIN_API_TOKEN
 
 log() { echo "[$(date -u +%H:%M:%S)] $*"; }
 
 # --- Gather live sets ------------------------------------------------------
 
 log "Fetching CP prod org slugs..."
-PROD_SLUGS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_PROD_ADMIN_TOKEN" \
+PROD_SLUGS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_ADMIN_API_TOKEN" \
   "https://api.moleculesai.app/cp/admin/orgs?limit=500" \
   | python3 -c "import json,sys; print(' '.join(o['slug'] for o in json.load(sys.stdin).get('orgs',[])))")
 log "  prod orgs: $(echo "$PROD_SLUGS" | wc -w | tr -d ' ')"
 
 log "Fetching CP staging org slugs..."
-STAGING_SLUGS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_STAGING_ADMIN_TOKEN" \
+STAGING_SLUGS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_STAGING_ADMIN_API_TOKEN" \
   "https://staging-api.moleculesai.app/cp/admin/orgs?limit=500" \
   | python3 -c "import json,sys; print(' '.join(o['slug'] for o in json.load(sys.stdin).get('orgs',[])))")
 log "  staging orgs: $(echo "$STAGING_SLUGS" | wc -w | tr -d ' ')"

@@ -144,6 +144,9 @@ describe("Legend — close and reopen", () => {
 });
 
 describe("Legend — palette offset positioning", () => {
+  // The panel has data-testid="legend-panel" so we can select it reliably.
+  // screen.getByText("Legend") also appears in the collapsed pill, so the
+  // old .closest("div") approach matched the wrong element in the DOM.
   it("uses left-4 when template palette is NOT open", () => {
     vi.mocked(useCanvasStore).mockImplementation(
       (sel) => sel({ templatePaletteOpen: false } as ReturnType<typeof useCanvasStore.getState>)

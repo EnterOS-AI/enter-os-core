@@ -75,8 +75,8 @@ jobs:
     env:
       CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
       CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
-      CP_PROD_ADMIN_TOKEN: ${{ secrets.CP_PROD_ADMIN_TOKEN }}
-      CP_STAGING_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_TOKEN }}
+      CP_ADMIN_API_TOKEN: ${{ secrets.CP_ADMIN_API_TOKEN }}
+      CP_STAGING_ADMIN_API_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_DEFAULT_REGION: us-east-2
@@ -109,7 +109,7 @@ jobs:
         #     so they can rerun after fixing the secret)
         run: |
           missing=()
-          for var in CF_API_TOKEN CF_ZONE_ID CP_PROD_ADMIN_TOKEN CP_STAGING_ADMIN_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+          for var in CF_API_TOKEN CF_ZONE_ID CP_ADMIN_API_TOKEN CP_STAGING_ADMIN_API_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
             if [ -z "${!var:-}" ]; then
               missing+=("$var")
             fi

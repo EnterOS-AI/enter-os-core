@@ -121,7 +121,7 @@ describe("KeyValueField — auto-hide timer", () => {
 
   it("auto-hides after 30 seconds when revealed", async () => {
     const onChange = vi.fn();
-    render(<KeyValueField value="secret" onChange={onChange} />);
+    const { container } = render(<KeyValueField value="secret" onChange={onChange} />);
 
     // Reveal the value
     fireEvent.click(getRevealButton());

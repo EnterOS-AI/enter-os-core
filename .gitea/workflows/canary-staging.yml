@@ -85,7 +85,7 @@ jobs:
       # OpenAI fallback — kept wired so an operator-dispatched run with
       # E2E_RUNTIME=hermes overridden via workflow_dispatch can still
       # exercise the OpenAI path without re-editing the workflow.
-      E2E_OPENAI_API_KEY: ${{ secrets.MOLECULE_STAGING_OPENAI_KEY }}
+      E2E_OPENAI_API_KEY: ${{ secrets.MOLECULE_STAGING_OPENAI_API_KEY }}
       E2E_MODE: canary
       E2E_RUNTIME: claude-code
       # Pin the canary to a specific MiniMax model rather than relying
@@ -140,7 +140,7 @@ jobs:
               fi
               ;;
             langgraph|hermes)
-              required_secret_name="MOLECULE_STAGING_OPENAI_KEY"
+              required_secret_name="MOLECULE_STAGING_OPENAI_API_KEY"
               required_secret_value="${E2E_OPENAI_API_KEY:-}"
               ;;
             *)
