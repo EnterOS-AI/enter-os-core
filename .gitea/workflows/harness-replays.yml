@@ -68,17 +68,18 @@ jobs:
       run: ${{ steps.decide.outputs.run }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          # fetch-depth: 0 is required here. The step runs `git diff "$base_sha"
-          # "$head_sha"` — if only the head commit is fetched (default
-          # fetch-depth: 1), the base ref is not in the local history and
-          # git diff fails silently (2>/dev/null), leaving DIFF empty, the
-          # step exits non-zero, and detect-changes reports "failure" despite
-          # continue-on-error: true. With fetch-depth: 0 the full history is
-          # available so both refs exist locally. The PR head and the base
-          # branch tip are always on the remote; full history is needed only
-          # to make them accessible offline in the container.
-          fetch-depth: 0
+      - name: Fetch base branch tip for diff
+        run: |
+          # With the default fetch-depth: 1, actions/checkout only fetches the
+          # PR head commit. The base branch tip (github.event.pull_request.base.sha)
+          # is NOT in the local history, so `git diff "$BASE" "$GITHUB_SHA"` fails
+          # because neither ref is fully resolved. Fetch only the base branch at
+          # depth 1 — one cheap network round-trip, sufficient for diff.
+          #
+          # Do NOT use fetch-depth: 0 here — the repo is 75+ MB and a full history
+          # fetch times out on the operator-host runner network (github.com unreachable,
+          # ~3s timeout to apt mirrors). A single-commit fetch avoids that.
+          git fetch origin "${{ github.event.pull_request.base.ref }}" --depth=1
       - id: decide
         run: |
           # workflow_dispatch: always run (manual trigger)
