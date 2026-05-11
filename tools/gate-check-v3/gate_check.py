@@ -365,9 +365,16 @@ def signal_6_ci(pr_number: int, repo: str, branch: str | None = None, pr_data: d
         else:
             passing_required.append(f"{ctx} (pending)")
 
+    # NOTE: do NOT use ci_state (combined_state) as a fallback verdict driver.
+    # The combined_state is computed over ALL statuses including this
+    # gate-check's own prior result. Using it as a fallback creates a
+    # self-referential loop: gate-check posts failure → combined_state
+    # becomes failure → script re-blocks → posts failure again.
+    # The check_statuses dict already excludes gate-check (Bug-1 fix from
+    # PR #547). Use failing_required as the sole CI gate; if no required
+    # checks are defined on the branch, return CLEAR rather than re-using
+    # the combined_state which includes our own status.
     if failing_required:
-        verdict = "CI_FAIL"
-    elif ci_state == "failure":
         verdict = "CI_FAIL"
     elif ci_state == "pending":
         verdict = "CI_PENDING"

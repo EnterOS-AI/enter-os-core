@@ -190,7 +190,14 @@ func TestStartSweeperWithInterval_TickerFiresAdditionalCycles(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	done := pendinguploads.StartSweeperForTest(ctx, store, time.Hour)
+	// Use a short ticker interval (100ms) so the test runs fast without
+	// burning real wall-clock time. StartSweeperWithIntervalForTest is the
+	// test-friendly variant that accepts a caller-specified interval; the
+	// production SweepInterval of 5m is too coarse for a 2s deadline on
+	// a loaded CI runner (the ticker may not fire at all under CPU
+	// contention — the root cause of the pre-existing CI flake).
+	done := make(chan struct{})
+	go pendinguploads.StartSweeperWithIntervalForTest(ctx, store, time.Hour, 100*time.Millisecond, done)
 	// Immediate cycle + at least one tick-driven cycle.
 	store.waitForCycle(t, 2, 2*time.Second)
 

@@ -697,6 +697,31 @@ func (h *OrgHandler) Import(c *gin.Context) {
 			})
 			return
 		}
+
+		// Per-workspace RequiredEnv preflight: checks that every RequiredEnv
+		// declared at the workspace level is covered by either (a) a global
+		// secret key (already validated above) or (b) a key present in the
+		// workspace's on-disk .env files (org root .env + per-workspace
+		// <files_dir>/.env). If neither covers the key the workspace is
+		// imported NOT CONFIGURED, which silently breaks the workspace at
+		// start time — the container boots without the required credential
+		// and every LLM call 401s or fails silently.  Issue #232.
+		// orgBaseDir is empty when importing via body.Template (inline YAML);
+		// in that case we cannot check .env files, so we skip this check
+		// and fall back to the global-only gate above (which correctly
+		// rejects any strict requirement not covered by global_secrets).
+		if orgBaseDir != "" {
+			wsMissing := collectPerWorkspaceUnsatisfied(tmpl.Workspaces, orgBaseDir, configured)
+			if len(wsMissing) > 0 {
+				c.JSON(http.StatusPreconditionFailed, gin.H{
+					"error":            "missing per-workspace required environment variables",
+					"missing_workspace_env": wsMissing,
+					"template":         tmpl.Name,
+					"suggestion":       "add these keys to the workspace's .env file or set them as global secrets before importing",
+				})
+				return
+			}
+		}
 	}
 
 	results := []map[string]interface{}{}
