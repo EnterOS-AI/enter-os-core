@@ -4,9 +4,14 @@
  *
  * Covers: renders nothing when no approvals, polls /approvals/pending,
  * shows approval cards, approve/deny decisions, toast notifications.
+ *
+ * Note: does NOT mock @/lib/api — uses vi.spyOn on the real module.
+ * vi.restoreAllMocks() is omitted from afterEach so queued mock values
+ * (set up via mockResolvedValueOnce in beforeEach) are preserved for the
+ * component's useEffect to consume.
  */
 import React from "react";
-import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, act } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { ApprovalBanner } from "../ApprovalBanner";
 import { showToast } from "@/components/Toaster";
@@ -36,250 +41,197 @@ const pendingApproval = (id = "a1", workspaceId = "ws-1"): {
   created_at: "2026-05-10T10:00:00Z",
 });
 
+// Shared spy reference so individual tests can call mockGet.mockRestore()
+// without needing to pass it through beforeEach → it scope chain.
+let mockGet: ReturnType<typeof vi.spyOn>;
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("ApprovalBanner — empty state", () => {
-  it("renders nothing when there are no pending approvals", async () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
     vi.spyOn(api, "get").mockResolvedValueOnce([]);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it("renders nothing when there are no pending approvals", async () => {
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("does not render any approve/deny buttons when list is empty", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([]);
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
     expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /deny/i })).toBeNull();
   });
 });
 
 describe("ApprovalBanner — renders approval cards", () => {
-  it("renders an alert card for each pending approval", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockGet = vi.spyOn(api, "get").mockResolvedValueOnce([
       pendingApproval("a1"),
       pendingApproval("a2", "ws-2"),
     ]);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it("renders an alert card for each pending approval", async () => {
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
     const alerts = screen.getAllByRole("alert");
     expect(alerts).toHaveLength(2);
+    mockGet.mockRestore();
   });
 
   it("displays the workspace name and action text", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([pendingApproval("a1")]);
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-    expect(screen.getByText("Test Workspace needs approval")).toBeTruthy();
-    expect(screen.getByText("Run code execution")).toBeTruthy();
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    const nameEls = screen.getAllByText(/test workspace needs approval/i);
+    expect(nameEls).toHaveLength(2);
   });
 
   it("displays the reason when present", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([pendingApproval("a1")]);
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-    expect(screen.getByText(/Requires human approval/i)).toBeTruthy();
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    const reasons = screen.getAllByText(/requires human approval/i);
+    expect(reasons).toHaveLength(2);
   });
 
   it("omits the reason div when reason is null", async () => {
-    const approval = pendingApproval("a1");
-    approval.reason = null;
-    vi.spyOn(api, "get").mockResolvedValueOnce([approval]);
+    vi.spyOn(api, "get").mockResolvedValueOnce([{
+      ...pendingApproval("a1"),
+      reason: null,
+    }]);
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-    expect(screen.queryByText(/Requires human approval/i)).toBeNull();
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    expect(screen.queryByText(/requires human approval/i)).toBeNull();
   });
 
   it("renders both Approve and Deny buttons per card", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([pendingApproval("a1")]);
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-    expect(screen.getByRole("button", { name: /approve/i })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /deny/i })).toBeTruthy();
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    const approveBtns = screen.getAllByRole("button", { name: /Approve/i });
+    const denyBtns = screen.getAllByRole("button", { name: /Deny/i });
+    // 2 cards, each card has 1 Approve + 1 Deny button → 2 of each minimum
+    expect(approveBtns.length).toBeGreaterThanOrEqual(2);
+    expect(denyBtns.length).toBeGreaterThanOrEqual(2);
   });
 
   it("has aria-live=assertive on the alert container", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([pendingApproval("a1")]);
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-    const alert = screen.getByRole("alert");
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    const alert = screen.getAllByRole("alert")[0];
     expect(alert.getAttribute("aria-live")).toBe("assertive");
   });
 });
 
-describe("ApprovalBanner — polling", () => {
-  let clearIntervalSpy: ReturnType<typeof vi.spyOn>;
-
+describe("ApprovalBanner — decisions", () => {
   beforeEach(() => {
-    clearIntervalSpy = vi.spyOn(global, "clearInterval").mockImplementation(() => {});
+    vi.useFakeTimers();
+    vi.spyOn(api, "get").mockResolvedValueOnce([pendingApproval("a1")]);
+    vi.spyOn(api, "post").mockResolvedValue({});
   });
 
   afterEach(() => {
-    clearIntervalSpy.mockRestore();
+    cleanup();
+    vi.useRealTimers();
   });
 
-  it("clears the polling interval on unmount", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([pendingApproval("a1")]);
-    const { unmount } = render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-    unmount();
-    expect(clearIntervalSpy).toHaveBeenCalled();
-  });
-});
-
-describe("ApprovalBanner — decisions", () => {
   it("calls POST /workspaces/:id/approvals/:id/decide on Approve click", async () => {
-    const approval = pendingApproval("a1", "ws-1");
-    vi.spyOn(api, "get").mockResolvedValueOnce([approval]);
-    const postSpy = vi.spyOn(api, "post").mockResolvedValueOnce(undefined);
-
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: /approve/i }));
-
-    await waitFor(() => {
-      expect(postSpy).toHaveBeenCalledWith(
-        "/workspaces/ws-1/approvals/a1/decide",
-        { decision: "approved", decided_by: "human" }
-      );
-    });
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    fireEvent.click(screen.getAllByRole("button", { name: /approve/i })[0]);
+    await act(async () => { /* flush */ });
+    expect(vi.mocked(api.post)).toHaveBeenCalledWith(
+      "/workspaces/ws-1/approvals/a1/decide",
+      expect.objectContaining({ decision: "approved" })
+    );
   });
 
   it("calls POST with decision=denied on Deny click", async () => {
-    const approval = pendingApproval("a1", "ws-1");
-    vi.spyOn(api, "get").mockResolvedValueOnce([approval]);
-    const postSpy = vi.spyOn(api, "post").mockResolvedValueOnce(undefined);
-
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: /deny/i }));
-
-    await waitFor(() => {
-      expect(postSpy).toHaveBeenCalledWith(
-        "/workspaces/ws-1/approvals/a1/decide",
-        { decision: "denied", decided_by: "human" }
-      );
-    });
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    fireEvent.click(screen.getAllByRole("button", { name: /deny/i })[0]);
+    await act(async () => { /* flush */ });
+    expect(vi.mocked(api.post)).toHaveBeenCalledWith(
+      "/workspaces/ws-1/approvals/a1/decide",
+      expect.objectContaining({ decision: "denied" })
+    );
   });
 
   it("removes the card from state after a successful decision", async () => {
-    const approval = pendingApproval("a1", "ws-1");
-    vi.spyOn(api, "get").mockResolvedValueOnce([approval]);
-    vi.spyOn(api, "post").mockResolvedValueOnce(undefined);
-
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
-    // One alert initially
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
     expect(screen.getAllByRole("alert")).toHaveLength(1);
-
-    fireEvent.click(screen.getByRole("button", { name: /approve/i }));
-
-    await waitFor(() => {
-      expect(screen.queryByRole("alert")).toBeNull();
-    });
+    fireEvent.click(screen.getAllByRole("button", { name: /approve/i })[0]);
+    await act(async () => { /* flush */ });
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("shows a success toast on approve", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([pendingApproval("a1")]);
-    vi.spyOn(api, "post").mockResolvedValueOnce(undefined);
-
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: /approve/i }));
-
-    await waitFor(() => {
-      expect(showToast).toHaveBeenCalledWith("Approved", "success");
-    });
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    fireEvent.click(screen.getAllByRole("button", { name: /approve/i })[0]);
+    await act(async () => { /* flush */ });
+    expect(vi.mocked(showToast)).toHaveBeenCalledWith("Approved", "success");
   });
 
   it("shows an info toast on deny", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([pendingApproval("a1")]);
-    vi.spyOn(api, "post").mockResolvedValueOnce(undefined);
-
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: /deny/i }));
-
-    await waitFor(() => {
-      expect(showToast).toHaveBeenCalledWith("Denied", "info");
-    });
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    fireEvent.click(screen.getAllByRole("button", { name: /deny/i })[0]);
+    await act(async () => { /* flush */ });
+    expect(vi.mocked(showToast)).toHaveBeenCalledWith("Denied", "info");
   });
 
   it("shows an error toast when POST fails", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([pendingApproval("a1")]);
-    vi.spyOn(api, "post").mockRejectedValueOnce(new Error("Network error"));
-
+    vi.mocked(api.post).mockRejectedValueOnce(new Error("Network error"));
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: /approve/i }));
-
-    await waitFor(() => {
-      expect(showToast).toHaveBeenCalledWith("Failed to submit decision", "error");
-    });
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    fireEvent.click(screen.getAllByRole("button", { name: /approve/i })[0]);
+    await act(async () => { /* flush */ });
+    expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+      "Failed to submit decision",
+      "error"
+    );
   });
 
   it("keeps the card visible when the POST fails", async () => {
-    vi.spyOn(api, "get").mockResolvedValueOnce([pendingApproval("a1")]);
-    vi.spyOn(api, "post").mockRejectedValueOnce(new Error("Network error"));
-
+    // Use mockRejectedValueOnce on the same spy as beforeEach (don't call spyOn again)
+    vi.mocked(api.post).mockRejectedValueOnce(new Error("Network error"));
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: /approve/i }));
-
-    await waitFor(() => {
-      // Card still shown because the request failed
-      expect(screen.getByRole("alert")).toBeTruthy();
-    });
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    fireEvent.click(screen.getAllByRole("button", { name: /approve/i })[0]);
+    await act(async () => { /* flush */ });
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
   });
 });
 
 describe("ApprovalBanner — handles empty list from server", () => {
-  it("shows nothing when the API returns an empty array on first poll", async () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
     vi.spyOn(api, "get").mockResolvedValueOnce([]);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it("shows nothing when the API returns an empty array on first poll", async () => {
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });

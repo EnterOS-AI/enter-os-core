@@ -138,7 +138,7 @@ export function TermsGate({ children }: { children: React.ReactNode }) {
                 // Hover goes DARKER, not lighter — emerald-500 on white
                 // text drops contrast below AA vs emerald-700. Same trap
                 // I fixed in ApprovalBanner + ConfirmDialog.
-                className="rounded bg-emerald-600 hover:bg-emerald-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-sunken"
+                className="rounded bg-emerald-600 hover:bg-emerald-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-sunken"
               >
                 {submitting ? "Saving…" : "I agree"}
               </button>

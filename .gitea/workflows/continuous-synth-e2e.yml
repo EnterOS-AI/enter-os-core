@@ -1,0 +1,255 @@
+name: Continuous synthetic E2E (staging)
+
+# Ported from .github/workflows/continuous-synth-e2e.yml on 2026-05-11 per RFC
+# internal#219 §1 sweep. Differences from the GitHub version:
+#   - Dropped `workflow_dispatch.inputs` (Gitea 1.22.6 parser rejects them
+#     per feedback_gitea_workflow_dispatch_inputs_unsupported).
+#   - Dropped `merge_group:` (no Gitea merge queue).
+#   - Dropped `environment:` blocks (Gitea has no environments).
+#   - Workflow-level env.GITHUB_SERVER_URL pinned per
+#     feedback_act_runner_github_server_url.
+#   - `continue-on-error: true` on each job (RFC §1 contract).
+#
+
+# Hard gate (#2342): cron-driven full-lifecycle E2E that catches
+# regressions visible only at runtime — schema drift, deployment-pipeline
+# gaps, vendor outages, env-var rotations, DNS / CF / Railway side-effects.
+#
+# Why this gate exists:
+#   PR-time CI catches code-level regressions but not deployment-time or
+#   integration-time ones. Today's empirical data:
+#     • #2345 (A2A v0.2 silent drop) — passed all unit tests, broke at
+#       JSON-RPC parse layer between sender and receiver. Visible only
+#       to a sender exercising the full path.
+#     • RFC #2312 chat upload — landed on staging-branch but never
+#       reached staging tenants because publish-workspace-server-image
+#       was main-only. Caught by manual dogfooding hours after deploy.
+#   Both would have surfaced within 15-20 min of regression if a
+#   continuous synth-E2E was running.
+#
+# Cadence: every 20 min (3x/hour). The script is conservatively
+# bounded at 10 min wall-clock; even on degraded staging it should
+# finish before the next firing. cron-overlap is guarded by the
+# concurrency group below.
+#
+# Cost: ~3 runs/hour × 5-10 min × $0.008/min GHA = ~$0.50-$1/day.
+# Plus a fresh tenant provisioned + torn down each run (Railway +
+# AWS pennies). Negligible.
+#
+# Failure handling: when the run fails, the workflow exits non-zero
+# and GitHub's standard email/notification path fires. Operators
+# can subscribe to this workflow's failure channel for paging-grade
+# alerting.
+
+on:
+  schedule:
+    # Every 10 minutes, on :02 :12 :22 :32 :42 :52. Three constraints:
+    #   1. Stay off the top-of-hour. GitHub Actions scheduler drops
+    #      :00 firings under high load (own docs:
+    #      https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#schedule).
+    #      Prior history: cron was '0,20,40' (2026-05-02) — only :00
+    #      ever survived. Bumped to '10,30,50' (2026-05-03) on the
+    #      theory that further-from-:00 wins. Empirically 2026-05-04
+    #      that ALSO dropped to ~60 min effective cadence (only ~1
+    #      schedule fire per hour — see molecule-core#2726). Detection
+    #      latency was claimed 20 min, actual 60 min.
+    #   2. Avoid colliding with the existing :15 sweep-cf-orphans
+    #      and :45 sweep-cf-tunnels — both hit the CF API and we
+    #      don't want to fight for rate-limit tokens.
+    #   3. Avoid the :30 heavy slot (canary-staging /30, sweep-aws-
+    #      secrets, sweep-stale-e2e-orgs every :15) — multiple
+    #      overlapping cron registrations on the same minute is part
+    #      of what GH drops under load.
+    # Solution: bump fires-per-hour 3 → 6 AND keep all slots in clean
+    # lanes (1-3 min away from any other cron). Even with empirically-
+    # observed ~67% GH drop ratio, 6 attempts/hour yields ~2 effective
+    # fires = ~30 min cadence; closer to the 20-min target than the
+    # current shape and provides a real degradation alarm if drops
+    # get worse.
+    - cron: '2,12,22,32,42,52 * * * *'
+permissions:
+  contents: read
+  # No issue-write here — failures surface as red runs in the workflow
+  # history. If you want auto-issue-on-fail, add a follow-up step that
+  # uses gh issue create gated on `if: failure()`. Keeping the surface
+  # minimal until that's actually wanted.
+
+# Serialize so two firings can never overlap. Cron firing every 20 min
+# but scripts conservatively bounded at 10 min — overlap shouldn't
+# happen in steady state, but if a run hangs we don't want N more
+# stacking up.
+concurrency:
+  group: continuous-synth-e2e
+  cancel-in-progress: false
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  synth:
+    name: Synthetic E2E against staging
+    runs-on: ubuntu-latest
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    continue-on-error: true
+    # Bumped from 12 → 20 (2026-05-04). Tenant user-data install phase
+    # (apt-get update + install docker.io/jq/awscli/caddy + snap install
+    # ssm-agent) runs from raw Ubuntu on every boot — none of it is
+    # pre-baked into the tenant AMI. Empirical fetch_secrets/ok timing
+    # across today's canaries: 51s → 82s → 143s → 625s. apt-mirror tail
+    # latency drives the boot-to-fetch_secrets phase from ~1min to >10min.
+    # A 12min budget leaves only ~2min for the workspace (which needs
+    # ~3.5min for claude-code cold boot) on slow-apt days, blowing the
+    # budget. 20min absorbs the worst tenant tail so the workspace probe
+    # gets the full ~7min it needs even on a slow apt day. Real fix:
+    # pre-bake caddy + ssm-agent into the tenant AMI (controlplane#TBD).
+    timeout-minutes: 20
+    env:
+      # claude-code default: cold-start ~5 min (comparable to langgraph),
+      # but uses MiniMax-M2.7-highspeed via the template's third-party-
+      # Anthropic-compat path (workspace-configs-templates/claude-code-
+      # default/config.yaml:64-69). MiniMax is ~5-10x cheaper than
+      # gpt-4.1-mini per token AND avoids the recurring OpenAI quota-
+      # exhaustion class that took the canary down 2026-05-03 (#265).
+      # Operators can pick langgraph / hermes via workflow_dispatch
+      # when they specifically need to exercise the OpenAI or SDK-
+      # native paths.
+      E2E_RUNTIME: ${{ github.event.inputs.runtime || 'claude-code' }}
+      # Pin the canary to a specific MiniMax model rather than relying
+      # on the per-runtime default ("sonnet" → routes to direct
+      # Anthropic, defeats the cost saving). Operators can override
+      # via workflow_dispatch by setting a different E2E_MODEL_SLUG
+      # input if they need to exercise a specific model. M2.7-highspeed
+      # is "Token Plan only" but cheap-per-token and fast.
+      E2E_MODEL_SLUG: ${{ github.event.inputs.model_slug || 'MiniMax-M2.7-highspeed' }}
+      # Bound to 10 min so a stuck provision fails the run instead of
+      # holding up the next cron firing. 15-min default in the script
+      # is for the on-PR full lifecycle where we have more headroom.
+      E2E_PROVISION_TIMEOUT_SECS: '600'
+      # Slug suffix — namespaced "synth-" so these runs are
+      # distinguishable from PR-driven runs in CP admin.
+      E2E_RUN_ID: synth-${{ github.run_id }}
+      # Forced false for cron; respected for manual dispatch
+      E2E_KEEP_ORG: ${{ github.event.inputs.keep_org == 'true' && '1' || '' }}
+      MOLECULE_CP_URL: ${{ vars.STAGING_CP_URL || 'https://staging-api.moleculesai.app' }}
+      MOLECULE_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+      # MiniMax key is the canary's PRIMARY auth path. claude-code
+      # template's `minimax` provider routes ANTHROPIC_BASE_URL to
+      # api.minimax.io/anthropic and reads MINIMAX_API_KEY at boot.
+      # tests/e2e/test_staging_full_saas.sh branches SECRETS_JSON on
+      # which key is present — MiniMax wins when set.
+      E2E_MINIMAX_API_KEY: ${{ secrets.MOLECULE_STAGING_MINIMAX_API_KEY }}
+      # Direct-Anthropic alternative for operators who don't want to
+      # set up a MiniMax account (priority below MiniMax — first
+      # non-empty wins in test_staging_full_saas.sh's secrets-injection
+      # block). See #2578 PR comment for the rationale.
+      E2E_ANTHROPIC_API_KEY: ${{ secrets.MOLECULE_STAGING_ANTHROPIC_API_KEY }}
+      # OpenAI fallback — kept wired so operators can dispatch with
+      # E2E_RUNTIME=langgraph or =hermes and still have a working
+      # canary path. The script picks the right blob shape based on
+      # which key is non-empty.
+      E2E_OPENAI_API_KEY: ${{ secrets.MOLECULE_STAGING_OPENAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Verify required secrets present
+        run: |
+          # Hard-fail on missing secret REGARDLESS of trigger. Previously
+          # this step soft-skipped on workflow_dispatch via `exit 0`, but
+          # `exit 0` only ends the STEP — subsequent steps still ran with
+          # the empty secret, the synth script fell through to the wrong
+          # SECRETS_JSON branch, and the canary failed 5 min later with a
+          # confusing "Agent error (Exception)" instead of the clean
+          # "secret missing" message at the top. Caught 2026-05-04 by
+          # dispatched run 25296530706: claude-code + missing MINIMAX
+          # silently used OpenAI keys but kept model=MiniMax-M2.7, then
+          # the workspace 401'd against MiniMax once it tried to call.
+          # Fix: exit 1 in both cron and dispatch paths. Operators who
+          # want to verify a YAML change without setting up the secret
+          # can read the verify-secrets step's stderr — the failure is
+          # itself the verification signal.
+          if [ -z "${MOLECULE_ADMIN_TOKEN:-}" ]; then
+            echo "::error::CP_STAGING_ADMIN_API_TOKEN secret missing — synth E2E cannot run"
+            echo "::error::Set it at Settings → Secrets and Variables → Actions; pull from staging-CP's CP_ADMIN_API_TOKEN env in Railway."
+            exit 1
+          fi
+
+          # LLM-key requirement is per-runtime: claude-code accepts
+          # EITHER MiniMax OR direct-Anthropic (whichever is set first),
+          # langgraph + hermes use OpenAI (MOLECULE_STAGING_OPENAI_API_KEY).
+          case "${E2E_RUNTIME}" in
+            claude-code)
+              if [ -n "${E2E_MINIMAX_API_KEY:-}" ]; then
+                required_secret_name="MOLECULE_STAGING_MINIMAX_API_KEY"
+                required_secret_value="${E2E_MINIMAX_API_KEY}"
+              elif [ -n "${E2E_ANTHROPIC_API_KEY:-}" ]; then
+                required_secret_name="MOLECULE_STAGING_ANTHROPIC_API_KEY"
+                required_secret_value="${E2E_ANTHROPIC_API_KEY}"
+              else
+                required_secret_name="MOLECULE_STAGING_MINIMAX_API_KEY or MOLECULE_STAGING_ANTHROPIC_API_KEY"
+                required_secret_value=""
+              fi
+              ;;
+            langgraph|hermes)
+              required_secret_name="MOLECULE_STAGING_OPENAI_API_KEY"
+              required_secret_value="${E2E_OPENAI_API_KEY:-}"
+              ;;
+            *)
+              echo "::warning::Unknown E2E_RUNTIME='${E2E_RUNTIME}' — skipping LLM-key check"
+              required_secret_name=""
+              required_secret_value="present"
+              ;;
+          esac
+          if [ -n "$required_secret_name" ] && [ -z "$required_secret_value" ]; then
+            echo "::error::${required_secret_name} secret missing — runtime=${E2E_RUNTIME} cannot authenticate against its LLM provider"
+            echo "::error::Set it at Settings → Secrets and Variables → Actions, OR dispatch with a different runtime"
+            exit 1
+          fi
+
+      - name: Install required tools
+        run: |
+          # The script depends on jq + curl (already on ubuntu-latest)
+          # and python3 (likewise). Verify they're all present so we
+          # fail fast on a runner image regression rather than mid-script.
+          for cmd in jq curl python3; do
+            command -v "$cmd" >/dev/null 2>&1 || {
+              echo "::error::required tool '$cmd' not on PATH — runner image regression?"
+              exit 1
+            }
+          done
+
+      - name: Run synthetic E2E
+        # The script handles its own teardown via EXIT trap; even on
+        # failure (timeout, assertion), the org is deprovisioned and
+        # leaks are reported. Exit code propagates from the script.
+        run: |
+          bash tests/e2e/test_staging_full_saas.sh
+
+      - name: Failure summary
+        # Runs only on failure. Adds a job summary so the workflow run
+        # page shows a quick "what happened" instead of forcing readers
+        # to scroll through script output.
+        if: failure()
+        run: |
+          {
+            echo "## Continuous synth E2E failed"
+            echo ""
+            echo "**Run ID:** ${{ github.run_id }}"
+            echo "**Trigger:** ${{ github.event_name }}"
+            echo "**Runtime:** ${E2E_RUNTIME}"
+            echo "**Slug:** synth-${{ github.run_id }}"
+            echo ""
+            echo "### What this means"
+            echo ""
+            echo "Staging just regressed on a path that previously worked. Likely classes:"
+            echo "- Schema mismatch between sender and receiver (#2345 class)"
+            echo "- Deployment-pipeline gap (RFC #2312 / staging-tenant-image-stale class)"
+            echo "- Vendor outage (Cloudflare, Railway, AWS, GHCR)"
+            echo "- Staging-CP env var rotation"
+            echo ""
+            echo "### Next steps"
+            echo ""
+            echo "1. Check the script output above for the assertion that failed"
+            echo "2. If it's a vendor outage, no action needed — next firing in ~20 min"
+            echo "3. If it's a code regression, find the causing PR via \`git log\` against last green run and revert/fix"
+            echo "4. Keep an eye on the next 1-2 firings — flake vs persistent fail differs in priority"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -98,10 +98,10 @@ describe("ConsoleModal — WCAG 2.1 dialog accessibility", () => {
     expect(titleEl?.textContent?.trim()).toBe("EC2 console output");
   });
 
-  it("backdrop div has aria-hidden='true' so screen readers skip it (WCAG 4.1.2)", async () => {
+  it("backdrop div has aria-label for screen readers (WCAG 2.4.6)", async () => {
     mockGet.mockResolvedValueOnce({ output: "" });
     render(<ConsoleModal workspaceId="ws-1" open={true} onClose={() => {}} />);
-    const backdrop = document.querySelector('[aria-hidden="true"]');
+    const backdrop = document.querySelector('[aria-label="Close terminal"]');
     expect(backdrop).toBeTruthy();
     expect(backdrop?.className).toContain("bg-black");
   });

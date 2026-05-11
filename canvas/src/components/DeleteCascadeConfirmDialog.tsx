@@ -81,7 +81,11 @@ export function DeleteCascadeConfirmDialog({
   return createPortal(
     <div className="fixed inset-0 z-[9999] flex items-center justify-center">
       {/* Backdrop */}
-      <div aria-hidden="true" className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onCancel} />
+      <div
+        className="absolute inset-0 bg-black/60 backdrop-blur-sm cursor-pointer"
+        onClick={onCancel}
+        aria-label="Dismiss dialog"
+      />
 
       {/* Dialog */}
       <div

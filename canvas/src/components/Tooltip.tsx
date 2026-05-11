@@ -77,7 +77,7 @@ export function Tooltip({ text, children }: Props) {
       onMouseLeave={leave}
       onFocus={onFocus}
       onBlur={onBlur}
-      aria-describedby={tooltipId.current}
+      aria-describedby={show ? tooltipId.current : undefined}
     >
       {children}
       {show && text && createPortal(

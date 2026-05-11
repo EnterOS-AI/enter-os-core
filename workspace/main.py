@@ -668,6 +668,31 @@ async def main():  # pragma: no cover
                 if heartbeat.active_tasks > 0:
                     continue
 
+                # Issue #381 fix: skip the idle prompt if there are unconsumed
+                # delegation results waiting. The heartbeat sends a self-message
+                # for every new result batch, so sending the idle prompt here would
+                # race: the agent would compose a stale tick BEFORE processing the
+                # results notification, producing repeated identical asks (peer sends
+                # correction, we respond with stale state, peer asks again).
+                # By skipping the idle prompt when results are pending, we let the
+                # heartbeat's own self-message wake the agent after results are
+                # written. The agent then sees the results in _prepare_prompt()
+                # and processes them before composing.
+                from heartbeat import DELEGATION_RESULTS_FILE as _DRF
+                try:
+                    with open(_DRF) as _rf:
+                        _rf.seek(0)
+                        _content = _rf.read().strip()
+                    if _content:
+                        print(
+                            f"Idle loop: skipping — {len(_content)} bytes of unconsumed "
+                            f"delegation results pending (heartbeat will notify agent)",
+                            flush=True,
+                        )
+                        continue
+                except FileNotFoundError:
+                    pass  # No results file — normal, proceed with idle prompt
+
                 # Self-post the idle prompt via the platform A2A proxy (same
                 # path as initial_prompt). The agent's own concurrency control
                 # rejects if the workspace becomes busy between this check and

@@ -73,6 +73,21 @@ describe("ConfirmDialog singleButton prop", () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
+  it("backdrop has aria-label for screen reader users (WCAG 4.1.2)", () => {
+    render(
+      <ConfirmDialog
+        open
+        title="Title"
+        message="Message"
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+    const backdrop = document.querySelector(".bg-black\\/60");
+    expect(backdrop).toBeTruthy();
+    expect(backdrop?.getAttribute("aria-label")).toBe("Dismiss dialog");
+  });
+
   it("singleButton: onConfirm fires on button click", () => {
     const onConfirm = vi.fn();
     render(

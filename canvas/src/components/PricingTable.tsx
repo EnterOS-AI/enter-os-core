@@ -128,9 +128,9 @@ function PlanCard({
         type="button"
         onClick={onSelect}
         disabled={loading}
-        className={`mt-6 rounded-lg px-4 py-3 text-sm font-medium ${
+        className={`mt-6 rounded-lg px-4 py-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface ${
           plan.highlighted
-            ? "bg-accent-strong text-white hover:bg-accent disabled:bg-blue-900"
+            ? "bg-accent-strong text-white hover:bg-accent disabled:bg-zinc-700 disabled:text-zinc-500"
             : "border border-line bg-surface-sunken text-ink hover:bg-surface-card disabled:opacity-50"
         }`}
       >

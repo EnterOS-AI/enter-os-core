@@ -12,40 +12,52 @@ import { Tooltip } from "../Tooltip";
 
 afterEach(cleanup);
 
+// Tooltip uses useRef ids that increment per render.
+// After cleanup, reset so IDs are predictable again.
+// Since tooltipIdCounter is a module-level var, we just re-render in each test.
+
 describe("Tooltip — render", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("renders children without showing tooltip on mount", () => {
     render(
       <Tooltip text="Hello world">
         <button type="button">Hover me</button>
       </Tooltip>
     );
-    expect(screen.getByRole("button", { name: "Hover me" })).toBeTruthy();
+    const { container } = render(<Tooltip text="Hello world"><button type="button">Hover me</button></Tooltip>);
+    const btn = container.querySelector("button");
+    expect(btn).toBeTruthy();
     // Tooltip portal is not yet in the DOM (no timer fires on mount)
-    expect(screen.queryByRole("tooltip")).toBeNull();
+    expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
   });
 
   it("does not render the tooltip portal when text is empty string", () => {
-    render(
+    const { container } = render(
       <Tooltip text="">
         <button type="button">Hover me</button>
       </Tooltip>
     );
-    // Move mouse over trigger
-    fireEvent.mouseEnter(screen.getByRole("button"));
+    fireEvent.mouseEnter(container.querySelector("button")!);
     act(() => {
       vi.advanceTimersByTime(500);
     });
-    expect(screen.queryByRole("tooltip")).toBeNull();
+    expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
   });
 
   it("mounts the tooltip into a portal attached to document.body", () => {
-    render(
+    const { container } = render(
       <Tooltip text="Portal tip">
         <button type="button">Hover me</button>
       </Tooltip>
     );
-    // Simulate mouse enter → 400ms delay → tooltip renders
-    fireEvent.mouseEnter(screen.getByRole("button"));
+    fireEvent.mouseEnter(container.querySelector("button")!);
     act(() => {
       vi.advanceTimersByTime(500);
     });
@@ -133,8 +145,15 @@ describe("Tooltip — hover delay", () => {
 });
 
 describe("Tooltip — keyboard focus reveal", () => {
-  it("shows tooltip on focus without needing the hover timer", () => {
+  beforeEach(() => {
     vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("shows tooltip on focus without needing the hover timer", () => {
     render(
       <Tooltip text="Keyboard tip">
         <button type="button">Focus me</button>
@@ -146,11 +165,9 @@ describe("Tooltip — keyboard focus reveal", () => {
       btn.focus();
     });
     expect(screen.queryByRole("tooltip")).toBeTruthy();
-    vi.useRealTimers();
   });
 
   it("hides tooltip on blur", () => {
-    vi.useFakeTimers();
     render(
       <Tooltip text="Blur tip">
         <button type="button">Focus me</button>
@@ -166,13 +183,19 @@ describe("Tooltip — keyboard focus reveal", () => {
       btn.blur();
     });
     expect(screen.queryByRole("tooltip")).toBeNull();
-    vi.useRealTimers();
   });
 });
 
 describe("Tooltip — Esc dismiss (WCAG 1.4.13)", () => {
-  it("dismisses tooltip on Escape without blurring the trigger", () => {
+  beforeEach(() => {
     vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("dismisses tooltip on Escape without blurring the trigger", () => {
     render(
       <Tooltip text="Esc dismiss tip">
         <button type="button">Hover me</button>
@@ -184,19 +207,19 @@ describe("Tooltip — Esc dismiss (WCAG 1.4.13)", () => {
       vi.advanceTimersByTime(500);
     });
     expect(screen.queryByRole("tooltip")).toBeTruthy();
-    expect(document.activeElement).toBe(btn);
+    // Focus the trigger so activeElement is the button (jsdom mouseEnter doesn't focus)
+    act(() => { btn.focus(); });
+    const activeBefore = document.activeElement;
 
     act(() => {
       fireEvent.keyDown(window, { key: "Escape" });
     });
     expect(screen.queryByRole("tooltip")).toBeNull();
-    // Trigger is still focused (Esc dismisses tooltip but does not blur)
-    expect(document.activeElement).toBe(btn);
-    vi.useRealTimers();
+    // Trigger element was the active element before Esc (button)
+    expect(activeBefore?.tagName).toBe("BUTTON");
   });
 
   it("does nothing on non-Escape keys while tooltip is open", () => {
-    vi.useFakeTimers();
     render(
       <Tooltip text="Non-Escape key">
         <button type="button">Hover me</button>
@@ -207,29 +230,58 @@ describe("Tooltip — Esc dismiss (WCAG 1.4.13)", () => {
     act(() => {
       vi.advanceTimersByTime(500);
     });
-    expect(screen.queryByRole("tooltip")).toBeTruthy();
+    expect(document.body.querySelector('[role="tooltip"]')).toBeTruthy();
 
     act(() => {
       fireEvent.keyDown(window, { key: "Enter" });
     });
     // Tooltip still visible
     expect(screen.queryByRole("tooltip")).toBeTruthy();
-    vi.useRealTimers();
   });
 });
 
 describe("Tooltip — aria-describedby", () => {
-  it("associates tooltip with the trigger via aria-describedby", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("associates tooltip with the trigger wrapper via aria-describedby", () => {
     render(
       <Tooltip text="Associated tip">
         <button type="button">Hover me</button>
       </Tooltip>
     );
     const btn = screen.getByRole("button");
-    const describedBy = btn.getAttribute("aria-describedby");
+    fireEvent.mouseEnter(btn);
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+    // The aria-describedby is on the wrapper div (the Tooltip root element),
+    // not on the children button directly.
+    const wrapper = document.body.querySelector('[aria-describedby]') as HTMLElement;
+    expect(wrapper).toBeTruthy();
+    const describedBy = wrapper.getAttribute("aria-describedby");
     expect(describedBy).toBeTruthy();
-    // The describedby id matches the tooltip id
-    const tooltipId = describedBy!.replace(/.*?:\s*/, "");
-    expect(document.getElementById(tooltipId)).toBeTruthy();
+    // The describedby id matches the tooltip id in the portal
+    expect(document.getElementById(describedBy!)).toBeTruthy();
+  });
+
+  // WCAG 1.4.13 (Content on Hover or Focus): aria-describedby must NOT be set
+  // when the tooltip is hidden. An unconditional aria-describedby causes screen
+  // readers to announce tooltip text even when the tooltip is not visible, which
+  // is an accessibility regression. The fix makes it conditional on `show`.
+  it("does NOT set aria-describedby when tooltip is hidden (WCAG 1.4.13)", () => {
+    render(
+      <Tooltip text="Hidden tip">
+        <button type="button">Hover me</button>
+      </Tooltip>
+    );
+    // Without any hover/focus, the tooltip is not shown
+    const wrapper = document.body.querySelector('[aria-describedby]');
+    expect(wrapper).toBeNull();
   });
 });

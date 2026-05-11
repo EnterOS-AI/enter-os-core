@@ -17,34 +17,42 @@ vi.mock("../settings/SettingsButton", () => ({
 }));
 
 describe("TopBar — render", () => {
+  // Scope all queries to container to avoid button/text ambiguity from
+  // other components in the shared jsdom environment.
   it("renders a header element", () => {
-    render(<TopBar />);
-    expect(document.body.querySelector("header")).toBeTruthy();
+    const { container } = render(<TopBar />);
+    expect(container.querySelector("header")).toBeTruthy();
   });
 
   it("renders the canvas name (default)", () => {
-    render(<TopBar />);
-    expect(screen.getByText("Canvas")).toBeTruthy();
+    const { container } = render(<TopBar />);
+    expect(container.textContent).toContain("Canvas");
   });
 
   it("renders a custom canvas name", () => {
-    render(<TopBar canvasName="My Org Canvas" />);
-    expect(screen.getByText("My Org Canvas")).toBeTruthy();
+    const { container } = render(<TopBar canvasName="My Org Canvas" />);
+    expect(container.textContent).toContain("My Org Canvas");
   });
 
   it("renders the '+ New Agent' button", () => {
-    render(<TopBar />);
-    expect(screen.getByRole("button", { name: /new agent/i })).toBeTruthy();
+    const { container } = render(<TopBar />);
+    const btn = Array.from(container.querySelectorAll("button")).find(
+      (b) => /new agent/i.test(b.textContent ?? "")
+    );
+    expect(btn).toBeTruthy();
   });
 
   it("renders the SettingsButton", () => {
-    render(<TopBar />);
-    expect(screen.getByRole("button", { name: "Settings" })).toBeTruthy();
+    const { container } = render(<TopBar />);
+    const btn = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.getAttribute("aria-label") === "Settings"
+    );
+    expect(btn).toBeTruthy();
   });
 
   it("has the logo span with aria-hidden", () => {
-    render(<TopBar />);
-    const logo = document.body.querySelector('[aria-hidden="true"]');
+    const { container } = render(<TopBar />);
+    const logo = container.querySelector('[aria-hidden="true"]');
     expect(logo?.textContent).toBe("☁");
   });
 });

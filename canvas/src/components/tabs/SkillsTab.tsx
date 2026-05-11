@@ -479,7 +479,7 @@ export function SkillsTab({ workspaceId, data }: Props) {
                 <button
                   type="button"
                   onClick={() => loadRegistry(true)}
-                  className="text-[10px] text-violet-300 hover:text-violet-200 underline-offset-2 hover:underline"
+                  className="text-[10px] text-violet-300 hover:text-violet-200 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
                 >
                   {registryLoading ? "Loading… click to retry" : "Retry"}
                 </button>

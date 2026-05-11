@@ -11,12 +11,13 @@ import { render, screen, fireEvent, cleanup, act } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TestConnectionButton } from "../ui/TestConnectionButton";
 import type { SecretGroup } from "@/types/secrets";
+import { validateSecret } from "@/lib/api/secrets";
 
 // ─── Mock validateSecret ──────────────────────────────────────────────────────
-
-const mockValidateSecret = vi.fn();
+// vi.mock is hoisted, so validateSecret (imported above) refers to the mocked
+// namespace value once vi.mock runs. Use vi.mocked() to access it in tests.
 vi.mock("@/lib/api/secrets", () => ({
-  validateSecret: mockValidateSecret,
+  validateSecret: vi.fn(),
 }));
 
 // SecretGroup is a string literal type: 'github' | 'anthropic' | 'openrouter' | 'custom'
@@ -29,7 +30,7 @@ describe("TestConnectionButton — render", () => {
     cleanup();
     vi.useRealTimers();
     vi.restoreAllMocks();
-    mockValidateSecret.mockReset();
+    vi.mocked(validateSecret).mockReset();
   });
 
   it("renders 'Test connection' button in idle state", () => {
@@ -39,12 +40,12 @@ describe("TestConnectionButton — render", () => {
 
   it("disables button when secretValue is empty", () => {
     render(<TestConnectionButton provider={toGroup("anthropic")} secretValue="" />);
-    expect(screen.getByRole("button").getAttribute("disabled")).toBeTruthy();
+    expect(screen.getByRole("button").hasAttribute("disabled")).toBe(true);
   });
 
   it("enables button when secretValue is non-empty", () => {
     render(<TestConnectionButton provider={toGroup("anthropic")} secretValue="sk-test" />);
-    expect(screen.getByRole("button").getAttribute("disabled")).toBeFalsy();
+    expect(screen.getByRole("button").hasAttribute("disabled")).toBe(false);
   });
 });
 
@@ -57,21 +58,21 @@ describe("TestConnectionButton — state machine", () => {
     cleanup();
     vi.useRealTimers();
     vi.restoreAllMocks();
-    mockValidateSecret.mockReset();
+    vi.mocked(validateSecret).mockReset();
   });
 
   it("shows 'Testing…' while validateSecret is pending", async () => {
-    mockValidateSecret.mockImplementation(() => new Promise(() => {})); // never resolves
+    vi.mocked(validateSecret).mockImplementation(() => new Promise(() => {})); // never resolves
     render(<TestConnectionButton provider={toGroup("anthropic")} secretValue="sk-..." />);
 
     fireEvent.click(screen.getByRole("button"));
 
     // Button should show testing label and be disabled
-    expect(screen.getByRole("button", { name: "Testing…" }).getAttribute("disabled")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Testing…" }).hasAttribute("disabled")).toBe(true);
   });
 
   it("shows 'Connected ✓' on success", async () => {
-    mockValidateSecret.mockResolvedValue({ valid: true });
+    vi.mocked(validateSecret).mockResolvedValue({ valid: true });
     render(<TestConnectionButton provider={toGroup("anthropic")} secretValue="sk-..." />);
 
     fireEvent.click(screen.getByRole("button"));
@@ -81,7 +82,7 @@ describe("TestConnectionButton — state machine", () => {
   });
 
   it("shows 'Test failed' on validation failure", async () => {
-    mockValidateSecret.mockResolvedValue({ valid: false, error: "Invalid key format" });
+    vi.mocked(validateSecret).mockResolvedValue({ valid: false, error: "Invalid key format" });
     render(<TestConnectionButton provider={toGroup("anthropic")} secretValue="bad-key" />);
 
     fireEvent.click(screen.getByRole("button"));
@@ -91,7 +92,7 @@ describe("TestConnectionButton — state machine", () => {
   });
 
   it("shows error detail when validation returns invalid with message", async () => {
-    mockValidateSecret.mockResolvedValue({ valid: false, error: "Permission denied" });
+    vi.mocked(validateSecret).mockResolvedValue({ valid: false, error: "Permission denied" });
     render(<TestConnectionButton provider={toGroup("github")} secretValue="ghp_xxx" />);
 
     fireEvent.click(screen.getByRole("button"));
@@ -102,14 +103,15 @@ describe("TestConnectionButton — state machine", () => {
   });
 
   it("shows generic error message on unexpected exception", async () => {
-    mockValidateSecret.mockRejectedValue(new Error("timeout"));
+    vi.mocked(validateSecret).mockRejectedValue(new Error("timeout"));
     render(<TestConnectionButton provider={toGroup("anthropic")} secretValue="sk-..." />);
 
     fireEvent.click(screen.getByRole("button"));
     await act(async () => { /* flush */ });
 
     expect(screen.getByRole("alert")).toBeTruthy();
-    expect(screen.getByText(/timeout/i)).toBeTruthy();
+    // The error detail is hardcoded to "Connection timed out. Service may be down."
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toMatch(/timed out/i);
   });
 });
 
@@ -122,11 +124,11 @@ describe("TestConnectionButton — auto-reset", () => {
     cleanup();
     vi.useRealTimers();
     vi.restoreAllMocks();
-    mockValidateSecret.mockReset();
+    vi.mocked(validateSecret).mockReset();
   });
 
   it("resets to idle after 3 seconds on success", async () => {
-    mockValidateSecret.mockResolvedValue({ valid: true });
+    vi.mocked(validateSecret).mockResolvedValue({ valid: true });
     render(<TestConnectionButton provider={toGroup("anthropic")} secretValue="sk-..." />);
 
     fireEvent.click(screen.getByRole("button"));
@@ -140,7 +142,7 @@ describe("TestConnectionButton — auto-reset", () => {
   });
 
   it("resets to idle after 5 seconds on failure", async () => {
-    mockValidateSecret.mockResolvedValue({ valid: false, error: "Bad key" });
+    vi.mocked(validateSecret).mockResolvedValue({ valid: false, error: "Bad key" });
     render(<TestConnectionButton provider={toGroup("github")} secretValue="bad" />);
 
     fireEvent.click(screen.getByRole("button"));
@@ -154,7 +156,7 @@ describe("TestConnectionButton — auto-reset", () => {
   });
 
   it("does not reset before 3 seconds on success", async () => {
-    mockValidateSecret.mockResolvedValue({ valid: true });
+    vi.mocked(validateSecret).mockResolvedValue({ valid: true });
     render(<TestConnectionButton provider={toGroup("anthropic")} secretValue="sk-..." />);
 
     fireEvent.click(screen.getByRole("button"));
@@ -178,12 +180,12 @@ describe("TestConnectionButton — onResult callback", () => {
     cleanup();
     vi.useRealTimers();
     vi.restoreAllMocks();
-    mockValidateSecret.mockReset();
+    vi.mocked(validateSecret).mockReset();
   });
 
   it("calls onResult(true) on success", async () => {
     const onResult = vi.fn();
-    mockValidateSecret.mockResolvedValue({ valid: true });
+    vi.mocked(validateSecret).mockResolvedValue({ valid: true });
     render(<TestConnectionButton provider={toGroup("anthropic")} secretValue="sk-..." onResult={onResult} />);
 
     fireEvent.click(screen.getByRole("button"));
@@ -194,7 +196,7 @@ describe("TestConnectionButton — onResult callback", () => {
 
   it("calls onResult(false) on failure", async () => {
     const onResult = vi.fn();
-    mockValidateSecret.mockResolvedValue({ valid: false });
+    vi.mocked(validateSecret).mockResolvedValue({ valid: false });
     render(<TestConnectionButton provider={toGroup("anthropic")} secretValue="bad" onResult={onResult} />);
 
     fireEvent.click(screen.getByRole("button"));
@@ -205,7 +207,7 @@ describe("TestConnectionButton — onResult callback", () => {
 
   it("calls onResult(false) when exception is thrown", async () => {
     const onResult = vi.fn();
-    mockValidateSecret.mockRejectedValue(new Error("network error"));
+    vi.mocked(validateSecret).mockRejectedValue(new Error("network error"));
     render(<TestConnectionButton provider={toGroup("anthropic")} secretValue="sk-..." onResult={onResult} />);
 
     fireEvent.click(screen.getByRole("button"));

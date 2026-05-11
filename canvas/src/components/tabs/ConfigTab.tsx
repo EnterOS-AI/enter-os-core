@@ -83,11 +83,11 @@ function AgentCardSection({ workspaceId }: { workspaceId: string }) {
           {error && <div className="px-2 py-1 bg-red-900/30 border border-red-800 rounded text-[10px] text-bad">{error}</div>}
           <div className="flex gap-2">
             <button type="button" onClick={handleSave} disabled={saving}
-              className="px-2 py-1 bg-accent hover:bg-accent-strong text-[10px] rounded text-white disabled:opacity-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface">
+              className="px-2 py-1 bg-accent hover:bg-accent-strong text-[10px] rounded text-white disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface">
               {saving ? "Saving..." : "Save"}
             </button>
             <button type="button" onClick={() => setEditing(false)}
-              className="px-2 py-1 bg-surface-card hover:bg-surface-elevated hover:text-ink text-[10px] rounded text-ink-mid transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-surface">Cancel</button>
+              className="px-2 py-1 bg-surface-card hover:bg-surface-elevated hover:text-ink text-[10px] rounded text-ink-mid transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface">Cancel</button>
           </div>
         </div>
       ) : (
@@ -101,7 +101,7 @@ function AgentCardSection({ workspaceId }: { workspaceId: string }) {
           )}
           {success && <div className="mt-2 px-2 py-1 bg-green-900/30 border border-green-800 rounded text-[10px] text-good">Updated</div>}
           <button type="button" onClick={() => { setDraft(JSON.stringify(card || {}, null, 2)); setEditing(true); setError(null); setSuccess(false); }}
-            className="mt-2 text-[10px] text-accent hover:text-accent">Edit Agent Card</button>
+            className="mt-2 text-[10px] text-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1">Edit Agent Card</button>
         </div>
       )}
     </Section>
@@ -876,7 +876,7 @@ export function ConfigTab({ workspaceId }: Props) {
                 <button
                   type="button"
                   onClick={() => updateNested("runtime_config" as keyof ConfigData, "required_env", currentModelSpec.required_env)}
-                  className="text-accent hover:text-accent underline"
+                  className="text-accent hover:text-accent underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
                 >
                   Apply
                 </button>
@@ -1016,7 +1016,7 @@ export function ConfigTab({ workspaceId }: Props) {
           onClick={() => handleSave(true)}
           disabled={!isDirty || saving}
           // Same accent-LIGHTER fix shipped on every other tab.
-          className="px-3 py-1.5 bg-accent hover:bg-accent-strong text-xs rounded text-white disabled:opacity-30 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
+          className="px-3 py-1.5 bg-accent hover:bg-accent-strong text-xs rounded text-white disabled:opacity-30 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
         >
           {saving ? "Restarting..." : "Save & Restart"}
         </button>
@@ -1024,14 +1024,14 @@ export function ConfigTab({ workspaceId }: Props) {
           type="button"
           onClick={() => handleSave(false)}
           disabled={!isDirty || saving}
-          className="px-3 py-1.5 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid disabled:opacity-30 transition-colors"
+          className="px-3 py-1.5 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid disabled:opacity-30 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
         >
           Save
         </button>
         <button
           type="button"
           onClick={loadConfig}
-          className="px-3 py-1.5 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid ml-auto"
+          className="px-3 py-1.5 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid ml-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
         >
           Reload
         </button>

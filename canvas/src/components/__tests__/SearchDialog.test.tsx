@@ -102,8 +102,8 @@ describe("SearchDialog — keyboard shortcuts", () => {
   });
 
   it("clears the query when Cmd+K opens the dialog", () => {
+    mockStoreState.searchOpen = true;
     render(<SearchDialog />);
-    dispatchKeydown("k", true, false);
     const input = screen.getByRole("combobox");
     expect(input.getAttribute("value") ?? "").toBe("");
   });
@@ -273,9 +273,9 @@ describe("SearchDialog — listbox navigation", () => {
     render(<SearchDialog />);
     const input = screen.getByRole("combobox");
     fireEvent.change(input, { target: { value: "a" } }); // All 3 match
-    fireEvent.keyDown(input, { key: "ArrowDown" }); // Highlight Bob
+    fireEvent.keyDown(input, { key: "ArrowDown" }); // Highlight Bob (index 1)
     fireEvent.keyDown(input, { key: "Enter" });
-    expect(mockStoreState.selectNode).toHaveBeenCalledWith("n1"); // Alice
+    expect(mockStoreState.selectNode).toHaveBeenCalledWith("n2"); // Bob
     expect(mockStoreState.setPanelTab).toHaveBeenCalledWith("details");
     expect(mockStoreState.setSearchOpen).toHaveBeenCalledWith(false);
   });

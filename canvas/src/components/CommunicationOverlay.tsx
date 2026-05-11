@@ -209,7 +209,7 @@ export function CommunicationOverlay() {
         type="button"
         onClick={() => setVisible(true)}
         aria-label="Show communications panel"
-        className="fixed top-16 right-4 z-30 px-3 py-1.5 bg-surface-sunken/90 border border-line/50 rounded-lg text-[10px] text-ink-mid hover:text-ink transition-colors"
+        className="fixed top-16 right-4 z-30 px-3 py-1.5 bg-surface-sunken/90 border border-line/50 rounded-lg text-[10px] text-ink-mid hover:text-ink transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
       >
         <span aria-hidden="true">↗↙ </span>{comms.length > 0 ? `${comms.length} comms` : "Communications"}
       </button>
@@ -226,7 +226,7 @@ export function CommunicationOverlay() {
           type="button"
           onClick={() => setVisible(false)}
           aria-label="Close communications panel"
-          className="text-ink-mid hover:text-ink-mid text-xs"
+          className="text-ink-mid hover:text-ink-mid text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
         >
           <span aria-hidden="true">✕</span>
         </button>

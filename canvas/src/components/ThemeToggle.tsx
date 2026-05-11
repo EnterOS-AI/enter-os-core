@@ -1,6 +1,7 @@
 "use client";
 
 import { useTheme, type ThemePreference } from "@/lib/theme-provider";
+import { useCallback } from "react";
 
 const OPTIONS: { value: ThemePreference; label: string; icon: string }[] = [
   // Sun: explicit light
@@ -33,9 +34,39 @@ const OPTIONS: { value: ThemePreference; label: string; icon: string }[] = [
  *
  * Aligned with molecule-app/components/theme-toggle.tsx so the picker
  * behaves identically across surfaces.
+ *
+ * WCAG 2.4.7: focus-visible rings on all three icon buttons.
+ * ARIA radiogroup pattern (2.1.1): Left/Right arrow keys move focus
+ * between options and update selection; Home/End jump to first/last.
  */
 export function ThemeToggle({ className = "" }: { className?: string }) {
   const { theme, setTheme } = useTheme();
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+      let next = index;
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+        e.preventDefault();
+        next = (index + 1) % OPTIONS.length;
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+        e.preventDefault();
+        next = (index - 1 + OPTIONS.length) % OPTIONS.length;
+      } else if (e.key === "Home") {
+        e.preventDefault();
+        next = 0;
+      } else if (e.key === "End") {
+        e.preventDefault();
+        next = OPTIONS.length - 1;
+      } else {
+        return;
+      }
+      setTheme(OPTIONS[next].value);
+      // Move focus to the new button so arrow-key navigation is continuous
+      const btns = (e.currentTarget.closest("[role=radiogroup]") as HTMLElement)?.querySelectorAll<HTMLButtonElement>("[role=radio]");
+      btns?.[next]?.focus();
+    },
+    []
+  );
 
   return (
     <div
@@ -43,7 +74,7 @@ export function ThemeToggle({ className = "" }: { className?: string }) {
       aria-label="Theme preference"
       className={`inline-flex items-center gap-0.5 rounded-md border border-line bg-surface-sunken p-0.5 ${className}`}
     >
-      {OPTIONS.map((opt) => {
+      {OPTIONS.map((opt, index) => {
         const active = theme === opt.value;
         return (
           <button
@@ -53,11 +84,12 @@ export function ThemeToggle({ className = "" }: { className?: string }) {
             aria-checked={active}
             aria-label={opt.label}
             onClick={() => setTheme(opt.value)}
+            onKeyDown={(e) => handleKeyDown(e, index)}
             className={
-              "flex h-6 w-6 items-center justify-center rounded transition-colors " +
+              "flex h-6 w-6 items-center justify-center rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface-sunken " +
               (active
                 ? "bg-surface-elevated text-ink shadow-sm"
-                : "text-ink-mid hover:text-ink-mid")
+                : "text-ink-mid hover:text-ink")
             }
           >
             <svg

@@ -113,9 +113,9 @@ function SecretRow({ label, secretKey, isSet, scope, globalMode, onSave, onDelet
           {isSet && <span className="text-[10px] text-good bg-green-900/30 px-1.5 py-0.5 rounded">Set</span>}
           {scope && <ScopeBadge scope={scope} />}
           {!editing && isSet && (globalMode || scope !== "global") && (
-            <button type="button" onClick={onDelete} className="text-[11px] text-bad hover:text-bad">Remove</button>
+            <button type="button" onClick={onDelete} className="text-[11px] text-bad hover:text-bad focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-1">Remove</button>
           )}
-          <button type="button" onClick={() => setEditing(!editing)} className="text-[11px] text-accent hover:text-accent">
+          <button type="button" onClick={() => setEditing(!editing)} className="text-[11px] text-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1">
             {actionLabel()}
           </button>
         </div>
@@ -131,7 +131,7 @@ function SecretRow({ label, secretKey, isSet, scope, globalMode, onSave, onDelet
           <button type="button"
             onClick={() => { onSave(value); setEditing(false); setValue(""); }}
             disabled={!value}
-            className="px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-white disabled:opacity-30"
+            className="px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-white disabled:opacity-30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
           >Save</button>
         </div>
       )}
@@ -165,10 +165,10 @@ function CustomSecretRow({ secretKey, scope, globalMode, onSave, onDelete }: {
           <span className="text-[10px] text-good">Set</span>
           {!globalMode && <ScopeBadge scope={scope} />}
           {canDelete && !editing && (
-            <button type="button" onClick={onDelete} className="text-[11px] text-bad hover:text-bad">Remove</button>
+            <button type="button" onClick={onDelete} className="text-[11px] text-bad hover:text-bad focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-1">Remove</button>
           )}
           {(canDelete || showOverride) && (
-            <button type="button" onClick={() => setEditing(!editing)} className="text-[11px] text-accent hover:text-accent">
+            <button type="button" onClick={() => setEditing(!editing)} className="text-[11px] text-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1">
               {editing ? "Cancel" : showOverride ? "Override" : "Update"}
             </button>
           )}
@@ -184,7 +184,7 @@ function CustomSecretRow({ secretKey, scope, globalMode, onSave, onDelete }: {
           <button type="button"
             onClick={() => { onSave(value); setEditing(false); setValue(""); }}
             disabled={!value}
-            className="px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-white disabled:opacity-30"
+            className="px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-white disabled:opacity-30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
           >Save</button>
         </div>
       )}
@@ -297,7 +297,7 @@ export function SecretsSection({ workspaceId, requiredEnv }: { workspaceId: stri
           <div className="flex items-center gap-2 pb-1">
             <button
               onClick={() => setGlobalMode(false)}
-              className={`text-[10px] px-2 py-0.5 rounded transition-colors ${
+              className={`text-[10px] px-2 py-0.5 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 ${
                 !globalMode ? "bg-accent-strong/20 text-accent border border-accent/30" : "text-white-soft hover:text-white-mid"
               }`}
             >
@@ -305,7 +305,7 @@ export function SecretsSection({ workspaceId, requiredEnv }: { workspaceId: stri
             </button>
             <button
               onClick={() => setGlobalMode(true)}
-              className={`text-[10px] px-2 py-0.5 rounded transition-colors ${
+              className={`text-[10px] px-2 py-0.5 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-1 ${
                 globalMode ? "bg-amber-600/20 text-warm border border-amber-500/30" : "text-white-soft hover:text-white-mid"
               }`}
             >
@@ -356,15 +356,15 @@ export function SecretsSection({ workspaceId, requiredEnv }: { workspaceId: stri
                 className="w-full bg-surface-sunken border border-line rounded px-2 py-1 text-[10px] text-ink focus:outline-none focus:border-accent" />
               <div className="flex gap-2">
                 <button type="button" onClick={() => { if (newKey && newValue) handleSave(newKey, newValue); }} disabled={!newKey || !newValue}
-                  className="px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-white disabled:opacity-30">
+                  className="px-2 py-1 bg-accent-strong hover:bg-accent text-[10px] rounded text-white disabled:opacity-30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1">
                   Save{globalMode ? " (Global)" : ""}
                 </button>
                 <button type="button" onClick={() => { setShowAdd(false); setNewKey(""); setNewValue(""); }}
-                  className="px-2 py-1 bg-surface-card hover:bg-surface-card text-[10px] rounded text-ink-mid">Cancel</button>
+                  className="px-2 py-1 bg-surface-card hover:bg-surface-card text-[10px] rounded text-ink-mid focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1">Cancel</button>
               </div>
             </div>
           ) : (
-            <button type="button" onClick={() => setShowAdd(true)} className="text-[10px] text-accent hover:text-accent">
+            <button type="button" onClick={() => setShowAdd(true)} className="text-[10px] text-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1">
               + Add {globalMode ? "Global " : ""}Variable
             </button>
           )}

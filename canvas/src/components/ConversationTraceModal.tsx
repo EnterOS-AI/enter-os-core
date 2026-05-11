@@ -115,7 +115,7 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
                 <button
                   type="button"
                   aria-label="Close conversation trace"
-                  className="text-ink-mid hover:text-ink-mid text-lg px-2"
+                  className="text-ink-mid hover:text-ink-mid text-lg px-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
                 >
                   ✕
                 </button>
@@ -286,7 +286,7 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
               <Dialog.Close asChild>
                 <button
                   type="button"
-                  className="px-4 py-1.5 text-[12px] bg-surface-card hover:bg-surface-card text-ink-mid rounded-lg transition-colors"
+                  className="px-4 py-1.5 text-[12px] bg-surface-card hover:bg-surface-card text-ink-mid rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
                 >
                   Close
                 </button>

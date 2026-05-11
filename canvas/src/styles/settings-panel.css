@@ -276,6 +276,11 @@
   cursor: pointer;
 }
 
+.secret-row__cancel-btn:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
 .secret-row__save-btn {
   background: #2563eb;
   color: #ffffff;
@@ -284,6 +289,11 @@
   border-radius: 6px;
   font-size: 13px;
   cursor: pointer;
+}
+
+.secret-row__save-btn:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
 }
 
 .secret-row__save-btn:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -354,6 +364,11 @@
   cursor: pointer;
 }
 
+.add-key-form__cancel-btn:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
 .add-key-form__save-btn {
   background: #2563eb;
   color: #ffffff;
@@ -362,6 +377,11 @@
   border-radius: 6px;
   font-size: 13px;
   cursor: pointer;
+}
+
+.add-key-form__save-btn:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
 }
 
 .add-key-form__save-btn:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -453,6 +473,11 @@
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.test-connection__btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent), 0 0 0 4px var(--surface);
 }
 
 .test-connection__btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -659,6 +684,11 @@
   cursor: pointer;
 }
 
+.guard-dialog__keep-btn:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
 .guard-dialog__discard-btn {
   background: #2563eb;
   color: #ffffff;
@@ -666,6 +696,11 @@
   padding: 8px 16px;
   border-radius: 6px;
   cursor: pointer;
+}
+
+.guard-dialog__discard-btn:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
 }
 
 /* ── Settings button (top bar) ─────────────────────── */

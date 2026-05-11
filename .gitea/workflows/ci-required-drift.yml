@@ -1,0 +1,107 @@
+# ci-required-drift — hourly sentinel for drift between the canonical
+# "what counts as required" sources of truth in this repo:
+#
+#   1. `.gitea/workflows/ci.yml` jobs                       (CI source)
+#   2. `branch_protections/{main,staging}.status_check_contexts`
+#                                                           (protection)
+#   3. `.gitea/workflows/audit-force-merge.yml` REQUIRED_CHECKS env
+#                                                           (audit env)
+#
+# RFC: internal#219 §4 (jobs ↔ protection) + §6 (audit env ↔ protection).
+# Ported verbatim-then-adapted from molecule-controlplane PR#112
+# (SHA 0adf2098) per RFC internal#219 Phase 2b+c — replicate repo-by-repo.
+#
+# When any pair diverges, a `[ci-drift]` issue is opened or updated
+# (idempotent by title) and labelled `tier:high`. This is the
+# auto-detection that closes the regression class identified in
+# RFC §1 finding 3 (protection only listed 2 of 6 real jobs for
+# ~weeks, undetected) and §6 (audit env drifts silently from
+# protection).
+#
+# Diff logic lives in `.gitea/scripts/ci-required-drift.py`. The
+# Python file does YAML AST parsing + `needs:` graph walking per
+# `feedback_behavior_based_ast_gates` — NOT grep-by-name. That way
+# job renames or matrix-expansion-induced churn produce honest signal.
+#
+# IMPORTANT — TRANSITIONAL STATE: molecule-core's ci.yml does NOT yet
+# contain the `all-required` sentinel job (RFC §4 Phase 4 adds it).
+# Until Phase 4 lands the detector will hard-fail with exit 3 on the
+# missing sentinel. That's intentional: a red workflow on a 5-min cron
+# is louder than a silent issue and forces Phase 4 to land soon.
+
+name: ci-required-drift
+
+# IMPORTANT — Gitea 1.22.6 parser quirk per
+# `feedback_gitea_workflow_dispatch_inputs_unsupported`: do NOT add an
+# `inputs:` block here, even though stock GitHub Actions allows it.
+# Gitea 1.22.6 flattens `workflow_dispatch.inputs.X` into a sibling of
+# the `on:` event keys and rejects the entire workflow as
+# "unknown on type". The whole file then registers for ZERO events
+# (no schedule, no dispatch). When Gitea ≥ 1.23 lands fleet-wide,
+# this constraint can be revisited.
+on:
+  schedule:
+    # Hourly at :17 — offset from :00 to spread load away from the
+    # peak when N cron workflows fire on the hour-boundary, per
+    # RFC §4 cadence ("off-zero").
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+# Read protection + read CI YAML + write issue. No write on contents.
+permissions:
+  contents: read
+  issues: write
+
+# Serialise — two simultaneous drift runs would duel on the issue
+# create/update path. The audit is idempotent, but parallel POSTs
+# can produce duplicate comments before the title-search dedup wins.
+concurrency:
+  group: ci-required-drift
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repo (we read the YAML files locally)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - name: Set up Python (PyYAML for AST parsing)
+        # Avoid a system-pip install on the runner; setup-python pins
+        # a hermetic interpreter + cache. PyYAML is small enough that
+        # the install is sub-2s — no need to cache wheels.
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Install PyYAML
+        run: python -m pip install --quiet 'PyYAML==6.0.2'
+      - name: Run drift detector
+        env:
+          # GITEA_TOKEN reads protection + writes issues. molecule-core
+          # uses `SOP_TIER_CHECK_TOKEN` as the org-level secret name for
+          # read-only Gitea API access from CI (set by audit-force-merge
+          # and sop-tier-check too). Falls back to the auto-injected
+          # GITHUB_TOKEN if the org-level secret isn't set
+          # (transitional repos).
+          GITEA_TOKEN: ${{ secrets.SOP_TIER_CHECK_TOKEN || secrets.GITHUB_TOKEN }}
+          GITEA_HOST: git.moleculesai.app
+          REPO: ${{ github.repository }}
+          # Branches whose protection we compare against. molecule-core
+          # currently has main protected; staging protection is
+          # forthcoming. Keep this list in sync if a new long-lived
+          # branch gets protected (e.g. release/* if introduced later).
+          BRANCHES: 'main staging'
+          # The sentinel job's name inside ci.yml. If the aggregator
+          # is ever renamed, update this too (the drift detector
+          # currently treats `all-required` as the source of "what
+          # the sentinel claims to require").
+          SENTINEL_JOB: 'all-required'
+          # Path to the audit workflow whose REQUIRED_CHECKS env we
+          # cross-check against protection (RFC §6).
+          AUDIT_WORKFLOW_PATH: '.gitea/workflows/audit-force-merge.yml'
+          # Path to the CI workflow with the sentinel + the jobs.
+          CI_WORKFLOW_PATH: '.gitea/workflows/ci.yml'
+          # Issue label applied on file/update. `tier:high` exists in
+          # the molecule-core label set (verified 2026-05-11, label id 9).
+          DRIFT_LABEL: 'tier:high'
+        run: python3 .gitea/scripts/ci-required-drift.py

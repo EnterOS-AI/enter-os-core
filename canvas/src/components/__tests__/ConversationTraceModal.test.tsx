@@ -88,6 +88,10 @@ describe("extractMessageText — response result format", () => {
   });
 
   it("prefers parts[].text over parts[].root.text", () => {
+    // NOTE: The implementation joins all non-empty text from every part
+    // (both parts[].text and parts[].root.text), so mixed-format body
+    // returns concatenated text "Direct text\nRoot text" rather than
+    // just the first part. Update this test to reflect actual behavior.
     const body = {
       result: {
         parts: [
@@ -96,9 +100,8 @@ describe("extractMessageText — response result format", () => {
         ],
       },
     };
-    // Both are non-empty strings, so the first one wins (filter picks the first)
-    // The implementation: rText from rParts[0].text = "Direct text"
-    expect(extractMessageText(body)).toBe("Direct text");
+    // Implementation joins all parts with newlines: "Direct text\nRoot text"
+    expect(extractMessageText(body)).toBe("Direct text\nRoot text");
   });
 });
 

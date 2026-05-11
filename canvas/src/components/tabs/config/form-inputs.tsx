@@ -102,7 +102,7 @@ export function TagList({ label, values, onChange, placeholder }: { label: strin
         {values.map((v, i) => (
           <span key={i} className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-surface-card border border-line rounded text-[10px] text-ink-mid font-mono">
             {v}
-            <button type="button" aria-label={`Remove tag ${v}`} onClick={() => onChange(values.filter((_, j) => j !== i))} className="text-ink-mid hover:text-bad">×</button>
+            <button type="button" aria-label={`Remove tag ${v}`} onClick={() => onChange(values.filter((_, j) => j !== i))} className="text-ink-mid hover:text-bad focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-1">×</button>
           </span>
         ))}
       </div>
@@ -129,7 +129,7 @@ export function Section({ title, children, defaultOpen = true }: { title: string
   const [open, setOpen] = useState(defaultOpen);
   return (
     <div className="border border-line rounded mb-2">
-      <button type="button" onClick={() => setOpen(!open)} className="w-full flex items-center justify-between px-3 py-1.5 text-[10px] text-ink-mid hover:text-ink bg-surface-sunken/50">
+      <button type="button" onClick={() => setOpen(!open)} className="w-full flex items-center justify-between px-3 py-1.5 text-[10px] text-ink-mid hover:text-ink bg-surface-sunken/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1">
         <span className="font-medium uppercase tracking-wider">{title}</span>
         <span>{open ? "▾" : "▸"}</span>
       </button>

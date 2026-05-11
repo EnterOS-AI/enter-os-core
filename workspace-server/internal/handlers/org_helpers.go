@@ -91,6 +91,10 @@ func expandWithEnv(s string, env map[string]string) string {
 // loadWorkspaceEnv reads the org root .env and the workspace-specific .env
 // (workspace overrides org root). Used by both secret injection and channel
 // config expansion.
+//
+// SECURITY: filesDir is sourced from untrusted org YAML input (ws.FilesDir).
+// resolveInsideRoot guard prevents path traversal (CWE-22) where a malicious
+// filesDir like "../../../etc" could escape the org root.
 func loadWorkspaceEnv(orgBaseDir, filesDir string) map[string]string {
 	envVars := map[string]string{}
 	if orgBaseDir == "" {
@@ -98,7 +102,14 @@ func loadWorkspaceEnv(orgBaseDir, filesDir string) map[string]string {
 	}
 	parseEnvFile(filepath.Join(orgBaseDir, ".env"), envVars)
 	if filesDir != "" {
-		parseEnvFile(filepath.Join(orgBaseDir, filesDir, ".env"), envVars)
+		safeFilesDir, err := resolveInsideRoot(orgBaseDir, filesDir)
+		if err != nil {
+			// Reject traversal attempt silently — callers expect an empty map
+			// on any read failure.
+			log.Printf("loadWorkspaceEnv: rejecting filesDir %q: %v", filesDir, err)
+			return envVars
+		}
+		parseEnvFile(filepath.Join(safeFilesDir, ".env"), envVars)
 	}
 	return envVars
 }

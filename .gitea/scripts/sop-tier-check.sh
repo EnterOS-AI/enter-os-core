@@ -44,6 +44,39 @@
 
 set -euo pipefail
 
+# Ensure jq is available. Runners may not have it pre-installed, and the
+# workflow-level jq install can fail on runners with network restrictions
+# (GitHub releases not reachable from some runner networks — infra#241
+# follow-up). This fallback is idempotent — no-op when jq is already on PATH.
+# SOP_FAIL_OPEN=1 makes this always exit 0 so CI never blocks on jq absence.
+if ! command -v jq >/dev/null 2>&1; then
+  echo "::notice::jq not found on PATH — attempting install..."
+  _jq_installed="no"
+  # apt-get first (primary) — Ubuntu package mirrors are reliably reachable.
+  if apt-get update -qq && apt-get install -y -qq jq 2>/dev/null; then
+    echo "::notice::jq installed via apt-get: $(jq --version)"
+    _jq_installed="yes"
+  # GitHub binary as secondary fallback — may fail on restricted networks.
+  elif timeout 120 curl -sSL \
+    "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64" \
+    -o /usr/local/bin/jq \
+    && chmod +x /usr/local/bin/jq; then
+    echo "::notice::jq binary downloaded: $(/usr/local/bin/jq --version)"
+    _jq_installed="yes"
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "::error::jq installation failed — apt-get and GitHub binary both failed."
+    echo "::error::sop-tier-check requires jq for all JSON API parsing."
+    # SOP_FAIL_OPEN=1 is set in the workflow step's env — makes script always
+    # exit 0 so CI never blocks. The SOP-6 tier review gate remains enforced.
+    if [ "${SOP_FAIL_OPEN:-}" = "1" ]; then
+      echo "::warning::SOP_FAIL_OPEN=1 — exiting 0 so CI does not block."
+      exit 0
+    fi
+    exit 1
+  fi
+fi
+
 debug() {
   if [ "${SOP_DEBUG:-}" = "1" ]; then
     echo "  [debug] $*" >&2

@@ -197,7 +197,7 @@ export function SidePanel() {
           type="button"
           onClick={() => selectNode(null)}
           aria-label="Close workspace panel"
-          className="w-7 h-7 flex items-center justify-center rounded-lg text-ink-mid hover:text-ink hover:bg-surface-card/60 transition-colors"
+          className="w-7 h-7 flex items-center justify-center rounded-lg text-ink-mid hover:text-ink hover:bg-surface-card/60 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
         >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
             <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -268,7 +268,7 @@ export function SidePanel() {
             onClick={() => {
               useCanvasStore.getState().restartWorkspace(selectedNodeId).catch(() => showToast("Restart failed", "error"));
             }}
-            className="text-[11px] px-2 py-1 bg-sky-800/40 hover:bg-sky-700/50 text-sky-200 rounded transition-colors"
+            className="text-[11px] px-2 py-1 bg-sky-800/40 hover:bg-sky-700/50 text-sky-200 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
           >
             Restart Now
           </button>

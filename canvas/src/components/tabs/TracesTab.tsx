@@ -60,7 +60,7 @@ export function TracesTab({ workspaceId }: Props) {
           onClick={loadTraces}
           // Added focus-visible ring; previous version was hover-only,
           // invisible to keyboard users.
-          className="text-[10px] text-ink-mid hover:text-ink-mid rounded-sm px-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          className="text-[10px] text-ink-mid hover:text-ink-mid rounded-sm px-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
         >
           Refresh
         </button>
@@ -98,7 +98,7 @@ export function TracesTab({ workspaceId }: Props) {
                   // panel. Same pattern shipped on EventsTab.
                   aria-expanded={isOpen}
                   aria-controls={panelId}
-                  className="w-full px-3 py-2 flex items-center gap-2 text-left hover:bg-surface-card/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/50 transition-colors"
+                  className="w-full px-3 py-2 flex items-center gap-2 text-left hover:bg-surface-card/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 transition-colors"
                 >
                   {/* Status dot uses semantic bad/good tokens — was hardcoded
                       bg-red-400 / bg-emerald-400 which doesn't pin to the

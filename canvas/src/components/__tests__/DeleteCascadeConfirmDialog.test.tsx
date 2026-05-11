@@ -99,9 +99,9 @@ describe("DeleteCascadeConfirmDialog — WCAG 2.1 dialog accessibility", () => {
     expect(titleEl?.textContent?.trim()).toBe("Delete Workspace and Children");
   });
 
-  it("backdrop div has aria-hidden='true' so screen readers skip it (WCAG 4.1.2)", () => {
+  it("backdrop div has aria-label for screen readers (WCAG 2.4.6)", () => {
     renderDialog();
-    const backdrop = document.querySelector('[aria-hidden="true"]');
+    const backdrop = document.querySelector('[aria-label="Dismiss dialog"]');
     expect(backdrop).toBeTruthy();
     expect(backdrop?.className).toContain("bg-black");
   });

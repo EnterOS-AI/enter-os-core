@@ -1,0 +1,151 @@
+name: Sweep stale Cloudflare DNS records
+
+# Ported from .github/workflows/sweep-cf-orphans.yml on 2026-05-11 per RFC
+# internal#219 §1 sweep. Differences from the GitHub version:
+#   - Dropped `workflow_dispatch.inputs` (Gitea 1.22.6 parser rejects them
+#     per feedback_gitea_workflow_dispatch_inputs_unsupported).
+#   - Dropped `merge_group:` (no Gitea merge queue).
+#   - Dropped `environment:` blocks (Gitea has no environments).
+#   - Workflow-level env.GITHUB_SERVER_URL pinned per
+#     feedback_act_runner_github_server_url.
+#   - `continue-on-error: true` on each job (RFC §1 contract).
+#
+
+# Janitor for Cloudflare DNS records whose backing tenant/workspace no
+# longer exists. Without this loop, every short-lived E2E or canary
+# leaves a CF record on the moleculesai.app zone — the zone has a
+# 200-record quota (controlplane#239 hit it 2026-04-23+) and provisions
+# start failing with code 81045 once exhausted.
+#
+# Why a separate workflow vs sweep-stale-e2e-orgs.yml:
+#   - That workflow operates at the CP layer (DELETE /cp/admin/tenants/:slug
+#     drives the cascade). It assumes CP has the org row to drive the
+#     deprovision from. It doesn't catch records left behind when CP
+#     itself never knew about the tenant (canary scratch, manual ops
+#     experiments) or when the cascade's CF-delete branch failed.
+#   - sweep-cf-orphans.sh enumerates the CF zone directly and matches
+#     each record against live CP slugs + AWS EC2 names. It catches
+#     leaks the CP-driven sweep can't.
+#
+# Safety: the script's own MAX_DELETE_PCT gate refuses to nuke more
+# than 50% of records in a single run. If something has gone weird
+# (CP admin endpoint returns no orgs → every tenant looks orphan) the
+# gate halts before damage. Decision-function unit tests in
+# scripts/ops/test_sweep_cf_decide.py (#2027) cover the rule
+# classifier.
+
+on:
+  schedule:
+    # Hourly. Mirrors sweep-stale-e2e-orgs cadence so the two janitors
+    # converge on the same tick. CF API rate budget is generous (1200
+    # req/5min); a single sweep makes ~1 list + N deletes (N<=quota/2).
+    - cron: '15 * * * *'  # offset from sweep-stale-e2e-orgs (top of hour)
+  # No `merge_group:` trigger on purpose. This is a janitor — it doesn't
+  # need to gate merges, and including it as written before #2088 fired
+  # the full sweep job (or its secret-check) on every PR going through
+  # the merge queue, generating one red CI run per merge-queue eval. If
+  # this workflow is ever wired up as a required check, re-add
+  #   merge_group: { types: [checks_requested] }
+  # AND gate the sweep step with `if: github.event_name != 'merge_group'`
+  # so merge-queue evals report success without actually running.
+
+# Don't let two sweeps race the same zone. workflow_dispatch during a
+# scheduled run would otherwise issue duplicate DELETE calls.
+concurrency:
+  group: sweep-cf-orphans
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  sweep:
+    name: Sweep CF orphans
+    runs-on: ubuntu-latest
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    continue-on-error: true
+    # 3 min surfaces hangs (CF API stall, AWS describe-instances stuck)
+    # within one cron interval instead of burning a full tick. Realistic
+    # worst case is ~2 min: 4 sequential curls + 1 aws + N×CF-DELETE
+    # each individually capped at 10s by the script's curl -m flag.
+    timeout-minutes: 3
+    env:
+      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+      CP_ADMIN_API_TOKEN: ${{ secrets.CP_ADMIN_API_TOKEN }}
+      CP_STAGING_ADMIN_API_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: us-east-2
+      MAX_DELETE_PCT: ${{ github.event.inputs.max_delete_pct || '50' }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Verify required secrets present
+        id: verify
+        # Schedule-vs-dispatch behaviour split (hardened 2026-04-28
+        # after the silent-no-op incident below):
+        #
+        # The earlier soft-skip-on-schedule policy hid a real leak. All
+        # six secrets were unset on this repo for an unknown duration;
+        # every hourly run printed a yellow ::warning:: and exited 0,
+        # so the workflow registered as "passing" while doing nothing.
+        # CF orphans accumulated to 152/200 (~76% of the zone quota
+        # gone) before a manual `dig`-driven audit caught it. Anything
+        # that runs as a janitor and reports green while idle is
+        # indistinguishable from "the janitor is healthy" — so we now
+        # treat schedule (and any future workflow_run/push triggers)
+        # as a hard-fail when secrets are missing.
+        #
+        #   - schedule / workflow_run / push → exit 1 (red CI run
+        #     surfaces the misconfiguration the next tick)
+        #   - workflow_dispatch              → exit 0 with a warning
+        #     (an operator ran this ad-hoc; they already accepted the
+        #     state of the repo and want the workflow to short-circuit
+        #     so they can rerun after fixing the secret)
+        run: |
+          missing=()
+          for var in CF_API_TOKEN CF_ZONE_ID CP_ADMIN_API_TOKEN CP_STAGING_ADMIN_API_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+            if [ -z "${!var:-}" ]; then
+              missing+=("$var")
+            fi
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "::warning::skipping sweep — secrets not configured: ${missing[*]}"
+              echo "::warning::set them at Settings → Secrets and Variables → Actions, then rerun."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::sweep cannot run — required secrets missing: ${missing[*]}"
+            echo "::error::set them at Settings → Secrets and Variables → Actions, or disable this workflow."
+            echo "::error::a silent skip masked an active CF DNS leak (152/200 zone records) caught only by a manual audit on 2026-04-28; this gate exists to make the gap visible."
+            exit 1
+          fi
+          echo "All required secrets present ✓"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Run sweep
+        if: steps.verify.outputs.skip != 'true'
+        # Schedule-vs-dispatch dry-run asymmetry (intentional):
+        #   - Scheduled runs: github.event.inputs.dry_run is empty →
+        #     defaults to "false" below → script runs with --execute
+        #     (the whole point of an hourly janitor).
+        #   - Manual workflow_dispatch: input default is true (line 38)
+        #     so an ad-hoc operator-triggered run is dry-run by default;
+        #     they have to flip the toggle to actually delete.
+        # The script's MAX_DELETE_PCT gate (default 50%) is the second
+        # line of defense regardless of mode.
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event.inputs.dry_run || 'false' }}" = "true" ]; then
+            echo "Running in dry-run mode — no deletions"
+            bash scripts/ops/sweep-cf-orphans.sh
+          else
+            echo "Running with --execute — will delete identified orphans"
+            bash scripts/ops/sweep-cf-orphans.sh --execute
+          fi

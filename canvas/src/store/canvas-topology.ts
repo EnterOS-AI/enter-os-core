@@ -35,7 +35,19 @@ export function sortParentsBeforeChildren<T extends { id: string; parentId?: str
     out.push(n);
   };
   for (const n of nodes) visit(n);
-  return out;
+  // Separate roots, valid children, and orphans:
+  // - roots: no parentId — true tree roots
+  // - valid children: has parentId pointing to an existing node
+  // - orphans: has parentId but the referenced parent is not in the node list
+  // Ordering: roots → valid children → orphans
+  const roots = out.filter((n) => !n.parentId);
+  const children = out.filter(
+    (n) => n.parentId !== undefined && byId.has(n.parentId),
+  );
+  const orphans = out.filter(
+    (n) => n.parentId !== undefined && !byId.has(n.parentId),
+  );
+  return [...roots, ...children, ...orphans];
 }
 
 // Grid-slot defaults for children laid under a parent. The card

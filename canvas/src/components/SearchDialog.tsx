@@ -144,8 +144,10 @@ export function SearchDialog() {
                 id={`search-result-${node.id}`}
                 role="option"
                 aria-selected={index === focusedIndex}
+                tabIndex={index === focusedIndex ? 0 : -1}
                 onClick={() => handleSelect(node.id)}
-                className={`w-full px-4 py-2.5 flex items-center gap-3 text-left transition-colors ${
+                onFocus={() => { setFocusedIndex(index); inputRef.current?.focus(); }}
+                className={`w-full px-4 py-2.5 flex items-center gap-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface ${
                   index === focusedIndex ? "bg-surface-card/60" : "hover:bg-surface-card/40"
                 }`}
               >

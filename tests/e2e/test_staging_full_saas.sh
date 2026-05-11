@@ -341,7 +341,7 @@ tenant_call() {
 #     MiniMax account). Lower friction than MiniMax for operators
 #     who already have an Anthropic API key for their own Claude
 #     Code session. Pricier per-token than MiniMax but billing is
-#     still independent of MOLECULE_STAGING_OPENAI_KEY. Pinned to the
+#     still independent of MOLECULE_STAGING_OPENAI_API_KEY. Pinned to the
 #     claude-code runtime — hermes/langgraph use OpenAI-shaped envs.
 #
 #   E2E_OPENAI_API_KEY → langgraph + hermes paths. Kept as fallback
@@ -368,7 +368,7 @@ elif [ -n "${E2E_ANTHROPIC_API_KEY:-}" ]; then
   # who already have an Anthropic API key (e.g. for their own Claude
   # Code session) and want to avoid setting up a separate MiniMax
   # account just for E2E. Pricier per-token than MiniMax but billing
-  # is still independent of MOLECULE_STAGING_OPENAI_KEY, so an OpenAI
+  # is still independent of MOLECULE_STAGING_OPENAI_API_KEY, so an OpenAI
   # quota collapse doesn't wedge this path. Pinned to the claude-code
   # runtime: hermes/langgraph use OpenAI-shaped envs and won't honour
   # ANTHROPIC_API_KEY without further wiring (out of scope for this
@@ -623,7 +623,7 @@ fi
 #   "Encrypted content is not supported" → hermes codex_responses API misroute (#14)
 #   "Unknown provider"               → bridge misconfigured PROVIDER= (regression of #13 fix)
 #   "hermes-agent unreachable"       → gateway process died
-#   "exceeded your current quota"    → MOLECULE_STAGING_OPENAI_KEY billing (NOT a platform regression — #2578)
+#   "exceeded your current quota"    → MOLECULE_STAGING_OPENAI_API_KEY billing (NOT a platform regression — #2578)
 #
 # Fail LOUD with the specific pattern so CI log + alert channel makes the
 # regression unambiguous.
@@ -657,7 +657,7 @@ fi
 # with a provider-side 429, that is a billing event on the configured
 # OpenAI key, not a platform regression. Tracked in #2578.
 if echo "$AGENT_TEXT" | grep -qiE "exceeded your current quota|insufficient_quota"; then
-  fail "A2A — PROVIDER QUOTA EXHAUSTED (NOT a platform regression). Operator action: top up MOLECULE_STAGING_OPENAI_KEY billing or rotate to a higher-quota org at Settings → Secrets and Variables → Actions. Tracked in #2578. Raw: $AGENT_TEXT"
+  fail "A2A — PROVIDER QUOTA EXHAUSTED (NOT a platform regression). Operator action: top up MOLECULE_STAGING_OPENAI_API_KEY billing or rotate to a higher-quota org at Settings → Secrets and Variables → Actions. Tracked in #2578. Raw: $AGENT_TEXT"
 fi
 # Generic catch-all — falls through if none of the known regressions hit.
 if echo "$AGENT_TEXT" | grep -qiE "error|exception"; then

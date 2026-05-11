@@ -83,7 +83,7 @@ export class ErrorBoundary extends React.Component<
               <button
                 type="button"
                 onClick={this.handleReload}
-                className="rounded-lg bg-accent-strong hover:bg-accent px-5 py-2 text-sm font-medium text-white transition-colors"
+                className="rounded-lg bg-accent-strong hover:bg-accent px-5 py-2 text-sm font-medium text-white transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
               >
                 Reload
               </button>
@@ -93,7 +93,7 @@ export class ErrorBoundary extends React.Component<
                   e.preventDefault();
                   this.handleReport();
                 }}
-                className="rounded-lg border border-line hover:border-line px-5 py-2 text-sm font-medium text-ink-mid hover:text-ink transition-colors"
+                className="rounded-lg border border-line hover:border-line px-5 py-2 text-sm font-medium text-ink-mid hover:text-ink transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
               >
                 Report
               </a>

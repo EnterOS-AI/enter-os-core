@@ -144,12 +144,18 @@ describe("Legend — close and reopen", () => {
 });
 
 describe("Legend — palette offset positioning", () => {
+  // The panel has data-testid="legend-panel" so we can select it reliably.
+  // screen.getByText("Legend") also appears in the collapsed pill, so the
+  // old .closest("div") approach matched the wrong element in the DOM.
   it("uses left-4 when template palette is NOT open", () => {
     vi.mocked(useCanvasStore).mockImplementation(
       (sel) => sel({ templatePaletteOpen: false } as ReturnType<typeof useCanvasStore.getState>)
     );
     render(<Legend />);
-    const panel = screen.getByText("Legend").closest("div");
+    // The outer panel div is the one with position classes (fixed bottom-6).
+    // screen.getByText("Legend") returns the inner heading text; get its
+    // closest ancestor with position-related classes (bottom-6).
+    const panel = screen.getByText("Legend").closest("div[class*='bottom-6']");
     expect(panel?.className).toContain("left-4");
   });
 
@@ -158,7 +164,7 @@ describe("Legend — palette offset positioning", () => {
       (sel) => sel({ templatePaletteOpen: true } as ReturnType<typeof useCanvasStore.getState>)
     );
     render(<Legend />);
-    const panel = screen.getByText("Legend").closest("div");
+    const panel = screen.getByText("Legend").closest("div[class*='bottom-6']");
     expect(panel?.className).toContain("left-[296px]");
   });
 });
