@@ -105,7 +105,7 @@ jobs:
       # OpenAI fallback — kept wired so an operator-dispatched run with
       # E2E_RUNTIME=hermes or =langgraph via workflow_dispatch can still
       # exercise the OpenAI path.
-      E2E_OPENAI_API_KEY: ${{ secrets.MOLECULE_STAGING_OPENAI_KEY }}
+      E2E_OPENAI_API_KEY: ${{ secrets.MOLECULE_STAGING_OPENAI_API_KEY }}
       E2E_RUNTIME: ${{ github.event.inputs.runtime || 'claude-code' }}
       # Pin the model when running on the default claude-code path —
       # the per-runtime default ("sonnet") routes to direct Anthropic
@@ -152,7 +152,7 @@ jobs:
               fi
               ;;
             langgraph|hermes)
-              required_secret_name="MOLECULE_STAGING_OPENAI_KEY"
+              required_secret_name="MOLECULE_STAGING_OPENAI_API_KEY"
               required_secret_value="${E2E_OPENAI_API_KEY:-}"
               ;;
             *)

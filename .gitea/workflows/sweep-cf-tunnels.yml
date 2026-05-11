@@ -70,8 +70,8 @@ jobs:
     env:
       CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
       CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-      CP_PROD_ADMIN_TOKEN: ${{ secrets.CP_PROD_ADMIN_TOKEN }}
-      CP_STAGING_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_TOKEN }}
+      CP_ADMIN_API_TOKEN: ${{ secrets.CP_ADMIN_API_TOKEN }}
+      CP_STAGING_ADMIN_API_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
       MAX_DELETE_PCT: ${{ github.event.inputs.max_delete_pct || '90' }}
 
     steps:
@@ -89,7 +89,7 @@ jobs:
         #     they already accepted the repo state)
         run: |
           missing=()
-          for var in CF_API_TOKEN CF_ACCOUNT_ID CP_PROD_ADMIN_TOKEN CP_STAGING_ADMIN_TOKEN; do
+          for var in CF_API_TOKEN CF_ACCOUNT_ID CP_ADMIN_API_TOKEN CP_STAGING_ADMIN_API_TOKEN; do
             if [ -z "${!var:-}" ]; then
               missing+=("$var")
             fi
