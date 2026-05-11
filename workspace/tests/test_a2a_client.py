@@ -1460,26 +1460,33 @@ class TestWaitForEnrichmentInFlight:
     def test_blocks_until_inflight_completes(self):
         """In-flight entry cleared while waiting → returns."""
         import a2a_client
+        import time as _time
 
         a2a_client._peer_in_flight_clear_for_testing()
         a2a_client._peer_metadata.clear()
 
         peer_data = {"id": _TEST_PEER_ID, "name": "Blocker Peer"}
-        resp = _make_sync_response(200, peer_data)
-        mock_client = _make_sync_mock_client(get_resp=resp)
 
-        with patch("a2a_client.httpx.Client", return_value=mock_client):
-            # Schedule the nonblocking call — it will be in-flight.
-            a2a_client.enrich_peer_metadata_nonblocking(_TEST_PEER_ID)
+        # Replace enrich_peer_metadata with one that bypasses httpx entirely.
+        # The httpx patch approach fails because the background worker runs
+        # after the patch context exits (thread-boundary issue: the executor
+        # thread is created before the patch, so it uses the original httpx).
+        # Replacing the function itself works across thread boundaries.
+        fake_enrich = lambda pid, src=None, *, now=None: (
+            a2a_client._peer_metadata_set(pid, (now or _time.monotonic(), peer_data)),
+            a2a_client._peer_names.__setitem__(pid, peer_data["name"])
+        )
 
+        orig = a2a_client.enrich_peer_metadata
+        a2a_client.enrich_peer_metadata = fake_enrich
         try:
-            # Wait should block until the worker finishes.
+            a2a_client.enrich_peer_metadata_nonblocking(_TEST_PEER_ID)
             a2a_client._wait_for_enrichment_inflight_for_testing(timeout=5.0)
-            # Cache should now be warm.
             cached = a2a_client._peer_metadata_get(_TEST_PEER_ID)
             assert cached is not None
             assert cached[1] == peer_data
         finally:
+            a2a_client.enrich_peer_metadata = orig
             a2a_client._peer_metadata.clear()
             a2a_client._peer_names.clear()
             a2a_client._peer_in_flight_clear_for_testing()
