@@ -91,6 +91,11 @@ func expandWithEnv(s string, env map[string]string) string {
 // loadWorkspaceEnv reads the org root .env and the workspace-specific .env
 // (workspace overrides org root). Used by both secret injection and channel
 // config expansion.
+//
+// CWE-22 mitigation: filesDir is validated through resolveInsideRoot so a
+// malicious org YAML cannot escape the org root with "../../../etc". Both
+// call sites already guard ws.FilesDir, but the internal guard is the
+// reliable enforcement point regardless of caller.
 func loadWorkspaceEnv(orgBaseDir, filesDir string) map[string]string {
 	envVars := map[string]string{}
 	if orgBaseDir == "" {
@@ -98,7 +103,12 @@ func loadWorkspaceEnv(orgBaseDir, filesDir string) map[string]string {
 	}
 	parseEnvFile(filepath.Join(orgBaseDir, ".env"), envVars)
 	if filesDir != "" {
-		parseEnvFile(filepath.Join(orgBaseDir, filesDir, ".env"), envVars)
+		// resolveInsideRoot returns the joined absolute path — use it directly.
+		safeFilesDir, err := resolveInsideRoot(orgBaseDir, filesDir)
+		if err != nil {
+			return envVars // silently reject traversal attempts
+		}
+		parseEnvFile(filepath.Join(safeFilesDir, ".env"), envVars)
 	}
 	return envVars
 }
