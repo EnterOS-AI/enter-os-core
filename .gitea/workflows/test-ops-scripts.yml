@@ -1,0 +1,65 @@
+name: Ops Scripts Tests
+
+# Ported from .github/workflows/test-ops-scripts.yml on 2026-05-11 per
+# RFC internal#219 §1 sweep.
+#
+# Differences from the GitHub version:
+#   - Dropped `merge_group:` trigger (no Gitea merge queue).
+#   - on.paths references .gitea/workflows/test-ops-scripts.yml (this
+#     file) instead of the .github/ one.
+#   - Workflow-level env.GITHUB_SERVER_URL set.
+#   - `continue-on-error: true` on the job (RFC §1 contract).
+#
+# Runs the unittest suite for scripts/ on every PR + push that touches
+# anything under scripts/. Kept separate from the main CI so a script-only
+# change doesn't trigger the heavier Go/Canvas/Python pipelines.
+#
+# Discovery layout: tests sit alongside the code they test (see
+# scripts/ops/test_sweep_cf_decide.py for the pattern; scripts/
+# test_build_runtime_package.py for the rewriter coverage). The job
+# below runs `unittest discover` TWICE — once from `scripts/`, once
+# from `scripts/ops/` — because neither dir has an `__init__.py`, so
+# a single discover from `scripts/` doesn't recurse into the ops
+# subdir. Two passes is simpler than retrofitting namespace packages.
+
+on:
+  push:
+    branches: [main, staging]
+    paths:
+      - 'scripts/**'
+      - '.gitea/workflows/test-ops-scripts.yml'
+  pull_request:
+    branches: [main, staging]
+    paths:
+      - 'scripts/**'
+      - '.gitea/workflows/test-ops-scripts.yml'
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Ops scripts (unittest)
+    runs-on: ubuntu-latest
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.11'
+      - name: Run scripts/ unittests (build_runtime_package, ...)
+        # Top-level scripts/ tests live alongside their target file
+        # (e.g. scripts/test_build_runtime_package.py exercises
+        # scripts/build_runtime_package.py). discover from scripts/
+        # picks up only top-level test_*.py because scripts/ops/ has
+        # no __init__.py — that's intentional, so we run two passes.
+        working-directory: scripts
+        run: python -m unittest discover -t . -p 'test_*.py' -v
+      - name: Run scripts/ops/ unittests (sweep_cf_decide, ...)
+        working-directory: scripts/ops
+        run: python -m unittest discover -p 'test_*.py' -v
