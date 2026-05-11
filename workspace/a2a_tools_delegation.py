@@ -414,7 +414,11 @@ async def tool_check_task_status(
                 # Filter by delegation_id
                 matching = [d for d in delegations if d.get("delegation_id") == task_id]
                 if matching:
-                    return json.dumps(matching[0])
+                    # OFFSEC-003: sanitize peer-supplied fields
+                    d = matching[0]
+                    d["summary"] = sanitize_a2a_result(d.get("summary", ""))
+                    d["response_preview"] = sanitize_a2a_result(d.get("response_preview", ""))
+                    return json.dumps(d)
                 return json.dumps({"status": "not_found", "delegation_id": task_id})
             # Return all recent delegations
             summary = []
@@ -423,8 +427,9 @@ async def tool_check_task_status(
                     "delegation_id": d.get("delegation_id", ""),
                     "target_id": d.get("target_id", ""),
                     "status": d.get("status", ""),
-                    "summary": d.get("summary", ""),
-                    "response_preview": d.get("response_preview", ""),
+                    # OFFSEC-003: sanitize peer-supplied fields before embedding in JSON
+                    "summary": sanitize_a2a_result(d.get("summary", "")),
+                    "response_preview": sanitize_a2a_result(d.get("response_preview", "")),
                 })
             return json.dumps({"delegations": summary, "count": len(delegations)})
     except Exception as e:
