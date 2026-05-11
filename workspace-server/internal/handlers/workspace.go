@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -285,16 +286,50 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "delivery_mode must be 'push' or 'poll'"})
 		return
 	}
-	// Insert workspace with runtime + delivery_mode persisted in DB (inside transaction)
-	_, err := tx.ExecContext(ctx, `
+	// Insert workspace with runtime + delivery_mode persisted in DB (inside transaction).
+	//
+	// Auto-suffix on (parent_id, name) collision via insertWorkspaceWithNameRetry:
+	// the partial-unique index `workspaces_parent_name_uniq` (migration
+	// 20260506000000) protects /org/import from TOCTOU duplicates, but the
+	// pre-fix Canvas Create path bubbled the raw pq violation as a 500 on
+	// double-click. Helper retries with " (2)", " (3)", … up to maxNameSuffix,
+	// returns the actually-persisted name (which we MUST thread back into
+	// payload + broadcast so the canvas displays what the DB has).
+	const insertWorkspaceSQL = `
 		INSERT INTO workspaces (id, name, role, tier, runtime, awareness_namespace, status, parent_id, workspace_dir, workspace_access, budget_limit, max_concurrent_tasks, delivery_mode)
 		VALUES ($1, $2, $3, $4, $5, $6, 'provisioning', $7, $8, $9, $10, $11, $12)
-	`, id, payload.Name, role, payload.Tier, payload.Runtime, awarenessNamespace, payload.ParentID, workspaceDir, workspaceAccess, payload.BudgetLimit, maxConcurrent, deliveryMode)
+	`
+	insertArgs := []any{id, payload.Name, role, payload.Tier, payload.Runtime, awarenessNamespace, payload.ParentID, workspaceDir, workspaceAccess, payload.BudgetLimit, maxConcurrent, deliveryMode}
+	persistedName, currentTx, err := insertWorkspaceWithNameRetry(
+		ctx,
+		tx,
+		// Closure captures ctx so the retry tx uses the same request context;
+		// nil opts mirrors the original BeginTx call above.
+		func(ctx context.Context) (*sql.Tx, error) { return db.DB.BeginTx(ctx, nil) },
+		payload.Name,
+		1, // args[1] is name
+		insertWorkspaceSQL,
+		insertArgs,
+	)
 	if err != nil {
-		tx.Rollback() //nolint:errcheck
+		if currentTx != nil {
+			currentTx.Rollback() //nolint:errcheck
+		}
+		if errors.Is(err, errWorkspaceNameExhausted) {
+			log.Printf("Create workspace: name suffix exhausted for base %q under parent %v", payload.Name, payload.ParentID)
+			c.JSON(http.StatusConflict, gin.H{"error": "workspace name already in use; please pick a different name"})
+			return
+		}
 		log.Printf("Create workspace error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create workspace"})
 		return
+	}
+	// Helper may have rolled back the original tx and returned a fresh one;
+	// rebind so the remaining secrets-INSERT + Commit run on the live tx.
+	tx = currentTx
+	if persistedName != payload.Name {
+		log.Printf("Create workspace %s: name collision auto-suffix %q -> %q", id, payload.Name, persistedName)
+		payload.Name = persistedName
 	}
 
 	// Persist initial secrets from the create payload (inside same transaction).
