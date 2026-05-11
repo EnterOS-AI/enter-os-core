@@ -78,6 +78,48 @@ func TestResolveInsideRoot_RejectsPrefixSibling(t *testing.T) {
 	}
 }
 
+// TestResolveInsideRoot_RejectsSymlinkTraversal is a regression test for
+// CWE-59 (symlink-based path traversal). An attacker plants a symlink inside
+// the allowed directory that points outside; the function must reject it.
+func TestResolveInsideRoot_RejectsSymlinkTraversal(t *testing.T) {
+	tmp := t.TempDir()
+	// Create a subdirectory inside root.
+	inner := filepath.Join(tmp, "workspaces", "dev")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Plant a symlink that resolves outside root.
+	sym := filepath.Join(inner, "leaked")
+	if err := os.Symlink("/etc", sym); err != nil {
+		t.Fatal(err)
+	}
+
+	// Lexically, "workspaces/dev/leaked" is inside tmp — but after symlink
+	// resolution it points to /etc and must be rejected.
+	if _, err := resolveInsideRoot(tmp, filepath.Join("workspaces", "dev", "leaked")); err == nil {
+		t.Error("symlink pointing outside root must be rejected (CWE-59)")
+	}
+
+	// Symlink that stays inside root is fine.
+	safe := filepath.Join(inner, "safe")
+	if err := os.Symlink(filepath.Join(tmp, "other"), safe); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveInsideRoot(tmp, filepath.Join("workspaces", "dev", "safe")); err != nil {
+		t.Errorf("symlink staying inside root must be allowed: %v", err)
+	}
+
+	// Broken symlink (target does not exist) must also be rejected — broken
+	// symlinks cannot be valid org files.
+	broken := filepath.Join(inner, "broken")
+	if err := os.Symlink("/nonexistent/broken", broken); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveInsideRoot(tmp, filepath.Join("workspaces", "dev", "broken")); err == nil {
+		t.Error("broken symlink must be rejected")
+	}
+}
+
 func TestResolveInsideRoot_DeepSubpath(t *testing.T) {
 	tmp := t.TempDir()
 	deep := filepath.Join(tmp, "a", "b", "c")

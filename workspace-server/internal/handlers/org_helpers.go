@@ -317,6 +317,12 @@ func mergePlugins(defaultPlugins, wsPlugins []string) []string {
 // Follows Go's standard pattern for SSRF-class path sanitization; using
 // strings.HasPrefix on an absolute-path pair plus the separator guard rejects
 // sibling directories that share a prefix (e.g. "/foo" vs "/foobar").
+//
+// CWE-59 mitigation: filepath.Abs does NOT resolve symlinks, so a path like
+// "workspaces/dev/inner" where "inner" is a symlink to "/etc" would lexically
+// pass the prefix check. We call filepath.EvalSymlinks to canonicalize the
+// path and re-check that it is still inside root. This closes the symlink-
+// based traversal vector (CWE-59, follow-up to #369).
 func resolveInsideRoot(root, userPath string) (string, error) {
 	if userPath == "" {
 		return "", fmt.Errorf("path is empty")
@@ -333,9 +339,18 @@ func resolveInsideRoot(root, userPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("joined abs: %w", err)
 	}
+	// CWE-59: resolve symlinks before final prefix check.
+	// If the path contains a symlink pointing outside root, EvalSymlinks
+	// will canonicalize to the external path and fail the guard below.
+	resolved, err := filepath.EvalSymlinks(absJoined)
+	if err != nil {
+		// If EvalSymlinks fails (e.g. broken symlink), fail closed —
+		// broken symlinks should not be used as org files.
+		return "", fmt.Errorf("resolve symlink: %w", err)
+	}
 	// Allow exact-root match (rare but valid) and any descendant.
-	if absJoined != absRoot && !strings.HasPrefix(absJoined, absRoot+string(filepath.Separator)) {
+	if resolved != absRoot && !strings.HasPrefix(resolved, absRoot+string(filepath.Separator)) {
 		return "", fmt.Errorf("path escapes root")
 	}
-	return absJoined, nil
+	return absJoined, nil // return the lexical path, not the resolved one
 }
