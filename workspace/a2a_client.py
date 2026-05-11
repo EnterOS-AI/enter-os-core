@@ -187,12 +187,6 @@ def enrich_peer_metadata_nonblocking(
     canon = _validate_peer_id(peer_id)
     if canon is None:
         return None
-    current = time.monotonic()
-    cached = _peer_metadata_get(canon)
-    if cached is not None:
-        fetched_at, record = cached
-        if current - fetched_at < _PEER_METADATA_TTL_SECONDS:
-            return record
     # Schedule background fetch unless one is already in flight for this
     # peer. The synchronous version atomically reads-then-writes; the
     # async version splits that into "schedule fetch" + "fetch fills
@@ -254,6 +248,12 @@ def _wait_for_enrichment_inflight_for_testing(timeout: float = 2.0) -> None:
             if not _enrich_in_flight:
                 return
         time.sleep(0.01)
+
+
+def _peer_in_flight_clear_for_testing() -> None:
+    """Clear the in-flight enrichment set. Test-only helper."""
+    with _enrich_in_flight_lock:
+        _enrich_in_flight.clear()
 
 
 def enrich_peer_metadata(
