@@ -402,7 +402,7 @@ function Row({ label, value, mono }: { label: string; value: string; mono?: bool
   );
 }
 
-function getSkills(card: Record<string, unknown> | null): { id: string; description?: string }[] {
+export function getSkills(card: Record<string, unknown> | null): { id: string; description?: string }[] {
   if (!card) return [];
   const skills = card.skills;
   if (!Array.isArray(skills)) return [];
