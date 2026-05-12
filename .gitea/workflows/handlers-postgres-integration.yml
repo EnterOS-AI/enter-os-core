@@ -78,7 +78,7 @@ jobs:
   detect-changes:
     name: detect-changes
     runs-on: ubuntu-latest
-    # Phase 3 (RFC internal#219 §1): surface broken workflows without blocking.
+    # internal#219 Phase 3 (RFC §1): surface broken workflows without blocking.
     continue-on-error: true
     outputs:
       handlers: ${{ steps.filter.outputs.handlers }}
@@ -118,7 +118,7 @@ jobs:
     name: Handlers Postgres Integration
     needs: detect-changes
     runs-on: ubuntu-latest
-    # Phase 3 (RFC internal#219 §1): surface broken workflows without blocking.
+    # internal#219 Phase 3 (RFC §1): surface broken workflows without blocking.
     continue-on-error: true
     env:
       # Unique name per run so concurrent jobs don't collide on the
