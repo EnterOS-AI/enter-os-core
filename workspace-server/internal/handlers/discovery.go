@@ -292,8 +292,12 @@ func filterPeersByQuery(peers []map[string]interface{}, q string) []map[string]i
 	needle := strings.ToLower(q)
 	out := make([]map[string]interface{}, 0, len(peers))
 	for _, p := range peers {
-		name := p["name"].(string)
-		role := p["role"].(string)
+		// Comma-ok idiom: nil map values return (nil, false), protecting
+		// against type-assertion panics when queryPeerMaps explicitly sets
+		// role=nil for empty-string roles (discovery.go:340). Also guards
+		// against nil name if the DB returns NULL.
+		name, _ := p["name"].(string)
+		role, _ := p["role"].(string)
 		if strings.Contains(strings.ToLower(name), needle) ||
 			strings.Contains(strings.ToLower(role), needle) {
 			out = append(out, p)
