@@ -52,12 +52,13 @@ env:
 
 jobs:
   build-and-push:
-    # NOTE: infra-sre must register a `docker` label on every act-runner that
-    # mounts /var/run/docker.sock (group=docker, socket perms 660+). Jobs without
-    # the `docker` label land on runners that lack the socket and fail here.
-    # molecule-runner-1 (no socket) vs molecule-runner-4 (socket) — coin-flip
-    # without this label gate.  See issue #576.
-    runs-on: [ubuntu-latest, docker]
+    # REVERTED (infra/revert-docker-runner-label): `runs-on: ubuntu-latest` restored.
+    # The `docker` label is not registered on any act_runner. `runs-on: [ubuntu-latest, docker]`
+    # causes jobs to queue indefinitely with zero eligible runners — strictly worse than the
+    # pre-#599 coin-flip (50% success rate). Once the `docker` label is registered on
+    # ≥2 runners, re-apply the fix from #599 (infra/docker-runner-label).
+    # See issue #576 + infra-lead pulse ~00:30Z.
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
