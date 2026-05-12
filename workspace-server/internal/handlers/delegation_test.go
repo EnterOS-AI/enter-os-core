@@ -1287,3 +1287,84 @@ func TestExecuteDelegation_CleanProxyResponse_Unchanged(t *testing.T) {
 		t.Errorf("unmet sqlmock expectations: %v", err)
 	}
 }
+
+// ---------- extractResponseText ----------
+
+func TestExtractResponseText_NonJSON(t *testing.T) {
+	got := extractResponseText([]byte("not json at all"))
+	if got != "not json at all" {
+		t.Errorf("non-JSON: got %q, want %q", got, "not json at all")
+	}
+}
+
+func TestExtractResponseText_ValidJSONNoResult(t *testing.T) {
+	got := extractResponseText([]byte(`{"id":"1","error":{"code":-32601,"message":"method not found"}}`))
+	if got != `{"id":"1","error":{"code":-32601,"message":"method not found"}}` {
+		t.Errorf("no result key: got %q, want raw body", got)
+	}
+}
+
+func TestExtractResponseText_ResultNotMap(t *testing.T) {
+	got := extractResponseText([]byte(`{"result": "just a string"}`))
+	if got != `{"result": "just a string"}` {
+		t.Errorf("result is string: got %q, want raw body", got)
+	}
+}
+
+func TestExtractResponseText_PartsTextKind(t *testing.T) {
+	body := []byte(`{"result":{"parts":[{"kind":"text","text":"Hello from agent"}]}}`)
+	got := extractResponseText(body)
+	if got != "Hello from agent" {
+		t.Errorf("parts text: got %q, want %q", got, "Hello from agent")
+	}
+}
+
+func TestExtractResponseText_PartsNonTextKind(t *testing.T) {
+	// kind="image" is skipped; falls through to raw body since no artifacts
+	body := []byte(`{"result":{"parts":[{"kind":"image","text":"should not return"}]}}`)
+	got := extractResponseText(body)
+	if got != string(body) {
+		t.Errorf("parts non-text: got %q, want raw body", got)
+	}
+}
+
+func TestExtractResponseText_PartsMultipleWithTextFirst(t *testing.T) {
+	body := []byte(`{"result":{"parts":[{"kind":"text","text":"first"},{"kind":"text","text":"second"}]}}`)
+	got := extractResponseText(body)
+	// Returns first text part found
+	if got != "first" {
+		t.Errorf("parts first match: got %q, want %q", got, "first")
+	}
+}
+
+func TestExtractResponseText_ArtifactsTextKind(t *testing.T) {
+	body := []byte(`{"result":{"artifacts":[{"parts":[{"kind":"text","text":"artifact text here"}]}]}}`)
+	got := extractResponseText(body)
+	if got != "artifact text here" {
+		t.Errorf("artifacts text: got %q, want %q", got, "artifact text here")
+	}
+}
+
+func TestExtractResponseText_ArtifactsNonTextKind(t *testing.T) {
+	body := []byte(`{"result":{"artifacts":[{"parts":[{"kind":"image","text":"hidden"}]}]}}`)
+	got := extractResponseText(body)
+	if got != string(body) {
+		t.Errorf("artifacts non-text: got %q, want raw body", got)
+	}
+}
+
+func TestExtractResponseText_EmptyPartsAndArtifacts(t *testing.T) {
+	body := []byte(`{"result":{"parts":[],"artifacts":[]}}`)
+	got := extractResponseText(body)
+	if got != string(body) {
+		t.Errorf("empty parts/artifacts: got %q, want raw body", got)
+	}
+}
+
+func TestExtractResponseText_EmptyText(t *testing.T) {
+	body := []byte(`{"result":{"parts":[{"kind":"text","text":""}]}}`)
+	got := extractResponseText(body)
+	if got != "" {
+		t.Errorf("empty text: got %q, want %q", got, "")
+	}
+}
