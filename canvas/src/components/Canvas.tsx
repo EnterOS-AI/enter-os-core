@@ -308,7 +308,9 @@ function CanvasInner() {
             showInteractive={false}
           />
           <MiniMap
-            className="!bg-surface-sunken/90 !border-line/50 !rounded-lg !shadow-xl !shadow-black/20"
+            // hidden < sm: minimap eats ~30% of a phone screen and
+            // overlaps with the New Workspace FAB at bottom-right.
+            className="!bg-surface-sunken/90 !border-line/50 !rounded-lg !shadow-xl !shadow-black/20 !hidden sm:!block"
             // Mask dims off-viewport areas; tint matches the surface so
             // the dimming doesn't show as a black bar in light mode.
             maskColor={resolvedTheme === "dark" ? "rgba(0, 0, 0, 0.7)" : "rgba(232, 226, 211, 0.7)"}

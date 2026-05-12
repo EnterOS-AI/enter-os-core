@@ -1,6 +1,22 @@
 import type { Metadata } from "next";
+import { Inter, JetBrains_Mono } from "next/font/google";
 import { cookies, headers } from "next/headers";
 import "./globals.css";
+
+// Self-hosted at build time → CSP-safe (font-src 'self' covers them
+// because Next.js serves the .woff2 from /_next/static). Exposed as
+// CSS variables so the mobile palette can reference them without
+// importing this module.
+const interFont = Inter({
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-inter",
+});
+const monoFont = JetBrains_Mono({
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-jetbrains",
+});
 import { AuthGate } from "@/components/AuthGate";
 import { CookieConsent } from "@/components/CookieConsent";
 import { PurchaseSuccessModal } from "@/components/PurchaseSuccessModal";
@@ -79,7 +95,7 @@ export default async function RootLayout({
           dangerouslySetInnerHTML={{ __html: themeBootScript }}
         />
       </head>
-      <body className="bg-surface text-ink">
+      <body className={`bg-surface text-ink ${interFont.variable} ${monoFont.variable}`}>
         <ThemeProvider initialTheme={theme}>
           {/* AuthGate is a client component; it checks the session on mount
               and bounces anonymous users to the control plane's login page
