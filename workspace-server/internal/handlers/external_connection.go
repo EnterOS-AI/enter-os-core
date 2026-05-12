@@ -50,6 +50,7 @@ func BuildExternalConnectionPayload(platformURL, workspaceID, authToken string) 
 		"hermes_channel_snippet":      stamp(externalHermesChannelTemplate),
 		"codex_snippet":               stamp(externalCodexTemplate),
 		"openclaw_snippet":            stamp(externalOpenClawTemplate),
+		"kimi_snippet":                stamp(externalKimiTemplate),
 	}
 }
 
@@ -489,6 +490,93 @@ codex
 // external openclaw would need a sessions.steer bridge daemon (the
 // equivalent of hermes-channel-molecule for openclaw). Tracked
 // separately; outbound tools is the first cut.
+// externalKimiTemplate — lightweight register + heartbeat for Kimi CLI.
+// Kimi does not yet have native MCP integration, so the snippet is a
+// self-contained Python script that keeps the workspace online in poll
+// mode. Operators paste this once and run it in a background terminal.
+const externalKimiTemplate = `# Kimi CLI external setup — lightweight register + heartbeat.
+# For operators whose external agent is a Kimi CLI session.
+
+# 1. Install the workspace runtime wheel (provides HTTP client):
+pip install molecule-ai-workspace-runtime
+
+# 2. Save credentials and heartbeat script:
+mkdir -p ~/.molecule-ai/kimi-workspace
+chmod 700 ~/.molecule-ai/kimi-workspace
+cat > ~/.molecule-ai/kimi-workspace/env <<'EOF'
+WORKSPACE_ID={{WORKSPACE_ID}}
+PLATFORM_URL={{PLATFORM_URL}}
+MOLECULE_WORKSPACE_TOKEN=<paste from create response>
+EOF
+chmod 600 ~/.molecule-ai/kimi-workspace/env
+
+cat > ~/.molecule-ai/kimi-workspace/kimi_heartbeat.py <<'PYEOF'
+#!/usr/bin/env python3
+import logging, os, time
+from pathlib import Path
+import httpx
+
+ENV = Path.home() / ".molecule-ai" / "kimi-workspace" / "env"
+INTERVAL = 20
+
+def load_env():
+    env = {}
+    for line in ENV.read_text().splitlines():
+        if "=" in line and not line.startswith("#"):
+            k, v = line.split("=", 1)
+            env[k.strip()] = v.strip()
+    return env
+
+def headers(url, token):
+    return {"Authorization": f"Bearer {token}", "Origin": url, "Content-Type": "application/json"}
+
+def register(client, url, ws, tok):
+    resp = client.post(f"{url}/registry/register", json={
+        "id": ws, "url": "", "agent_card": {"name": "mac-laptop-kimi", "skills": []},
+        "delivery_mode": "poll",
+    }, headers=headers(url, tok))
+    resp.raise_for_status()
+    logging.info("registered %s", ws)
+
+def heartbeat(client, url, ws, tok, start):
+    resp = client.post(f"{url}/registry/heartbeat", json={
+        "workspace_id": ws, "error_rate": 0.0, "sample_error": "",
+        "active_tasks": 0, "current_task": "", "uptime_seconds": int(time.time() - start),
+    }, headers=headers(url, tok))
+    resp.raise_for_status()
+
+def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    start = time.time()
+    while True:
+        try:
+            e = load_env()
+            with httpx.Client(timeout=10.0) as c:
+                register(c, e["PLATFORM_URL"], e["WORKSPACE_ID"], e["MOLECULE_WORKSPACE_TOKEN"])
+                heartbeat(c, e["PLATFORM_URL"], e["WORKSPACE_ID"], e["MOLECULE_WORKSPACE_TOKEN"], start)
+            time.sleep(INTERVAL)
+        except Exception as exc:
+            logging.warning("loop failed: %s", exc)
+            time.sleep(5)
+
+if __name__ == "__main__":
+    main()
+PYEOF
+chmod +x ~/.molecule-ai/kimi-workspace/kimi_heartbeat.py
+
+# 3. Start the heartbeat (run in a persistent terminal or via launchd):
+python3 ~/.molecule-ai/kimi-workspace/kimi_heartbeat.py
+
+# The script registers the workspace and heartbeats every 20s,
+# keeping the workspace status = 'online' on the canvas.
+#
+# For inbound A2A delivery (canvas messages → your Kimi session),
+# pair with the Python SDK tab which sets up a push-mode A2A server.
+#
+# Need help?
+#   Documentation: https://doc.moleculesai.app/docs/guides/external-agent-registration
+`
+
 const externalOpenClawTemplate = `# OpenClaw MCP config — outbound tool path. For operators whose
 # external agent is an openclaw session.
 #
