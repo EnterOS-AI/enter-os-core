@@ -235,22 +235,6 @@ func stack() string {
 	return string(buf[:n])
 }
 
-// timedExecuteDelegation wraps dh.executeDelegation with per-step timing prints.
-// Each line is prefixed with a timestamp (relative to first print) so the CI log
-// reveals exactly which step is blocking. We print to t.Logf so it appears in
-// the CI output regardless of test success/failure.
-func timedExecuteDelegation(t *testing.T, dh *DelegationHandler, sourceID, targetID, delegationID string, body []byte) {
-	t.Helper()
-	ts := time.Now()
-	logf := func(format string, args ...interface{}) {
-		t.Logf("[+%v] "+format, time.Since(ts), args...)
-	}
-
-	logf("STEP setup: entering executeDelegation")
-	dh.executeDelegation(sourceID, targetID, delegationID, body)
-	logf("STEP done: executeDelegation returned")
-}
-
 // runWithTimeout calls fn in a goroutine and fails t if it doesn't return within
 // timeout. This prevents a single hanging test from consuming the full 5-minute CI
 // timeout and leaving no diagnostic time for subsequent tests. The stack trace
