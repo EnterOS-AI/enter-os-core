@@ -64,12 +64,16 @@ func integrationDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if err := conn.Ping(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := conn.PingContext(ctx); err != nil {
 		t.Fatalf("ping: %v", err)
 	}
 	// Each test gets a fresh table state — fail loud if cleanup fails so
 	// a bad test doesn't pollute the next one.
-	if _, err := conn.ExecContext(context.Background(), `DELETE FROM delegations`); err != nil {
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel2()
+	if _, err := conn.ExecContext(ctx2, `DELETE FROM delegations`); err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
 	// Wire the package-level db.DB so production helpers (recordLedgerInsert,

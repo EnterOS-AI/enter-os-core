@@ -163,6 +163,7 @@ func buildHTTPResponse(statusCode int, body string) []byte {
 // Returns a cleanup function the test should defer.
 func setupIntegrationFixtures(t *testing.T, conn *sql.DB) func() {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	for _, ws := range []struct {
 		id       string
 		name     string
@@ -171,10 +172,11 @@ func setupIntegrationFixtures(t *testing.T, conn *sql.DB) func() {
 		{testSourceID, "test-source", nil},
 		{testTargetID, "test-target", nil},
 	} {
-		if _, err := conn.ExecContext(context.Background(),
+		if _, err := conn.ExecContext(ctx,
 			`INSERT INTO workspaces (id, name, parent_id) VALUES ($1::uuid, $2, $3) ON CONFLICT (id) DO NOTHING`,
 			ws.id, ws.name, ws.parentID,
 		); err != nil {
+			cancel()
 			t.Fatalf("seed workspace %s: %v", ws.id, err)
 		}
 	}
@@ -183,31 +185,36 @@ func setupIntegrationFixtures(t *testing.T, conn *sql.DB) func() {
 		"delegation_id": testDelegationID,
 		"task":         "do work",
 	})
-	if _, err := conn.ExecContext(context.Background(), `
+	if _, err := conn.ExecContext(ctx, `
 		INSERT INTO activity_logs
 			(workspace_id, activity_type, method, source_id, target_id, request_body, status)
 		VALUES ($1, 'delegate', 'delegate', $1, $2, $3::jsonb, 'pending')
 		ON CONFLICT DO NOTHING
 	`, testSourceID, testTargetID, string(reqBody)); err != nil {
+		cancel()
 		t.Fatalf("seed activity_logs: %v", err)
 	}
 
-	if _, err := conn.ExecContext(context.Background(), `
+	if _, err := conn.ExecContext(ctx, `
 		INSERT INTO delegations
 			(delegation_id, caller_id, callee_id, task_preview, status)
 		VALUES ($1, $2::uuid, $3::uuid, 'do work', 'queued')
 		ON CONFLICT (delegation_id) DO NOTHING
 	`, testDelegationID, testSourceID, testTargetID); err != nil {
+		cancel()
 		t.Fatalf("seed delegations: %v", err)
 	}
+	cancel()
 
 	return func() {
-		conn.ExecContext(context.Background(),
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel2()
+		conn.ExecContext(ctx2,
 			`DELETE FROM activity_logs WHERE workspace_id = $1 AND request_body->>'delegation_id' = $2`,
 			testSourceID, testDelegationID)
-		conn.ExecContext(context.Background(),
+		conn.ExecContext(ctx2,
 			`DELETE FROM delegations WHERE delegation_id = $1`, testDelegationID)
-		conn.ExecContext(context.Background(),
+		conn.ExecContext(ctx2,
 			`DELETE FROM workspaces WHERE id IN ($1, $2)`, testSourceID, testTargetID)
 	}
 }
@@ -216,8 +223,10 @@ func setupIntegrationFixtures(t *testing.T, conn *sql.DB) func() {
 // delegation, or fails the test if the row is not found.
 func readDelegationRow(t *testing.T, conn *sql.DB) (status, preview, errorDetail string) {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	var prev, errDet sql.NullString
-	err := conn.QueryRowContext(context.Background(),
+	err := conn.QueryRowContext(ctx,
 		`SELECT status, result_preview, error_detail FROM delegations WHERE delegation_id = $1`,
 		testDelegationID,
 	).Scan(&status, &prev, &errDet)
