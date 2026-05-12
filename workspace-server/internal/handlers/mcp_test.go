@@ -548,10 +548,28 @@ func TestMCPHandler_CommitMemory_CleanContent_PassesThrough(t *testing.T) {
 // tools/call — recall_memory
 // ─────────────────────────────────────────────────────────────────────────────
 
+// TestMCPHandler_RecallMemory_GlobalScope_Blocked verifies C3 enforcement:
+// GLOBAL scope is blocked on the MCP bridge. Sibling of
+// TestMCPHandler_CommitMemory_GlobalScope_Blocked (#681 — mirrors PR#680's
+// OFFSEC-001 contract hardening from the commit-memory path).
+//
+// Canary tokens are included in the arguments so a future OFFSEC-001 regression
+// (err.Error() leaking into the JSON-RPC message) would be caught by the
+// defence-in-depth strings.Contains guard even if the exact-message assertion
+// were deleted. Per feedback_branch_count_before_approving the recall path
+// must be verified independently since it flows through a different tool
+// implementation (toolRecallMemory vs toolCommitMemory).
 func TestMCPHandler_RecallMemory_GlobalScope_Blocked(t *testing.T) {
 	h, mock := newMCPHandler(t)
 	// No DB expectations — handler must abort before touching the DB.
 
+	// Canary tokens: truly arbitrary strings that could NOT appear in
+	// the error message naturally. If OFFSEC-001 regresses and the raw
+	// err.Error() is returned, these will appear verbatim in the response.
+	// Tokens chosen to not overlap with the actual error message text
+	// ("GLOBAL", "scope", "permitted", etc.) — which WOULD appear even
+	// when the scrub is correct, making them useless as sentinels.
+	const canary = "xK8mPqRwT zN7vLsJhYw"
 	w := mcpPost(t, h, "ws-1", map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      11,
@@ -559,7 +577,7 @@ func TestMCPHandler_RecallMemory_GlobalScope_Blocked(t *testing.T) {
 		"params": map[string]interface{}{
 			"name": "recall_memory",
 			"arguments": map[string]interface{}{
-				"query": "secret",
+				"query": canary,
 				"scope": "GLOBAL",
 			},
 		},
@@ -569,6 +587,27 @@ func TestMCPHandler_RecallMemory_GlobalScope_Blocked(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp.Error == nil {
 		t.Error("expected JSON-RPC error for GLOBAL scope recall, got nil")
+	}
+	// Exact-equality assertions: code == -32000 AND the constant message.
+	// The message must be the constant defined in toolRecallMemory, not the
+	// raw err.Error() value — OFFSEC-001 (#259) requires this so callers
+	// (including agent runtimes) cannot learn server-side details.
+	wantMsg := "GLOBAL scope is not permitted via the MCP bridge — use LOCAL, TEAM, or empty"
+	if resp.Error != nil {
+		if resp.Error.Code != -32000 {
+			t.Errorf("error code should be -32000, got %d", resp.Error.Code)
+		}
+		if resp.Error.Message != wantMsg {
+			t.Errorf("error message should be constant %q, got %q", wantMsg, resp.Error.Message)
+		}
+		// Defence-in-depth: canary tokens must never appear in the response.
+		// A future regression where err.Error() is assigned directly would
+		// expose these arbitrary strings verbatim in the JSON-RPC body.
+		for _, token := range strings.Fields(canary) {
+			if strings.Contains(resp.Error.Message, token) {
+				t.Errorf("error message should not contain canary token %q (OFFSEC-001 leak)", token)
+			}
+		}
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unexpected DB calls on GLOBAL scope block: %v", err)
