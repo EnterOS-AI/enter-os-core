@@ -96,16 +96,27 @@ API="https://${GITEA_HOST}/api/v1"
 AUTH="Authorization: token ${GITEA_TOKEN}"
 echo "::notice::tier-check start: repo=$OWNER/$NAME pr=$PR_NUMBER author=$PR_AUTHOR"
 
-# Sanity: token resolves to a user
-WHOAMI=$(curl -sS -H "$AUTH" "${API}/user" | jq -r '.login // ""')
+# Sanity: token resolves to a user.
+# Use || true on the jq pipeline so that set -euo pipefail (line 45) does not
+# cause the script to exit prematurely when the token is empty/invalid — the
+# if check below handles that case gracefully. Without || true, a 401 from an
+# empty/invalid token causes jq to exit 1, triggering set -e and exiting the
+# entire script before SOP_FAIL_OPEN can be evaluated (the check is in the jq-
+# install block; if jq is already on PATH, that block is skipped entirely).
+WHOAMI=$(curl -sS -H "$AUTH" "${API}/user" | jq -r '.login // ""') || true
 if [ -z "$WHOAMI" ]; then
   echo "::error::GITEA_TOKEN cannot resolve a user via /api/v1/user — check the token scope and that the secret is wired correctly."
+  if [ "${SOP_FAIL_OPEN:-}" = "1" ]; then
+    echo "::warning::SOP_FAIL_OPEN=1 — exiting 0 so CI does not block."
+    exit 0
+  fi
   exit 1
 fi
 echo "::notice::token resolves to user: $WHOAMI"
 
-# 1. Read tier label
-LABELS=$(curl -sS -H "$AUTH" "${API}/repos/${OWNER}/${NAME}/issues/${PR_NUMBER}/labels" | jq -r '.[].name')
+# 1. Read tier label. || true ensures set -euo pipefail does not abort the
+# script if curl or jq fails (e.g. 401 from empty token).
+LABELS=$(curl -sS -H "$AUTH" "${API}/repos/${OWNER}/${NAME}/issues/${PR_NUMBER}/labels" | jq -r '.[].name') || true
 TIER=""
 for L in $LABELS; do
   case "$L" in
@@ -176,17 +187,25 @@ fi
 # 4. Resolve all team names → IDs
 # /orgs/{org}/teams/{slug}/... endpoints don't exist on Gitea 1.22;
 # we use /teams/{id}.
+# set +e prevents set -e from aborting the script if curl fails (e.g. empty token).
 ORG_TEAMS_FILE=$(mktemp)
 trap 'rm -f "$ORG_TEAMS_FILE"' EXIT
+set +e
 HTTP_CODE=$(curl -sS -o "$ORG_TEAMS_FILE" -w '%{http_code}' -H "$AUTH" \
   "${API}/orgs/${OWNER}/teams")
-debug "teams-list HTTP=$HTTP_CODE size=$(wc -c <"$ORG_TEAMS_FILE")"
+_HTTP_EXIT=$?
+set -e
+debug "teams-list HTTP=$HTTP_CODE (curl exit=$_HTTP_EXIT) size=$(wc -c <"$ORG_TEAMS_FILE")"
 if [ "${SOP_DEBUG:-}" = "1" ]; then
   echo "  [debug] teams-list body (first 300 chars):" >&2
   head -c 300 "$ORG_TEAMS_FILE" >&2; echo >&2
 fi
-if [ "$HTTP_CODE" != "200" ]; then
-  echo "::error::GET /orgs/${OWNER}/teams returned HTTP $HTTP_CODE — token likely lacks read:org scope."
+if [ "$_HTTP_EXIT" -ne 0 ] || [ "$HTTP_CODE" != "200" ]; then
+  echo "::error::GET /orgs/${OWNER}/teams failed (curl exit=$_HTTP_EXIT HTTP=$HTTP_CODE) — token may lack read:org scope or be invalid."
+  if [ "${SOP_FAIL_OPEN:-}" = "1" ]; then
+    echo "::warning::SOP_FAIL_OPEN=1 — exiting 0 so CI does not block."
+    exit 0
+  fi
   exit 1
 fi
 
@@ -231,9 +250,22 @@ for _t in $_all_teams; do
   debug "team-id: $_t → $_id"
 done
 
-# 5. Read approving reviewers
+# 5. Read approving reviewers. set +e disables set -e temporarily so that curl
+# failures (e.g. empty/invalid token → HTTP 401) do not abort the script before
+# SOP_FAIL_OPEN is evaluated. set -e is restored immediately after.
+set +e
 REVIEWS=$(curl -sS -H "$AUTH" "${API}/repos/${OWNER}/${NAME}/pulls/${PR_NUMBER}/reviews")
-APPROVERS=$(echo "$REVIEWS" | jq -r '[.[] | select(.state=="APPROVED") | .user.login] | unique | .[]')
+_REVIEWS_EXIT=$?
+set -e
+if [ $_REVIEWS_EXIT -ne 0 ] || [ -z "$REVIEWS" ]; then
+  echo "::error::Failed to fetch reviews (curl exit=$_REVIEWS_EXIT) — token may be invalid or unreachable."
+  if [ "${SOP_FAIL_OPEN:-}" = "1" ]; then
+    echo "::warning::SOP_FAIL_OPEN=1 — exiting 0 so CI does not block."
+    exit 0
+  fi
+  exit 1
+fi
+APPROVERS=$(echo "$REVIEWS" | jq -r '[.[] | select(.state=="APPROVED") | .user.login] | unique | .[]') || true
 if [ -z "$APPROVERS" ]; then
   echo "::error::No approving reviews on this PR. Set SOP_DEBUG=1 and re-run for diagnostics."
   exit 1

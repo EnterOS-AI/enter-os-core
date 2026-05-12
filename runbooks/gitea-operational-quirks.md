@@ -4,11 +4,11 @@ Documents persistent operational findings about Gitea Actions runner behaviour
 that differ from GitHub Actions and require workarounds in workflow YAML or
 runbooks.
 
-> Last updated: 2026-05-11 (core-devops-agent)
+> Last updated: 2026-05-12 (infra-runtime-be-agent)
 
 ---
 
-## Large repo causes fetch timeout on Gitea Actions runner
+## Quirk #1 — Large repo causes fetch timeout on Gitea Actions runner
 
 ### Finding
 
@@ -68,7 +68,7 @@ confirming this is a repo-size constraint, not network isolation.
 
 ---
 
-## `continue-on-error` only works at step level, not job level
+## Quirk #2 — `continue-on-error` only works at step level, not job level
 
 ### Finding
 
@@ -112,12 +112,12 @@ jobs:
 
 ### References
 
-- Gitea Actions quirk #10 (from migration checklist)
+- Quirk #10 (this document): Gitea does NOT auto-populate `secrets.GITHUB_TOKEN`
 - PR #441: fix applied to `harness-replays.yml`
 
 ---
 
-## `workflow_dispatch.inputs` not supported
+## Quirk #3 — `workflow_dispatch.inputs` not supported
 
 Gitea 1.22.6 parser rejects `workflow_dispatch.inputs`. Drop from all workflow
 YAML files ported from GitHub Actions. Manual triggers should use
@@ -127,21 +127,21 @@ YAML files ported from GitHub Actions. Manual triggers should use
 
 ---
 
-## `merge_group` not supported
+## Quirk #4 — `merge_group` not supported
 
 Gitea has no merge queue concept. Drop `merge_group:` triggers from all
 workflow YAML files.
 
 ---
 
-## `environment:` blocks not supported
+## Quirk #5 — `environment:` blocks not supported
 
 Gitea has no environments concept. Drop `environment:` from all workflow YAML
 files. Secrets and variables are repo-level.
 
 ---
 
-## Gitea combined status reports `failure` when all contexts are `null`
+## Quirk #6 — Gitea combined status reports `failure` when all contexts are `null`
 
 ### Finding
 
@@ -189,3 +189,215 @@ primary consumer of combined status and is affected.
 
 - Issue #481: first real-world case of this bug (2026-05-11)
 - `feedback_no_such_thing_as_flakes`: watchdog directive
+
+---
+
+## Quirk #7 — TBD
+
+*[Placeholder — document here when a new Gitea Actions quirk is discovered.]*
+
+### Finding
+
+*[What Gitea Actions does differently from GitHub Actions.]*
+
+### Impact
+
+*[Which workflows or operations are affected.]*
+
+### Workaround
+
+*[How to work around this quirk.]*
+
+### References
+
+- internal#[N]: first observation
+
+---
+
+## Quirk #8 — TBD
+
+*[Placeholder — document here when a new Gitea Actions quirk is discovered.]*
+
+### Finding
+
+*[What Gitea Actions does differently from GitHub Actions.]*
+
+### Impact
+
+*[Which workflows or operations are affected.]*
+
+### Workaround
+
+*[How to work around this quirk.]*
+
+### References
+
+- internal#[N]: first observation
+
+---
+
+## Quirk #9 — TBD
+
+*[Placeholder — document here when a new Gitea Actions quirk is discovered.]*
+
+### Finding
+
+*[What Gitea Actions does differently from GitHub Actions.]*
+
+### Impact
+
+*[Which workflows or operations are affected.]*
+
+### Workaround
+
+*[How to work around this quirk.]*
+
+### References
+
+- internal#[N]: first observation
+
+---
+
+## Quirk #10 — Gitea does NOT auto-populate `secrets.GITHUB_TOKEN`
+
+### Finding
+
+Gitea Actions (1.22.6) does **not** auto-populate `secrets.GITHUB_TOKEN`
+the way GitHub Actions does. A workflow that references `secrets.GITHUB_TOKEN`
+without explicitly provisioning a named secret gets an empty string — not a
+read-only token scoped to the repo.
+
+### Impact
+
+Workflows that call the Gitea REST API using `secrets.GITHUB_TOKEN` as auth
+receive **HTTP 401** on every API call. Affected workflows in molecule-core:
+
+| Workflow | Symptom | Workaround |
+|---|---|---|
+| `gate-check-v3.yml` | Reports BLOCKED on every PR | Provision `SOP_TIER_CHECK_TOKEN`; update workflow to use it |
+| `qa-review.yml` | Fails immediately on PR open | Same — needs named secret |
+| `security-review.yml` | Fails immediately on PR open | Same — needs named secret |
+
+### How to diagnose
+
+Add a debug step to the failing workflow:
+
+```yaml
+- name: Diagnose token
+  run: |
+    echo "Token present: ${{ secrets.GITHUB_TOKEN != '' }}"
+    curl -sS --fail -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+      "$GITHUB_SERVER_URL/api/v1/user" | jq -r '.login'
+    # Expected (GitHub): prints your username.
+    # Actual (Gitea): HTTP 401 or empty string.
+```
+
+### References
+
+- internal#325: root-cause analysis and token provisioning
+- `feedback_gitea_no_auto_supplied_github_token`
+
+---
+
+## Quirk #11 — PR-create event dispatcher races — only 1 of N workflows fires on `pull_request opened`
+
+### Finding
+
+When a PR is created via the Gitea web UI or API, the Gitea Actions event
+dispatcher may fire **only 1 of N eligible workflows** on the initial
+`pull_request opened` event. All other eligible workflows are silently dropped.
+
+This was observed on molecule-core PR #558 (created 2026-05-11T19:54:10Z):
+12+ workflows had no `paths:` filter and should have fired, but only
+`sop-tier-check.yml` dispatched.
+
+Concurrent PRs created within the same minute received 12–30 dispatches each,
+confirming this is specific to the PR-create event dispatch, not a general
+runner capacity issue.
+
+### Impact
+
+- PRs may not run the full CI suite on first open.
+- `gate-check-v3`, `secret-scan`, `qa-review`, and `security-review` can be
+  silently absent from the PR's status checks.
+- Branch protection may block merge even though CI is effectively green.
+
+### How to diagnose
+
+```bash
+# List workflow runs for the PR:
+gh run list --event pull_request --repo molecule-ai/molecule-core \
+  | grep "$(gh pr view $PR --json number --jq '.number')"
+
+# Expected: 12+ runs on PR open.
+# Actual (when race fires): only 1 run.
+```
+
+### Workaround
+
+Force a second dispatch by pushing a no-op synchronize commit:
+
+```bash
+git commit --allow-empty -m "chore: trigger workflows [skip ci]"
+git push
+```
+
+The synchronize event fires a second `pull_request` event, which reliably
+triggers all eligible workflows.
+
+### References
+
+- internal#329: first observation on PR #558
+- `feedback_gitea_pr_create_dispatcher_race`
+
+---
+
+## When you find a new quirk
+
+Copy the template below, increment the quirk number, and fill in the finding,
+impact, workaround, and references. Place the new section in the **correct
+numerical position** (before the next higher-numbered quirk). Update this
+section's final paragraph to remove the next slot's number.
+
+### Template
+
+```markdown
+## Quirk #N — <short title>
+
+### Finding
+
+<What Gitea Actions does differently from GitHub Actions.>
+
+### Impact
+
+<Which workflows or operations are affected. Include an affected workflows
+table if more than one is affected.>
+
+### How to diagnose
+
+<Shell commands or API calls that confirm this is the quirk, not a real failure.>
+
+### Workaround
+
+<How to work around this quirk in workflow YAML or operations.>
+
+### References
+
+- internal#[N]: first observation
+- <Any Gitea issue, feedback label, or upstream bug tracker reference>
+```
+
+---
+
+## Open questions for Gitea 1.23
+
+- [ ] **act_runner concurrent-job cap**: issue #305 — runner saturation under
+  merge burst; needs `max_concurrent_jobs` cap configured on act_runner
+- [ ] **Infisical→Gitea secret-sync**: issue #307 — eliminate manual secret
+  PUTs by wiring an Infisical cron to the Gitea API
+- [ ] **PR-create dispatcher race resolution**: internal #329 — is there a
+  Gitea fix or config knob to disable the race? File upstream bug if not
+- [ ] **GITHUB_TOKEN auto-population**: internal #325 — is this on the
+  Gitea 1.23 roadmap? If not, the workaround (named secret) is the permanent
+  answer
+
