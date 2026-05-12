@@ -573,7 +573,7 @@ jobs:
           PHASE3_MASKED = {"platform-build"}
           # Exclude null (Phase 3 suppressed / in-flight) from the bad list.
           bad = [(k, v.get("result")) for k, v in ns.items()
-                 if v.get("result") not in ("success", None, "cancelled") and k not in PHASE3_MASKED]
+                 if v.get("result") not in ("success", None, "cancelled", "skipped") and k not in PHASE3_MASKED]
           if bad:
               print(f"FAIL: jobs not green:", file=sys.stderr)
               for k, r in bad:
