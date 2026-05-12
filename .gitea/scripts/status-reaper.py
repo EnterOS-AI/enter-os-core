@@ -19,13 +19,18 @@ What this script does, per `.gitea/workflows/status-reaper.yml` invocation:
          downstream — Gitea uses ` / ` as the workflow/job separator).
      Classify each by whether `on:` contains a `push:` trigger.
 
-  2. List the last N (=10) commits on WATCH_BRANCH via
-     GET /repos/{o}/{r}/commits?sha={branch}&limit={N}. rev2 sweeps
-     N commits per tick instead of HEAD only — schedule workflows
-     post `failure` to whatever SHA was HEAD when they COMPLETED, so
-     by the next */5 tick main has often moved forward and the red
-     gets stranded on a stale commit (Phase 1+2 evidence: rev1 saw
-     `compensated:0` every tick across ~6 cycles).
+  2. List the last N (=30, rev3 — widened from 10) commits on
+     WATCH_BRANCH via GET /repos/{o}/{r}/commits?sha={branch}&limit={N}.
+     rev2 sweeps N commits per tick instead of HEAD only — schedule
+     workflows post `failure` to whatever SHA was HEAD when they
+     COMPLETED, so by the next */5 tick main has often moved forward
+     and the red gets stranded on a stale commit. rev3 widens the
+     window from 10 → 30 because schedule workflows post `failure`
+     RETROACTIVELY (5-15 min after their merge); a 10-commit window
+     is narrower than the merge-cadence during a burst, so reds land
+     OUTSIDE the window before reaper sees them (Phase 1+2 evidence:
+     rev2 run 17057 at 02:46Z saw 185/0 contexts on 10 SHAs; direct
+     probe ~30min later showed ~25 fails on those same 10 SHAs).
 
   3. For EACH SHA in the list:
        - GET combined commit status. Per-SHA error isolation
@@ -502,7 +507,17 @@ def reap(
 # already stale enough that the schedule-run that posted them has long
 # since been overwritten by a real push trigger. See `reference_post_
 # suspension_pipeline` for the merge-cadence baseline.
-DEFAULT_SWEEP_LIMIT = 10
+#
+# rev3 (2026-05-12, hongming-pc2 GO 03:25Z): widened from 10 → 30.
+# rev2 (limit=10) shipped 01:48Z and ran 6/6 ticks post-merge with
+# `compensated:0` despite ~25 stranded reds visible on those same 10
+# SHAs ~30min later. Root cause: schedule workflows post `failure`
+# RETROACTIVELY 5-15 min after their merge, so by the time reaper's
+# next */5 tick lands, the stranded red is on a SHA that has already
+# fallen out of a 10-commit window during a burst-merge period.
+# Trades window-width-cheap for cadence-loady (per hongming-pc2):
+# kept `*/5` cron unchanged; only the window-N is widened.
+DEFAULT_SWEEP_LIMIT = 30
 
 
 def list_recent_commit_shas(branch: str, limit: int) -> list[str]:

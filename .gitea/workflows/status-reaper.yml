@@ -53,16 +53,19 @@ name: status-reaper
 # `inputs:` block here. Gitea 1.22.6 rejects the whole workflow as
 # "unknown on type" when `workflow_dispatch.inputs.X` is present.
 on:
-  # SCHEDULE DISABLED 2026-05-12 — interim per RFC#420 Option-C machinery-down emergency
-  # Reaper rev2 not compensating + watchdog timeout-cascade; rev3 in flight
-  # Re-enable after rev3 lands + runner saturation root resolved
-  #   schedule:
-  #     # Every 5 minutes. Off-zero alignment with sibling cron workflows:
-  #     # ci-required-drift (`:17`), main-red-watchdog (`:05`),
-  #     # railway-pin-audit (`:23`). 5-min cadence gives a tight enough
-  #     # close on schedule-triggered false-reds that main-red-watchdog
-  #     # (hourly :05) almost never files an issue on the false case.
-  #     - cron: '*/5 * * * *'
+  # SCHEDULE RE-ENABLED 2026-05-12 rev3 — interim disable (mc#645) reverted now that
+  # rev3 widens DEFAULT_SWEEP_LIMIT 10 → 30 (covers retroactive-failure timing window).
+  # Sibling watchdog re-enabled in the same PR with timeout-minutes raised 5 → 15.
+  schedule:
+    # Every 5 minutes. Off-zero alignment with sibling cron workflows:
+    # ci-required-drift (`:17`), main-red-watchdog (`:05`),
+    # railway-pin-audit (`:23`). 5-min cadence gives a tight enough
+    # close on schedule-triggered false-reds that main-red-watchdog
+    # (hourly :05) almost never files an issue on the false case.
+    # rev3 keeps `*/5` unchanged per hongming-pc2 03:25Z review:
+    # "trades window-width-cheap for cadence-loady" — N=30 widens
+    # the lookback cheaply without doubling runner load via `*/2`.
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 # Compensating-status POST needs write on repo statuses; no other

@@ -713,6 +713,92 @@ def test_reap_skips_combined_success_shas(sr_module, monkeypatch):
     assert posts[0][0] == f"/repos/owner/repo/statuses/{SHA_B}"
 
 
+def test_default_sweep_limit_is_30(sr_module):
+    """rev3 contract: `DEFAULT_SWEEP_LIMIT = 30` (widened from rev2's 10).
+
+    Root cause of the widening: schedule workflows post `failure`
+    RETROACTIVELY 5-15 min after their merge. A 10-commit window is
+    narrower than the merge-cadence during a burst, so reds land
+    OUTSIDE the window before reaper's next tick sees them.
+
+    Evidence: rev2 run 17057 (02:46Z 2026-05-12) saw 185 contexts / 0
+    fails on its 10 SHAs; direct probe ~30min later showed ~25 fails
+    on those same 10 SHAs.
+
+    If this default is ever lowered back, that change MUST cite
+    re-measured cadence data — a smaller window than the
+    retroactive-failure-post lag re-introduces compensated:0.
+    """
+    assert sr_module.DEFAULT_SWEEP_LIMIT == 30
+
+
+def test_reap_widened_window_catches_retroactive_failure(sr_module, monkeypatch):
+    """rev3 regression: with limit=30, a stranded red on a SHA at depth=20
+    (which the rev2 limit=10 window would have missed) IS swept + compensated.
+
+    Why this matters: rev2 ran with limit=10 and saw `compensated:0` for
+    6 consecutive ticks despite ~25 known-stranded reds across the last
+    30 main commits. Widening to 30 must demonstrably catch a SHA past
+    the old window. We mock 30 SHAs, plant the failure on SHA[20], and
+    verify exactly one compensation lands on that SHA.
+    """
+    shas = [f"{c:02x}" * 20 for c in range(30)]  # 30 deterministic SHAs
+    failing_sha = shas[20]  # depth 20 — outside rev2's window=10, inside rev3's =30
+
+    posts: list[tuple[str, dict]] = []
+
+    def fake_api(method, path, *, body=None, query=None, expect_json=True):
+        if method == "GET" and path.endswith("/commits"):
+            # /commits listing — return all 30 fake commit objects
+            assert query.get("limit") == "30", (
+                f"expected limit=30 in query, got {query}"
+            )
+            return (200, [{"sha": s} for s in shas])
+        if method == "GET" and "/commits/" in path and path.endswith("/status"):
+            sha = path.split("/commits/")[1].split("/status")[0]
+            if sha == failing_sha:
+                return (
+                    200,
+                    {
+                        "state": "failure",
+                        "statuses": [
+                            {
+                                "context": "retroactive-drift / drift (push)",
+                                "state": "failure",
+                                "target_url": "https://example.test/run/9001",
+                            }
+                        ],
+                    },
+                )
+            # All others combined=success (cost-opt short-circuit).
+            return (200, {"state": "success", "statuses": []})
+        if method == "POST":
+            posts.append((path, body))
+            return (201, {})
+        raise AssertionError(f"unexpected api call: {method} {path}")
+
+    monkeypatch.setattr(sr_module, "api", fake_api)
+
+    workflow_map = {"retroactive-drift": False}  # schedule-only → class-O
+    counters = sr_module.reap_branch(
+        workflow_map, "main", limit=sr_module.DEFAULT_SWEEP_LIMIT, dry_run=False
+    )
+
+    # All 30 SHAs walked; exactly one compensated.
+    assert counters["scanned_shas"] == 30
+    assert counters["compensated"] == 1
+    assert failing_sha in counters["compensated_per_sha"]
+    assert counters["compensated_per_sha"][failing_sha] == [
+        "retroactive-drift / drift (push)"
+    ]
+    assert len(posts) == 1
+    assert posts[0][0] == f"/repos/owner/repo/statuses/{failing_sha}"
+    # Sanity: with rev2's window=10, depth=20 would NOT have been reached.
+    # This assertion documents the rev3 widening as the structural fix:
+    # the failing_sha index (20) is strictly greater than rev2's old limit (10).
+    assert shas.index(failing_sha) >= 10
+
+
 def test_reap_continues_on_per_sha_apierror(sr_module, monkeypatch, capsys):
     """rev2 refinement #7 (MOST CRITICAL): a transient ApiError or HTTP-5xx
     on get_combined_status(SHA_X) must NOT fail the whole tick. Log + skip
