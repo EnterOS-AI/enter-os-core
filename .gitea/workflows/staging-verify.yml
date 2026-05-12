@@ -11,11 +11,6 @@ name: Staging verify
 #   - Workflow-level env.GITHUB_SERVER_URL pinned per
 #     feedback_act_runner_github_server_url.
 #   - `continue-on-error: true` on each job (RFC §1 contract).
-#   - **Gitea workflow_run trigger limitation**: Gitea 1.22.6's support
-#     for the `workflow_run` event is partial. If this never fires on a
-#     real publish-workspace-server-image completion, the follow-up
-#     triage PR should replace the trigger with a push-with-paths-filter
-#     on the same publish workflow's path (i.e. `.gitea/workflows/publish-workspace-server-image.yml`).
 #
 
 # Runs the canary smoke suite against the staging canary tenant fleet
@@ -59,9 +54,6 @@ name: Staging verify
 #     are populated.
 
 on:
-  workflow_run:
-    workflows: ["publish-workspace-server-image"]
-    types: [completed]
 permissions:
   contents: read
   packages: write
@@ -79,10 +71,6 @@ env:
 jobs:
   # bp-exempt: post-merge staging verification side effect; CI / all-required gates merges.
   staging-smoke:
-    # Skip when the upstream workflow failed — no image to test against.
-    # workflow_dispatch trigger dropped in this Gitea port; only the
-    # workflow_run path remains.
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
     # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
