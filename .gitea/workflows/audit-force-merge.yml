@@ -85,4 +85,5 @@ jobs:
           REQUIRED_CHECKS: |
             Secret scan / Scan diff for credential-shaped strings (pull_request)
             sop-tier-check / tier-check (pull_request)
+            CI / all-required (pull_request)
         run: bash .gitea/scripts/audit-force-merge.sh
