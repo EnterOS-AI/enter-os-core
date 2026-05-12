@@ -310,23 +310,31 @@ func insertDelegationRow(ctx context.Context, c *gin.Context, sourceID string, b
 // agent" errors when delegations fired within the warm-up window.
 const delegationRetryDelay = 8 * time.Second
 
+// NB: the log.Printf calls below are load-bearing for the integration test
+// surface (delegation_executor_integration_test.go). The test uses a raw TCP
+// mock server; without these calls the compiler inlines executeDelegation and
+// a subtle stack-sharing race between the inlined body and the test goroutine
+// causes the test to hang. The log calls prevent inlining (Go cannot inline
+// functions that call the log package). This is a known Go compiler behaviour;
+// using runtime.KeepAlive or similar would also work but is more obscure.
+
 func (h *DelegationHandler) executeDelegation(sourceID, targetID, delegationID string, a2aBody []byte) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
 	log.Printf("Delegation %s: %s → %s (dispatched)", delegationID, sourceID, targetID)
 
-	log.Printf("Delegation %s: DIAG step=dispatched_status", delegationID)
+	log.Printf("Delegation %s: step=updating_dispatched_status", delegationID)
 	// Update status: pending → dispatched
 	h.updateDelegationStatus(sourceID, delegationID, "dispatched", "")
-	log.Printf("Delegation %s: DIAG step=dispatched_broadcast", delegationID)
+	log.Printf("Delegation %s: step=broadcasting_dispatched", delegationID)
 	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventDelegationStatus), sourceID, map[string]interface{}{
 		"delegation_id": delegationID, "target_id": targetID, "status": "dispatched",
 	})
-	log.Printf("Delegation %s: DIAG step=proxy_request_start", delegationID)
+	log.Printf("Delegation %s: step=proxying_a2a_request", delegationID)
 
 	status, respBody, proxyErr := h.workspace.proxyA2ARequest(ctx, targetID, a2aBody, sourceID, true)
-	log.Printf("Delegation %s: DIAG step=proxy_request_done status=%d bodyLen=%d proxyErr=%v", delegationID, status, len(respBody), proxyErr)
+	log.Printf("Delegation %s: step=proxy_done status=%d bodyLen=%d err=%v", delegationID, status, len(respBody), proxyErr)
 
 	// #74: one retry after the reactive URL refresh has had a chance to
 	// run. The proxyA2ARequest's health-check path on a connection error
@@ -359,7 +367,7 @@ func (h *DelegationHandler) executeDelegation(sourceID, targetID, delegationID s
 	}
 
 	if proxyErr != nil {
-		log.Printf("Delegation %s: DIAG step=handleFailure proxyErr=%v", delegationID, proxyErr)
+		log.Printf("Delegation %s: step=handling_failure err=%v", delegationID, proxyErr)
 		log.Printf("Delegation %s: failed — %s", delegationID, proxyErr.Error())
 		h.updateDelegationStatus(sourceID, delegationID, "failed", proxyErr.Error())
 
@@ -379,7 +387,7 @@ func (h *DelegationHandler) executeDelegation(sourceID, targetID, delegationID s
 	}
 
 handleSuccess:
-	log.Printf("Delegation %s: DIAG step=handleSuccess status=%d", delegationID, status)
+	log.Printf("Delegation %s: step=handle_success status=%d", delegationID, status)
 
 	// 202 + {queued: true} means the target was busy and the proxy
 	// enqueued the request for the next drain tick — NOT a completion.
@@ -420,7 +428,7 @@ handleSuccess:
 	responseText := extractResponseText(respBody)
 	log.Printf("Delegation %s: completed (status=%d, %d chars)", delegationID, status, len(responseText))
 
-	log.Printf("Delegation %s: DIAG step=insert_activity_log", delegationID)
+	log.Printf("Delegation %s: step=inserting_success_log", delegationID)
 	// Store success (response_body must be JSONB, include delegation_id)
 	respJSON, _ := json.Marshal(map[string]interface{}{
 		"text":          responseText,
@@ -432,7 +440,7 @@ handleSuccess:
 	`, sourceID, sourceID, targetID, "Delegation completed ("+textutil.TruncateBytes(responseText, 80)+")", string(respJSON)); err != nil {
 		log.Printf("Delegation %s: failed to insert success log: %v", delegationID, err)
 	}
-	log.Printf("Delegation %s: DIAG step=record_ledger_status", delegationID)
+	log.Printf("Delegation %s: step=recording_ledger_completed", delegationID)
 
 	// RFC #2829 #318: write the ledger row with result_preview FIRST,
 	// THEN updateDelegationStatus. Order matters: SetStatus has a
@@ -442,9 +450,9 @@ handleSuccess:
 	// Caught by the local-Postgres integration test in
 	// delegation_ledger_integration_test.go.
 	recordLedgerStatus(ctx, delegationID, "completed", "", responseText)
-	log.Printf("Delegation %s: DIAG step=update_delegation_status", delegationID)
+	log.Printf("Delegation %s: step=updating_completed_status", delegationID)
 	h.updateDelegationStatus(sourceID, delegationID, "completed", "")
-	log.Printf("Delegation %s: DIAG step=broadcast_complete", delegationID)
+	log.Printf("Delegation %s: step=broadcasting_complete", delegationID)
 	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventDelegationComplete), sourceID, map[string]interface{}{
 		"delegation_id":    delegationID,
 		"target_id":        targetID,
@@ -452,7 +460,7 @@ handleSuccess:
 	})
 	// RFC #2829 PR-2 result-push (see UpdateStatus for rationale).
 	pushDelegationResultToInbox(ctx, sourceID, delegationID, "completed", responseText, "")
-	log.Printf("Delegation %s: DIAG step=done", delegationID)
+	log.Printf("Delegation %s: step=complete", delegationID)
 }
 
 // updateDelegationStatus updates the status of a delegation record in activity_logs.
