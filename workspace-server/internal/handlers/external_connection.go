@@ -490,17 +490,18 @@ codex
 // external openclaw would need a sessions.steer bridge daemon (the
 // equivalent of hermes-channel-molecule for openclaw). Tracked
 // separately; outbound tools is the first cut.
-// externalKimiTemplate — lightweight register + heartbeat for Kimi CLI.
-// Kimi does not yet have native MCP integration, so the snippet is a
-// self-contained Python script that keeps the workspace online in poll
-// mode. Operators paste this once and run it in a background terminal.
-const externalKimiTemplate = `# Kimi CLI external setup — lightweight register + heartbeat.
+// externalKimiTemplate — complete poll-based external setup for Kimi CLI.
+// Includes register + heartbeat + inbound activity polling + reply via
+// /notify. No public URL needed (NAT-safe). Operators paste once and run
+// in a background terminal or via launchd.
+const externalKimiTemplate = `# Kimi CLI external setup — register + heartbeat + inbound poll + reply.
 # For operators whose external agent is a Kimi CLI session.
+# No public URL needed; runs behind NAT in poll mode.
 
 # 1. Install the workspace runtime wheel (provides HTTP client):
 pip install molecule-ai-workspace-runtime
 
-# 2. Save credentials and heartbeat script:
+# 2. Save credentials and the bridge script:
 mkdir -p ~/.molecule-ai/kimi-workspace
 chmod 700 ~/.molecule-ai/kimi-workspace
 cat > ~/.molecule-ai/kimi-workspace/env <<'EOF'
@@ -510,14 +511,16 @@ MOLECULE_WORKSPACE_TOKEN=<paste from create response>
 EOF
 chmod 600 ~/.molecule-ai/kimi-workspace/env
 
-cat > ~/.molecule-ai/kimi-workspace/kimi_heartbeat.py <<'PYEOF'
+cat > ~/.molecule-ai/kimi-workspace/kimi_bridge.py <<'PYEOF'
 #!/usr/bin/env python3
-import logging, os, time
+"""Kimi bridge — keeps workspace online and polls for canvas messages."""
+import json, logging, time
 from pathlib import Path
 import httpx
 
 ENV = Path.home() / ".molecule-ai" / "kimi-workspace" / "env"
-INTERVAL = 20
+HEARTBEAT_INTERVAL = 20
+POLL_INTERVAL = 5
 
 def load_env():
     env = {}
@@ -527,34 +530,77 @@ def load_env():
             env[k.strip()] = v.strip()
     return env
 
-def headers(url, token):
+def hdrs(url, token):
     return {"Authorization": f"Bearer {token}", "Origin": url, "Content-Type": "application/json"}
 
 def register(client, url, ws, tok):
-    resp = client.post(f"{url}/registry/register", json={
+    r = client.post(f"{url}/registry/register", json={
         "id": ws, "url": "", "agent_card": {"name": "mac-laptop-kimi", "skills": []},
         "delivery_mode": "poll",
-    }, headers=headers(url, tok))
-    resp.raise_for_status()
+    }, headers=hdrs(url, tok))
+    r.raise_for_status()
     logging.info("registered %s", ws)
 
 def heartbeat(client, url, ws, tok, start):
-    resp = client.post(f"{url}/registry/heartbeat", json={
+    r = client.post(f"{url}/registry/heartbeat", json={
         "workspace_id": ws, "error_rate": 0.0, "sample_error": "",
         "active_tasks": 0, "current_task": "", "uptime_seconds": int(time.time() - start),
-    }, headers=headers(url, tok))
-    resp.raise_for_status()
+    }, headers=hdrs(url, tok))
+    r.raise_for_status()
+
+def poll_inbound(client, url, ws, tok, since_id):
+    params = {"since_secs": "30", "limit": "50"}
+    if since_id:
+        params["since_id"] = since_id
+    r = client.get(f"{url}/workspaces/{ws}/activity", params=params, headers=hdrs(url, tok))
+    r.raise_for_status()
+    return r.json()
+
+def send_reply(client, url, ws, tok, text):
+    r = client.post(f"{url}/workspaces/{ws}/notify", json={"message": text}, headers=hdrs(url, tok))
+    r.raise_for_status()
+    logging.info("reply sent: %s", text[:80])
+
+def extract_user_text(item):
+    """Pull the user message text from an activity log request_body."""
+    try:
+        body = item.get("request_body") or {}
+        parts = body.get("params", {}).get("message", {}).get("parts", [])
+        return " ".join(p.get("text", "") for p in parts if p.get("text"))
+    except Exception:
+        return ""
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     start = time.time()
+    since_id = ""
+    last_beat = 0
     while True:
         try:
             e = load_env()
+            purl, ws, tok = e["PLATFORM_URL"], e["WORKSPACE_ID"], e["MOLECULE_WORKSPACE_TOKEN"]
             with httpx.Client(timeout=10.0) as c:
-                register(c, e["PLATFORM_URL"], e["WORKSPACE_ID"], e["MOLECULE_WORKSPACE_TOKEN"])
-                heartbeat(c, e["PLATFORM_URL"], e["WORKSPACE_ID"], e["MOLECULE_WORKSPACE_TOKEN"], start)
-            time.sleep(INTERVAL)
+                # Heartbeat every HEARTBEAT_INTERVAL seconds
+                if time.time() - last_beat >= HEARTBEAT_INTERVAL:
+                    register(c, purl, ws, tok)
+                    heartbeat(c, purl, ws, tok, start)
+                    last_beat = time.time()
+
+                # Poll for new canvas messages
+                items = poll_inbound(c, purl, ws, tok, since_id)
+                for item in items:
+                    since_id = item["id"]
+                    src = item.get("source_id")
+                    method = item.get("method") or ""
+                    # Skip our own /notify replies and agent-originated traffic
+                    if method == "notify" or src is not None:
+                        continue
+                    text = extract_user_text(item)
+                    if text:
+                        logging.info("INBOUND from canvas: %s", text)
+                        # Replace the echo below with your own logic:
+                        send_reply(c, purl, ws, tok, f"Echo: {text}")
+            time.sleep(POLL_INTERVAL)
         except Exception as exc:
             logging.warning("loop failed: %s", exc)
             time.sleep(5)
@@ -562,16 +608,26 @@ def main():
 if __name__ == "__main__":
     main()
 PYEOF
-chmod +x ~/.molecule-ai/kimi-workspace/kimi_heartbeat.py
+chmod +x ~/.molecule-ai/kimi-workspace/kimi_bridge.py
 
-# 3. Start the heartbeat (run in a persistent terminal or via launchd):
-python3 ~/.molecule-ai/kimi-workspace/kimi_heartbeat.py
+# 3. Start the bridge (run in a persistent terminal or via launchd):
+python3 ~/.molecule-ai/kimi-workspace/kimi_bridge.py
 
-# The script registers the workspace and heartbeats every 20s,
-# keeping the workspace status = 'online' on the canvas.
+# What the script does:
+#   • Registers the workspace in poll mode (no public URL needed)
+#   • Heartbeats every 20s to keep STATUS = online on the canvas
+#   • Polls /workspaces/:id/activity every 5s for new canvas messages
+#   • Echo-replies via POST /workspaces/:id/notify
 #
-# For inbound A2A delivery (canvas messages → your Kimi session),
-# pair with the Python SDK tab which sets up a push-mode A2A server.
+# To change the reply logic, edit the send_reply() call inside the loop.
+# To send a one-off reply from another terminal:
+#   curl -fsS -X POST "{{PLATFORM_URL}}/workspaces/{{WORKSPACE_ID}}/notify" \
+#     -H "Authorization: Bearer $(cat ~/.molecule-ai/kimi-workspace/env | grep TOKEN | cut -d= -f2)" \
+#     -H "Content-Type: application/json" \
+#     -d '{"message":"Hello from Kimi"}'
+#
+# For push-mode inbound A2A (instead of polling), pair with the Python SDK
+# tab — but that requires a public HTTPS endpoint (ngrok / Cloudflare Tunnel).
 #
 # Need help?
 #   Documentation: https://doc.moleculesai.app/docs/guides/external-agent-registration

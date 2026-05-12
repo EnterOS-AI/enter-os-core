@@ -303,7 +303,7 @@ export function ExternalConnectModal({ info, onClose }: Props) {
             {tab === "kimi" && filledKimi && (
               <SnippetBlock
                 value={filledKimi}
-                label="Kimi CLI — self-contained Python heartbeat script. Keeps the workspace online in poll mode; run in a background terminal or via launchd. Pair with the Python SDK tab for inbound A2A delivery."
+                label="Kimi CLI — self-contained Python bridge. Registers, heartbeats, polls for canvas messages, and echoes replies back. NAT-safe (no public URL). Run in a background terminal or via launchd."
                 copyKey="kimi"
                 copied={copiedKey === "kimi"}
                 onCopy={() => copy(filledKimi, "kimi")}
