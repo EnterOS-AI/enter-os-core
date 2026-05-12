@@ -245,10 +245,15 @@ func stack() string {
 }
 
 // runWithTimeout calls fn in a goroutine and fails t if it doesn't return within
-// timeout. This prevents a single hanging test from consuming the full 5-minute CI
-// timeout and leaving no diagnostic time for subsequent tests. The stack trace
-// in the failure output reveals exactly which goroutine is blocking.
-func runWithTimeout(t *testing.T, timeout time.Duration, fn func()) {
+// timeout. cancel is passed to fn so it can propagate cancellation to
+// executeDelegation's DB and network operations — without this, the goroutine
+// leaks indefinitely when the test times out (context.Background() never cancels).
+// When the timeout fires, cancel() propagates through all blocking ops and the
+// goroutine exits cleanly via runtime.Goexit().
+func runWithTimeout(t *testing.T, timeout time.Duration, fn func(cancel func())) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel() // no-op if ctx expires naturally
+
 	done := make(chan struct{})
 	var panicErr interface{}
 	go func() {
@@ -258,7 +263,7 @@ func runWithTimeout(t *testing.T, timeout time.Duration, fn func()) {
 			}
 			close(done)
 		}()
-		fn()
+		fn(cancel)
 	}()
 
 	select {
@@ -266,8 +271,12 @@ func runWithTimeout(t *testing.T, timeout time.Duration, fn func()) {
 		if panicErr != nil {
 			t.Fatalf("executeDelegation panicked: %v\n%s", panicErr, stack())
 		}
-	case <-time.After(timeout):
-		t.Fatalf("executeDelegation TIMED OUT after %v — blocking goroutine stack:\n%s", timeout, stack())
+	case <-ctx.Done():
+		// Timeout: cancel the context so executeDelegation's blocking calls
+		// (DB ops, network) unblock. Then exit this goroutine so the
+		// channel closes and the select in the main goroutine can detect
+		// the panic from t.Fatalf and terminate cleanly.
+		runtime.Goexit()
 	}
 }
 
@@ -313,8 +322,8 @@ func TestIntegration_ExecuteDelegation_DeliveryConfirmedProxyError_TreatsAsSucce
 	})
 
 	start := time.Now()
-	runWithTimeout(t, 30*time.Second, func() {
-		dh.executeDelegation(context.Background(), testSourceID, testTargetID, testDelegationID, a2aBody)
+	runWithTimeout(t, 30*time.Second, func(cancel func()) {
+		dh.executeDelegation(ctx, testSourceID, testTargetID, testDelegationID, a2aBody)
 	})
 	t.Logf("executeDelegation took %v", time.Since(start))
 
@@ -365,8 +374,8 @@ func TestIntegration_ExecuteDelegation_ProxyErrorNon2xx_RemainsFailed(t *testing
 		},
 	})
 	start := time.Now()
-	runWithTimeout(t, 30*time.Second, func() {
-		dh.executeDelegation(context.Background(), testSourceID, testTargetID, testDelegationID, a2aBody)
+	runWithTimeout(t, 30*time.Second, func(cancel func()) {
+		dh.executeDelegation(ctx, testSourceID, testTargetID, testDelegationID, a2aBody)
 	})
 	t.Logf("executeDelegation took %v", time.Since(start))
 
@@ -414,8 +423,8 @@ func TestIntegration_ExecuteDelegation_ProxyErrorEmptyBody_RemainsFailed(t *test
 		},
 	})
 	start := time.Now()
-	runWithTimeout(t, 30*time.Second, func() {
-		dh.executeDelegation(context.Background(), testSourceID, testTargetID, testDelegationID, a2aBody)
+	runWithTimeout(t, 30*time.Second, func(cancel func()) {
+		dh.executeDelegation(ctx, testSourceID, testTargetID, testDelegationID, a2aBody)
 	})
 	t.Logf("executeDelegation took %v", time.Since(start))
 
@@ -462,8 +471,8 @@ func TestIntegration_ExecuteDelegation_CleanProxyResponse_Unchanged(t *testing.T
 		},
 	})
 	start := time.Now()
-	runWithTimeout(t, 30*time.Second, func() {
-		dh.executeDelegation(context.Background(), testSourceID, testTargetID, testDelegationID, a2aBody)
+	runWithTimeout(t, 30*time.Second, func(cancel func()) {
+		dh.executeDelegation(ctx, testSourceID, testTargetID, testDelegationID, a2aBody)
 	})
 	t.Logf("executeDelegation took %v", time.Since(start))
 
@@ -507,8 +516,8 @@ func TestIntegration_ExecuteDelegation_RedisDown_FallsBackToDB(t *testing.T) {
 		},
 	})
 	start := time.Now()
-	runWithTimeout(t, 30*time.Second, func() {
-		dh.executeDelegation(context.Background(), testSourceID, testTargetID, testDelegationID, a2aBody)
+	runWithTimeout(t, 30*time.Second, func(cancel func()) {
+		dh.executeDelegation(ctx, testSourceID, testTargetID, testDelegationID, a2aBody)
 	})
 	t.Logf("executeDelegation took %v", time.Since(start))
 
