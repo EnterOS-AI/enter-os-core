@@ -601,3 +601,175 @@ def test_scan_workflows_missing_dir_returns_empty(sr_module, tmp_path, capsys):
     assert out == {}
     captured = capsys.readouterr()
     assert "::warning::workflows dir not found" in captured.out
+
+
+# --------------------------------------------------------------------------
+# rev2: multi-SHA sweep — `reap_branch()` walks last N main commits
+# --------------------------------------------------------------------------
+# Phase 1+2 evidence (orchestrator + hongming-pc2): rev1 sees `compensated:0`
+# every tick because the schedule workflow posts `failure` to whatever SHA
+# was HEAD when it COMPLETED. By the next */5 tick, main has often moved
+# forward, so the single-HEAD reaper misses the stranded red. rev2 sweeps
+# the last 10 commits each tick. See `reference_post_suspension_pipeline`
+# and parent rev1 PR #618 for context.
+
+SHA_A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+SHA_B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+SHA_C = "cccccccccccccccccccccccccccccccccccccccc"
+
+
+def test_reap_sweeps_n_shas_smoke(sr_module, monkeypatch):
+    """rev2 contract: sweep last 10 (or N) main commits, GET combined
+    status for EACH. Smoke: with 3 stub SHAs, each is GET'd exactly once.
+    """
+    gets: list[str] = []
+    posts: list[tuple[str, dict]] = []
+
+    def fake_api(method, path, *, body=None, query=None, expect_json=True):
+        if method == "GET" and path.endswith("/commits"):
+            # commits listing — return 3 fake commit objects
+            return (200, [{"sha": SHA_A}, {"sha": SHA_B}, {"sha": SHA_C}])
+        if method == "GET" and "/commits/" in path and path.endswith("/status"):
+            sha = path.split("/commits/")[1].split("/status")[0]
+            gets.append(sha)
+            # All combined=success → cost-optimization short-circuit
+            return (200, {"state": "success", "statuses": []})
+        if method == "POST":
+            posts.append((path, body))
+            return (201, {})
+        raise AssertionError(f"unexpected api call: {method} {path}")
+
+    monkeypatch.setattr(sr_module, "api", fake_api)
+
+    workflow_map = {"x": False}
+    counters = sr_module.reap_branch(
+        workflow_map, "main", limit=10, dry_run=False
+    )
+
+    # Each of the 3 SHAs returned by /commits should be GET'd once.
+    assert gets == [SHA_A, SHA_B, SHA_C]
+    # No POST (everything was combined=success).
+    assert posts == []
+    # Counters reflect what we saw.
+    assert counters["scanned_shas"] == 3
+    assert counters["compensated"] == 0
+    assert counters["compensated_per_sha"] == {}
+
+
+def test_reap_skips_combined_success_shas(sr_module, monkeypatch):
+    """rev2 cost-optimization (refinement #2): when combined==success for
+    a SHA, do NOT iterate per-context statuses; move on to next SHA.
+
+    Mock 2 SHAs with combined=success + 1 with combined=failure → only
+    the failure-SHA's statuses get the per-context loop applied.
+    """
+    per_context_iterated_for: list[str] = []
+    posts: list[tuple[str, dict]] = []
+
+    failure_statuses = [
+        {
+            "context": "drift / drift (push)",
+            "state": "failure",
+            "target_url": "https://example.test/run/42",
+        }
+    ]
+
+    def fake_api(method, path, *, body=None, query=None, expect_json=True):
+        if method == "GET" and path.endswith("/commits"):
+            return (200, [{"sha": SHA_A}, {"sha": SHA_B}, {"sha": SHA_C}])
+        if method == "GET" and "/commits/" in path and path.endswith("/status"):
+            sha = path.split("/commits/")[1].split("/status")[0]
+            if sha == SHA_B:
+                # Mark this SHA as the failure one — return per-context
+                # statuses that would compensate if iterated.
+                return (200, {"state": "failure", "statuses": failure_statuses})
+            # Others are combined=success — must short-circuit.
+            return (200, {"state": "success", "statuses": failure_statuses})
+        if method == "POST":
+            # If a POST hits a non-failure SHA, the short-circuit failed.
+            posts.append((path, body))
+            return (201, {})
+        raise AssertionError(f"unexpected api call: {method} {path}")
+
+    monkeypatch.setattr(sr_module, "api", fake_api)
+
+    # Workflow trigger map: `drift` is schedule-only (compensable).
+    workflow_map = {"drift": False}
+    counters = sr_module.reap_branch(
+        workflow_map, "main", limit=10, dry_run=False
+    )
+
+    # Only SHA_B (the combined=failure one) should be compensated.
+    assert counters["compensated"] == 1
+    assert counters["scanned_shas"] == 3
+    assert SHA_B in counters["compensated_per_sha"]
+    assert counters["compensated_per_sha"][SHA_B] == ["drift / drift (push)"]
+    # SHA_A and SHA_C must NOT appear in compensated_per_sha — their
+    # per-context loop was skipped via the combined=success short-circuit.
+    assert SHA_A not in counters["compensated_per_sha"]
+    assert SHA_C not in counters["compensated_per_sha"]
+    # Exactly one POST: the compensation on SHA_B.
+    assert len(posts) == 1
+    assert posts[0][0] == f"/repos/owner/repo/statuses/{SHA_B}"
+
+
+def test_reap_continues_on_per_sha_apierror(sr_module, monkeypatch, capsys):
+    """rev2 refinement #7 (MOST CRITICAL): a transient ApiError or HTTP-5xx
+    on get_combined_status(SHA_X) must NOT fail the whole tick. Log + skip
+    SHA_X, continue with SHA_Y.
+
+    Different from the single-HEAD path (where fail-loud is correct): the
+    sweep is best-effort across historical commits, so one transient blip
+    on a stale SHA should not strand reds on the OTHER stale SHAs.
+    """
+    posts: list[tuple[str, dict]] = []
+
+    def fake_api(method, path, *, body=None, query=None, expect_json=True):
+        if method == "GET" and path.endswith("/commits"):
+            return (200, [{"sha": SHA_A}, {"sha": SHA_B}])
+        if method == "GET" and "/commits/" in path and path.endswith("/status"):
+            sha = path.split("/commits/")[1].split("/status")[0]
+            if sha == SHA_A:
+                raise sr_module.ApiError(
+                    f"GET /repos/owner/repo/commits/{SHA_A}/status "
+                    f"-> HTTP 502: bad gateway"
+                )
+            # SHA_B returns normally with a failure to compensate.
+            return (
+                200,
+                {
+                    "state": "failure",
+                    "statuses": [
+                        {
+                            "context": "drift / drift (push)",
+                            "state": "failure",
+                        }
+                    ],
+                },
+            )
+        if method == "POST":
+            posts.append((path, body))
+            return (201, {})
+        raise AssertionError(f"unexpected api call: {method} {path}")
+
+    monkeypatch.setattr(sr_module, "api", fake_api)
+
+    workflow_map = {"drift": False}
+    # Must NOT raise — per-SHA error isolation contract.
+    counters = sr_module.reap_branch(
+        workflow_map, "main", limit=10, dry_run=False
+    )
+
+    # SHA_A was logged + skipped. SHA_B processed normally.
+    assert counters["scanned_shas"] == 2
+    assert counters["compensated"] == 1
+    assert SHA_B in counters["compensated_per_sha"]
+    assert SHA_A not in counters["compensated_per_sha"]
+    # Compensation POST landed on SHA_B only.
+    assert len(posts) == 1
+    assert posts[0][0] == f"/repos/owner/repo/statuses/{SHA_B}"
+    # The ApiError must be logged so a human auditing tick output can see
+    # WHICH SHA blipped and WHY.
+    captured = capsys.readouterr()
+    assert "::warning::" in captured.out or "::notice::" in captured.out
+    assert SHA_A[:10] in captured.out

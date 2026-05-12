@@ -647,7 +647,7 @@ export function SkillsTab({ workspaceId, data }: Props) {
   );
 }
 
-function extractSkills(agentCard: Record<string, unknown> | null): SkillEntry[] {
+export function extractSkills(agentCard: Record<string, unknown> | null): SkillEntry[] {
   if (!agentCard) return [];
   const rawSkills = agentCard.skills;
   if (!Array.isArray(rawSkills)) return [];
