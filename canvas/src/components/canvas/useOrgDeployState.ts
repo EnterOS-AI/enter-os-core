@@ -40,7 +40,8 @@ interface NodeProjection {
   status: string;
 }
 
-function buildDeployMap(
+// Exported for unit testing — the function is pure and deterministic.
+export function buildDeployMap(
   projections: NodeProjection[],
   deletingIds: ReadonlySet<string>,
 ): Map<string, OrgDeployState> {
