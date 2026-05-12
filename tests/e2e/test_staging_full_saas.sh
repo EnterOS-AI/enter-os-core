@@ -492,6 +492,12 @@ done
 # probes docker.Ping + container exec; we still expect ok=true there
 # since local-docker is the alternative production path.
 log "7b/11 Canvas-terminal EIC diagnose probe..."
+# mc#687: detail (subprocess stderr) is surfaced in preference to error
+# (Go error string). The subprocess stderr contains the actionable signal —
+# e.g. "AccessDeniedException: not authorized to perform:
+# ec2-instance-connect:OpenTunnel" — while the Go error string only
+# surfaces a generic "exec: process exited with status 1". Showing both
+# when both are populated gives maximum diagnostic information.
 for wid in $WS_TO_CHECK; do
   DIAG_JSON=$(tenant_call GET "/workspaces/$wid/terminal/diagnose" 2>/dev/null || echo '{}')
   DIAG_OK=$(echo "$DIAG_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); print('true' if d.get('ok') else 'false')" 2>/dev/null || echo "false")
@@ -499,7 +505,19 @@ for wid in $WS_TO_CHECK; do
     ok "    $wid terminal-reachable (canvas terminal will work)"
   else
     DIAG_FAIL=$(echo "$DIAG_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('first_failure','unknown'))" 2>/dev/null || echo "unknown")
-    DIAG_DETAIL=$(echo "$DIAG_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); s=[x for x in d.get('steps',[]) if not x.get('ok')]; print(s[0].get('error','') if s else '')" 2>/dev/null || echo "")
+    DIAG_DETAIL=$(echo "$DIAG_JSON" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+steps=[x for x in d.get('steps',[]) if not x.get('ok')]
+if not steps: sys.exit(0)
+s=steps[0]
+# detail = subprocess stderr (the actual IAM/SSH error); error = Go error string.
+detail=s.get('detail','')
+error=s.get('error','')
+if detail and error: print(detail+' ('+error+')')
+elif detail: print(detail)
+elif error: print(error)
+" 2>/dev/null || echo "")
     fail "Workspace $wid terminal diagnose failed at step '$DIAG_FAIL': $DIAG_DETAIL — check tenant SG has tcp/22 from EIC endpoint SG (sg-0785d5c6138220523), EIC_ENDPOINT_SG_ID set in Railway, and EIC endpoint health"
   fi
 done
