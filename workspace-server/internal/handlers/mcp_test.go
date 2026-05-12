@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"errors"
@@ -204,6 +205,9 @@ func TestMCPHandler_NotificationsInitialized_Returns200(t *testing.T) {
 // Unknown method
 // ─────────────────────────────────────────────────────────────────────────────
 
+// TestMCPHandler_UnknownMethod_Returns32601 verifies dispatchRPC returns
+// -32601 for an unknown method. Per OFFSEC-001: the error message must be
+// constant — req.Method is user-controlled and must NOT appear in the response.
 func TestMCPHandler_UnknownMethod_Returns32601(t *testing.T) {
 	h, _ := newMCPHandler(t)
 
@@ -223,6 +227,14 @@ func TestMCPHandler_UnknownMethod_Returns32601(t *testing.T) {
 	}
 	if resp.Error.Code != -32601 {
 		t.Errorf("expected code -32601, got %d", resp.Error.Code)
+	}
+	// Message must be constant — no user-controlled method name leak.
+	if resp.Error.Message != "method not found" {
+		t.Errorf("error message should be constant 'method not found', got: %q", resp.Error.Message)
+	}
+	// Double-check the method name never appears in the message (defence-in-depth).
+	if strings.Contains(resp.Error.Message, "not/a/real/method") {
+		t.Error("error message must not echo the user-controlled method name")
 	}
 }
 
