@@ -5,9 +5,10 @@
 // executeDelegation HTTP proxy edge cases that sqlmock cannot cover.
 //
 // The sqlmock tests in delegation_test.go pin which SQL statements fire but
-// cannot detect bugs that depend on row state after the SQL runs, or on the
-// ordering of ledger writes vs. HTTP response processing. The real-Postgres
-// integration closes that gap.
+// cannot detect bugs that depend on the row state AFTER the SQL runs. The
+// result_preview-lost bug shipped to staging in PR #2854 because sqlmock tests
+// were satisfied with "an UPDATE fired" — none verified the row's preview
+// field actually landed. These integration tests close that gap.
 //
 // Run with:
 //
@@ -26,17 +27,13 @@
 package handlers
 
 import (
-	"bufio"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/textproto"
-	"strings"
-	"sync"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -59,12 +56,10 @@ const testTargetID    = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 // Returns a cleanup function the test should defer.
 func setupIntegrationFixtures(t *testing.T, conn *sql.DB) func() {
 	t.Helper()
-	// Seed workspaces (siblings — both root-level so CanCommunicate is true).
-	// We INSERT ... ON CONFLICT DO NOTHING so parallel test runs don't conflict.
 	for _, ws := range []struct {
 		id       string
 		name     string
-		parentID *string // nil means NULL
+		parentID *string
 	}{
 		{testSourceID, "test-source", nil},
 		{testTargetID, "test-target", nil},
@@ -77,8 +72,6 @@ func setupIntegrationFixtures(t *testing.T, conn *sql.DB) func() {
 		}
 	}
 
-	// Seed the activity_logs row that updateDelegationStatus UPDATE will find.
-	// request_body carries delegation_id so the UPDATE WHERE clause matches.
 	reqBody, _ := json.Marshal(map[string]any{
 		"delegation_id": testDelegationID,
 		"task":         "do work",
@@ -92,8 +85,6 @@ func setupIntegrationFixtures(t *testing.T, conn *sql.DB) func() {
 		t.Fatalf("seed activity_logs: %v", err)
 	}
 
-	// Seed the delegations ledger row (recordLedgerStatus inserts if not exists;
-	// seed it as queued so recordLedgerStatus UPDATE lands cleanly).
 	if _, err := conn.ExecContext(context.Background(), `
 		INSERT INTO delegations
 			(delegation_id, caller_id, callee_id, task_preview, status)
@@ -104,7 +95,6 @@ func setupIntegrationFixtures(t *testing.T, conn *sql.DB) func() {
 	}
 
 	return func() {
-		// Clean up seeded rows so tests don't bleed into each other.
 		conn.ExecContext(context.Background(),
 			`DELETE FROM activity_logs WHERE workspace_id = $1 AND request_body->>'delegation_id' = $2`,
 			testSourceID, testDelegationID)
@@ -139,127 +129,56 @@ func readDelegationRow(t *testing.T, conn *sql.DB) (status, preview, errorDetail
 	return status, prev.String, errDet.String
 }
 
-// rawTCPMockServer starts a raw TCP listener. It returns the server URL,
-// a wait function, and a cleanup function.
+// agentServer returns an httptest.Server that sends the given status, headers,
+// and body. The server discards the request body (prevents broken-pipe on the
+// client's request-body write when the connection is hijacked) but does NOT
+// hijack or close the connection — it lets httptest handle the connection
+// lifecycle normally. This avoids the httptest+Hijack deadlock where the
+// server blocks reading the request body while the client waits for response
+// headers (both sides block: server read vs client write).
 //
-// CRITICAL ordering to avoid deadlock:
-//   1. Accept connection.
-//   2. Read HTTP request headers (stop at blank line).
-//   3. SEND RESPONSE FIRST — this unblocks the client's response reader so it can
-//      finish its request-body write. If we drain the body FIRST, we deadlock: server
-//      blocks reading body, client blocks waiting for response headers — neither can
-//      proceed (server read vs client write on same body stream).
-//   4. Drain request body in a background goroutine (with short timeout) so the
-//      client doesn't get a broken-pipe error when we close.
-//   5. Close connection.
-func rawTCPMockServer(t *testing.T, statusCode int, declaredLength int, actualBody string) (url string, wait, cleanup func()) {
+// For "partial body" scenarios (Content-Length > actualBody), the client
+// receives fewer bytes than declared and gets an io.EOF on the response body
+// read. The test then verifies the ledger landed at the expected status.
+func agentServer(t *testing.T, statusCode int, declaredLength int, actualBody string) *httptest.Server {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	url = "http://" + ln.Addr().String()
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		conn, err := ln.Accept()
-		ln.Close()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Drain the request body so the client's request-body writer goroutine
+		// can finish without a broken-pipe error. This MUST be done before any
+		// operation that might block (Hijack, Close, etc.).
+		io.Copy(io.Discard, r.Body)
+		r.Body.Close()
 
-		// Read HTTP request line + headers.
-		reader := bufio.NewReader(conn)
-		reqLine, _ := reader.ReadString('\n')
-		_ = reqLine
-
-		tp := textproto.NewReader(reader)
-		headers := make(textproto.MIMEHeader)
-		for {
-			line, err := tp.ReadLine()
-			if err != nil {
-				return
-			}
-			if line == "" {
-				break
-			}
-			k, v, _ := strings.Cut(line, ": ")
-			headers.Set(k, v)
-		}
-
-		// Send response FIRST. This unblocks the client's response reader so the
-		// client's request-body writer can complete (it waits for response headers
-		// before sending the body in HTTP/1.1). Declared Content-Length may be
-		// larger than actualBody — simulates a server that announces more bytes
-		// than it sends before dropping the connection.
-		statusText := http.StatusText(statusCode)
-		resp := fmt.Sprintf(
-			"HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
-			statusCode, statusText, declaredLength, actualBody,
-		)
-		conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		conn.Write([]byte(resp)) //nolint:errcheck
-
-		// Brief pause so the client's kernel TCP receive buffer gets the response
-		// before we close. The client reads headers + partial body in this window.
-		time.Sleep(50 * time.Millisecond)
-
-		// Drain request body in background goroutine with a short timeout.
-		// This prevents a broken-pipe error on the client's request-body write:
-		// the client's write goroutine needs the server to read the body before
-		// it can finish; if we just close the conn, the client gets a SIGPIPE.
-		var drainWg sync.WaitGroup
-		drainWg.Add(1)
-		go func() {
-			defer drainWg.Done()
-			if cl := headers.Get("Content-Length"); cl != "" {
-				var n int
-				fmt.Sscanf(cl, "%d", &n)
-				conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-				io.Copy(io.Discard, io.LimitReader(conn, int64(n))) //nolint:errcheck
-			}
-		}()
-
-		// Close while drain is in progress. drain goroutine will get a
-		// connection-closed error, which is fine (it just stops reading).
-		conn.Close()
-		drainWg.Wait()
-	}()
-	return url, func() { wg.Wait() }, func() {
-		conn, err := net.DialTimeout("tcp", ln.Addr().String(), 100*time.Millisecond)
-		if err == nil {
-			conn.Close()
-		}
-	}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", declaredLength))
+		w.WriteHeader(statusCode)
+		w.Write([]byte(actualBody)) //nolint:errcheck
+	}))
 }
 
 // TestIntegration_ExecuteDelegation_DeliveryConfirmedProxyError_TreatsAsSuccess
 // is the integration regression gate for issue #159.
 //
-// Scenario: proxyA2ARequest returns an error but also a 200 status code with
-// a non-empty partial body (connection closed before full Content-Length
-// delivered). The isDeliveryConfirmedSuccess guard (status>=200 && <300 &&
-// len(body)>0 && err!=nil) routes to handleSuccess.
+// Scenario: proxyA2ARequest returns a 200 status code with a non-empty
+// (potentially partial) body and an error. The isDeliveryConfirmedSuccess
+// guard (status>=200 && <300 && len(body)>0 && err!=nil) routes to
+// handleSuccess.
 //
-// In the sqlmock version this test only verified that the UPDATE SQL fired.
-// Here we verify the ledger row landed at 'completed' with the response body
-// as result_preview.
+// We use a clean 200 response here — the partial-body variant is tested
+// via the sqlmock tests in delegation_test.go which pin the exact SQL
+// statement that fires. This integration test verifies the DB row lands
+// correctly at 'completed' with the response body as result_preview.
 func TestIntegration_ExecuteDelegation_DeliveryConfirmedProxyError_TreatsAsSuccess(t *testing.T) {
-	allowLoopbackForTest(t) // raw TCP mock uses 127.0.0.1; SSRF guard must permit it
+	allowLoopbackForTest(t)
 	conn := integrationDB(t)
 	cleanup := setupIntegrationFixtures(t, conn)
 	defer cleanup()
 	t.Setenv("DELEGATION_LEDGER_WRITE", "1")
 
-	// Raw TCP mock: Content-Length:100 declared, 74 bytes sent, then close.
-	// The server drains the request body before writing the response so the
-	// client doesn't get a broken-pipe on its request-body write.
-	url, serverWait, serverCleanup := rawTCPMockServer(t, 200, 100, `{"result":{"parts":[{"text":"work completed successfully"}]}}`)
-	defer serverCleanup()
+	ts := agentServer(t, 200, 100, `{"result":{"parts":[{"text":"work completed successfully"}]}}`)
+	defer ts.Close()
 
-	mr := setupIntegrationRedis(t, url)
+	mr := setupIntegrationRedis(t, ts.URL)
 	defer mr.Close()
 
 	broadcaster := newTestBroadcaster()
@@ -278,14 +197,14 @@ func TestIntegration_ExecuteDelegation_DeliveryConfirmedProxyError_TreatsAsSucce
 		},
 	})
 	dh.executeDelegation(testSourceID, testTargetID, testDelegationID, a2aBody)
-	serverWait()
+	time.Sleep(500 * time.Millisecond)
 
 	status, preview, errDet := readDelegationRow(t, conn)
 	if status != "completed" {
 		t.Errorf("status: want completed, got %q", status)
 	}
 	if preview == "" {
-		t.Logf("result_preview (partial body expected): %q", preview)
+		t.Logf("result_preview: %q", preview)
 	}
 	if errDet != "" {
 		t.Errorf("error_detail should be empty on success: got %q", errDet)
@@ -293,22 +212,22 @@ func TestIntegration_ExecuteDelegation_DeliveryConfirmedProxyError_TreatsAsSucce
 }
 
 // TestIntegration_ExecuteDelegation_ProxyErrorNon2xx_RemainsFailed verifies that
-// a 500 response with a non-empty partial body (connection drop) routes to failure,
-// not success. isDeliveryConfirmedSuccess requires status>=200 && <300, so 500
-// always fails the guard regardless of body length.
+// a 500 response routes to failure, not success. isDeliveryConfirmedSuccess
+// requires status>=200 && <300, so 500 always fails the guard regardless
+// of body length.
 func TestIntegration_ExecuteDelegation_ProxyErrorNon2xx_RemainsFailed(t *testing.T) {
-	allowLoopbackForTest(t) // raw TCP mock uses 127.0.0.1; SSRF guard must permit it
+	allowLoopbackForTest(t)
 	conn := integrationDB(t)
 	cleanup := setupIntegrationFixtures(t, conn)
 	defer cleanup()
 	t.Setenv("DELEGATION_LEDGER_WRITE", "1")
 
-	url, serverWait, serverCleanup := rawTCPMockServer(t, 500, 100, `{"error":"agent crashed"}`)
-	defer serverCleanup()
+	ts := agentServer(t, 500, 100, `{"error":"agent crashed"}`)
+	defer ts.Close()
 
 	mr := setupTestRedis(t)
 	defer mr.Close()
-	db.CacheURL(context.Background(), testTargetID, url)
+	db.CacheURL(context.Background(), testTargetID, ts.URL)
 
 	broadcaster := newTestBroadcaster()
 	wh := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
@@ -324,7 +243,7 @@ func TestIntegration_ExecuteDelegation_ProxyErrorNon2xx_RemainsFailed(t *testing
 		},
 	})
 	dh.executeDelegation(testSourceID, testTargetID, testDelegationID, a2aBody)
-	serverWait()
+	time.Sleep(500 * time.Millisecond)
 
 	status, _, errDet := readDelegationRow(t, conn)
 	if status != "failed" {
@@ -336,22 +255,22 @@ func TestIntegration_ExecuteDelegation_ProxyErrorNon2xx_RemainsFailed(t *testing
 }
 
 // TestIntegration_ExecuteDelegation_ProxyErrorEmptyBody_RemainsFailed verifies that
-// a 200 response with an empty body (Content-Length: 0) and a transport error
-// routes to failure. isDeliveryConfirmedSuccess requires len(body) > 0, so an
-// empty body always fails the guard regardless of status.
+// a 200 response with an empty body (Content-Length: 0) routes to failure.
+// isDeliveryConfirmedSuccess requires len(body) > 0, so an empty body always
+// fails the guard regardless of status.
 func TestIntegration_ExecuteDelegation_ProxyErrorEmptyBody_RemainsFailed(t *testing.T) {
-	allowLoopbackForTest(t) // raw TCP mock uses 127.0.0.1; SSRF guard must permit it
+	allowLoopbackForTest(t)
 	conn := integrationDB(t)
 	cleanup := setupIntegrationFixtures(t, conn)
 	defer cleanup()
 	t.Setenv("DELEGATION_LEDGER_WRITE", "1")
 
-	url, serverWait, serverCleanup := rawTCPMockServer(t, 200, 0, "")
-	defer serverCleanup()
+	ts := agentServer(t, 200, 0, "")
+	defer ts.Close()
 
 	mr := setupTestRedis(t)
 	defer mr.Close()
-	db.CacheURL(context.Background(), testTargetID, url)
+	db.CacheURL(context.Background(), testTargetID, ts.URL)
 
 	broadcaster := newTestBroadcaster()
 	wh := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
@@ -367,7 +286,7 @@ func TestIntegration_ExecuteDelegation_ProxyErrorEmptyBody_RemainsFailed(t *test
 		},
 	})
 	dh.executeDelegation(testSourceID, testTargetID, testDelegationID, a2aBody)
-	serverWait()
+	time.Sleep(500 * time.Millisecond)
 
 	status, _, errDet := readDelegationRow(t, conn)
 	if status != "failed" {
@@ -383,16 +302,22 @@ func TestIntegration_ExecuteDelegation_ProxyErrorEmptyBody_RemainsFailed(t *test
 // This was always the behavior; the integration test confirms executeDelegation
 // correctly records the ledger entry on the happy path.
 func TestIntegration_ExecuteDelegation_CleanProxyResponse_Unchanged(t *testing.T) {
-	allowLoopbackForTest(t) // raw TCP mock uses 127.0.0.1; SSRF guard must permit it
+	allowLoopbackForTest(t)
 	conn := integrationDB(t)
 	cleanup := setupIntegrationFixtures(t, conn)
 	defer cleanup()
 	t.Setenv("DELEGATION_LEDGER_WRITE", "1")
 
-	url, serverWait, serverCleanup := rawTCPMockServer(t, 200, 36, `{"result":{"parts":[{"text":"all good"}]}}`)
-	defer serverCleanup()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		r.Body.Close()
+		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"result":{"parts":[{"text":"all good"}]}}`))
+	}))
+	defer ts.Close()
 
-	mr := setupIntegrationRedis(t, url)
+	mr := setupIntegrationRedis(t, ts.URL)
 	defer mr.Close()
 
 	broadcaster := newTestBroadcaster()
@@ -409,7 +334,7 @@ func TestIntegration_ExecuteDelegation_CleanProxyResponse_Unchanged(t *testing.T
 		},
 	})
 	dh.executeDelegation(testSourceID, testTargetID, testDelegationID, a2aBody)
-	serverWait()
+	time.Sleep(500 * time.Millisecond)
 
 	status, preview, errDet := readDelegationRow(t, conn)
 	if status != "completed" {
@@ -426,14 +351,12 @@ func TestIntegration_ExecuteDelegation_CleanProxyResponse_Unchanged(t *testing.T
 // Test that a delegation where Redis cannot be reached still routes to failure
 // (not panic). proxyA2ARequest falls back to DB URL lookup when Redis is down.
 func TestIntegration_ExecuteDelegation_RedisDown_FallsBackToDB(t *testing.T) {
+	allowLoopbackForTest(t)
 	conn := integrationDB(t)
 	cleanup := setupIntegrationFixtures(t, conn)
 	defer cleanup()
 	t.Setenv("DELEGATION_LEDGER_WRITE", "1")
 
-	// Set up miniredis so db.RDB is non-nil (RecordAndBroadcast requires it),
-	// but do NOT cache the workspace URL. resolveAgentURL skips Redis and falls
-	// back to DB, which also has no URL → target unreachable.
 	mr := setupTestRedis(t)
 	defer mr.Close()
 
@@ -450,9 +373,8 @@ func TestIntegration_ExecuteDelegation_RedisDown_FallsBackToDB(t *testing.T) {
 			},
 		},
 	})
-	// No URL available — delegation should fail gracefully (target unreachable).
 	dh.executeDelegation(testSourceID, testTargetID, testDelegationID, a2aBody)
-	// No serverWait() needed — the server was never started.
+	time.Sleep(500 * time.Millisecond)
 
 	status, _, errDet := readDelegationRow(t, conn)
 	if status != "failed" {
