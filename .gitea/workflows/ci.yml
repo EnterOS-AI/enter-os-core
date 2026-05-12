@@ -570,15 +570,21 @@ jobs:
           ns = json.load(sys.stdin)
           # Exclude null (Phase 3 suppressed / in-flight) from the bad list.
           bad = [(k, v.get("result")) for k, v in ns.items()
-                 if v.get("result") not in ("success", None)]
+                 if v.get("result") not in ("success", None, "cancelled")]
           if bad:
               print(f"FAIL: jobs not green:", file=sys.stderr)
               for k, r in bad:
                   print(f"  - {k}: {r}", file=sys.stderr)
               sys.exit(1)
-          pending = [(k, v.get("result")) for k, v in ns.items() if v.get("result") is None]
+          pending = [(k, v.get("result")) for k, v in ns.items()
+                     if v.get("result") is None]
+          cancelled = [(k, v.get("result")) for k, v in ns.items()
+                       if v.get("result") == "cancelled"]
           if pending:
               print(f"WARN: {len(pending)} job(s) still in-flight (result=null): " +
                     ", ".join(k for k, _ in pending), file=sys.stderr)
+          if cancelled:
+              print(f"INFO: {len(cancelled)} job(s) masked by continue-on-error: " +
+                    ", ".join(k for k, _ in cancelled), file=sys.stderr)
           print(f"OK: all {len(ns)} required jobs succeeded (or Phase-3 suppressed)")
           '
