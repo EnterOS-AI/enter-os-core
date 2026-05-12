@@ -70,10 +70,12 @@ jobs:
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
-    # Phase 3 (RFC #219 §1): surface broken workflows without blocking
-    # the PR. Follow-up PR flips this off after the surfaced defects
-    # (if any) are triaged.
-    continue-on-error: true
+    # Phase 4 (RFC #219 §1): all required jobs >=98% green on main.
+    # Flip confirmed 2026-05-12 via combined-status check of latest main
+    # commit (all CI jobs green). `all-required` sentinel hard-fails
+    # when this job fails; no Phase 3 suppression needed.
+    # revert: add `continue-on-error: true` back if regressions appear.
+    continue-on-error: false
     outputs:
       platform: ${{ steps.check.outputs.platform }}
       canvas: ${{ steps.check.outputs.canvas }}
@@ -124,7 +126,8 @@ jobs:
     name: Platform (Go)
     needs: changes
     runs-on: ubuntu-latest
-    continue-on-error: true
+    # Phase 4 (RFC #219 §1): confirmed green on main 2026-05-12.
+    continue-on-error: false
     defaults:
       run:
         working-directory: workspace-server
@@ -271,7 +274,8 @@ jobs:
     name: Canvas (Next.js)
     needs: changes
     runs-on: ubuntu-latest
-    continue-on-error: true
+    # Phase 4 (RFC #219 §1): confirmed green on main 2026-05-12.
+    continue-on-error: false
     defaults:
       run:
         working-directory: canvas
@@ -317,7 +321,8 @@ jobs:
     name: Shellcheck (E2E scripts)
     needs: changes
     runs-on: ubuntu-latest
-    continue-on-error: true
+    # Phase 4 (RFC #219 §1): confirmed green on main 2026-05-12.
+    continue-on-error: false
     steps:
       - if: needs.changes.outputs.scripts != 'true'
         run: echo "No tests/e2e/ or infra/scripts/ changes — skipping real shellcheck; this job always runs to satisfy the required-check name on branch protection."
@@ -392,7 +397,8 @@ jobs:
     name: Python Lint & Test
     needs: changes
     runs-on: ubuntu-latest
-    continue-on-error: true
+    # Phase 4 (RFC #219 §1): confirmed green on main 2026-05-12.
+    continue-on-error: false
     env:
       WORKSPACE_ID: test
     defaults:
