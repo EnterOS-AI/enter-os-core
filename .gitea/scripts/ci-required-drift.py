@@ -301,7 +301,19 @@ def expected_context(job_key: str, workflow_name: str = "ci") -> str:
 # Drift detection
 # --------------------------------------------------------------------------
 def detect_drift(branch: str) -> tuple[list[str], dict]:
-    """Returns (findings, debug). Empty findings == no drift."""
+    """Returns (findings, debug). Empty findings == no drift.
+
+    Raises:
+        ApiError: propagated from the protection fetch only when the
+                  failure is likely a transient Gitea outage (5xx).
+                  403/404 from the protection endpoint is treated as
+                  "cannot determine drift for this branch" — a token-
+                  scope issue (missing repo-admin on DRIFT_BOT_TOKEN) or
+                  a repo with no protection set should not turn the
+                  hourly cron red. The workflow continues to the next
+                  branch; no [ci-drift] issue is filed for a branch
+                  whose protection cannot be read.
+    """
     findings: list[str] = []
 
     ci_doc = load_yaml(CI_WORKFLOW_PATH)
@@ -313,9 +325,50 @@ def detect_drift(branch: str) -> tuple[list[str], dict]:
     env_set = required_checks_env(audit_doc)
 
     # Protection
-    # api() raises ApiError on non-2xx; let it propagate so a transient
-    # 500 fails the run loudly rather than producing a "no drift" lie.
-    _, protection = api("GET", f"/repos/{OWNER}/{NAME}/branch_protections/{branch}")
+    # api() raises ApiError on non-2xx. Transient 5xx should fail loud.
+    # 403/404 means the token lacks repo-admin scope (Gitea 1.22.6's
+    # branch_protections endpoint requires it — see DRIFT_BOT_TOKEN
+    # provisioning trail in ci-required-drift.yml). Treat as
+    # "cannot determine drift for this branch" — skip without turning
+    # the workflow red. Surface a clear diagnostic so the operator
+    # knows what to fix.
+    contexts: set[str] = set()
+    protection_path = f"/repos/{OWNER}/{NAME}/branch_protections/{branch}"
+    try:
+        _, protection = api("GET", protection_path)
+    except ApiError as e:
+        # Isolate the HTTP status from the error message.
+        http_status: int | None = None
+        msg = str(e)
+        # ApiError message format: "{method} {path} → HTTP {status}: {body}"
+        import re as _re
+
+        m = _re.search(r"HTTP (\d{3})", msg)
+        if m:
+            http_status = int(m.group(1))
+        if http_status in (403, 404):
+            # Token lacks scope OR branch has no protection. Cannot
+            # determine drift — skip this branch. Do NOT exit non-zero;
+            # the issue IS the alarm, not a red workflow.
+            sys.stderr.write(
+                f"::error::GET {protection_path} returned HTTP {http_status} — "
+                f"DRIFT_BOT_TOKEN lacks repo-admin scope (Gitea 1.22.6 "
+                f"requires it for this endpoint) OR branch has no protection "
+                f"configured. Cannot determine drift for {branch}; "
+                f"skipping. Fix: grant repo-admin to mc-drift-bot or "
+                f"configure protection on {branch}.\n"
+            )
+            debug = {
+                "branch": branch,
+                "ci_jobs": sorted(jobs),
+                "sentinel_needs": sorted(needs),
+                "protection_contexts_skipped": True,
+                "protection_http_status": http_status,
+                "audit_env_checks": sorted(env_set),
+            }
+            return [], debug
+        # 5xx — propagate (transient outage, fail loud per design).
+        raise
     if not isinstance(protection, dict):
         sys.stderr.write(
             f"::error::protection response for {branch} not a JSON object\n"

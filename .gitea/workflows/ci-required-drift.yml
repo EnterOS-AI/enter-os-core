@@ -23,11 +23,11 @@
 # `feedback_behavior_based_ast_gates` — NOT grep-by-name. That way
 # job renames or matrix-expansion-induced churn produce honest signal.
 #
-# IMPORTANT — TRANSITIONAL STATE: molecule-core's ci.yml does NOT yet
-# contain the `all-required` sentinel job (RFC §4 Phase 4 adds it).
-# Until Phase 4 lands the detector will hard-fail with exit 3 on the
-# missing sentinel. That's intentional: a red workflow on a 5-min cron
-# is louder than a silent issue and forces Phase 4 to land soon.
+# NOTE on protection endpoint scope: `GET /repos/.../branch_protections/{branch}`
+# requires repo-admin role in Gitea 1.22.6. If DRIFT_BOT_TOKEN lacks it,
+# the script skips that branch with a clear ::error:: diagnostic and exits 0
+# (the issue IS the alarm, not a red workflow). See provisioning trail in
+# the run step's GITEA_TOKEN env comment.
 
 name: ci-required-drift
 
