@@ -97,11 +97,10 @@ jobs:
     name: Verify continue-on-error flips have run-log proof
     runs-on: ubuntu-latest
     timeout-minutes: 8
-    # Phase 3 (RFC #219 §1): surface broken flips without blocking
-    # the PR yet. Follow-up flips this to `false` once the workflow
-    # itself has clean recent runs on main. Dogfood: don't violate
-    # the same rule the workflow enforces.
-    continue-on-error: true
+    # Phase 3 (RFC internal#219 §1): surface broken flips without blocking
+    # the PR yet. Follow-up flips this to `false` once the workflow itself
+    # has clean recent runs on main. mc#664 interim — remove when CoE→false.
+    continue-on-error: true  # mc#664
     steps:
       - name: Check out PR head (full history for base-SHA access)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
