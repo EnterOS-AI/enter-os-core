@@ -1,0 +1,75 @@
+name: Lint workflow YAML (Gitea-1.22.6-hostile shapes)
+
+# Tier-2 hard-gate lint (RFC internal#219 §1, charter §SOP-N rule (m)).
+# Catches six Gitea-1.22.6-hostile workflow-YAML shapes BEFORE they reach
+# `main`. Each rule maps to a documented incident in saved memory:
+#
+#   1. workflow_dispatch.inputs   — feedback_gitea_workflow_dispatch_inputs_unsupported
+#                                   (2026-05-11 PyPI freeze 24h)
+#   2. on: workflow_run           — task #81 (Gitea 1.22.6 lacks the event)
+#   3. name: containing "/"       — breaks status-context tokenization
+#   4. cross-file name collision  — status-reaper rev1 fail-loud class
+#   5. cross-repo uses: org/r/p@r — feedback_gitea_cross_repo_uses_blocked
+#                                   (DEFAULT_ACTIONS_URL=github → 404)
+#   6. (WARN) api.github.com refs — feedback_act_runner_github_server_url
+#                                   without workflow-level GITHUB_SERVER_URL
+#
+# Empirical history this hardens against:
+#   - status-reaper rev1 caught rule-4 (name-collision) class
+#   - sop-tier-refire DOA'd on rule-2 (workflow_run partial)
+#   - #319 bootstrap-paradox (chained-defect class, related)
+#   - internal#329 dispatcher race (adjacent)
+#   - 2026-05-11 publish-runtime: rule-1, 24h PyPI freeze
+#
+# Triggers:
+#   - pull_request: pre-merge gate — block hostile shapes before they land
+#   - push: post-merge regression detection — catch direct-to-main edits
+#
+# Per RFC internal#219 §1 contract: continue-on-error: true during the
+# surface-broken-shapes phase. Follow-up PR flips off after surfaced
+# defects are triaged. The push-trigger ensures we catch regressions
+# even if the pull_request gate is bypassed by branch-protection drift.
+
+on:
+  pull_request:
+    paths:
+      - '.gitea/workflows/**'
+      - '.gitea/scripts/lint-workflow-yaml.py'
+      - 'tests/test_lint_workflow_yaml.py'
+  push:
+    branches: [main, staging]
+    paths:
+      - '.gitea/workflows/**'
+      - '.gitea/scripts/lint-workflow-yaml.py'
+      - 'tests/test_lint_workflow_yaml.py'
+
+# Belt-and-suspenders against runner default
+# (feedback_act_runner_github_server_url).
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  lint:
+    name: Lint workflow YAML for Gitea-1.22.6-hostile shapes
+    runs-on: ubuntu-latest
+    # Phase 3 (RFC #219 §1): surface broken shapes without blocking PRs.
+    # Follow-up PR flips this off after the 4 existing-on-main rule-2
+    # (workflow_run) violations are migrated to a supported trigger.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.11'
+
+      - name: Install PyYAML
+        run: pip install --quiet 'PyYAML>=6.0'
+
+      - name: Lint .gitea/workflows/*.yml
+        run: python3 .gitea/scripts/lint-workflow-yaml.py
+
+      - name: Run lint-workflow-yaml unit tests
+        run: |
+          pip install --quiet pytest
+          python3 -m pytest tests/test_lint_workflow_yaml.py -v
