@@ -202,7 +202,9 @@ func TestIntegration_ExecuteDelegation_DeliveryConfirmedProxyError_TreatsAsSucce
 			},
 		},
 	})
+	start := time.Now()
 	dh.executeDelegation(testSourceID, testTargetID, testDelegationID, a2aBody)
+	t.Logf("executeDelegation took %v", time.Since(start))
 	time.Sleep(500 * time.Millisecond)
 
 	status, preview, errDet := readDelegationRow(t, conn)
@@ -249,7 +251,9 @@ func TestIntegration_ExecuteDelegation_ProxyErrorNon2xx_RemainsFailed(t *testing
 			},
 		},
 	})
+	execStart := time.Now()
 	dh.executeDelegation(testSourceID, testTargetID, testDelegationID, a2aBody)
+	t.Logf("executeDelegation took %v", time.Since(execStart))
 	time.Sleep(500 * time.Millisecond)
 
 	status, _, errDet := readDelegationRow(t, conn)
