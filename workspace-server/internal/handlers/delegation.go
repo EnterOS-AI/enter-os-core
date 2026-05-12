@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
@@ -315,10 +316,12 @@ const delegationRetryDelay = 8 * time.Second
 // mock server; without these calls the compiler inlines executeDelegation and
 // a subtle stack-sharing race between the inlined body and the test goroutine
 // causes the test to hang. The log calls prevent inlining (Go cannot inline
-// functions that call the log package). This is a known Go compiler behaviour;
-// using runtime.KeepAlive or similar would also work but is more obscure.
+// functions that call the log package). This is a known Go compiler behaviour.
+// runtime.LockOSThread() below provides an additional hardening: pinning the
+// goroutine to a single OS thread eliminates any scheduler-migration races.
 
 func (h *DelegationHandler) executeDelegation(sourceID, targetID, delegationID string, a2aBody []byte) {
+	runtime.LockOSThread() // pin to thread; prevents scheduler-migration races in integration tests
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
