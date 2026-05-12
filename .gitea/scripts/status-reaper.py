@@ -19,18 +19,34 @@ What this script does, per `.gitea/workflows/status-reaper.yml` invocation:
          downstream — Gitea uses ` / ` as the workflow/job separator).
      Classify each by whether `on:` contains a `push:` trigger.
 
-  2. GET combined status for HEAD of WATCH_BRANCH.
+  2. List the last N (=10) commits on WATCH_BRANCH via
+     GET /repos/{o}/{r}/commits?sha={branch}&limit={N}. rev2 sweeps
+     N commits per tick instead of HEAD only — schedule workflows
+     post `failure` to whatever SHA was HEAD when they COMPLETED, so
+     by the next */5 tick main has often moved forward and the red
+     gets stranded on a stale commit (Phase 1+2 evidence: rev1 saw
+     `compensated:0` every tick across ~6 cycles).
 
-  3. For each per-context status entry where:
-       state == "failure" AND context.endswith(" (push)")
-     Parse context as `<workflow_name> / <job_name> (push)`. Look up
-     workflow_name in the trigger map:
-       - missing → log ::notice:: and skip (conservative).
-       - has_push_trigger=True → preserve (would mask real signal).
-       - has_push_trigger=False → POST a compensating
-         `state=success` status to /statuses/{sha} with the same
-         context (Gitea de-dups by context) and a description that
-         documents the workaround + this script's path.
+  3. For EACH SHA in the list:
+       - GET combined commit status. Per-SHA error isolation
+         (refinement #7): if this call raises ApiError or any 5xx,
+         LOG `::warning::` + continue to the next SHA. Different from
+         the single-HEAD pre-rev2 path where fail-loud was correct;
+         the sweep is best-effort across historical commits, so one
+         transient blip on a stale SHA must not strand reds on the
+         OTHER stale SHAs.
+       - If combined.state == "success": skip — cost optimization
+         (refinement #2), common case (most commits are green).
+       - Otherwise iterate per-context entries. For each entry where:
+           state == "failure" AND context.endswith(" (push)")
+         Parse context as `<workflow_name> / <job_name> (push)`.
+         Look up workflow_name in the trigger map:
+           - missing → log ::notice:: and skip (conservative).
+           - has_push_trigger=True → preserve (real defect signal).
+           - has_push_trigger=False → POST a compensating
+             `state=success` status to /statuses/{sha} with the same
+             context (Gitea de-dups by context) and a description
+             documenting the workaround + this script's path.
 
   4. Exit 0. Re-running is idempotent — Gitea's commit-status table
      stores the LATEST state-per-context, so the success POST sticks
@@ -401,21 +417,29 @@ def reap(
     sha: str,
     *,
     dry_run: bool = False,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Walk `combined.statuses[]` and compensate where appropriate.
+
+    Per-SHA worker. The multi-SHA orchestrator (`reap_branch`) calls
+    this once per stale main commit each tick.
 
     Returns counters for observability:
       {compensated, preserved_real_push, preserved_unknown,
        preserved_non_failure, preserved_non_push_suffix,
-       preserved_unparseable}
+       preserved_unparseable,
+       compensated_contexts: [<context>, ...]}
+
+    `compensated_contexts` is rev2-added so `reap_branch` can build
+    `compensated_per_sha` without re-deriving it from the POST stream.
     """
-    counters = {
+    counters: dict[str, Any] = {
         "compensated": 0,
         "preserved_real_push": 0,
         "preserved_unknown": 0,
         "preserved_non_failure": 0,
         "preserved_non_push_suffix": 0,
         "preserved_unparseable": 0,
+        "compensated_contexts": [],
     }
 
     statuses = combined.get("statuses") or []
@@ -464,8 +488,134 @@ def reap(
             sha, context, s.get("target_url"), dry_run=dry_run
         )
         counters["compensated"] += 1
+        counters["compensated_contexts"].append(context)
 
     return counters
+
+
+# --------------------------------------------------------------------------
+# rev2: multi-SHA sweep over the last N commits on WATCH_BRANCH
+# --------------------------------------------------------------------------
+# How many main commits to sweep per tick. Sized to cover a burst-merge
+# window where multiple PRs land in the 5-min interval between reaper
+# ticks. Older reds falling off the window is acceptable — they were
+# already stale enough that the schedule-run that posted them has long
+# since been overwritten by a real push trigger. See `reference_post_
+# suspension_pipeline` for the merge-cadence baseline.
+DEFAULT_SWEEP_LIMIT = 10
+
+
+def list_recent_commit_shas(branch: str, limit: int) -> list[str]:
+    """List the most recent `limit` commit SHAs on `branch`, newest
+    first.
+
+    Wraps GET /repos/{o}/{r}/commits?sha={branch}&limit={limit}. Gitea
+    1.22.6 returns a JSON list of commit objects each with a `sha` key
+    (verified via vendor-truth probe 2026-05-11 against
+    git.moleculesai.app — `feedback_smoke_test_vendor_truth_not_shape_match`).
+
+    Raises ApiError on non-2xx OR on unexpected response shape. This is
+    a HARD halt — without the commit list the sweep can't proceed. (The
+    per-SHA error isolation downstream is a different concern: tolerating
+    a transient 5xx on ONE commit's status is best-effort; losing the
+    commit list itself means we don't even know which commits to try.)
+    """
+    _, body = api(
+        "GET",
+        f"/repos/{OWNER}/{NAME}/commits",
+        query={"sha": branch, "limit": str(limit)},
+    )
+    if not isinstance(body, list):
+        raise ApiError(
+            f"commits listing for {branch} not a JSON array "
+            f"(got {type(body).__name__})"
+        )
+    shas: list[str] = []
+    for entry in body:
+        if not isinstance(entry, dict):
+            continue
+        sha = entry.get("sha")
+        if isinstance(sha, str) and len(sha) >= 7:
+            shas.append(sha)
+    if not shas:
+        raise ApiError(
+            f"commits listing for {branch} returned no usable SHAs"
+        )
+    return shas
+
+
+def reap_branch(
+    workflow_trigger_map: dict[str, bool],
+    branch: str,
+    *,
+    limit: int = DEFAULT_SWEEP_LIMIT,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Sweep the last `limit` commits on `branch`, applying `reap()`
+    to each (with per-SHA error isolation).
+
+    Returns aggregated counters PLUS rev2 observability fields:
+      - scanned_shas: how many SHAs we actually iterated
+      - compensated_per_sha: {<sha_full>: [<context>, ...]} — only
+        SHAs that actually got at least one compensation are included
+    """
+    shas = list_recent_commit_shas(branch, limit)
+
+    aggregate: dict[str, Any] = {
+        "scanned_shas": 0,
+        "compensated": 0,
+        "preserved_real_push": 0,
+        "preserved_unknown": 0,
+        "preserved_non_failure": 0,
+        "preserved_non_push_suffix": 0,
+        "preserved_unparseable": 0,
+        "compensated_per_sha": {},
+    }
+
+    for sha in shas:
+        aggregate["scanned_shas"] += 1
+
+        # Per-SHA error isolation (refinement #7). One transient blip
+        # on a historical commit must NOT abort the whole tick — the
+        # OTHER stale SHAs may still hold strandable reds.
+        try:
+            combined = get_combined_status(sha)
+        except ApiError as e:
+            print(
+                f"::warning::get_combined_status({sha[:10]}) failed; "
+                f"skipping this SHA: {e}"
+            )
+            continue
+
+        # Cost optimization (refinement #2): the common case is a green
+        # commit. Skip the per-context loop entirely when combined is
+        # already success — saves a tight loop over ~20 statuses per SHA
+        # on green commits, the dominant majority.
+        if combined.get("state") == "success":
+            continue
+
+        per_sha = reap(
+            workflow_trigger_map, combined, sha, dry_run=dry_run
+        )
+
+        # Aggregate scalar counters.
+        for key in (
+            "compensated",
+            "preserved_real_push",
+            "preserved_unknown",
+            "preserved_non_failure",
+            "preserved_non_push_suffix",
+            "preserved_unparseable",
+        ):
+            aggregate[key] += per_sha[key]
+
+        # Record per-SHA compensated contexts (only when non-empty —
+        # keep the summary readable when most SHAs are no-ops).
+        contexts = per_sha.get("compensated_contexts") or []
+        if contexts:
+            aggregate["compensated_per_sha"][sha] = list(contexts)
+
+    return aggregate
 
 
 def main() -> int:
@@ -474,6 +624,15 @@ def main() -> int:
         "--dry-run",
         action="store_true",
         help="Skip the compensating POST; print what would be done.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_SWEEP_LIMIT,
+        help=(
+            "How many recent commits on WATCH_BRANCH to sweep per tick "
+            f"(default: {DEFAULT_SWEEP_LIMIT})."
+        ),
     )
     args = parser.parse_args()
 
@@ -486,11 +645,11 @@ def main() -> int:
         f"class-O candidates={sum(1 for v in workflow_trigger_map.values() if not v)}"
     )
 
-    sha = get_head_sha(WATCH_BRANCH)
-    combined = get_combined_status(sha)
-
-    counters = reap(
-        workflow_trigger_map, combined, sha, dry_run=args.dry_run
+    counters = reap_branch(
+        workflow_trigger_map,
+        WATCH_BRANCH,
+        limit=args.limit,
+        dry_run=args.dry_run,
     )
 
     # Observability: print one JSON line summarising the tick. Loki
@@ -499,9 +658,9 @@ def main() -> int:
         "status-reaper summary: "
         + json.dumps(
             {
-                "sha": sha,
                 "branch": WATCH_BRANCH,
                 "dry_run": args.dry_run,
+                "limit": args.limit,
                 **counters,
             },
             sort_keys=True,
