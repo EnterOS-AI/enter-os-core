@@ -49,11 +49,11 @@ if [ "$MERGED" != "true" ]; then
   exit 0
 fi
 
-MERGE_SHA=$(echo "$PR" | jq -r '.merge_commit_sha // empty')
-MERGED_BY=$(echo "$PR" | jq -r '.merged_by.login // "unknown"')
-TITLE=$(echo "$PR" | jq -r '.title // ""')
-BASE_BRANCH=$(echo "$PR" | jq -r '.base.ref // "main"')
-HEAD_SHA=$(echo "$PR" | jq -r '.head.sha // empty')
+MERGE_SHA=$(echo "$PR" | jq -r '.merge_commit_sha // empty') || true
+MERGED_BY=$(echo "$PR" | jq -r '.merged_by.login // "unknown"') || true
+TITLE=$(echo "$PR" | jq -r '.title // ""') || true
+BASE_BRANCH=$(echo "$PR" | jq -r '.base.ref // "main"') || true
+HEAD_SHA=$(echo "$PR" | jq -r '.head.sha // empty') || true
 
 if [ -z "$MERGE_SHA" ]; then
   echo "::warning::PR #${PR_NUMBER} merged=true but no merge_commit_sha — cannot evaluate force-merge."
@@ -75,7 +75,7 @@ STATUS=$(curl -sS -H "$AUTH" \
 declare -A CHECK_STATE
 while IFS=$'\t' read -r ctx state; do
   [ -n "$ctx" ] && CHECK_STATE[$ctx]="$state"
-done < <(echo "$STATUS" | jq -r '.statuses // [] | .[] | "\(.context)\t\(.status)"')
+done < <(echo "$STATUS" | jq -r '.statuses // [] | .[] | "\(.context)\t\(.status)"') || true
 
 # 4. For each required check, was it green at merge? YAML block scalars
 #    (`|`) leave a trailing newline; skip blank/whitespace-only lines.
@@ -97,7 +97,7 @@ fi
 
 # 5. Emit structured audit event.
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-FAILED_JSON=$(printf '%s\n' "${FAILED_CHECKS[@]}" | jq -R . | jq -s .)
+FAILED_JSON=$(printf '%s\n' "${FAILED_CHECKS[@]}" | jq -R . | jq -s .) || true
 
 # Print as a single-line JSON so Vector's parse_json transform can pick
 # it up cleanly from docker_logs.
