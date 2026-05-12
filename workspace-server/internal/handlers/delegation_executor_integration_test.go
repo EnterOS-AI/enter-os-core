@@ -143,10 +143,10 @@ func readDelegationRow(t *testing.T, conn *sql.DB) (status, preview, errorDetail
 func agentServer(t *testing.T, statusCode int, declaredLength int, actualBody string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Drain the request body so the client's request-body writer goroutine
-		// can finish without a broken-pipe error.
-		io.Copy(io.Discard, r.Body)
+		handlerStart := time.Now()
+		n, _ := io.Copy(io.Discard, r.Body)
 		r.Body.Close()
+		t.Logf("agentServer: request received after %v, body=%d bytes, sending %d", time.Since(handlerStart), n, len(actualBody))
 
 		// declaredLength exists as a parameter so callers can assert that
 		// mismatched headers are handled correctly (the transport-level
