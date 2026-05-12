@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+
 /**
  * Tests for OrgTemplatesSection — collapsible org template import list.
  *
@@ -78,6 +79,7 @@ afterEach(() => {
   cleanup();
 });
 
+
 async function expandSection() {
   const toggle = (await screen.findAllByRole("button")).find(
     (b) => b.getAttribute("aria-controls") === "org-templates-body"
@@ -110,6 +112,7 @@ describe("OrgTemplatesSection — collapse/expand", () => {
     expect(screen.getByText("MeDo Smoke Test")).toBeTruthy();
   });
 
+
   it("clicking header again collapses back", async () => {
     render(<OrgTemplatesSection />);
     await expandSection();
@@ -123,6 +126,7 @@ describe("OrgTemplatesSection — collapse/expand", () => {
     });
     expect(screen.queryByText("Free Beats All")).toBeNull();
   });
+
 
   it("count badge appears after load", async () => {
     render(<OrgTemplatesSection />);

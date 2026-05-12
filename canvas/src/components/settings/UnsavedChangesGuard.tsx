@@ -1,5 +1,6 @@
 'use client';
 
+import { useRef } from 'react';
 import * as AlertDialog from '@radix-ui/react-alert-dialog';
 
 interface UnsavedChangesGuardProps {
@@ -15,16 +16,30 @@ interface UnsavedChangesGuardProps {
  * - Shown when closing panel while a form has unsaved input
  * - NOT shown if the form is empty (opened but nothing typed)
  * - Focus-trapped (AlertDialog)
+ *
+ * Uses pendingDiscard ref so fireEvent.click on asChild Action can drive
+ * which callback fires — avoids needing eslint-disable / explicit onClick.
  */
 export function UnsavedChangesGuard({
   open,
   onKeepEditing,
   onDiscard,
 }: UnsavedChangesGuardProps) {
+  const pendingDiscard = useRef(false);
+
   return (
     <AlertDialog.Root
       open={open}
-      onOpenChange={(o) => { if (!o) onKeepEditing(); }}
+      onOpenChange={(o) => {
+        if (!o) {
+          if (pendingDiscard.current) {
+            pendingDiscard.current = false;
+            onDiscard();
+          } else {
+            onKeepEditing();
+          }
+        }
+      }}
     >
       <AlertDialog.Portal>
         <AlertDialog.Overlay className="guard-dialog__overlay" />
@@ -48,7 +63,7 @@ export function UnsavedChangesGuard({
               <button
                 type="button"
                 className="guard-dialog__discard-btn"
-                onClick={(e) => { e.stopPropagation(); onDiscard(); }}
+                onClick={() => { pendingDiscard.current = true; }}
               >
                 Discard
               </button>
