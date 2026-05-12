@@ -51,28 +51,17 @@ func (s *syncBuf) String() string {
 // ec2-instance-connect:OpenTunnel". Returns "" when the output is
 // identical to the error string (no stderr captured).
 func unwrapGoError(errMsg string) string {
-	// Find the last ") " at the end — the fmt.Errorf wrapper puts
-	// subprocess output in parentheses at the end of the string.
-	// e.g. "send-ssh-public-key: exec: exit status 1 (AccessDenied...)"
-	if len(errMsg) < 4 {
-		return ""
-	}
-	// Find last ")(" pattern: Go's %w wraps before the output paren
+	// Extract content between the last '(' and trailing ')'. The
+	// sendSSHPublicKey wrapper uses fmt.Errorf("...: %w (%s)", err, combinedOut)
+	// so the subprocess stderr is always the last parenthesised segment,
 	// e.g. "send-ssh-public-key: exit status 1 (AccessDeniedException: ...)"
-	// We want everything after the last ") " — the subprocess stderr.
-	// Safe heuristic: strip up to and including the last ") " prefix.
-	sep := ") "
-	idx := strings.LastIndex(errMsg, sep)
-	if idx == -1 {
+	// — note the closing ')' is at the very end with no trailing space.
+	open := strings.LastIndex(errMsg, "(")
+	if open < 0 {
 		return ""
 	}
-	candidate := errMsg[idx+len(sep):]
-	// If stripping the last ") ..." leaves the string unchanged, there
-	// was no real subprocess output.
-	if candidate == errMsg {
-		return ""
-	}
-	return candidate
+	inner := errMsg[open+1:]
+	return strings.TrimSuffix(inner, ")")
 }
 
 // HandleDiagnose handles GET /workspaces/:id/terminal/diagnose. It runs the
