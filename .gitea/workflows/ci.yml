@@ -383,6 +383,27 @@ jobs:
         run: |
           bash tests/e2e/test_model_slug.sh
 
+      - if: needs.changes.outputs.scripts == 'true'
+        name: Test ECR promote-tenant-image script (mock-driven, no live infra)
+        # Covers scripts/promote-tenant-image.sh — the codified
+        # :staging-latest → :latest ECR promote + tenant fleet redeploy
+        # closing molecule-ai/molecule-core#660. 40 mock-driven cases
+        # exercise every exit path (preflight, snapshot, promote, redeploy
+        # 403→SSM-refresh, verify, rollback). No live AWS/CP/SSM calls.
+        run: |
+          bash scripts/test-promote-tenant-image.sh
+
+      - if: needs.changes.outputs.scripts == 'true'
+        name: Shellcheck promote-tenant-image script
+        # scripts/ is excluded from the bulk shellcheck pass above (legacy
+        # SC3040/SC3043 cleanup pending). Run shellcheck explicitly on
+        # the promote script + its test harness so regressions there are
+        # caught by the required check.
+        run: |
+          shellcheck --severity=warning \
+            scripts/promote-tenant-image.sh \
+            scripts/test-promote-tenant-image.sh
+
   canvas-deploy-reminder:
     name: Canvas Deploy Reminder
     runs-on: ubuntu-latest
