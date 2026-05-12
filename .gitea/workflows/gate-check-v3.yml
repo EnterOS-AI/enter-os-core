@@ -32,6 +32,14 @@ on:
   # iterating all open PRs when PR_NUMBER is empty.
   workflow_dispatch:
 
+permissions:
+  # read: contents — for checkout (base ref, not PR head for security)
+  # read: pull-requests — for reading PR info via API
+  # write: pull-requests — for posting/updating gate-check comments
+  #   Without this the token cannot POST/PATCH /issues/comments → 403.
+  contents: read
+  pull-requests: write
+
 env:
   GITHUB_SERVER_URL: https://git.moleculesai.app
 
