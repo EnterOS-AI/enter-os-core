@@ -12,25 +12,26 @@ directly so the floor is met without changing the gate.
 
 The wrappers are ~40 LOC of glue. The full delivery behavior
 (persistence, 410 recovery, etc.) is exercised in test_inbox.py.
+
+Fixes #307: replaced the _run(coro) anti-pattern (which bypassed
+pytest-asyncio lifecycle and caused async pollution in full-suite runs)
+with proper ``async def`` test methods owned by pytest-asyncio.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+pytestmark = pytest.mark.asyncio
+
 
 @pytest.fixture(autouse=True)
-def _require_workspace_id(monkeypatch):
+async def _require_workspace_id(monkeypatch):
     monkeypatch.setenv("WORKSPACE_ID", "00000000-0000-0000-0000-000000000000")
     monkeypatch.setenv("PLATFORM_URL", "http://test.invalid")
     yield
-
-
-def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
 
 
 # ---------------------------------------------------------------------------
@@ -39,14 +40,14 @@ def _run(coro):
 
 
 class TestToolInboxPeek:
-    def test_returns_not_enabled_when_state_none(self):
+    async def test_returns_not_enabled_when_state_none(self):
         import a2a_tools
 
         with patch("inbox.get_state", return_value=None):
-            out = _run(a2a_tools.tool_inbox_peek())
+            out = await a2a_tools.tool_inbox_peek()
         assert "not enabled" in out
 
-    def test_returns_json_array_of_messages(self):
+    async def test_returns_json_array_of_messages(self):
         import a2a_tools
 
         msg1 = MagicMock()
@@ -58,20 +59,20 @@ class TestToolInboxPeek:
         fake_state.peek.return_value = [msg1, msg2]
 
         with patch("inbox.get_state", return_value=fake_state):
-            out = _run(a2a_tools.tool_inbox_peek(limit=5))
+            out = await a2a_tools.tool_inbox_peek(limit=5)
         # peek limit is forwarded
         fake_state.peek.assert_called_once_with(limit=5)
         parsed = json.loads(out)
         assert len(parsed) == 2
         assert parsed[0]["activity_id"] == "a1"
 
-    def test_non_int_limit_falls_back_to_10(self):
+    async def test_non_int_limit_falls_back_to_10(self):
         import a2a_tools
 
         fake_state = MagicMock()
         fake_state.peek.return_value = []
         with patch("inbox.get_state", return_value=fake_state):
-            _run(a2a_tools.tool_inbox_peek(limit="garbage"))  # type: ignore[arg-type]
+            await a2a_tools.tool_inbox_peek(limit="garbage")  # type: ignore[arg-type]
         fake_state.peek.assert_called_once_with(limit=10)
 
 
@@ -81,49 +82,49 @@ class TestToolInboxPeek:
 
 
 class TestToolInboxPop:
-    def test_returns_not_enabled_when_state_none(self):
+    async def test_returns_not_enabled_when_state_none(self):
         import a2a_tools
 
         with patch("inbox.get_state", return_value=None):
-            out = _run(a2a_tools.tool_inbox_pop("act-1"))
+            out = await a2a_tools.tool_inbox_pop("act-1")
         assert "not enabled" in out
 
-    def test_rejects_empty_activity_id(self):
+    async def test_rejects_empty_activity_id(self):
         import a2a_tools
 
         fake_state = MagicMock()
         with patch("inbox.get_state", return_value=fake_state):
-            out = _run(a2a_tools.tool_inbox_pop(""))
+            out = await a2a_tools.tool_inbox_pop("")
         assert "activity_id is required" in out
         fake_state.pop.assert_not_called()
 
-    def test_rejects_non_str_activity_id(self):
+    async def test_rejects_non_str_activity_id(self):
         import a2a_tools
 
         fake_state = MagicMock()
         with patch("inbox.get_state", return_value=fake_state):
-            out = _run(a2a_tools.tool_inbox_pop(123))  # type: ignore[arg-type]
+            out = await a2a_tools.tool_inbox_pop(123)  # type: ignore[arg-type]
         assert "activity_id is required" in out
         fake_state.pop.assert_not_called()
 
-    def test_returns_removed_true_when_popped(self):
+    async def test_returns_removed_true_when_popped(self):
         import a2a_tools
 
         fake_state = MagicMock()
         fake_state.pop.return_value = MagicMock()  # truthy = something was removed
         with patch("inbox.get_state", return_value=fake_state):
-            out = _run(a2a_tools.tool_inbox_pop("act-7"))
+            out = await a2a_tools.tool_inbox_pop("act-7")
         parsed = json.loads(out)
         assert parsed == {"removed": True, "activity_id": "act-7"}
         fake_state.pop.assert_called_once_with("act-7")
 
-    def test_returns_removed_false_when_unknown(self):
+    async def test_returns_removed_false_when_unknown(self):
         import a2a_tools
 
         fake_state = MagicMock()
         fake_state.pop.return_value = None
         with patch("inbox.get_state", return_value=fake_state):
-            out = _run(a2a_tools.tool_inbox_pop("act-missing"))
+            out = await a2a_tools.tool_inbox_pop("act-missing")
         parsed = json.loads(out)
         assert parsed == {"removed": False, "activity_id": "act-missing"}
 
@@ -134,25 +135,25 @@ class TestToolInboxPop:
 
 
 class TestToolWaitForMessage:
-    def test_returns_not_enabled_when_state_none(self):
+    async def test_returns_not_enabled_when_state_none(self):
         import a2a_tools
 
         with patch("inbox.get_state", return_value=None):
-            out = _run(a2a_tools.tool_wait_for_message(timeout_secs=1.0))
+            out = await a2a_tools.tool_wait_for_message(timeout_secs=1.0)
         assert "not enabled" in out
 
-    def test_timeout_payload_when_no_message(self):
+    async def test_timeout_payload_when_no_message(self):
         import a2a_tools
 
         fake_state = MagicMock()
         fake_state.wait.return_value = None
         with patch("inbox.get_state", return_value=fake_state):
-            out = _run(a2a_tools.tool_wait_for_message(timeout_secs=0.1))
+            out = await a2a_tools.tool_wait_for_message(timeout_secs=0.1)
         parsed = json.loads(out)
         assert parsed["timeout"] is True
         assert parsed["timeout_secs"] == 0.1
 
-    def test_returns_message_when_delivered(self):
+    async def test_returns_message_when_delivered(self):
         import a2a_tools
 
         msg = MagicMock()
@@ -160,37 +161,37 @@ class TestToolWaitForMessage:
         fake_state = MagicMock()
         fake_state.wait.return_value = msg
         with patch("inbox.get_state", return_value=fake_state):
-            out = _run(a2a_tools.tool_wait_for_message(timeout_secs=2.0))
+            out = await a2a_tools.tool_wait_for_message(timeout_secs=2.0)
         parsed = json.loads(out)
         assert parsed["activity_id"] == "a-9"
 
-    def test_timeout_clamped_to_300(self):
+    async def test_timeout_clamped_to_300(self):
         import a2a_tools
 
         fake_state = MagicMock()
         fake_state.wait.return_value = None
         with patch("inbox.get_state", return_value=fake_state):
-            _run(a2a_tools.tool_wait_for_message(timeout_secs=99999))
+            await a2a_tools.tool_wait_for_message(timeout_secs=99999)
         # Whatever wait was called with, it must not exceed 300
         passed = fake_state.wait.call_args.args[0]
         assert passed == 300.0
 
-    def test_timeout_clamped_to_zero_floor(self):
+    async def test_timeout_clamped_to_zero_floor(self):
         import a2a_tools
 
         fake_state = MagicMock()
         fake_state.wait.return_value = None
         with patch("inbox.get_state", return_value=fake_state):
-            _run(a2a_tools.tool_wait_for_message(timeout_secs=-5))
+            await a2a_tools.tool_wait_for_message(timeout_secs=-5)
         passed = fake_state.wait.call_args.args[0]
         assert passed == 0.0
 
-    def test_non_numeric_timeout_falls_back_to_60(self):
+    async def test_non_numeric_timeout_falls_back_to_60(self):
         import a2a_tools
 
         fake_state = MagicMock()
         fake_state.wait.return_value = None
         with patch("inbox.get_state", return_value=fake_state):
-            _run(a2a_tools.tool_wait_for_message(timeout_secs="garbage"))  # type: ignore[arg-type]
+            await a2a_tools.tool_wait_for_message(timeout_secs="garbage")  # type: ignore[arg-type]
         passed = fake_state.wait.call_args.args[0]
         assert passed == 60.0

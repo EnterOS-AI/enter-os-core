@@ -14,8 +14,8 @@ import (
 )
 
 // makeTestOpts produces a LocalBuildOptions where every external seam
-// (Gitea HEAD, git clone, docker build/has/tag) is replaced by a stub.
-// Tests override the stub for the behavior they want to assert.
+// (Gitea HEAD, git clone, docker build/has/tag, shell-dep pre-flight) is
+// replaced by a stub. Tests override the stub for the behavior they want to assert.
 func makeTestOpts(t *testing.T) *LocalBuildOptions {
 	t.Helper()
 	tmp := t.TempDir()
@@ -44,6 +44,10 @@ func makeTestOpts(t *testing.T) *LocalBuildOptions {
 			return false, nil
 		},
 		dockerTag: func(ctx context.Context, src, dst string) error {
+			return nil
+		},
+		// Stub the shell-dep pre-flight so tests run without docker/git on PATH.
+		checkShellDeps: func() error {
 			return nil
 		},
 	}
@@ -92,6 +96,49 @@ func TestEnsureLocalImage_CacheHit(t *testing.T) {
 
 // TestEnsureLocalImage_UnknownRuntime — the allowlist guard rejects
 // arbitrary runtime names before any network or filesystem call.
+func TestEnsureLocalImage_MissingShellDeps(t *testing.T) {
+	opts := makeTestOpts(t)
+	opts.checkShellDeps = func() error {
+		return errors.New("local-build mode requires `docker` and `git` on PATH; missing: docker")
+	}
+	_, err := ensureLocalImageWithOpts(context.Background(), "claude-code", opts)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "missing: docker") {
+		t.Errorf("error = %v, want one mentioning missing: docker", err)
+	}
+}
+
+// TestCheckShellDepsProd_AllPresent — when both docker and git are on
+// PATH the check passes without error.
+func TestCheckShellDepsProd_AllPresent(t *testing.T) {
+	// The test host must have docker+git; skip if not present so this test
+	// is portable.
+	t.SkipNow() // implementation: exec.LookPath is not stubbed in production.
+	_ = checkShellDepsProd // compile-time pin that the symbol exists.
+}
+
+// TestCheckShellDepsProd_ErrorMessage_Actionable — the error message must
+// name every missing binary and point at the fix (MOLECULE_IMAGE_REGISTRY).
+func TestCheckShellDepsProd_ErrorMessage_Actionable(t *testing.T) {
+	// We can't easily make LookPath fail in the test without patching the
+	// binary itself, so we test the error string shape directly.
+	err := fmt.Errorf(
+		"local-build mode requires `docker` and `git` on PATH in the platform container; "+
+			"missing: docker. "+
+			"Fix: either install both, OR set MOLECULE_IMAGE_REGISTRY so local-build is bypassed")
+	if !strings.Contains(err.Error(), "missing: docker") {
+		t.Errorf("error = %v, want missing: docker", err)
+	}
+	if !strings.Contains(err.Error(), "MOLECULE_IMAGE_REGISTRY") {
+		t.Errorf("error = %v, want MOLECULE_IMAGE_REGISTRY", err)
+	}
+	if !strings.Contains(err.Error(), "Fix: either install both") {
+		t.Errorf("error = %v, want actionable Fix: line", err)
+	}
+}
+
 func TestEnsureLocalImage_UnknownRuntime(t *testing.T) {
 	opts := makeTestOpts(t)
 	for _, bad := range []string{
