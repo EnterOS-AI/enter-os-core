@@ -545,6 +545,156 @@ def test_reap_unparseable_push_context_preserved(sr_module, monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# Per-context status-key vendor-truth (rev4)
+#
+# Gitea 1.22.6 returns commit-status entries with key `status` per entry,
+# NOT `state`. The TOP-LEVEL combined aggregate uses `state`. This schema
+# asymmetry caused rev1-3 to take the compensation path 0 times despite
+# triggering on real failures: `s.get("state")` returned None → state
+# evaluated to "" → `"" != "failure"` guard preserved every entry.
+#
+# These tests explicitly use the vendor-truth shape (`status` per entry),
+# proving the rev4 fix routes the failure entry through compensation.
+# Fixtures in rev1-3 tests above use `state` (the pre-fix bug shape) —
+# we keep them for backward-compat coverage via the fallback in
+# `s.get("status") or s.get("state")`, but the canonical Gitea shape
+# uses `status`. Logged under
+# `feedback_smoke_test_vendor_truth_not_shape_match`.
+# --------------------------------------------------------------------------
+def test_reap_per_context_uses_status_key_not_state(sr_module, monkeypatch):
+    """Empirical Gitea 1.22.6 shape: per-entry uses `status`, top-level
+    uses `state`. The rev4 fix MUST detect failure via `status`."""
+    calls = []
+
+    def fake_api(method, path, *, body=None, query=None, expect_json=True):
+        calls.append((method, path, body))
+        return (201, {})
+
+    monkeypatch.setattr(sr_module, "api", fake_api)
+
+    workflow_map = {"staging-smoke": False}  # no push trigger → Class-O
+    # Real Gitea-shaped response: top-level `state`, per-entry `status`.
+    # No `state` key on the per-entry item.
+    combined = {
+        "state": "failure",
+        "statuses": [
+            {
+                "context": "staging-smoke / smoke (push)",
+                "status": "failure",  # ← vendor-truth key
+                "target_url": "https://example.test/run/1",
+                "description": "smoke job failed",
+            }
+        ],
+    }
+    counters = sr_module.reap(workflow_map, combined, SHA, dry_run=False)
+    # The bug-class assertion: pre-rev4 this would have been 0, with
+    # preserved_non_failure=1. Rev4 reads `status` → routes to compensate.
+    assert counters["compensated"] == 1, (
+        "Compensation path unreachable: status-reaper still reads `state` "
+        "instead of `status` on per-entry combined.statuses[] items "
+        "(rev1-3 bug)."
+    )
+    assert counters["preserved_non_failure"] == 0
+    assert len(calls) == 1
+    assert calls[0][0] == "POST"
+    assert calls[0][1] == f"/repos/owner/repo/statuses/{SHA}"
+
+
+def test_reap_per_context_status_key_takes_precedence_over_state(
+    sr_module, monkeypatch
+):
+    """Defensive: if both `status` and `state` are present (e.g. a
+    hypothetical Gitea version emits both), `status` (the canonical
+    Gitea 1.22.6 key) wins. Guards against a future regression where
+    a fixture or future Gitea release emits stale `state="success"`
+    while `status="failure"` is the truth."""
+    calls = []
+
+    def fake_api(method, path, *, body=None, query=None, expect_json=True):
+        calls.append((method, path, body))
+        return (201, {})
+
+    monkeypatch.setattr(sr_module, "api", fake_api)
+
+    workflow_map = {"staging-smoke": False}
+    combined = {
+        "state": "failure",
+        "statuses": [
+            {
+                "context": "staging-smoke / smoke (push)",
+                # Both keys present — vendor-truth `status` MUST win.
+                "status": "failure",
+                "state": "success",
+                "target_url": "https://example.test/run/2",
+                "description": "smoke job failed",
+            }
+        ],
+    }
+    counters = sr_module.reap(workflow_map, combined, SHA, dry_run=False)
+    assert counters["compensated"] == 1
+    assert counters["preserved_non_failure"] == 0
+    assert len(calls) == 1
+
+
+def test_reap_per_context_state_only_fallback(sr_module, monkeypatch):
+    """Backward-compat: a test fixture or older Gitea variant that emits
+    only `state` (no `status`) must still flow through compensation.
+    Belt-and-suspenders against future fixture drift. Keeps rev1-3
+    `state`-using fixtures green."""
+    calls = []
+
+    def fake_api(method, path, *, body=None, query=None, expect_json=True):
+        calls.append((method, path, body))
+        return (201, {})
+
+    monkeypatch.setattr(sr_module, "api", fake_api)
+
+    workflow_map = {"staging-smoke": False}
+    combined = {
+        "state": "failure",
+        "statuses": [
+            {
+                "context": "staging-smoke / smoke (push)",
+                "state": "failure",  # legacy fixture shape only
+                "target_url": "https://example.test/run/3",
+            }
+        ],
+    }
+    counters = sr_module.reap(workflow_map, combined, SHA, dry_run=False)
+    assert counters["compensated"] == 1
+    assert len(calls) == 1
+
+
+def test_reap_per_context_missing_both_keys_preserves(sr_module, monkeypatch):
+    """A per-entry item lacking BOTH `status` and `state` must be
+    preserved (counted under preserved_non_failure). This is the only
+    correctly-behaving leg of the pre-rev4 bug — exercising it ensures
+    the fallback chain doesn't accidentally over-compensate on
+    malformed entries."""
+    monkeypatch.setattr(
+        sr_module, "api",
+        lambda *a, **kw: (_ for _ in ()).throw(
+            AssertionError("api should not be called")
+        ),
+    )
+
+    workflow_map = {"staging-smoke": False}
+    combined = {
+        "state": "failure",
+        "statuses": [
+            {
+                "context": "staging-smoke / smoke (push)",
+                # No status, no state — neither key present.
+                "target_url": "https://example.test/run/4",
+            }
+        ],
+    }
+    counters = sr_module.reap(workflow_map, combined, SHA, dry_run=False)
+    assert counters["compensated"] == 0
+    assert counters["preserved_non_failure"] == 1
+
+
+# --------------------------------------------------------------------------
 # ApiError propagation
 # --------------------------------------------------------------------------
 def test_get_head_sha_raises_on_non_2xx(sr_module, monkeypatch):

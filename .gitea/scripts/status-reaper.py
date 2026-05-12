@@ -452,7 +452,18 @@ def reap(
         if not isinstance(s, dict):
             continue
         context = s.get("context") or ""
-        state = s.get("state") or ""
+        # Schema asymmetry: Gitea 1.22.6 returns the TOP-LEVEL combined
+        # aggregate as `combined.state` but each per-context entry in
+        # `combined.statuses[]` uses the key `status`, NOT `state`.
+        # Prefer `status`; fall back to `state` so a future Gitea
+        # version (or a test fixture written against the wrong key)
+        # still flows through the compensation path. Verified empirically
+        # via direct API probe 2026-05-12 03:42Z:
+        #   /repos/.../commits/{sha}/status entries → key is "status".
+        # Pre-rev4 code read "state" only → returned "" → bypassed the
+        # `state != "failure"` guard → compensation path unreachable.
+        # See `feedback_smoke_test_vendor_truth_not_shape_match`.
+        state = s.get("status") or s.get("state") or ""
 
         # Only `failure` is the bug shape. `error`/`pending`/`success`
         # left alone — they have other meanings.
