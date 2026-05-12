@@ -37,13 +37,15 @@ name: main-red-watchdog
 # "unknown on type" when `workflow_dispatch.inputs.X` is present. Revisit
 # when Gitea ≥ 1.23 is fleet-wide.
 on:
-  # SCHEDULE DISABLED 2026-05-12 — interim per RFC#420 Option-C machinery-down emergency
-  # Watchdog timing out behind runner saturation; rev3+dedicated-runner-label in flight
-  # Re-enable after rev3 lands + runner saturation root resolved
-  #   schedule:
-  #     # Hourly at :05 — task spec calls for "off-zero" (`5 * * * *`),
-  #     # offset from :17 (ci-required-drift) and :00 (peak cron load).
-  #     - cron: '5 * * * *'
+  # SCHEDULE RE-ENABLED 2026-05-12 rev3 — interim disable (mc#645) reverted alongside
+  # status-reaper rev3 (widen-window). Job-level timeout-minutes raised 5 → 15 below
+  # to absorb runner-saturation latency without spurious cancels (the original cascade
+  # cause). If runner-saturation root persists, the dedicated-runner-label split
+  # remains the structural next step (tracked separately).
+  schedule:
+    # Hourly at :05 — task spec calls for "off-zero" (`5 * * * *`),
+    # offset from :17 (ci-required-drift) and :00 (peak cron load).
+    - cron: '5 * * * *'
   workflow_dispatch:
 
 # Read commit status + branch ref + issues; write issues (open/PATCH/close).
@@ -61,7 +63,12 @@ concurrency:
 jobs:
   watchdog:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # rev3 (2026-05-12, mc#645 revert): raised 5 → 15 to absorb runner-saturation
+    # latency. Original 5min cap was producing 124-style cancels under load,
+    # which fed the very `[main-red]` issues this workflow files (self-poisoning).
+    # 15min is still well below Gitea-default 6h job ceiling; if a real hang
+    # occurs the issue-file path is still the alarm surface.
+    timeout-minutes: 15
     steps:
       - name: Check out repo (script lives at .gitea/scripts/)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
