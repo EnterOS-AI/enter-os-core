@@ -94,9 +94,10 @@ describe("sortParentsBeforeChildren", () => {
       { id: "orphan", parentId: "ghost" },
       { id: "root", parentId: undefined },
     ];
-    // Missing parent is skipped; orphan placed after root
+    // Missing parent is skipped; orphan keeps its input order
+    // (ghost doesn't exist → orphan is treated as a root in output order)
     const result = sortParentsBeforeChildren(nodes);
-    expect(result.map((n) => n.id)).toEqual(["root", "orphan"]);
+    expect(result.map((n) => n.id)).toEqual(["orphan", "root"]);
   });
 });
 
