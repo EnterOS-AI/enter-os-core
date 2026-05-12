@@ -67,12 +67,13 @@ on:
 permissions:
   contents: read
 
-# Single-flight: two reaper ticks racing would POST duplicate
-# compensations. Idempotent at the API (Gitea overwrites by context
-# on POST /statuses/{sha}) but cleaner to serialise.
-concurrency:
-  group: status-reaper
-  cancel-in-progress: false
+# NOTE: NO `concurrency:` block is intentional.
+# Gitea 1.22.6 doesn't honor `cancel-in-progress: false`: queued ticks
+# of the same group get cancelled-with-started=0 instead of waiting
+# (DB-verified 2026-05-12, runs 16053/16085 of status-reaper.yml).
+# The reaper's POST /statuses/{sha} is idempotent — Gitea de-dups by
+# context — so concurrent ticks are safe; accept them rather than
+# serialise via the broken mechanism.
 
 jobs:
   reap:
