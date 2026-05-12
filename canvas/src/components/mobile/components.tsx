@@ -287,6 +287,7 @@ export function AgentCard({
   return (
     <button
       type="button"
+      aria-label={`${agent.name}, status: ${agent.status}, tier ${agent.tier}${agent.remote ? ", remote" : ""}`}
       onClick={onClick}
       style={{
         display: "block",
@@ -420,6 +421,9 @@ export function FilterChips({
   ];
   return (
     <div
+      role="toolbar"
+      aria-label="Filter agents"
+      aria-activedescendant={value ? `filter-${value}` : undefined}
       style={{
         display: "flex",
         gap: 6,
@@ -433,7 +437,10 @@ export function FilterChips({
         return (
           <button
             key={o.id}
+            id={`filter-${o.id}`}
+            role="radio"
             type="button"
+            aria-checked={on}
             onClick={() => onChange(o.id)}
             style={{
               display: "inline-flex",
@@ -453,6 +460,7 @@ export function FilterChips({
           >
             {o.label}
             <span
+              aria-hidden="true"
               style={{
                 fontSize: 10.5,
                 opacity: 0.7,
