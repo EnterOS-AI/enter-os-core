@@ -140,18 +140,18 @@ func readDelegationRow(t *testing.T, conn *sql.DB) (status, preview, errorDetail
 }
 
 // rawTCPMockServer starts a raw TCP listener. It returns the server URL,
-// a wait function, and a done function.
+// a wait function, and a cleanup function.
 //
-// The server handles ONE connection then stops listening. On that connection:
-//   1. Read HTTP request headers (stop at blank line).
-//   2. DRAIN the request body (Content-Length bytes) in the background so the
-//      client doesn't hit a broken-pipe when we close the connection.
-//   3. Write raw HTTP response (headers + partial body) directly to the raw conn.
-//   4. Close the raw conn immediately.
-//
-// This avoids httptest's buffered writer + Hijack() deadlock: with raw TCP, we
-// fully control when the response is written and when the connection is closed,
-// and we drain the request body so the client can finish its write cleanly.
+// CRITICAL ordering to avoid deadlock:
+//   1. Accept connection.
+//   2. Read HTTP request headers (stop at blank line).
+//   3. SEND RESPONSE FIRST — this unblocks the client's response reader so it can
+//      finish its request-body write. If we drain the body FIRST, we deadlock: server
+//      blocks reading body, client blocks waiting for response headers — neither can
+//      proceed (server read vs client write on same body stream).
+//   4. Drain request body in a background goroutine (with short timeout) so the
+//      client doesn't get a broken-pipe error when we close.
+//   5. Close connection.
 func rawTCPMockServer(t *testing.T, statusCode int, declaredLength int, actualBody string) (url string, wait, cleanup func()) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -164,7 +164,7 @@ func rawTCPMockServer(t *testing.T, statusCode int, declaredLength int, actualBo
 	go func() {
 		defer wg.Done()
 		conn, err := ln.Accept()
-		ln.Close() // stop listening; we only handle one connection
+		ln.Close()
 		if err != nil {
 			return
 		}
@@ -173,9 +173,8 @@ func rawTCPMockServer(t *testing.T, statusCode int, declaredLength int, actualBo
 		// Read HTTP request line + headers.
 		reader := bufio.NewReader(conn)
 		reqLine, _ := reader.ReadString('\n')
-		_ = reqLine // we don't care about the request line
+		_ = reqLine
 
-		// Read headers.
 		tp := textproto.NewReader(reader)
 		headers := make(textproto.MIMEHeader)
 		for {
@@ -184,23 +183,17 @@ func rawTCPMockServer(t *testing.T, statusCode int, declaredLength int, actualBo
 				return
 			}
 			if line == "" {
-				break // blank line: end of headers
+				break
 			}
 			k, v, _ := strings.Cut(line, ": ")
 			headers.Set(k, v)
 		}
 
-		// Drain the request body so the client can finish sending it.
-		// Without this, closing the conn while the client is mid-write causes
-		// a broken-pipe error on the client side (request writer goroutine hangs).
-		if cl := headers.Get("Content-Length"); cl != "" {
-			var n int
-			fmt.Sscanf(cl, "%d", &n)
-			io.Copy(io.Discard, io.LimitReader(conn, int64(n))) //nolint:errcheck
-		}
-
-		// Write raw HTTP response directly to the raw conn.
-		// This bypasses httptest's buffered writer entirely.
+		// Send response FIRST. This unblocks the client's response reader so the
+		// client's request-body writer can complete (it waits for response headers
+		// before sending the body in HTTP/1.1). Declared Content-Length may be
+		// larger than actualBody — simulates a server that announces more bytes
+		// than it sends before dropping the connection.
 		statusText := http.StatusText(statusCode)
 		resp := fmt.Sprintf(
 			"HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
@@ -209,11 +202,30 @@ func rawTCPMockServer(t *testing.T, statusCode int, declaredLength int, actualBo
 		conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		conn.Write([]byte(resp)) //nolint:errcheck
 
-		// Brief pause so the client kernel TCP buffer drains before we close.
-		// The client reads the response headers + partial body in this window.
+		// Brief pause so the client's kernel TCP receive buffer gets the response
+		// before we close. The client reads headers + partial body in this window.
 		time.Sleep(50 * time.Millisecond)
-		conn.Close() // sends FIN; client's Read() returns io.EOF
-		close(done)
+
+		// Drain request body in background goroutine with a short timeout.
+		// This prevents a broken-pipe error on the client's request-body write:
+		// the client's write goroutine needs the server to read the body before
+		// it can finish; if we just close the conn, the client gets a SIGPIPE.
+		var drainWg sync.WaitGroup
+		drainWg.Add(1)
+		go func() {
+			defer drainWg.Done()
+			if cl := headers.Get("Content-Length"); cl != "" {
+				var n int
+				fmt.Sscanf(cl, "%d", &n)
+				conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+				io.Copy(io.Discard, io.LimitReader(conn, int64(n))) //nolint:errcheck
+			}
+		}()
+
+		// Close while drain is in progress. drain goroutine will get a
+		// connection-closed error, which is fine (it just stops reading).
+		conn.Close()
+		drainWg.Wait()
 	}()
 	return url, func() { wg.Wait() }, func() {
 		conn, err := net.DialTimeout("tcp", ln.Addr().String(), 100*time.Millisecond)
