@@ -317,7 +317,8 @@ JQ_FILTER='.[]
 
 T12_INPUT='[{"state":"APPROVED","dismissed":false,"user":{"login":"core-devops"}},{"state":"CHANGES_REQUESTED","dismissed":false,"user":{"login":"bob"}},{"state":"APPROVED","dismissed":false,"user":{"login":"alice"}},{"state":"APPROVED","dismissed":true,"user":{"login":"carol"}}]'
 
-T12_CANDIDATES=$(echo "$T12_INPUT" | /tmp/jq -r "$JQ_FILTER" 2>/dev/null | sort -u)
+JQ_CMD=$(command -v jq 2>/dev/null || echo /tmp/jq)
+T12_CANDIDATES=$(echo "$T12_INPUT" | "$JQ_CMD" -r "$JQ_FILTER" 2>/dev/null | sort -u)
 assert_contains "T12 jq: core-devops (non-author APPROVED) in candidates" "core-devops" "$T12_CANDIDATES"
 assert_eq "T12 jq: alice (author) NOT in candidates" "" "$(echo "$T12_CANDIDATES" | grep '^alice$' || true)"
 assert_eq "T12 jq: carol (dismissed) NOT in candidates" "" "$(echo "$T12_CANDIDATES" | grep '^carol$' || true)"
