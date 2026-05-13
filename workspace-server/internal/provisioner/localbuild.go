@@ -445,16 +445,16 @@ func parseGiteaBranchHeadSha(body []byte) (string, error) {
 	// Look for `"id":"<40-hex>"` inside the commit object.
 	idx := strings.Index(string(body), `"id":"`)
 	if idx < 0 {
-		return "", errors.New("Gitea branch response missing commit.id field")
+		return "", errors.New("gitea branch response missing commit.id field")
 	}
 	rest := string(body[idx+len(`"id":"`):])
 	end := strings.IndexByte(rest, '"')
 	if end < 0 {
-		return "", errors.New("Gitea branch response has malformed commit.id (no closing quote)")
+		return "", errors.New("gitea branch response has malformed commit.id (no closing quote)")
 	}
 	sha := rest[:end]
 	if len(sha) < 7 {
-		return "", fmt.Errorf("Gitea returned suspiciously short sha %q", sha)
+		return "", fmt.Errorf("gitea returned suspiciously short sha %q", sha)
 	}
 	return sha, nil
 }

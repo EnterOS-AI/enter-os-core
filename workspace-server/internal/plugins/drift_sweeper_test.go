@@ -3,6 +3,8 @@ package plugins
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
 	"testing"
 )
 
@@ -64,31 +66,6 @@ func TestResolveRef_MapsNotFoundToErrPluginNotFound(t *testing.T) {
 	}
 }
 
-// stubGitForResolveRef creates a stub that handles fetch + rev-parse for ResolveRef.
-func stubGitForResolveRef(t *testing.T, sha string) func(ctx context.Context, dir string, args ...string) error {
-	return func(ctx context.Context, dir string, args ...string) error {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if len(args) < 1 {
-			return errors.New("no args")
-		}
-		switch args[0] {
-		case "fetch":
-			// mkdir for clone target
-			_ = dir
-			return nil
-		case "rev-parse":
-			// rev-parse success — write SHA to a file so rev-parse can "read" it
-			return nil
-		case "describe":
-			// git describe for latest tag
-			return nil
-		}
-		return errors.New("unexpected git command: " + args[0])
-	}
-}
-
 func TestResolveRef_SucceedsForTagRef(t *testing.T) {
 	// This test verifies the happy path: fetch + rev-parse succeed.
 	// We stub all git commands to succeed, then verify LastFetchSHA is populated.
@@ -99,18 +76,43 @@ func TestResolveRef_SucceedsForTagRef(t *testing.T) {
 				return ctx.Err()
 			}
 			calls[args[0]] = true
+			if args[0] == "fetch" {
+				run := func(name string, args ...string) error {
+					cmd := exec.CommandContext(ctx, name, args...)
+					cmd.Dir = dir
+					cmd.Env = append(os.Environ(),
+						"GIT_AUTHOR_NAME=test",
+						"GIT_AUTHOR_EMAIL=test@example.invalid",
+						"GIT_COMMITTER_NAME=test",
+						"GIT_COMMITTER_EMAIL=test@example.invalid",
+					)
+					return cmd.Run()
+				}
+				if err := run("git", "init"); err != nil {
+					return err
+				}
+				if err := os.WriteFile(dir+"/README.md", []byte("test\n"), 0o644); err != nil {
+					return err
+				}
+				if err := run("git", "add", "README.md"); err != nil {
+					return err
+				}
+				if err := run("git", "commit", "-m", "test"); err != nil {
+					return err
+				}
+				if err := run("git", "tag", "v1.0.0"); err != nil {
+					return err
+				}
+			}
 			return nil
 		},
 	}
 	_, err := r.ResolveRef(context.Background(), "org/repo#tag:v1.0.0")
-	// Without a real git binary, we can't fully test success — but we can
-	// verify the argument routing doesn't panic and returns expected errors.
-	if err != nil && !errors.Is(err, ErrPluginNotFound) {
-		// Expect ErrPluginNotFound when git is not available (no real git binary)
-		// The important thing is it doesn't panic.
+	if err != nil {
+		t.Fatalf("ResolveRef returned unexpected error: %v", err)
 	}
 	if !calls["fetch"] && !calls["rev-parse"] {
-		// At least one git command should have been called
+		t.Fatal("expected at least one git command")
 	}
 }
 
@@ -149,7 +151,7 @@ func TestPluginUpdateQueueRow_Struct(t *testing.T) {
 		WorkspaceID: "test-workspace",
 		PluginName:  "test-plugin",
 		TrackedRef:  "tag:v1.0.0",
-		CurrentSHA:   "abc123",
+		CurrentSHA:  "abc123",
 		LatestSHA:   "def456",
 		Status:      "pending",
 	}

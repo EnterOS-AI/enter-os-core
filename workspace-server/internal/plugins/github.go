@@ -57,11 +57,11 @@ func (r *GithubResolver) Scheme() string { return "github" }
 //   - Owner / repo: must start with alphanumeric, then 0–99 chars from
 //     [a-zA-Z0-9_.-]. Matches GitHub's validation.
 //   - Ref: must NOT start with `-` (prevents ref-as-flag injection like
-//     "-exec=/evil"). Then 0–254 chars from [a-zA-Z0-9_./-]. Disallows
+//     "-exec=/evil"). Then 0–254 chars from [a-zA-Z0-9_./:-]. Disallows
 //     whitespace and shell metacharacters. The handler additionally
 //     passes `--` before the URL when invoking git, for defense in depth.
 var repoRE = regexp.MustCompile(
-	`^([a-zA-Z0-9][a-zA-Z0-9_.\-]{0,99})/([a-zA-Z0-9][a-zA-Z0-9_.\-]{0,99})(?:#([a-zA-Z0-9_.][a-zA-Z0-9_./\-]{0,254}))?$`,
+	`^([a-zA-Z0-9][a-zA-Z0-9_.\-]{0,99})/([a-zA-Z0-9][a-zA-Z0-9_.\-]{0,99})(?:#([a-zA-Z0-9_.][a-zA-Z0-9_./:\-]{0,254}))?$`,
 )
 
 // Fetch clones the repository and copies its contents (minus .git) into dst.

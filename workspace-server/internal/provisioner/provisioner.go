@@ -442,7 +442,7 @@ func (p *Provisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string, e
 	//      contents are by definition immutable.
 	// The pull is best-effort: if it fails (network, auth, rate limit) the
 	// subsequent ContainerCreate still surfaces the actionable error below.
-	imgInspect, _, imgErr := p.cli.ImageInspectWithRaw(ctx, image)
+	imgInspect, imgErr := p.cli.ImageInspect(ctx, image)
 	moving := imageTagIsMoving(image)
 	switch {
 	case imgErr != nil:
@@ -541,12 +541,12 @@ func (p *Provisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string, e
 //
 // Selection matrix:
 //
-//   cfg.WorkspacePath | cfg.WorkspaceAccess     | mount
-//   ------------------+-------------------------+--------------------------------
-//   ""                | "" / "none"             | <named-volume>:/workspace  (isolated, current default)
-//   "<host-dir>"      | "" / "read_write"       | <host-dir>:/workspace      (current PM behaviour)
-//   "<host-dir>"      | "read_only"             | <host-dir>:/workspace:ro   (research agents get read access without write risk)
-//   ""                | "read_only"/"read_write"| <named-volume>:/workspace  (degraded — access requires a mount; validated at handler layer)
+//	cfg.WorkspacePath | cfg.WorkspaceAccess     | mount
+//	------------------+-------------------------+--------------------------------
+//	""                | "" / "none"             | <named-volume>:/workspace  (isolated, current default)
+//	"<host-dir>"      | "" / "read_write"       | <host-dir>:/workspace      (current PM behaviour)
+//	"<host-dir>"      | "read_only"             | <host-dir>:/workspace:ro   (research agents get read access without write risk)
+//	""                | "read_only"/"read_write"| <named-volume>:/workspace  (degraded — access requires a mount; validated at handler layer)
 //
 // Kept pure + side-effect-free so it's unit-testable.
 func buildWorkspaceMount(cfg WorkspaceConfig) string {
@@ -700,11 +700,11 @@ func applyTierResources(hostCfg *container.HostConfig, tier int) (memMB, cpuShar
 	memMB = getTierMemoryMB(tier)
 	cpuShares = getTierCPUShares(tier)
 	if memMB > 0 {
-		hostCfg.Resources.Memory = memMB * 1024 * 1024
+		hostCfg.Memory = memMB * 1024 * 1024
 	}
 	if cpuShares > 0 {
 		// shares -> NanoCPUs: 1024 shares == 1 CPU == 1e9 NanoCPUs
-		hostCfg.Resources.NanoCPUs = (cpuShares * 1_000_000_000) / 1024
+		hostCfg.NanoCPUs = (cpuShares * 1_000_000_000) / 1024
 	}
 	return memMB, cpuShares
 }
@@ -1000,20 +1000,6 @@ func (p *Provisioner) WriteAuthTokenToVolume(ctx context.Context, workspaceID, t
 	return nil
 }
 
-// execInContainer runs a command inside a running container as root.
-// Best-effort: logs errors but does not fail the caller.
-func (p *Provisioner) execInContainer(ctx context.Context, containerID string, cmd []string) {
-	execCfg := container.ExecOptions{Cmd: cmd, User: "root"}
-	execID, err := p.cli.ContainerExecCreate(ctx, containerID, execCfg)
-	if err != nil {
-		log.Printf("Provisioner: exec create failed: %v", err)
-		return
-	}
-	if err := p.cli.ContainerExecStart(ctx, execID.ID, container.ExecStartOptions{}); err != nil {
-		log.Printf("Provisioner: exec start failed: %v", err)
-	}
-}
-
 // RemoveVolume removes the config volume for a workspace.
 // Also removes the claude-sessions volume (best-effort, may not exist
 // for non claude-code runtimes). Issue #12.
@@ -1127,12 +1113,12 @@ func (p *Provisioner) IsRunning(ctx context.Context, workspaceID string) (bool, 
 //
 //   - ("ws-<id>", nil): container is running. Caller can exec into it.
 //   - ("",        nil): container does not exist OR exists but is stopped
-//                       (NotFound, Exited, Created, Restarting…). Caller
-//                       should treat as a definitive "not running."
+//     (NotFound, Exited, Created, Restarting…). Caller
+//     should treat as a definitive "not running."
 //   - ("",        err): transient daemon error (timeout, socket EOF, ctx
-//                       cancel). Caller should NOT infer "not running" —
-//                       this could be a flaky daemon under load. Decide
-//                       per-callsite whether to fail soft or hard.
+//     cancel). Caller should NOT infer "not running" —
+//     this could be a flaky daemon under load. Decide
+//     per-callsite whether to fail soft or hard.
 //
 // Background — molecule-core#10: the plugins handler used to carry its own
 // copy of this inspect logic (`findRunningContainer`) which collapsed

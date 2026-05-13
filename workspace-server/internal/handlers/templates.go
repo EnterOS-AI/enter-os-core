@@ -278,7 +278,7 @@ func (h *TemplatesHandler) ListFiles(c *gin.Context) {
 		// 1:1, but Go can't implicit-convert named struct types).
 		out := make([]fileEntry, 0, len(entries))
 		for _, e := range entries {
-			out = append(out, fileEntry{Path: e.Path, Size: e.Size, Dir: e.Dir})
+			out = append(out, fileEntry(e))
 		}
 		c.JSON(http.StatusOK, out)
 		return
@@ -373,9 +373,7 @@ func (h *TemplatesHandler) ListFiles(c *gin.Context) {
 func (h *TemplatesHandler) ReadFile(c *gin.Context) {
 	workspaceID := c.Param("id")
 	filePath := c.Param("path")
-	if strings.HasPrefix(filePath, "/") {
-		filePath = filePath[1:]
-	}
+	filePath = strings.TrimPrefix(filePath, "/")
 
 	if err := validateRelPath(filePath); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid path"})
@@ -480,9 +478,7 @@ func (h *TemplatesHandler) ReadFile(c *gin.Context) {
 func (h *TemplatesHandler) WriteFile(c *gin.Context) {
 	workspaceID := c.Param("id")
 	filePath := c.Param("path")
-	if strings.HasPrefix(filePath, "/") {
-		filePath = filePath[1:]
-	}
+	filePath = strings.TrimPrefix(filePath, "/")
 
 	if err := validateRelPath(filePath); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid path"})
@@ -636,4 +632,3 @@ func (h *TemplatesHandler) DeleteFile(c *gin.Context) {
 		go h.wh.RestartByID(workspaceID)
 	}
 }
-

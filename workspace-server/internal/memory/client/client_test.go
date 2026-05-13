@@ -794,6 +794,7 @@ func TestDoJSON_204OnEndpointExpectingBody(t *testing.T) {
 	}
 	if got == nil {
 		t.Error("got nil SearchResponse, want zero value")
+		return
 	}
 	if len(got.Memories) != 0 {
 		t.Errorf("memories = %v, want empty", got.Memories)
