@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -313,8 +314,10 @@ func TestStore_PatchNamespace_DualFields(t *testing.T) {
 	db, mock := setupMockDB(t)
 	store := NewStore(db)
 	exp := time.Now().Add(time.Hour).UTC()
-	// sqlmock matches by query string; we verify the query uses $2 and $3.
-	mock.ExpectQuery("UPDATE memory_namespaces SET expires_at = \\$2, metadata = \\$3 WHERE name = \\$1").
+	// QueryMatcherRegexp (default): expectQuery is a regex. We verify the
+	// query uses $2 and $3 for the dual-field case by checking the full
+	// query pattern. regexp.QuoteMeta handles the $ escaping correctly.
+	mock.ExpectQuery(regexp.QuoteMeta("UPDATE memory_namespaces SET expires_at = $2, metadata = $3 WHERE name = $1")).
 		WithArgs("workspace:abc", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"name", "kind", "expires_at", "metadata", "created_at"}).
 			AddRow("workspace:abc", "workspace", exp, []byte(`{}`), time.Now()))
