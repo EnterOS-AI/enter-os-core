@@ -148,6 +148,7 @@ jobs:
     # a permanent re-mask. Re-flip blocked on mc#664 fix-forward landing.
     # Other 4 #656 flips (changes, canvas-build, shellcheck, python-lint)
     # retain continue-on-error: false; only platform-build regresses.
+    # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true  # mc#664 fix-forward in flight; re-flip when mc#664 lands (PR #669 → rebase after #709)
     defaults:
       run:
@@ -186,6 +187,7 @@ jobs:
           echo "::group::pendinguploads exit=$pu_exit (last 100 lines)"
           tail -100 /tmp/test-pu.log
           echo "::endgroup::"
+        # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
         continue-on-error: true
       - if: needs.changes.outputs.platform == 'true'
         name: Run tests with race detection and coverage
@@ -372,6 +374,7 @@ jobs:
   canvas-deploy-reminder:
     name: Canvas Deploy Reminder
     runs-on: ubuntu-latest
+    # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     needs: [changes, canvas-build]
     # Only fires on direct pushes to main (i.e. after staging→main promotion).

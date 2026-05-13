@@ -441,8 +441,8 @@ func TestMCPHandler_CommitMemory_GlobalScope_Blocked(t *testing.T) {
 	if resp.Error == nil {
 		t.Error("expected JSON-RPC error for GLOBAL scope, got nil")
 	}
-	if resp.Error != nil && !bytes.Contains([]byte(resp.Error.Message), []byte("GLOBAL")) {
-		t.Errorf("error message should mention GLOBAL, got: %s", resp.Error.Message)
+	if resp.Error != nil && resp.Error.Message != "tool call failed" {
+		t.Errorf("client error should use the OFFSEC constant message, got: %s", resp.Error.Message)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unexpected DB calls on GLOBAL scope block: %v", err)

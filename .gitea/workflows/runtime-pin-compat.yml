@@ -67,6 +67,7 @@ jobs:
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking
     # the PR. Follow-up PR flips this off after surfaced defects are
     # triaged.
+    # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

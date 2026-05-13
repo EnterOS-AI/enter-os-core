@@ -392,6 +392,25 @@ func (h *DelegationHandler) executeDelegation(ctx context.Context, sourceID, tar
 		return
 	}
 
+	if status >= 200 && status < 300 && len(respBody) == 0 {
+		errMsg := "workspace agent returned empty response"
+		log.Printf("Delegation %s: step=handling_failure err=%s", delegationID, errMsg)
+		h.updateDelegationStatus(ctx, sourceID, delegationID, "failed", errMsg)
+
+		if _, err := db.DB.ExecContext(ctx, `
+			INSERT INTO activity_logs (workspace_id, activity_type, method, source_id, target_id, summary, status, error_detail)
+			VALUES ($1, 'delegation', 'delegate_result', $2, $3, $4, 'failed', $5)
+		`, sourceID, sourceID, targetID, "Delegation failed", errMsg); err != nil {
+			log.Printf("Delegation %s: failed to insert empty-response error log: %v", delegationID, err)
+		}
+
+		h.broadcaster.RecordAndBroadcast(ctx, string(events.EventDelegationFailed), sourceID, map[string]interface{}{
+			"delegation_id": delegationID, "target_id": targetID, "error": errMsg,
+		})
+		pushDelegationResultToInbox(ctx, sourceID, delegationID, "failed", "", errMsg)
+		return
+	}
+
 handleSuccess:
 	log.Printf("Delegation %s: step=handle_success status=%d", delegationID, status)
 
@@ -797,4 +816,3 @@ func extractResponseText(body []byte) string {
 	}
 	return string(body)
 }
-
