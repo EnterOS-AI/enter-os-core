@@ -282,13 +282,17 @@
 }
 
 .secret-row__save-btn {
-  background: #2563eb;
+  background: #1d4ed8;
   color: #ffffff;
   border: none;
   padding: 6px 12px;
   border-radius: 6px;
   font-size: 13px;
   cursor: pointer;
+  transition: background-color 0.15s;
+}
+.secret-row__save-btn:hover {
+  background: #1e40af;
 }
 
 .secret-row__save-btn:focus-visible {
@@ -370,13 +374,17 @@
 }
 
 .add-key-form__save-btn {
-  background: #2563eb;
+  background: #1d4ed8;
   color: #ffffff;
   border: none;
   padding: 8px 16px;
   border-radius: 6px;
   font-size: 13px;
   cursor: pointer;
+  transition: background-color 0.15s;
+}
+.add-key-form__save-btn:hover {
+  background: #1e40af;
 }
 
 .add-key-form__save-btn:focus-visible {
@@ -510,7 +518,7 @@
 .empty-state__body { font-size: 14px; color: #a1a1aa; margin: 0 0 24px; line-height: 1.5; }
 
 .empty-state__cta {
-  background: #2563eb;
+  background: #1d4ed8;
   color: #ffffff;
   border: none;
   padding: 10px 20px;
@@ -518,6 +526,10 @@
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
+  transition: background-color 0.15s;
+}
+.empty-state__cta:hover {
+  background: #1e40af;
 }
 
 .empty-state__cta:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-ring-offset); }
@@ -561,12 +573,16 @@
 .secrets-tab__error p { color: var(--status-invalid); margin: 0 0 12px; }
 
 .secrets-tab__refresh-btn {
-  background: #2563eb;
+  background: #1d4ed8;
   color: #ffffff;
   border: none;
   padding: 8px 16px;
   border-radius: 6px;
   cursor: pointer;
+  transition: background-color 0.15s;
+}
+.secrets-tab__refresh-btn:hover {
+  background: #1e40af;
 }
 
 .secrets-tab__no-results {
@@ -690,12 +706,16 @@
 }
 
 .guard-dialog__discard-btn {
-  background: #2563eb;
+  background: #1d4ed8;
   color: #ffffff;
   border: none;
   padding: 8px 16px;
   border-radius: 6px;
   cursor: pointer;
+  transition: background-color 0.15s;
+}
+.guard-dialog__discard-btn:hover {
+  background: #1e40af;
 }
 
 .guard-dialog__discard-btn:focus-visible {
@@ -747,12 +767,20 @@
 .top-bar__name { font-size: 14px; font-weight: 500; color: #d4d4d8; }
 
 .top-bar__btn {
-  background: #2563eb;
+  background: #1d4ed8;
   color: #ffffff;
   border: none;
   padding: 6px 12px;
   border-radius: 6px;
   font-size: 13px;
   cursor: pointer;
+  transition: background-color 0.15s;
+}
+.top-bar__btn:hover {
+  background: #1e40af;
+}
+.top-bar__btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px #18181b, 0 0 0 4px #3b82f6;
 }
 
