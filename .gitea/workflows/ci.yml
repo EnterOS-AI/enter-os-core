@@ -169,10 +169,10 @@ jobs:
         run: go build ./cmd/server
       # CLI (molecli) moved to standalone repo: git.moleculesai.app/molecule-ai/molecule-cli
       - if: needs.changes.outputs.platform == 'true'
-        run: go vet ./... || true
+        run: go vet ./...
       - if: needs.changes.outputs.platform == 'true'
         name: Run golangci-lint
-        run: golangci-lint run --timeout 3m ./... || true
+        run: golangci-lint run --timeout 3m ./...
       - if: needs.changes.outputs.platform == 'true'
         name: Diagnostic — per-package verbose 60s
         run: |
