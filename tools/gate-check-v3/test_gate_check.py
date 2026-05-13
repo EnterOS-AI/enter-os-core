@@ -32,3 +32,45 @@ def test_run_skips_pr_not_targeting_default_branch(monkeypatch):
     assert result["verdict"] == "CLEAR"
     assert result["skipped"] is True
     assert "staging" in result["reason"]
+
+
+def test_signal_1_infra_sre_login_alias_resolved_to_core_devops(monkeypatch):
+    """infra-sre posts [devops-agent] APPROVED → engineers gate satisfied via LOGIN_ALIASES."""
+    mod = load_gate_check()
+
+    def fake_api_get(path):
+        # PR 900 has tier:low label
+        if path == "/repos/molecule-ai/molecule-core/pulls/900":
+            return {
+                "number": 900,
+                "labels": [{"name": "tier:low"}],
+            }
+        raise AssertionError(f"unexpected api_get: {path}")
+
+    def fake_api_list(path):
+        if path == "/repos/molecule-ai/molecule-core/issues/900/comments":
+            return []
+        if path == "/repos/molecule-ai/molecule-core/pulls/900/comments":
+            return []
+        if path == "/repos/molecule-ai/molecule-core/pulls/900/reviews":
+            return [
+                {
+                    "id": 1,
+                    "user": {"login": "infra-sre"},
+                    "state": "APPROVED",
+                    "submitted_at": "2026-05-13T10:00:00Z",
+                }
+            ]
+        raise AssertionError(f"unexpected api_list: {path}")
+
+    monkeypatch.setattr(mod, "api_get", fake_api_get)
+    monkeypatch.setattr(mod, "api_list", fake_api_list)
+
+    result = mod.signal_1_comment_scan(900, "molecule-ai/molecule-core")
+
+    assert result["verdict"] == "CLEAR"
+    assert result["signal"] == "agent_tag_comments"
+    # infra-sre (aliased to core-devops) should satisfy engineers gate
+    engineers = result["results"]["core-devops"]
+    assert engineers["verdict"] == "APPROVED"
+    assert engineers["group"] == "engineers"
