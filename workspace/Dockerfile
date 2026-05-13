@@ -77,6 +77,15 @@ VOLUME /configs
 VOLUME /workspace
 
 EXPOSE 8000
+
+# HEALTHCHECK: probe the A2A agent-card endpoint so orchestrators and
+# container runtimes can detect a live, responsive workspace agent.
+# Uses curl (present in python:3.11-slim base) against the uvicorn server.
+# PORT is injected at runtime via the molecule-runtime entrypoint; the
+# default matches EXPOSE.
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD curl -sf http://localhost:${PORT:-8000}/agent/card >/dev/null || exit 1
+
 RUN chmod +x /app/entrypoint.sh
 # Start as root — entrypoint fixes volume permissions then drops to agent
 CMD ["./entrypoint.sh"]
