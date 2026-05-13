@@ -1,0 +1,51 @@
+name: gitea-merge-queue
+
+# External serialized merge queue for Gitea 1.22.6.
+#
+# Gitea's `pull_auto_merge` table is not a real merge queue: it does not
+# serialize green PRs against a freshly-tested latest main. This workflow runs
+# the user-space queue bot, one PR per tick, using the non-bypass merge actor.
+#
+# Queue contract:
+#   - add label `merge-queue` to an open same-repo PR
+#   - bot updates stale PR heads with current main, then waits for CI
+#   - bot merges only when current main is green and required PR contexts pass
+#   - add `merge-queue-hold` to pause a queued PR without removing it
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitea-merge-queue-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  queue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out queue script from main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Process one queued PR
+        env:
+          # AUTO_SYNC_TOKEN is the devops-engineer persona PAT. It is the
+          # non-bypass merge actor allowed by branch protection.
+          GITEA_TOKEN: ${{ secrets.AUTO_SYNC_TOKEN }}
+          GITEA_HOST: git.moleculesai.app
+          REPO: ${{ github.repository }}
+          WATCH_BRANCH: ${{ github.event.repository.default_branch }}
+          QUEUE_LABEL: merge-queue
+          HOLD_LABEL: merge-queue-hold
+          UPDATE_STYLE: merge
+          REQUIRED_CONTEXTS: >-
+            CI / all-required (pull_request),
+            sop-checklist / all-items-acked (pull_request)
+        run: python3 .gitea/scripts/gitea-merge-queue.py

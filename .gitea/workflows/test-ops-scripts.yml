@@ -11,8 +11,9 @@ name: Ops Scripts Tests
 #   - `continue-on-error: true` on the job (RFC §1 contract).
 #
 # Runs the unittest suite for scripts/ on every PR + push that touches
-# anything under scripts/. Kept separate from the main CI so a script-only
-# change doesn't trigger the heavier Go/Canvas/Python pipelines.
+# anything under scripts/ or .gitea/scripts/. Kept separate from the main CI
+# so a script-only change doesn't trigger the heavier Go/Canvas/Python
+# pipelines.
 #
 # Discovery layout: tests sit alongside the code they test (see
 # scripts/ops/test_sweep_cf_decide.py for the pattern; scripts/
@@ -27,11 +28,13 @@ on:
     branches: [main, staging]
     paths:
       - 'scripts/**'
+      - '.gitea/scripts/**'
       - '.gitea/workflows/test-ops-scripts.yml'
   pull_request:
     branches: [main, staging]
     paths:
       - 'scripts/**'
+      - '.gitea/scripts/**'
       - '.gitea/workflows/test-ops-scripts.yml'
 
 env:
@@ -53,6 +56,8 @@ jobs:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.11'
+      - name: Install .gitea script test dependencies
+        run: python -m pip install --quiet 'pytest==9.0.2' 'PyYAML==6.0.2'
       - name: Run scripts/ unittests (build_runtime_package, ...)
         # Top-level scripts/ tests live alongside their target file
         # (e.g. scripts/test_build_runtime_package.py exercises
@@ -64,3 +69,5 @@ jobs:
       - name: Run scripts/ops/ unittests (sweep_cf_decide, ...)
         working-directory: scripts/ops
         run: python -m unittest discover -p 'test_*.py' -v
+      - name: Run .gitea/scripts pytest suite
+        run: python -m pytest .gitea/scripts/tests -q

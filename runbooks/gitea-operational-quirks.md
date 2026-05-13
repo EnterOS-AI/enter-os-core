@@ -129,8 +129,12 @@ YAML files ported from GitHub Actions. Manual triggers should use
 
 ## Quirk #4 — `merge_group` not supported
 
-Gitea has no merge queue concept. Drop `merge_group:` triggers from all
-workflow YAML files.
+Gitea has no native merge queue concept. Drop `merge_group:` triggers from
+all workflow YAML files.
+
+For `molecule-core`, use the external serialized queue documented in
+`runbooks/gitea-merge-queue.md`. Gitea's `pull_auto_merge` table is
+auto-merge-on-green, not a queue that retests each PR against latest `main`.
 
 ---
 
@@ -400,4 +404,3 @@ table if more than one is affected.>
 - [ ] **GITHUB_TOKEN auto-population**: internal #325 — is this on the
   Gitea 1.23 roadmap? If not, the workaround (named secret) is the permanent
   answer
-
