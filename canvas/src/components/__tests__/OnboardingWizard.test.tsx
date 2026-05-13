@@ -140,18 +140,17 @@ describe("OnboardingWizard — auto-advance", () => {
   });
 
   it("auto-advances from welcome to api-key when nodes appear", async () => {
-    const { unmount } = render(<OnboardingWizard />);
+    const { rerender } = render(<OnboardingWizard />);
     expect(screen.getByText("Welcome to Molecule AI")).toBeTruthy();
 
-    // Simulate a node being added to the store and re-render
+    // Simulate a node being added to the store and trigger re-render
     mockStoreState.nodes = [{ id: "ws-1", data: {} }];
-    render(<OnboardingWizard />);
+    rerender(<OnboardingWizard />);
 
     await waitFor(() => {
       expect(screen.queryByText("Welcome to Molecule AI")).toBeNull();
     });
     expect(screen.getByText("Set your API key")).toBeTruthy();
-    unmount();
   });
 });
 

@@ -30,7 +30,7 @@ export function createMessage(
     id: crypto.randomUUID(),
     role,
     content,
-    attachments: attachments && attachments.length > 0 ? attachments : undefined,
+    ...(attachments && attachments.length > 0 ? { attachments } : {}),
     timestamp: new Date().toISOString(),
   };
 }

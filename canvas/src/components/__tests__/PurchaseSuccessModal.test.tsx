@@ -12,13 +12,66 @@ import { render, screen, fireEvent, cleanup, act } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PurchaseSuccessModal } from "../PurchaseSuccessModal";
 
+// ─── History mock ─────────────────────────────────────────────────────────────
+// jsdom's window.history.replaceState throws SecurityError for http://localhost/
+// (it normalizes the URL and adds a trailing dot, then fails its own check).
+// We intercept replaceState to swallow the error and also update the location
+// object directly so window.location.search reflects the current URL params.
+const _origReplaceState = window.history.replaceState.bind(window.history);
+const _origLocation = window.location;
+let _currentHref = "http://localhost/";
+
+// Override window.location with a writable version that tracks our fake href
+Object.defineProperty(window, "location", {
+  value: {
+    get href() { return _currentHref; },
+    set href(v: string) { _currentHref = v; },
+    get search() {
+      const idx = _currentHref.indexOf("?");
+      return idx >= 0 ? _currentHref.slice(idx) : "";
+    },
+    get pathname() {
+      const idx = _currentHref.indexOf("?");
+      const pathPart = idx >= 0 ? _currentHref.slice(0, idx) : _currentHref;
+      return new URL(pathPart).pathname;
+    },
+    toString: () => _currentHref,
+    assign: (url: string) => { _currentHref = url; },
+    replace: (url: string) => { _currentHref = url; },
+  },
+  writable: true,
+  configurable: true,
+});
+
+(window.history as unknown as Record<string, unknown>).replaceState = function(
+  this: History,
+  state: unknown,
+  title: string,
+  url?: string | URL,
+) {
+  const urlStr = url != null ? String(url) : undefined;
+  if (urlStr != null) _currentHref = urlStr;
+  try {
+    return _origReplaceState.call(this, state, title, url);
+  } catch (err) {
+    // jsdom throws for http://localhost/ — swallow and rely on our fake location
+    return undefined as unknown as void;
+  }
+} as History["replaceState"];
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function pushUrl(url: string) {
-  window.history.pushState({}, "", url);
-}
 function replaceUrl(url: string) {
-  window.history.replaceState({}, "", url);
+  _currentHref = url;
+  try {
+    window.history.replaceState(null, "", url);
+  } catch {
+    // Intercepted above
+  }
+}
+
+function pushUrl(url: string) {
+  replaceUrl(url);
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -117,7 +170,7 @@ describe("PurchaseSuccessModal — dismiss", () => {
   it("closes the dialog when the close button is clicked", async () => {
     render(<PurchaseSuccessModal />);
     await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
+      vi.advanceTimersByTime(10);
     });
     expect(screen.getByRole("dialog")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
@@ -130,7 +183,7 @@ describe("PurchaseSuccessModal — dismiss", () => {
   it("closes the dialog when the backdrop is clicked", async () => {
     render(<PurchaseSuccessModal />);
     await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
+      vi.advanceTimersByTime(10);
     });
     expect(screen.getByRole("dialog")).toBeTruthy();
     // Click the backdrop (the full-screen overlay div)
@@ -145,7 +198,7 @@ describe("PurchaseSuccessModal — dismiss", () => {
   it("closes on Escape key", async () => {
     render(<PurchaseSuccessModal />);
     await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
+      vi.advanceTimersByTime(10);
     });
     expect(screen.getByRole("dialog")).toBeTruthy();
     fireEvent.keyDown(window, { key: "Escape" });
@@ -158,7 +211,7 @@ describe("PurchaseSuccessModal — dismiss", () => {
   it("auto-dismisses after 5 seconds", async () => {
     render(<PurchaseSuccessModal />);
     await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
+      vi.advanceTimersByTime(10);
     });
     expect(screen.getByRole("dialog")).toBeTruthy();
 
@@ -171,7 +224,7 @@ describe("PurchaseSuccessModal — dismiss", () => {
   it("does not auto-dismiss before 5 seconds", async () => {
     render(<PurchaseSuccessModal />);
     await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
+      vi.advanceTimersByTime(10);
     });
     expect(screen.getByRole("dialog")).toBeTruthy();
 
@@ -195,7 +248,7 @@ describe("PurchaseSuccessModal — URL stripping", () => {
   it("strips purchase_success and item params from the URL on mount", async () => {
     render(<PurchaseSuccessModal />);
     await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
+      vi.advanceTimersByTime(10);
     });
     const url = new URL(window.location.href);
     expect(url.searchParams.get("purchase_success")).toBeNull();
@@ -206,7 +259,7 @@ describe("PurchaseSuccessModal — URL stripping", () => {
     const replaceSpy = vi.spyOn(window.history, "replaceState");
     render(<PurchaseSuccessModal />);
     await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
+      vi.advanceTimersByTime(10);
     });
     expect(replaceSpy).toHaveBeenCalled();
   });
@@ -226,7 +279,7 @@ describe("PurchaseSuccessModal — accessibility", () => {
   it("has aria-modal=true on the dialog", async () => {
     render(<PurchaseSuccessModal />);
     await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
+      vi.advanceTimersByTime(10);
     });
     const dialog = screen.getByRole("dialog");
     expect(dialog.getAttribute("aria-modal")).toBe("true");
@@ -235,7 +288,7 @@ describe("PurchaseSuccessModal — accessibility", () => {
   it("has aria-labelledby pointing to the title", async () => {
     render(<PurchaseSuccessModal />);
     await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
+      vi.advanceTimersByTime(10);
     });
     const dialog = screen.getByRole("dialog");
     const labelledby = dialog.getAttribute("aria-labelledby");
@@ -247,8 +300,10 @@ describe("PurchaseSuccessModal — accessibility", () => {
   it("moves focus to the close button on open", async () => {
     render(<PurchaseSuccessModal />);
     await act(async () => {
-      // Two rAFs for focus: one from the effect, one from the RAF wrapper
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      vi.advanceTimersByTime(10);
+      // Advance rAF timers as well (ViTest mocks rAF with fake timers)
+      vi.advanceTimersByTime(0);
+      vi.advanceTimersByTime(0);
     });
     expect(document.activeElement?.textContent).toMatch(/close/i);
   });

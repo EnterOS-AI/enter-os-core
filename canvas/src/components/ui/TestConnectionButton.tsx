@@ -65,13 +65,17 @@ export function TestConnectionButton({
 
   return (
     <div className="test-connection">
+      {state === 'testing' && (
+        <span aria-hidden="true" className="test-connection__spinner">
+          <Spinner />
+        </span>
+      )}
       <button
         type="button"
         onClick={handleTest}
         disabled={state === 'testing' || !secretValue}
         className={`test-connection__btn test-connection__btn--${state}`}
       >
-        {state === 'testing' && <Spinner />}
         {LABELS[state]}
       </button>
       {errorDetail && state === 'failure' && (
@@ -83,9 +87,9 @@ export function TestConnectionButton({
   );
 }
 
-function Spinner() {
+function Spinner({ ariaHidden = true }: { ariaHidden?: boolean }) {
   return (
-    <svg className="spinner" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <svg className="spinner" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden={ariaHidden}>
       <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
     </svg>
   );

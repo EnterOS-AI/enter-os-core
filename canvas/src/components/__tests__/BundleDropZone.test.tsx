@@ -37,12 +37,22 @@ function makeBundle(name = "test-workspace"): File {
   });
 }
 
+// jsdom doesn't define DragEvent globally; create a dragover event with
+// dataTransfer.types stubbed to include "Files" so handleDragOver triggers.
+function createDragOverEvent() {
+  return Object.assign(new Event("dragover", { bubbles: true, cancelable: true }), {
+    dataTransfer: { types: ["Files"], files: null },
+  });
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("BundleDropZone — render", () => {
   it("renders a hidden file input with correct accept and aria-label", () => {
     render(<BundleDropZone />);
-    const input = screen.getByLabelText("Import bundle file");
+    // Use id selector since both input and button share aria-label="Import bundle file"
+    const input = document.getElementById("bundle-file-input") as HTMLInputElement;
+    expect(input).toBeTruthy();
     expect(input.getAttribute("type")).toBe("file");
     expect(input.getAttribute("accept")).toBe(".bundle.json");
   });
@@ -64,22 +74,17 @@ describe("BundleDropZone — drag state", () => {
     vi.useRealTimers();
   });
 
-  it("shows the drop overlay when a file is dragged over", () => {
+  it("shows the drop overlay when a file is dragged over", async () => {
     render(<BundleDropZone />);
-    const overlay = screen.getByText("Drop Bundle to Import").closest("div");
-    expect(overlay?.className).toContain("fixed");
-
-    // Simulate drag-over on the invisible drop zone
-    const zone = document.body.querySelector('[class*="fixed inset-0 z-10"]') as HTMLElement;
+    expect(screen.queryByText("Drop Bundle to Import")).toBeNull();
+    const zone = document.body.querySelector('[class*="z-10"]') as HTMLElement;
     if (zone) {
-      fireEvent.dragOver(zone);
-    } else {
-      // Fallback: dispatch on the component's outer div
-      const container = document.body.querySelector('[class*="pointer-events-none"]') as HTMLElement;
-      if (container) {
-        fireEvent.dragOver(container);
-      }
+      const dragOverEvent = createDragOverEvent();
+      fireEvent.dragOver(zone, dragOverEvent);
     }
+    await act(async () => { vi.runOnlyPendingTimers(); });
+    const overlay = screen.getByText("Drop Bundle to Import").closest('[class*="z-20"]');
+    expect(overlay).not.toBeNull();
   });
 
   it("hides the drop overlay when not dragging", () => {
@@ -92,8 +97,7 @@ describe("BundleDropZone — drag state", () => {
 describe("BundleDropZone — keyboard file input (WCAG 2.1.1)", () => {
   it("triggers the hidden file input when the import button is clicked", () => {
     render(<BundleDropZone />);
-    const input = screen.getByLabelText("Import bundle file") as HTMLInputElement;
-    const clickSpy = vi.spyOn(input, "click");
+    const input = document.getElementById("bundle-file-input") as HTMLInputElement;    const clickSpy = vi.spyOn(input, "click");
     fireEvent.click(screen.getByRole("button", { name: /import bundle/i }));
     expect(clickSpy).toHaveBeenCalled();
   });
@@ -107,7 +111,7 @@ describe("BundleDropZone — keyboard file input (WCAG 2.1.1)", () => {
     });
 
     render(<BundleDropZone />);
-    const input = screen.getByLabelText("Import bundle file");
+    const input = document.getElementById("bundle-file-input") as HTMLInputElement;
 
     const file = makeBundle("My Bundle");
     Object.defineProperty(input, "files", {
@@ -139,7 +143,7 @@ describe("BundleDropZone — import success", () => {
     });
 
     render(<BundleDropZone />);
-    const input = screen.getByLabelText("Import bundle file");
+    const input = document.getElementById("bundle-file-input") as HTMLInputElement;
 
     const file = makeBundle("Success Workspace");
     Object.defineProperty(input, "files", { value: [file], writable: false });
@@ -170,7 +174,7 @@ describe("BundleDropZone — import success", () => {
     });
 
     render(<BundleDropZone />);
-    const input = screen.getByLabelText("Import bundle file");
+    const input = document.getElementById("bundle-file-input") as HTMLInputElement;
 
     const file = makeBundle("Timed Workspace");
     Object.defineProperty(input, "files", { value: [file], writable: false });
@@ -196,7 +200,7 @@ describe("BundleDropZone — import error", () => {
     vi.mocked(api.post).mockRejectedValueOnce(new Error("Import failed: 500 Internal Server Error"));
 
     render(<BundleDropZone />);
-    const input = screen.getByLabelText("Import bundle file");
+    const input = document.getElementById("bundle-file-input") as HTMLInputElement;
 
     const file = makeBundle("Failed Workspace");
     Object.defineProperty(input, "files", { value: [file], writable: false });
@@ -214,7 +218,7 @@ describe("BundleDropZone — import error", () => {
   it("shows error when file is not a .bundle.json", async () => {
     vi.useFakeTimers();
     render(<BundleDropZone />);
-    const input = screen.getByLabelText("Import bundle file");
+    const input = document.getElementById("bundle-file-input") as HTMLInputElement;
 
     const file = new File(["{}"], "readme.txt", { type: "text/plain" });
     Object.defineProperty(input, "files", { value: [file], writable: false });
@@ -239,7 +243,7 @@ describe("BundleDropZone — import error", () => {
     vi.mocked(api.post).mockRejectedValueOnce(new Error("Network error"));
 
     render(<BundleDropZone />);
-    const input = screen.getByLabelText("Import bundle file");
+    const input = document.getElementById("bundle-file-input") as HTMLInputElement;
 
     const file = makeBundle("Error Workspace");
     Object.defineProperty(input, "files", { value: [file], writable: false });
@@ -267,7 +271,7 @@ describe("BundleDropZone — importing state", () => {
     vi.mocked(api.post).mockReturnValueOnce(pending as unknown as ReturnType<typeof api.post>);
 
     render(<BundleDropZone />);
-    const input = screen.getByLabelText("Import bundle file");
+    const input = document.getElementById("bundle-file-input") as HTMLInputElement;
 
     const file = makeBundle("Pending Workspace");
     Object.defineProperty(input, "files", { value: [file], writable: false });
@@ -299,8 +303,7 @@ describe("BundleDropZone — file input reset", () => {
     });
 
     render(<BundleDropZone />);
-    const input = screen.getByLabelText("Import bundle file") as HTMLInputElement;
-
+    const input = document.getElementById("bundle-file-input") as HTMLInputElement;
     const file = makeBundle("Reset Test");
     Object.defineProperty(input, "files", { value: [file], writable: false });
 

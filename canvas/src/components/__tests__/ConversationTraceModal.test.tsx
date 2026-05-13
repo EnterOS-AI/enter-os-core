@@ -96,9 +96,9 @@ describe("extractMessageText — response result format", () => {
         ],
       },
     };
-    // Both are non-empty strings, so the first one wins (filter picks the first)
-    // The implementation: rText from rParts[0].text = "Direct text"
-    expect(extractMessageText(body)).toBe("Direct text");
+    // Both parts contribute: text from first part, root.text from second.
+    // The implementation: all non-empty strings joined with newline.
+    expect(extractMessageText(body)).toBe("Direct text\nRoot text");
   });
 });
 

@@ -226,6 +226,7 @@ describe("Tooltip — Esc dismiss (WCAG 1.4.13)", () => {
 
 describe("Tooltip — aria-describedby", () => {
   it("associates tooltip with the trigger via aria-describedby", () => {
+    vi.useFakeTimers();
     render(
       <Tooltip text="Associated tip">
         <button type="button">Hover me</button>
@@ -236,7 +237,10 @@ describe("Tooltip — aria-describedby", () => {
     const wrapper = btn.parentElement as HTMLElement;
     const describedBy = wrapper.getAttribute("aria-describedby");
     expect(describedBy).toBeTruthy();
-    // The describedby id matches the tooltip id
+    // Show the tooltip so the element with that id exists in the DOM
+    fireEvent.mouseEnter(btn);
+    act(() => { vi.advanceTimersByTime(500); });
     expect(document.getElementById(describedBy!)).toBeTruthy();
+    vi.useRealTimers();
   });
 });

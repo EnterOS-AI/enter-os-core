@@ -631,6 +631,7 @@ function AllKeysModal({
     // React's commit ordering.
     <div className="fixed inset-0 z-[60] flex items-center justify-center">
       <div
+        aria-hidden="true"
         className="absolute inset-0 bg-black/70 backdrop-blur-sm"
         aria-label="Dismiss modal"
         onClick={onCancel}

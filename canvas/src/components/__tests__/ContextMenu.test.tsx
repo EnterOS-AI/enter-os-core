@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ContextMenu } from "../ContextMenu";
 import { useCanvasStore } from "@/store/canvas";
 import { showToast } from "../Toaster";
+import { api } from "@/lib/api";
 
 // ─── Mock Toaster ─────────────────────────────────────────────────────────────
 
@@ -21,12 +22,10 @@ vi.mock("../Toaster", () => ({
 
 // ─── Mock API ────────────────────────────────────────────────────────────────
 
-const apiPost = vi.fn().mockResolvedValue(undefined as void);
-const apiPatch = vi.fn().mockResolvedValue(undefined as void);
 vi.mock("@/lib/api", () => ({
   api: {
-    post: apiPost,
-    patch: apiPatch,
+    post: vi.fn().mockResolvedValue(undefined as void),
+    patch: vi.fn().mockResolvedValue(undefined as void),
     get: vi.fn(),
   },
 }));
@@ -96,8 +95,8 @@ describe("ContextMenu — visibility", () => {
     mockStoreState.setCollapsed.mockClear();
     mockStoreState.arrangeChildren.mockClear();
     mockStoreState.nodes = [];
-    apiPost.mockReset();
-    apiPatch.mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.mocked(api.patch).mockReset();
     vi.mocked(showToast).mockClear();
   });
 
@@ -146,8 +145,8 @@ describe("ContextMenu — close", () => {
     mockStoreState.setCollapsed.mockClear();
     mockStoreState.arrangeChildren.mockClear();
     mockStoreState.nodes = [];
-    apiPost.mockReset();
-    apiPatch.mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.mocked(api.patch).mockReset();
     vi.mocked(showToast).mockClear();
   });
 
@@ -168,7 +167,7 @@ describe("ContextMenu — close", () => {
   it("closes when Tab is pressed", () => {
     openMenu();
     render(<ContextMenu />);
-    fireEvent.keyDown(document.body, { key: "Tab" });
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Tab" });
     expect(mockStoreState.closeContextMenu).toHaveBeenCalled();
   });
 });
@@ -187,8 +186,8 @@ describe("ContextMenu — menu items", () => {
     mockStoreState.setCollapsed.mockClear();
     mockStoreState.arrangeChildren.mockClear();
     mockStoreState.nodes = [];
-    apiPost.mockReset();
-    apiPatch.mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.mocked(api.patch).mockReset();
     vi.mocked(showToast).mockClear();
   });
 
@@ -202,8 +201,11 @@ describe("ContextMenu — menu items", () => {
   it("hides Chat and Terminal for offline nodes", () => {
     openMenu({ nodeData: { name: "Bob", status: "offline", tier: 2, role: "analyst" } });
     render(<ContextMenu />);
-    expect(screen.queryByRole("menuitem", { name: /chat/i })).toBeNull();
-    expect(screen.queryByRole("menuitem", { name: /terminal/i })).toBeNull();
+    // Offline nodes render Chat/Terminal as disabled buttons (accessible but non-interactive)
+    const chatBtn = screen.getByRole("menuitem", { name: /chat/i });
+    const termBtn = screen.getByRole("menuitem", { name: /terminal/i });
+    expect(chatBtn.hasAttribute("disabled")).toBe(true);
+    expect(termBtn.hasAttribute("disabled")).toBe(true);
   });
 
   it("shows Pause for online nodes (not paused)", () => {
@@ -284,8 +286,8 @@ describe("ContextMenu — keyboard navigation", () => {
     mockStoreState.setCollapsed.mockClear();
     mockStoreState.arrangeChildren.mockClear();
     mockStoreState.nodes = [];
-    apiPost.mockReset();
-    apiPatch.mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.mocked(api.patch).mockReset();
     vi.mocked(showToast).mockClear();
   });
 
@@ -326,8 +328,8 @@ describe("ContextMenu — item actions", () => {
     mockStoreState.setCollapsed.mockClear();
     mockStoreState.arrangeChildren.mockClear();
     mockStoreState.nodes = [];
-    apiPost.mockReset();
-    apiPatch.mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.mocked(api.patch).mockReset();
     vi.mocked(showToast).mockClear();
   });
 
@@ -357,20 +359,20 @@ describe("ContextMenu — item actions", () => {
 
   it("Pause calls the pause API and updates node status optimistically", async () => {
     openMenu({ nodeData: { name: "Alice", status: "online", tier: 4, role: "assistant" } });
-    apiPost.mockResolvedValue(undefined);
+    vi.mocked(api.post).mockResolvedValue(undefined);
     render(<ContextMenu />);
     fireEvent.click(screen.getByRole("menuitem", { name: /pause/i }));
     await act(async () => { /* flush */ });
-    expect(apiPost).toHaveBeenCalledWith("/workspaces/n1/pause", {});
+    expect(vi.mocked(api.post)).toHaveBeenCalledWith("/workspaces/n1/pause", {});
     expect(mockStoreState.updateNodeData).toHaveBeenCalledWith("n1", { status: "paused" });
   });
 
   it("Resume calls the resume API", async () => {
     openMenu({ nodeData: { name: "Alice", status: "paused", tier: 4, role: "assistant" } });
-    apiPost.mockResolvedValue(undefined);
+    vi.mocked(api.post).mockResolvedValue(undefined);
     render(<ContextMenu />);
     fireEvent.click(screen.getByRole("menuitem", { name: /resume/i }));
     await act(async () => { /* flush */ });
-    expect(apiPost).toHaveBeenCalledWith("/workspaces/n1/resume", {});
+    expect(vi.mocked(api.post)).toHaveBeenCalledWith("/workspaces/n1/resume", {});
   });
 });

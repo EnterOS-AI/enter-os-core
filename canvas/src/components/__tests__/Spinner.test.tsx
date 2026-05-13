@@ -14,29 +14,33 @@ describe("Spinner — size variants", () => {
     const { container } = render(<Spinner size="sm" />);
     const svg = container.querySelector("svg");
     expect(svg).toBeTruthy();
-    expect(svg?.className).toContain("w-3");
-    expect(svg?.className).toContain("h-3");
+    const cls = svg?.getAttribute("class") ?? "";
+    expect(cls).toContain("w-3");
+    expect(cls).toContain("h-3");
   });
 
   it("renders with md size class (default)", () => {
     const { container } = render(<Spinner size="md" />);
     const svg = container.querySelector("svg");
-    expect(svg?.className).toContain("w-4");
-    expect(svg?.className).toContain("h-4");
+    const cls = svg?.getAttribute("class") ?? "";
+    expect(cls).toContain("w-4");
+    expect(cls).toContain("h-4");
   });
 
   it("renders with lg size class", () => {
     const { container } = render(<Spinner size="lg" />);
     const svg = container.querySelector("svg");
-    expect(svg?.className).toContain("w-5");
-    expect(svg?.className).toContain("h-5");
+    const cls = svg?.getAttribute("class") ?? "";
+    expect(cls).toContain("w-5");
+    expect(cls).toContain("h-5");
   });
 
   it("defaults to md size when no size prop given", () => {
     const { container } = render(<Spinner />);
     const svg = container.querySelector("svg");
-    expect(svg?.className).toContain("w-4");
-    expect(svg?.className).toContain("h-4");
+    const cls = svg?.getAttribute("class") ?? "";
+    expect(cls).toContain("w-4");
+    expect(cls).toContain("h-4");
   });
 
   it("has aria-hidden=true so screen readers skip it", () => {
@@ -48,7 +52,8 @@ describe("Spinner — size variants", () => {
   it("includes the motion-safe:animate-spin class for CSS animation", () => {
     const { container } = render(<Spinner />);
     const svg = container.querySelector("svg");
-    expect(svg?.className).toContain("motion-safe:animate-spin");
+    const cls = svg?.getAttribute("class") ?? "";
+    expect(cls).toContain("motion-safe:animate-spin");
   });
 
   it("renders exactly one SVG element", () => {

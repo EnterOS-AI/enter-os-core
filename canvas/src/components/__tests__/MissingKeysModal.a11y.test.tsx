@@ -81,11 +81,13 @@ describe("MissingKeysModal — WCAG 2.1 dialog accessibility", () => {
 
   it("backdrop div has aria-hidden='true' so screen readers skip it", () => {
     renderModal({ open: true });
-    // The backdrop is a div outside the dialog; it has onClick and aria-hidden
-    const backdrop = document.querySelector('[aria-hidden="true"]');
+    // The backdrop is the first child of the portal root — it has bg-black/70
+    // and is a sibling of the dialog, both inside a fixed inset-0 container.
+    const fixedContainer = document.body.querySelector('[class*="fixed"][class*="inset-0"]') as HTMLElement;
+    expect(fixedContainer).toBeTruthy();
+    const backdrop = fixedContainer.querySelector('[class*="bg-black"]') as HTMLElement;
     expect(backdrop).toBeTruthy();
-    // Verify the backdrop is the full-screen overlay (has bg-black/70)
-    expect(backdrop?.className).toContain("bg-black/70");
+    expect(backdrop.getAttribute("aria-hidden")).toBe("true");
   });
 
   it("decorative warning SVG in header has aria-hidden='true'", () => {

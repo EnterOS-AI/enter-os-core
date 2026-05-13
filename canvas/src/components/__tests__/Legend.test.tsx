@@ -149,7 +149,8 @@ describe("Legend — palette offset positioning", () => {
       (sel) => sel({ templatePaletteOpen: false } as ReturnType<typeof useCanvasStore.getState>)
     );
     render(<Legend />);
-    const panel = screen.getByText("Legend").closest("div");
+    // The panel is the div with the fixed/bottom-6/z-30 classes; find it directly.
+    const panel = document.querySelector('[class*="fixed"][class*="bottom-6"]') as HTMLElement;
     expect(panel?.className).toContain("left-4");
   });
 
@@ -158,7 +159,7 @@ describe("Legend — palette offset positioning", () => {
       (sel) => sel({ templatePaletteOpen: true } as ReturnType<typeof useCanvasStore.getState>)
     );
     render(<Legend />);
-    const panel = screen.getByText("Legend").closest("div");
+    const panel = document.querySelector('[class*="fixed"][class*="bottom-6"]') as HTMLElement;
     expect(panel?.className).toContain("left-[296px]");
   });
 });
