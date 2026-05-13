@@ -38,7 +38,7 @@ func setupWorkspaceCrudTest(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 
 func TestState_LegacyWorkspaceNoLiveToken(t *testing.T) {
 	mock, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r.GET("/workspaces/:id/state", h.State)
 
 	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -76,7 +76,7 @@ func TestState_LegacyWorkspaceNoLiveToken(t *testing.T) {
 
 func TestState_HasLiveTokenMissingAuth(t *testing.T) {
 	mock, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r.GET("/workspaces/:id/state", h.State)
 
 	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -96,7 +96,7 @@ func TestState_HasLiveTokenMissingAuth(t *testing.T) {
 
 func TestState_WorkspaceNotFound(t *testing.T) {
 	mock, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r.GET("/workspaces/:id/state", h.State)
 
 	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -126,7 +126,7 @@ func TestState_WorkspaceNotFound(t *testing.T) {
 
 func TestState_WorkspaceSoftDeleted(t *testing.T) {
 	mock, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r.GET("/workspaces/:id/state", h.State)
 
 	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -159,7 +159,7 @@ func TestState_WorkspaceSoftDeleted(t *testing.T) {
 
 func TestState_QueryError(t *testing.T) {
 	mock, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r.GET("/workspaces/:id/state", h.State)
 
 	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -182,8 +182,9 @@ func TestState_QueryError(t *testing.T) {
 // ---------- Update ----------
 
 func TestUpdate_InvalidUUID(t *testing.T) {
-	_, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	_, _unused := setupWorkspaceCrudTest(t)
+	_ = _unused
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r2 := gin.New()
 	r2.PATCH("/workspaces/:id", h.Update)
 
@@ -200,8 +201,9 @@ func TestUpdate_InvalidUUID(t *testing.T) {
 }
 
 func TestUpdate_InvalidBody(t *testing.T) {
-	_, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	_, _unused := setupWorkspaceCrudTest(t)
+	_ = _unused
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r2 := gin.New()
 	r2.PATCH("/workspaces/:id", h.Update)
 
@@ -217,7 +219,8 @@ func TestUpdate_InvalidBody(t *testing.T) {
 
 func TestUpdate_WorkspaceNotFound(t *testing.T) {
 	mock, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	_ = r
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r2 := gin.New()
 	r2.PATCH("/workspaces/:id", h.Update)
 
@@ -240,8 +243,9 @@ func TestUpdate_WorkspaceNotFound(t *testing.T) {
 }
 
 func TestUpdate_NameTooLong(t *testing.T) {
-	_, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	_, _unused := setupWorkspaceCrudTest(t)
+	_ = _unused
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r2 := gin.New()
 	r2.PATCH("/workspaces/:id", h.Update)
 
@@ -262,8 +266,9 @@ func TestUpdate_NameTooLong(t *testing.T) {
 }
 
 func TestUpdate_RoleTooLong(t *testing.T) {
-	_, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	_, _unused := setupWorkspaceCrudTest(t)
+	_ = _unused
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r2 := gin.New()
 	r2.PATCH("/workspaces/:id", h.Update)
 
@@ -284,8 +289,9 @@ func TestUpdate_RoleTooLong(t *testing.T) {
 }
 
 func TestUpdate_NameWithNewline(t *testing.T) {
-	_, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	_, _unused := setupWorkspaceCrudTest(t)
+	_ = _unused
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r2 := gin.New()
 	r2.PATCH("/workspaces/:id", h.Update)
 
@@ -302,8 +308,9 @@ func TestUpdate_NameWithNewline(t *testing.T) {
 }
 
 func TestUpdate_NameWithYAMLSpecialChars(t *testing.T) {
-	_, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	_, _unused := setupWorkspaceCrudTest(t)
+	_ = _unused
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r2 := gin.New()
 	r2.PATCH("/workspaces/:id", h.Update)
 
@@ -320,8 +327,9 @@ func TestUpdate_NameWithYAMLSpecialChars(t *testing.T) {
 }
 
 func TestUpdate_WorkspaceDirSystemPath(t *testing.T) {
-	_, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	_, _unused := setupWorkspaceCrudTest(t)
+	_ = _unused
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r2 := gin.New()
 	r2.PATCH("/workspaces/:id", h.Update)
 
@@ -338,8 +346,9 @@ func TestUpdate_WorkspaceDirSystemPath(t *testing.T) {
 }
 
 func TestUpdate_WorkspaceDirTraversal(t *testing.T) {
-	_, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	_, _unused := setupWorkspaceCrudTest(t)
+	_ = _unused
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r2 := gin.New()
 	r2.PATCH("/workspaces/:id", h.Update)
 
@@ -356,8 +365,9 @@ func TestUpdate_WorkspaceDirTraversal(t *testing.T) {
 }
 
 func TestUpdate_WorkspaceDirRelativePath(t *testing.T) {
-	_, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	_, _unused := setupWorkspaceCrudTest(t)
+	_ = _unused
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r2 := gin.New()
 	r2.PATCH("/workspaces/:id", h.Update)
 
@@ -376,8 +386,9 @@ func TestUpdate_WorkspaceDirRelativePath(t *testing.T) {
 // ---------- Delete ----------
 
 func TestDelete_InvalidUUID(t *testing.T) {
-	_, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	_, _unused := setupWorkspaceCrudTest(t)
+	_ = _unused
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r2 := gin.New()
 	r2.DELETE("/workspaces/:id", h.Delete)
 
@@ -392,7 +403,8 @@ func TestDelete_InvalidUUID(t *testing.T) {
 
 func TestDelete_HasChildrenWithoutConfirm(t *testing.T) {
 	mock, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	_ = r
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r2 := gin.New()
 	r2.DELETE("/workspaces/:id", h.Delete)
 
@@ -426,7 +438,8 @@ func TestDelete_HasChildrenWithoutConfirm(t *testing.T) {
 
 func TestDelete_ChildrenCheckQueryError(t *testing.T) {
 	mock, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	_ = r
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r2 := gin.New()
 	r2.DELETE("/workspaces/:id", h.Delete)
 

@@ -215,9 +215,9 @@ func TestTarWalk_EmptyDirectory(t *testing.T) {
 	}
 }
 
-// TestTarWalk_NestedDirs: deeply nested directories produce all intermediate
+// TestTarWalk_NestedDirs_Atomic: deeply nested directories produce all intermediate
 // dir entries plus leaf entries. This exercises the recursive walk.
-func TestTarWalk_NestedDirs(t *testing.T) {
+func TestTarWalk_NestedDirs_Atomic(t *testing.T) {
 	hostDir := t.TempDir()
 	deep := filepath.Join(hostDir, "a", "b", "c")
 	if err := os.MkdirAll(deep, 0o755); err != nil {

@@ -6,7 +6,7 @@ import (
 
 // ── validateWorkspaceID ─────────────────────────────────────────────────────────
 
-func TestValidateWorkspaceID_Valid(t *testing.T) {
+func TestValidateWorkspaceID_Validators_Valid(t *testing.T) {
 	cases := []string{
 		"550e8400-e29b-41d4-a716-446655440000",
 		"00000000-0000-0000-0000-000000000000",
@@ -21,7 +21,7 @@ func TestValidateWorkspaceID_Valid(t *testing.T) {
 	}
 }
 
-func TestValidateWorkspaceID_Invalid(t *testing.T) {
+func TestValidateWorkspaceID_Validators_Invalid(t *testing.T) {
 	cases := []struct {
 		name string
 		id   string
@@ -47,7 +47,7 @@ func TestValidateWorkspaceID_Invalid(t *testing.T) {
 
 // ── validateWorkspaceDir ───────────────────────────────────────────────────────
 
-func TestValidateWorkspaceDir_Valid(t *testing.T) {
+func TestValidateWorkspaceDir_Validators_Valid(t *testing.T) {
 	cases := []string{
 		"/opt/molecule/workspaces/dev",
 		"/home/user/.molecule/workspaces",
@@ -150,13 +150,13 @@ func TestValidateWorkspaceFields_AllEmpty(t *testing.T) {
 	}
 }
 
-func TestValidateWorkspaceFields_Valid(t *testing.T) {
+func TestValidateWorkspaceFields_Validators_Valid(t *testing.T) {
 	if err := validateWorkspaceFields("My Workspace", "Backend Engineer", "gpt-4o", "langgraph"); err != nil {
 		t.Errorf("validateWorkspaceFields with valid args: expected nil, got %v", err)
 	}
 }
 
-func TestValidateWorkspaceFields_NameTooLong(t *testing.T) {
+func TestValidateWorkspaceFields_Validators_NameTooLong(t *testing.T) {
 	longName := make([]byte, 256)
 	for i := range longName {
 		longName[i] = 'a'
@@ -175,7 +175,7 @@ func TestValidateWorkspaceFields_NameTooLong(t *testing.T) {
 	}
 }
 
-func TestValidateWorkspaceFields_RoleTooLong(t *testing.T) {
+func TestValidateWorkspaceFields_Validators_RoleTooLong(t *testing.T) {
 	longRole := make([]byte, 1001)
 	for i := range longRole {
 		longRole[i] = 'x'
@@ -205,7 +205,7 @@ func TestValidateWorkspaceFields_RuntimeTooLong(t *testing.T) {
 	}
 }
 
-func TestValidateWorkspaceFields_NewlineInName(t *testing.T) {
+func TestValidateWorkspaceFields_Validators_NewlineInName(t *testing.T) {
 	if err := validateWorkspaceFields("My\nWorkspace", "", "", ""); err == nil {
 		t.Error("name with \\n: expected error, got nil")
 	}

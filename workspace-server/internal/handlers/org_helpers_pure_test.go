@@ -643,7 +643,13 @@ func TestMergePlugins_ExclusionWithBang(t *testing.T) {
 }
 
 func TestMergePlugins_ExclusionWithDash(t *testing.T) {
+	// Exclusion pattern with trailing dash removes that plugin from defaults.
 	defaults := []string{"plugin-a", "plugin-b", "plugin-c"}
+	wsPlugins := []string{"!plugin-b"}
+	result := mergePlugins(defaults, wsPlugins)
+	assert.Equal(t, []string{"plugin-a", "plugin-c"}, result)
+}
+
 func TestMergePlugins_ExclusionEmptyTarget(t *testing.T) {
 	defaults := []string{"plugin-a", "plugin-b"}
 	wsPlugins := []string{"!", "-"} // no-op exclusions
@@ -660,7 +666,13 @@ func TestMergePlugins_ExclusionNotInDefaults(t *testing.T) {
 }
 
 func TestMergePlugins_WorkspaceAddsNew(t *testing.T) {
+	// Workspace can add new plugins not present in defaults.
 	defaults := []string{"plugin-a"}
+	wsPlugins := []string{"plugin-a", "plugin-b"}
+	result := mergePlugins(defaults, wsPlugins)
+	assert.Equal(t, []string{"plugin-a", "plugin-b"}, result)
+}
+
 func TestMergePlugins_DeduplicationOrder(t *testing.T) {
 	// Defaults first; workspace entries deduplicated.
 	defaults := []string{"plugin-a", "plugin-a", "plugin-b"}
