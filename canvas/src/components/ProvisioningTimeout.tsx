@@ -389,7 +389,7 @@ export function ProvisioningTimeout({
               <button
                 type="button"
                 onClick={handleCancelConfirm}
-                className="px-3.5 py-1.5 text-[12px] bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-1"
+                className="px-3.5 py-1.5 text-[12px] bg-red-800 hover:bg-red-700 text-white rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-1"
               >
                 Remove Workspace
               </button>

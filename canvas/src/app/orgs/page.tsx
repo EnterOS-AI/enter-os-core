@@ -327,7 +327,7 @@ function OrgCTA({ org }: { org: Org }) {
     return (
       <a
         href={href}
-        className="rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
+        className="rounded bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600"
       >
         Open
       </a>
@@ -337,7 +337,7 @@ function OrgCTA({ org }: { org: Org }) {
     return (
       <a
         href={`/pricing?org=${encodeURIComponent(org.slug)}`}
-        className="rounded bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-500"
+        className="rounded bg-amber-800 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700"
       >
         Complete payment
       </a>
