@@ -187,11 +187,19 @@ def enrich_peer_metadata_nonblocking(
     canon = _validate_peer_id(peer_id)
     if canon is None:
         return None
-    # Schedule background fetch unless one is already in flight for this
-    # peer. The synchronous version atomically reads-then-writes; the
-    # async version splits that into "schedule fetch" + "fetch fills
-    # cache later." The in-flight set keeps a flurry of pushes from
-    # one peer (e.g., a chatty agent) from spawning N parallel GETs.
+    # Cache hit (fresh): return without blocking on a registry GET.
+    # This is the hot path for active peer conversations — avoids
+    # spawning a background thread for every push from a known peer.
+    current = time.monotonic()
+    cached = _peer_metadata_get(canon)
+    if cached is not None:
+        fetched_at, record = cached
+        if current - fetched_at < _PEER_METADATA_TTL_SECONDS:
+            return record
+    # Cache miss or TTL expired: schedule background fetch unless one is
+    # already in flight for this peer. The in-flight set keeps a flurry
+    # of pushes from one peer (e.g., a chatty agent) from spawning N
+    # parallel GETs.
     with _enrich_in_flight_lock:
         if canon in _enrich_in_flight:
             return None
