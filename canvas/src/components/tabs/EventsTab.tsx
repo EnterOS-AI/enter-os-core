@@ -75,7 +75,7 @@ export function EventsTab({ workspaceId }: Props) {
           // Was hover:bg-surface-card on top of bg-surface-card — silent
           // no-op hover. Lift to surface-elevated, matching the Cancel
           // pattern from ConfirmDialog.
-          className="px-2 py-1 bg-surface-card hover:bg-surface-elevated hover:text-ink text-[10px] rounded text-ink-mid transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          className="px-2 py-1 bg-surface-card hover:bg-surface-elevated hover:text-ink text-[10px] rounded text-ink-mid transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
         >
           Refresh
         </button>
@@ -106,7 +106,7 @@ export function EventsTab({ workspaceId }: Props) {
                   // toggles or what it controls.
                   aria-expanded={isOpen}
                   aria-controls={panelId}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-left rounded-t hover:bg-surface-elevated/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/50 transition-colors"
+                  className="w-full flex items-center gap-2 px-3 py-2 text-left rounded-t hover:bg-surface-elevated/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 transition-colors"
                 >
                   <span
                     className={`text-xs font-mono ${

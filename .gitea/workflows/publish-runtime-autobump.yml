@@ -1,0 +1,150 @@
+name: publish-runtime-autobump
+
+# Auto-bump-on-workspace-edit half of the publish pipeline.
+#
+# Why this file exists (issue #351):
+#   Gitea Actions does not correctly disambiguate `paths:` from `tags:`
+#   when both are bundled under a single `on.push` key. The result is
+#   that tag pushes get filtered out and `publish-runtime.yml` never
+#   fires — `action_run` rows: 0. This was unnoticed pre-2026-05-11
+#   because PYPI_TOKEN was absent (publishes would have failed anyway).
+#
+#   Split design:
+#     - publish-runtime.yml         : on.push.tags only        (the publisher)
+#     - publish-runtime-autobump.yml: on.push.branches+paths   (this file — the version-bumper)
+#
+#   This file computes the next version from PyPI's latest, pushes a
+#   `runtime-v$VERSION` tag, and exits. The tag push then triggers
+#   publish-runtime.yml via its tags-only trigger.
+#
+# Concurrency: shares the `publish-runtime` group with publish-runtime.yml
+# so concurrent workspace pushes serialize at the bump step. Without
+# this, two pushes minutes apart could both read PyPI latest=0.1.129
+# and try to tag 0.1.130 simultaneously, only one of which would land.
+
+on:
+  # Run on PR pushes to post a success status so Gitea can merge the PR.
+  # All steps use continue-on-error: true so operational failures
+  # (PyPI unreachable, DISPATCH_TOKEN missing) do not block merge.
+  pull_request:
+    paths:
+      - "workspace/**"
+  # Bump-and-tag on main/staging push (the actual operational trigger).
+  push:
+    branches:
+      - main
+      - staging
+    paths:
+      - "workspace/**"
+  # Manual dispatch — useful when Gitea Actions API (/actions/*) is
+  # unreachable (e.g. act_runner 404 on Gitea 1.22.6) and we cannot
+  # re-trigger via curl.
+  workflow_dispatch:
+
+permissions:
+  contents: write  # required to push tags back
+
+concurrency:
+  group: publish-runtime
+  cancel-in-progress: false
+
+jobs:
+  # PR-validation path: always succeeds so Gitea can merge workflow-only PRs.
+  # Operational failures (PyPI unreachable, missing DISPATCH_TOKEN) are
+  # surfaced via continue-on-error: true rather than blocking the merge.
+  # The actual bump work happens on the main/staging push after merge.
+  pr-validate:
+    runs-on: ubuntu-latest
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true  # do not block PR merge on operational failures
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+
+      - name: Validate PyPI connectivity (best-effort)
+        run: |
+          set -eu
+          echo "=== Checking PyPI accessibility ==="
+          LATEST=$(curl -fsS --retry 3 --max-time 10 \
+            https://pypi.org/pypi/molecule-ai-workspace-runtime/json \
+            | python -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" \
+            || echo "PyPI unreachable (non-blocking for PR validation)")
+          echo "Latest: ${LATEST:-unknown}"
+
+  # Actual bump-and-tag: runs on main/staging pushes, posts real success/failure.
+  # No continue-on-error — operational failures here trip the main-red
+  # watchdog, which is the desired signal for infrastructure degradation.
+  bump-and-tag:
+    runs-on: ubuntu-latest
+    # Only fire on push events (main/staging after PR merge). Pull_request
+    # events are handled by pr-validate above; we do NOT bump on every
+    # push-synchronize because that would race with the PR head.
+    #
+    # NOTE: the prior condition `github.event.pull_request.base.ref == ''`
+    # was broken — on a PR-merge push in Gitea Actions, the pull_request
+    # context is still attached (base.ref='main'), so the condition always
+    # evaluated to false and bump-and-tag was permanently skipped.
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+
+      - name: Fetch tags for collision check
+        run: git fetch origin --tags --depth=1
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+
+      - name: Compute next version from PyPI latest
+        id: bump
+        run: |
+          set -eu
+          LATEST=$(curl -fsS --retry 3 https://pypi.org/pypi/molecule-ai-workspace-runtime/json \
+            | python -c "import sys,json; print(json.load(sys.stdin)['info']['version'])")
+          MAJOR=$(echo "$LATEST" | cut -d. -f1)
+          MINOR=$(echo "$LATEST" | cut -d. -f2)
+          PATCH=$(echo "$LATEST" | cut -d. -f3)
+          VERSION="${MAJOR}.${MINOR}.$((PATCH+1))"
+          echo "PyPI latest=$LATEST -> next=$VERSION"
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::computed version $VERSION does not match PEP 440 X.Y.Z"
+            exit 1
+          fi
+          if git tag --list | grep -qx "runtime-v$VERSION"; then
+            echo "::error::tag runtime-v$VERSION already exists in this repo. Manual intervention required (PyPI and Gitea tag history are out of sync)."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Push runtime-v$VERSION tag
+        env:
+          DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+          VERSION: ${{ steps.bump.outputs.version }}
+          GITEA_URL: https://git.moleculesai.app
+        run: |
+          set -eu
+          if [ -z "$DISPATCH_TOKEN" ]; then
+            echo "::error::DISPATCH_TOKEN secret is not set — needed to push the tag back to molecule-core."
+            exit 1
+          fi
+          git config user.name  "publish-runtime autobump"
+          git config user.email "publish-runtime@moleculesai.app"
+          git tag -a "runtime-v$VERSION" \
+            -m "Auto-bump on workspace/** edit on $GITHUB_REF" \
+            -m "Triggered by: $GITHUB_REF @ $GITHUB_SHA" \
+            -m "publish-runtime.yml will pick up this tag and upload to PyPI"
+          # Push via DISPATCH_TOKEN (a Gitea PAT). Using the bot identity
+          # ensures the resulting tag-push event is dispatched to
+          # publish-runtime.yml; act_runner's default GITHUB_TOKEN cannot
+          # trigger downstream workflows.
+          git remote set-url origin "${GITEA_URL#https://}"
+          git remote set-url origin "https://x-access-token:${DISPATCH_TOKEN}@${GITEA_URL#https://}/molecule-ai/molecule-core.git"
+          git push origin "runtime-v$VERSION"
+          echo "✓ pushed runtime-v$VERSION — publish-runtime.yml should fire next"

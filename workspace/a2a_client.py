@@ -26,10 +26,10 @@ _WORKSPACE_ID_raw = os.environ.get("WORKSPACE_ID")
 if not _WORKSPACE_ID_raw:
     raise RuntimeError("WORKSPACE_ID environment variable is required but not set")
 WORKSPACE_ID = _WORKSPACE_ID_raw
-if os.path.exists("/.dockerenv") or os.environ.get("DOCKER_VERSION"):
-    PLATFORM_URL = os.environ.get("PLATFORM_URL", "http://host.docker.internal:8080")
-else:
-    PLATFORM_URL = os.environ.get("PLATFORM_URL", "http://localhost:8080")
+# Platform URL: always host.docker.internal inside containers. The platform API
+# is only reachable via the Docker network mesh from inside a workspace
+# container regardless of the runtime environment (Docker/host).
+PLATFORM_URL = os.environ.get("PLATFORM_URL", "http://host.docker.internal:8080")
 
 # Cache workspace ID → name mappings (populated by list_peers calls)
 _peer_names: dict[str, str] = {}
@@ -187,17 +187,19 @@ def enrich_peer_metadata_nonblocking(
     canon = _validate_peer_id(peer_id)
     if canon is None:
         return None
+    # Cache hit (fresh): return without blocking on a registry GET.
+    # This is the hot path for active peer conversations — avoids
+    # spawning a background thread for every push from a known peer.
     current = time.monotonic()
     cached = _peer_metadata_get(canon)
     if cached is not None:
         fetched_at, record = cached
         if current - fetched_at < _PEER_METADATA_TTL_SECONDS:
             return record
-    # Schedule background fetch unless one is already in flight for this
-    # peer. The synchronous version atomically reads-then-writes; the
-    # async version splits that into "schedule fetch" + "fetch fills
-    # cache later." The in-flight set keeps a flurry of pushes from
-    # one peer (e.g., a chatty agent) from spawning N parallel GETs.
+    # Cache miss or TTL expired: schedule background fetch unless one is
+    # already in flight for this peer. The in-flight set keeps a flurry
+    # of pushes from one peer (e.g., a chatty agent) from spawning N
+    # parallel GETs.
     with _enrich_in_flight_lock:
         if canon in _enrich_in_flight:
             return None
@@ -254,6 +256,12 @@ def _wait_for_enrichment_inflight_for_testing(timeout: float = 2.0) -> None:
             if not _enrich_in_flight:
                 return
         time.sleep(0.01)
+
+
+def _peer_in_flight_clear_for_testing() -> None:
+    """Clear the in-flight enrichment set. Test-only helper."""
+    with _enrich_in_flight_lock:
+        _enrich_in_flight.clear()
 
 
 def enrich_peer_metadata(

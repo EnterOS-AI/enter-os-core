@@ -394,6 +394,80 @@ func TestPeers_Q_NoMatches_RawBodyIsArrayNotNull(t *testing.T) {
 	}
 }
 
+// TestFilterPeersByQuery_NilRoleRegression is the regression gate for
+// mc#730/#731: queryPeerMaps sets peer["role"] = nil when the DB role column
+// is empty (discovery.go lines 337-341). filterPeersByQuery did a bare
+// type assertion p["role"].(string) which panics on nil. The fix uses the
+// comma-ok form so nil → "". The test passes a map with nil name and nil
+// role and asserts no panic + correct filter behaviour.
+func TestFilterPeersByQuery_NilRoleRegression(t *testing.T) {
+	cases := []struct {
+		name       string
+		peers      []map[string]interface{}
+		q          string
+		wantLen    int
+		wantIDs    []string
+	}{
+		{
+			name: "nil role matches on name",
+			peers: []map[string]interface{}{
+				{"id": "ws-a", "name": nil, "role": nil},
+				{"id": "ws-b", "name": "Alpha Builder", "role": nil},
+				{"id": "ws-c", "name": "Beta Builder", "role": nil},
+			},
+			q:       "alpha",
+			wantLen: 1,
+			wantIDs: []string{"ws-b"},
+		},
+		{
+			name: "nil name matches on nil role (empty string)",
+			peers: []map[string]interface{}{
+				{"id": "ws-x", "name": nil, "role": nil},
+				{"id": "ws-y", "name": "Dev Workspace", "role": nil},
+			},
+			q:       "",
+			wantLen: 2, // empty q is a no-op
+			wantIDs: []string{"ws-x", "ws-y"},
+		},
+		{
+			name: "all nil — no panic, returns input",
+			peers: []map[string]interface{}{
+				{"id": "ws-z", "name": nil, "role": nil},
+			},
+			q:       "anything",
+			wantLen: 0,
+			wantIDs: nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := filterPeersByQuery(tc.peers, tc.q)
+			if len(got) != tc.wantLen {
+				t.Fatalf("len: got %d, want %d", len(got), tc.wantLen)
+			}
+			gotIDs := make([]string, len(got))
+			for i, p := range got {
+				gotIDs[i] = p["id"].(string)
+			}
+			if tc.wantIDs != nil {
+				for _, id := range tc.wantIDs {
+					found := false
+					for _, g := range gotIDs {
+						if g == id {
+							found = true
+							break
+						}
+					}
+					if !found {
+						t.Errorf("missing id %q; got IDs: %v", id, gotIDs)
+					}
+				}
+			}
+		})
+	}
+}
+
 func keysOf(m map[string]struct{}) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

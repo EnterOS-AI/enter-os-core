@@ -40,8 +40,8 @@
 #
 # Env vars required:
 #   AWS_REGION              — region the secrets live in (default: us-east-1)
-#   CP_PROD_ADMIN_TOKEN     — CP admin bearer for api.moleculesai.app
-#   CP_STAGING_ADMIN_TOKEN  — CP admin bearer for staging-api.moleculesai.app
+#   CP_ADMIN_API_TOKEN     — CP admin bearer for api.moleculesai.app
+#   CP_STAGING_ADMIN_API_TOKEN  — CP admin bearer for staging-api.moleculesai.app
 #   AWS_ACCESS_KEY_ID,      — IAM principal with secretsmanager:ListSecrets
 #   AWS_SECRET_ACCESS_KEY     and secretsmanager:DeleteSecret. Note: the
 #                             prod molecule-cp principal does NOT have
@@ -88,8 +88,8 @@ need() {
     exit 1
   fi
 }
-need CP_PROD_ADMIN_TOKEN
-need CP_STAGING_ADMIN_TOKEN
+need CP_ADMIN_API_TOKEN
+need CP_STAGING_ADMIN_API_TOKEN
 need AWS_ACCESS_KEY_ID
 need AWS_SECRET_ACCESS_KEY
 
@@ -107,13 +107,13 @@ log() { echo "[$(date -u +%H:%M:%S)] $*"; }
 # response includes both `id` and `slug`; we extract `id` here.
 
 log "Fetching CP prod org ids..."
-PROD_IDS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_PROD_ADMIN_TOKEN" \
+PROD_IDS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_ADMIN_API_TOKEN" \
   "https://api.moleculesai.app/cp/admin/orgs?limit=500" \
   | python3 -c "import json,sys; print(' '.join(o['id'] for o in json.load(sys.stdin).get('orgs',[])))")
 log "  prod orgs: $(echo "$PROD_IDS" | wc -w | tr -d ' ')"
 
 log "Fetching CP staging org ids..."
-STAGING_IDS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_STAGING_ADMIN_TOKEN" \
+STAGING_IDS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_STAGING_ADMIN_API_TOKEN" \
   "https://staging-api.moleculesai.app/cp/admin/orgs?limit=500" \
   | python3 -c "import json,sys; print(' '.join(o['id'] for o in json.load(sys.stdin).get('orgs',[])))")
 log "  staging orgs: $(echo "$STAGING_IDS" | wc -w | tr -d ' ')"
@@ -239,9 +239,9 @@ for s in d.get("SecretList", []):
 
 # --- Summarize + safety gate ----------------------------------------------
 
-DELETE_COUNT=$(echo "$DECISIONS" | python3 -c "import json,sys; print(sum(1 for l in sys.stdin if json.loads(l)['action']=='delete'))")
+DELETE_COUNT=$(printf '%s' "$DECISIONS" | python3 -c "import json,sys; print(sum(1 for l in sys.stdin if json.loads(l)['action']=='delete'))")
 KEEP_COUNT=$((TOTAL_SECRETS - DELETE_COUNT))
-TENANT_SECRETS=$(echo "$DECISIONS" | python3 -c "
+TENANT_SECRETS=$(printf '%s' "$DECISIONS" | python3 -c "
 import json, sys
 n = sum(1 for l in sys.stdin if json.loads(l)['reason'] != 'not-a-tenant-secret')
 print(n)
@@ -256,7 +256,7 @@ log "  would keep:             $KEEP_COUNT"
 log ""
 
 # Per-reason breakdown of deletes + keep-categories worth seeing
-echo "$DECISIONS" | python3 -c "
+printf '%s' "$DECISIONS" | python3 -c "
 import json,sys,collections
 delete_c = collections.Counter()
 keep_c = collections.Counter()
@@ -291,7 +291,7 @@ if [ "$DRY_RUN" = "1" ]; then
   log "Dry run complete. Pass --execute to actually delete $DELETE_COUNT secrets."
   log ""
   log "First 20 secrets that would be deleted:"
-  echo "$DECISIONS" | python3 -c "
+  printf '%s' "$DECISIONS" | python3 -c "
 import json, sys
 shown = 0
 for l in sys.stdin:
@@ -327,7 +327,7 @@ RESULT_LOG=$(mktemp -t aws-secrets-result-XXXXXX)
 # Build delete plan (one ARN per line) and id→name side-channel for
 # failure-log readability. Use ARN rather than Name on the delete
 # call because Name is mutable; ARN is the stable identifier.
-echo "$DECISIONS" | python3 -c '
+printf '%s' "$DECISIONS" | python3 -c '
 import json, sys
 plan_path = sys.argv[1]
 map_path = sys.argv[2]

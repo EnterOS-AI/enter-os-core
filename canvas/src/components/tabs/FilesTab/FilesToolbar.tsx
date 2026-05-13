@@ -44,7 +44,7 @@ export function FilesToolbar({
       <div className="flex gap-1.5">
         {root === "/configs" && (
           <>
-            <button type="button" onClick={onNewFile} aria-label="Create new file" className="text-[10px] text-accent hover:text-accent" title="Create new file">
+            <button type="button" onClick={onNewFile} aria-label="Create new file" className="text-[10px] text-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1" title="Create new file">
               + New
             </button>
             <input
@@ -57,20 +57,20 @@ export function FilesToolbar({
               className="hidden"
               onChange={(e) => e.target.files && onUpload(e.target.files)}
             />
-            <button type="button" onClick={() => uploadRef.current?.click()} aria-label="Upload folder" className="text-[10px] text-accent hover:text-accent" title="Upload folder">
+            <button type="button" onClick={() => uploadRef.current?.click()} aria-label="Upload folder" className="text-[10px] text-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1" title="Upload folder">
               Upload
             </button>
           </>
         )}
-        <button type="button" onClick={onDownloadAll} aria-label="Download all files" className="text-[10px] text-ink-mid hover:text-ink-mid" title="Download all files">
+        <button type="button" onClick={onDownloadAll} aria-label="Download all files" className="text-[10px] text-ink-mid hover:text-ink-mid focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1" title="Download all files">
           Export
         </button>
         {root === "/configs" && (
-          <button type="button" onClick={onClearAll} aria-label="Delete all files" className="text-[10px] text-bad/60 hover:text-bad" title="Delete all files">
+          <button type="button" onClick={onClearAll} aria-label="Delete all files" className="text-[10px] text-bad/60 hover:text-bad focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-1" title="Delete all files">
             Clear
           </button>
         )}
-        <button type="button" onClick={onRefresh} aria-label="Refresh file list" className="text-[10px] text-ink-mid hover:text-ink-mid" title="Refresh">
+        <button type="button" onClick={onRefresh} aria-label="Refresh file list" className="text-[10px] text-ink-mid hover:text-ink-mid focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1" title="Refresh">
           ↻
         </button>
       </div>

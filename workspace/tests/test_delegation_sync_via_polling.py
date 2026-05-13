@@ -64,10 +64,12 @@ class TestFlagOffLegacyPath:
 
     async def test_flag_off_uses_send_a2a_message_not_polling(self, monkeypatch):
         """With DELEGATION_SYNC_VIA_INBOX unset, tool_delegate_task must
-        invoke the legacy send_a2a_message and NEVER call /delegate."""
+        invoke the legacy send_a2a_message and NEVER call /delegate.
+        Result is wrapped in _A2A_BOUNDARY_START/END (OFFSEC-003, PR #477)."""
         monkeypatch.delenv("DELEGATION_SYNC_VIA_INBOX", raising=False)
 
         import a2a_tools
+        from _sanitize_a2a import _A2A_BOUNDARY_END, _A2A_BOUNDARY_START
         send_calls = []
 
         async def fake_send(workspace_id, task, source_workspace_id=None):
@@ -88,7 +90,10 @@ class TestFlagOffLegacyPath:
                 "ws-target", "task body", source_workspace_id="ws-self"
             )
 
-        assert result == "legacy ok", f"expected legacy passthrough, got {result!r}"
+        # OFFSEC-003: result is wrapped in boundary markers
+        assert _A2A_BOUNDARY_START in result
+        assert _A2A_BOUNDARY_END in result
+        assert "legacy ok" in result
         assert send_calls == [("ws-target", "task body", "ws-self")]
         poll_mock.assert_not_called()
 
@@ -119,6 +124,7 @@ class TestPollModeAutoFallback:
         monkeypatch.delenv("DELEGATION_SYNC_VIA_INBOX", raising=False)
 
         import a2a_tools
+        from _sanitize_a2a import _A2A_BOUNDARY_END, _A2A_BOUNDARY_START
         from a2a_client import _A2A_QUEUED_PREFIX
 
         send_calls = []
@@ -152,8 +158,10 @@ class TestPollModeAutoFallback:
         assert len(poll_calls) == 1
         assert poll_calls[0] == ("ws-target", "task body", "ws-self")
         # Caller sees the real reply, NOT the queued sentinel and NOT
-        # a DELEGATION FAILED string.
-        assert result == "real response from poll-mode peer"
+        # a DELEGATION FAILED string. Wrapped in OFFSEC-003 boundary markers.
+        assert _A2A_BOUNDARY_START in result
+        assert _A2A_BOUNDARY_END in result
+        assert "real response from poll-mode peer" in result
 
     async def test_non_queued_send_result_does_not_trigger_fallback(self, monkeypatch):
         # Push-mode peer returns a normal text reply — fallback path
@@ -161,6 +169,7 @@ class TestPollModeAutoFallback:
         monkeypatch.delenv("DELEGATION_SYNC_VIA_INBOX", raising=False)
 
         import a2a_tools
+        from _sanitize_a2a import _A2A_BOUNDARY_END, _A2A_BOUNDARY_START
 
         async def fake_send(*_a, **_kw):
             return "normal reply"
@@ -179,7 +188,10 @@ class TestPollModeAutoFallback:
                 "ws-target", "task", source_workspace_id="ws-self"
             )
 
-        assert result == "normal reply"
+        # OFFSEC-003: wrapped in boundary markers
+        assert _A2A_BOUNDARY_START in result
+        assert _A2A_BOUNDARY_END in result
+        assert "normal reply" in result
         poll_mock.assert_not_called()
 
     async def test_error_send_result_does_not_trigger_fallback(self, monkeypatch):

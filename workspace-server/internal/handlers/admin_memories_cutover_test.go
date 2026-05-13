@@ -131,10 +131,9 @@ func TestCutoverActive(t *testing.T) {
 
 func TestWithMemoryV2_AttachesDeps(t *testing.T) {
 	h := NewAdminMemoriesHandler().WithMemoryV2(nil, nil)
-	// Both nil pointers — wiring still attaches them; cutoverActive
-	// reports false because the interface values are nil.
-	if h.plugin == nil && h.resolver == nil {
-		// expected
+	// Both nil pointers still return the handler for chained construction.
+	if h == nil {
+		t.Fatal("WithMemoryV2(nil, nil) returned nil handler")
 	}
 }
 
@@ -596,7 +595,7 @@ func (r perWorkspaceResolver) ReadableNamespaces(_ context.Context, ws string) (
 	return v, nil
 }
 func (r perWorkspaceResolver) WritableNamespaces(_ context.Context, ws string) ([]namespace.Namespace, error) {
-	return r.ReadableNamespaces(nil, ws)
+	return r.ReadableNamespaces(context.TODO(), ws)
 }
 
 // TestExport_IncludesEveryMembersPrivateNamespace pins the I3 follow-up

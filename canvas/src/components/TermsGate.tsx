@@ -87,20 +87,21 @@ export function TermsGate({ children }: { children: React.ReactNode }) {
     <>
       {children}
       {status === "pending" && (
-        // Backdrop is decorative — does NOT carry aria-hidden anymore.
-        // The earlier version put aria-hidden="true" on this wrapper,
-        // which hid the dialog AND its descendants from screen readers,
-        // making the entire terms-acceptance flow invisible to AT users.
-        // Backdrop click intentionally does nothing — this is a hard
-        // gate.
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface/80 backdrop-blur-sm">
+        // Backdrop is purely decorative (blur overlay). Separated from the
+        // dialog so aria-hidden on the backdrop does NOT hide the dialog from
+        // assistive tech. Backdrop click does nothing — this is a hard gate.
+        <>
+          <div aria-hidden="true" className="fixed inset-0 z-50 bg-surface/80 backdrop-blur-sm" />
           <div
             role="dialog"
             aria-modal="true"
             aria-labelledby="terms-dialog-title"
             aria-describedby="terms-dialog-body"
-            className="mx-4 max-w-lg rounded-lg border border-line bg-surface-sunken p-6 shadow-xl"
+            className="fixed inset-0 z-50 flex items-center justify-center"
           >
+            <div
+              className="mx-4 max-w-lg rounded-lg border border-line bg-surface-sunken p-6 shadow-xl"
+            >
             <h2 id="terms-dialog-title" className="text-lg font-semibold text-ink">Terms &amp; conditions</h2>
             <div id="terms-dialog-body">
               <p className="mt-3 text-sm text-ink-mid">
@@ -135,16 +136,17 @@ export function TermsGate({ children }: { children: React.ReactNode }) {
                 ref={agreeButtonRef}
                 onClick={accept}
                 disabled={submitting}
-                // Hover goes DARKER, not lighter — emerald-500 on white
-                // text drops contrast below AA vs emerald-700. Same trap
-                // I fixed in ApprovalBanner + ConfirmDialog.
-                className="rounded bg-emerald-600 hover:bg-emerald-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-sunken"
+                aria-disabled={submitting}
+                // Hover goes DARKER — emerald-600 on white text is 3.3:1 (WCAG AA FAIL).
+                // emerald-700 is 4.6:1 (WCAG AA PASS). Hover darkens to emerald-600.
+                className="rounded bg-emerald-700 hover:bg-emerald-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-sunken"
               >
-                {submitting ? "Saving…" : "I agree"}
+                {submitting ? "…" : "I agree"}
               </button>
             </div>
+            </div>
           </div>
-        </div>
+        </>
       )}
       {status === "error" && (
         <div role="alert" className="fixed bottom-4 left-4 right-4 mx-auto max-w-md rounded border border-red-800 bg-red-950 p-3 text-sm text-red-200">

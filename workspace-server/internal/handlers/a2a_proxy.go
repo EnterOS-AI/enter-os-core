@@ -501,12 +501,37 @@ func (h *WorkspaceHandler) proxyA2ARequest(ctx context.Context, workspaceID stri
 		// to correctly route delivery-confirmed responses (where the agent completed
 		// the work but the TCP connection dropped before the full body was received)
 		// to success instead of failure (#159).
+		//
+		// For non-2xx responses (server explicitly rejected with 3xx+), preserve
+		// resp.StatusCode in the proxyA2AError.Status so isTransientProxyError
+		// returns false — a server-authored rejection is not a transient transport
+		// error and must not be retried. Only 2xx body-read errors keep Status=502
+		// (the agent completed work but the TCP layer dropped the response).
+		errStatus := http.StatusBadGateway
+		if resp.StatusCode >= 300 {
+			errStatus = resp.StatusCode
+		}
 		return resp.StatusCode, respBody, &proxyA2AError{
-			Status: http.StatusBadGateway,
+			Status: errStatus,
 			Response: gin.H{
 				"error":              "failed to read agent response",
 				"delivery_confirmed": deliveryConfirmed,
 			},
+		}
+	}
+
+	// 2xx with empty body: the agent completed the request but returned no content.
+	// An A2A agent must always return a JSON body; empty means the agent is
+	// broken or the connection closed before any body bytes were written.
+	// Return a proxyA2AError so executeDelegation routes this to failure rather
+	// than silently marking it as completed with a nil body.
+	// logA2ASuccess is intentionally NOT called here — delivery was not confirmed.
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 && len(respBody) == 0 {
+		log.Printf("ProxyA2A: agent %s returned %d with empty body — treating as failure",
+			workspaceID, resp.StatusCode)
+		return resp.StatusCode, respBody, &proxyA2AError{
+			Status:   resp.StatusCode,
+			Response: gin.H{"error": "agent returned empty response body"},
 		}
 	}
 

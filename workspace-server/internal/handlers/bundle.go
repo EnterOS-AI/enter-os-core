@@ -49,6 +49,10 @@ func (h *BundleHandler) Import(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid bundle"})
 		return
 	}
+	if b.Schema == "" || b.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid bundle"})
+		return
+	}
 
 	// Reject null JSON (which binds to a zero-value Bundle{}) and empty schema.
 	// Without this guard a POST of `null` or `{}` would INSERT a workspace row

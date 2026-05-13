@@ -119,7 +119,7 @@ function A2AEdgeImpl({
               onClick={handleClick}
               aria-label={ariaLabel}
               title="Open source workspace's activity feed"
-              className={`px-2 py-0.5 rounded-full bg-surface-sunken/95 border ${accent} ${accentText} text-[10px] font-medium shadow-md shadow-black/40 backdrop-blur-sm hover:bg-surface-card hover:border-opacity-100 transition-colors cursor-pointer`}
+              className={`px-2 py-0.5 rounded-full bg-surface-sunken/95 border ${accent} ${accentText} text-[10px] font-medium shadow-md shadow-black/40 backdrop-blur-sm hover:bg-surface-card hover:border-opacity-100 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1`}
             >
               {labelText}
             </button>

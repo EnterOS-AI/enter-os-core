@@ -3,8 +3,6 @@ package handlers
 import (
 	"strings"
 	"testing"
-
-	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
 )
 
 // Tests for the SaaS-aware default-tier resolution introduced in #2901
@@ -20,19 +18,6 @@ import (
 //      passed-in tier into the generated config.yaml — pre-#2910 it
 //      was hardcoded to 3 and silently disagreed with the create-
 //      handler default on SaaS.
-
-// stubCPProv is a minimal stand-in for the CP provisioner — only
-// exercises the IsSaaS / HasProvisioner contract, never invoked in
-// these tests.
-type stubCPProv struct{}
-
-func (stubCPProv) Start(_ interface{}, _ provisioner.WorkspaceConfig) (string, error) {
-	return "", nil
-}
-func (stubCPProv) Stop(_ interface{}, _ string) error { return nil }
-func (stubCPProv) Restart(_ interface{}, _ provisioner.WorkspaceConfig) (string, error) {
-	return "", nil
-}
 
 func TestIsSaaS_TrueWhenCPProvWired(t *testing.T) {
 	h := &WorkspaceHandler{cpProv: &trackingCPProv{}}

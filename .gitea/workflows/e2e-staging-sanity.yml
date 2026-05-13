@@ -1,0 +1,167 @@
+name: E2E Staging Sanity (leak-detection self-check)
+
+# Ported from .github/workflows/e2e-staging-sanity.yml on 2026-05-11 per
+# RFC internal#219 §1 sweep.
+#
+# Differences from the GitHub version:
+#   - Dropped `workflow_dispatch:` (Gitea 1.22.6 finicky on bare dispatch).
+#   - `actions/github-script@v9` issue-open block replaced with curl
+#     calls to the Gitea REST API (/api/v1/repos/.../issues|comments).
+#   - Workflow-level env.GITHUB_SERVER_URL set.
+#   - `continue-on-error: true` on the job (RFC §1 contract).
+#
+# Periodic assertion that the teardown safety nets in e2e-staging-saas
+# and staging-smoke (formerly canary-staging) actually work. Runs the
+# E2E harness with E2E_INTENTIONAL_FAILURE=1, which poisons the tenant
+# admin token after the org is provisioned. The workspace-provision
+# step then fails, the script exits non-zero, and the EXIT trap +
+# workflow always()-step must still tear down cleanly.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+concurrency:
+  group: e2e-staging-sanity
+  cancel-in-progress: false
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  sanity:
+    name: Intentional-failure teardown sanity
+    runs-on: ubuntu-latest
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true
+    timeout-minutes: 20
+
+    env:
+      MOLECULE_CP_URL: https://staging-api.moleculesai.app
+      # 2026-05-11: secret canonicalised from MOLECULE_STAGING_ADMIN_TOKEN
+      # (dead in org secret store) to CP_STAGING_ADMIN_API_TOKEN per
+      # internal#322 — see this PR for the cross-workflow sweep.
+      MOLECULE_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+      E2E_MODE: smoke
+      E2E_RUNTIME: hermes
+      E2E_RUN_ID: "sanity-${{ github.run_id }}"
+      E2E_INTENTIONAL_FAILURE: "1"
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Verify admin token present
+        run: |
+          if [ -z "$MOLECULE_ADMIN_TOKEN" ]; then
+            echo "::error::CP_STAGING_ADMIN_API_TOKEN not set"
+            exit 2
+          fi
+
+      # Inverted assertion: the run MUST fail. If it passes, the
+      # E2E_INTENTIONAL_FAILURE path is broken.
+      - name: Run harness — expecting exit !=0
+        id: harness
+        run: |
+          set +e
+          bash tests/e2e/test_staging_full_saas.sh
+          rc=$?
+          echo "harness_rc=$rc" >> "$GITHUB_OUTPUT"
+          if [ "$rc" = "1" ]; then
+            echo "OK Harness failed as expected (rc=1); teardown trap ran, leak-check passed"
+            exit 0
+          elif [ "$rc" = "0" ]; then
+            echo "::error::Harness succeeded under E2E_INTENTIONAL_FAILURE=1 — the poisoning path is broken"
+            exit 1
+          elif [ "$rc" = "4" ]; then
+            echo "::error::LEAK DETECTED (rc=4) — teardown failed to clean up the org. Safety net broken."
+            exit 4
+          else
+            echo "::error::Unexpected rc=$rc — neither clean-failure nor leak. Investigate harness."
+            exit 1
+          fi
+
+      - name: Open issue if safety net is broken (Gitea API)
+        if: failure()
+        env:
+          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ env.GITHUB_SERVER_URL }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          API="${SERVER_URL%/}/api/v1"
+          TITLE="E2E teardown safety net broken"
+          RUN_URL="${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
+
+          BODY_JSON=$(jq -nc --arg t "$TITLE" --arg run "$RUN_URL" '
+            {title: $t,
+             body: ("The weekly sanity run (E2E_INTENTIONAL_FAILURE=1) did not exit as expected. This means one of:\n  - poisoning did not actually cause failure (test harness regression), OR\n  - teardown left an orphan org (leak detection caught a real bug)\n\nRun: " + $run + "\n\nThis is higher priority than a canary failure — the whole E2E safety net cannot be trusted until this is resolved.")}')
+
+          EXISTING=$(curl -fsS -H "Authorization: token $GITEA_TOKEN" \
+            "${API}/repos/${REPO}/issues?state=open&type=issues&limit=50" \
+            | jq -r --arg t "$TITLE" '.[] | select(.title==$t) | .number' | head -1)
+
+          if [ -n "$EXISTING" ]; then
+            curl -fsS -X POST -H "Authorization: token $GITEA_TOKEN" -H "Content-Type: application/json" \
+              "${API}/repos/${REPO}/issues/${EXISTING}/comments" \
+              -d "$(jq -nc --arg run "$RUN_URL" '{body: ("Still broken. " + $run)}')" >/dev/null
+            echo "Commented on existing issue #${EXISTING}"
+          else
+            curl -fsS -X POST -H "Authorization: token $GITEA_TOKEN" -H "Content-Type: application/json" \
+              "${API}/repos/${REPO}/issues" -d "$BODY_JSON" >/dev/null
+            echo "Filed new issue"
+          fi
+
+      # Belt-and-braces: if teardown left anything behind, nuke it here
+      # so we don't bleed staging quota.
+      - name: Teardown safety net
+        if: always()
+        env:
+          ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+        run: |
+          set +e
+          orgs=$(curl -sS "$MOLECULE_CP_URL/cp/admin/orgs" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" 2>/dev/null \
+            | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          today = __import__('datetime').date.today().strftime('%Y%m%d')
+          # Match both the new e2e-smoke- prefix (post-2026-05-11 rename)
+          # and the legacy e2e-canary- prefix for one rollout cycle so
+          # any in-flight org provisioned under the old prefix on an
+          # older runner checkout still gets cleaned up. Remove the
+          # canary fallback after one week of no-old-prefix observations.
+          prefixes = (f'e2e-smoke-{today}-sanity-', f'e2e-canary-{today}-sanity-')
+          candidates = [o['slug'] for o in d.get('orgs', [])
+                        if any(o.get('slug','').startswith(p) for p in prefixes)
+                        and o.get('status') not in ('purged',)]
+          print('\n'.join(candidates))
+          " 2>/dev/null)
+          leaks=()
+          for slug in $orgs; do
+            # Tempfile-routed -w + set +e/-e prevents curl-exit-code
+            # pollution of the captured status (lint-curl-status-capture.yml).
+            set +e
+            curl -sS -o /tmp/sanity-cleanup.out -w "%{http_code}" \
+              -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
+              -H "Authorization: Bearer $ADMIN_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"confirm\":\"$slug\"}" >/tmp/sanity-cleanup.code
+            set -e
+            code=$(cat /tmp/sanity-cleanup.code 2>/dev/null || echo "000")
+            if [ "$code" = "200" ] || [ "$code" = "204" ]; then
+              echo "[teardown] deleted $slug (HTTP $code)"
+            else
+              echo "::warning::sanity teardown for $slug returned HTTP $code — sweep-stale-e2e-orgs will catch it within ~45 min. Body: $(head -c 300 /tmp/sanity-cleanup.out 2>/dev/null)"
+              leaks+=("$slug")
+            fi
+          done
+          if [ ${#leaks[@]} -gt 0 ]; then
+            echo "::warning::sanity teardown left ${#leaks[@]} leak(s): ${leaks[*]}"
+          fi
+          exit 0

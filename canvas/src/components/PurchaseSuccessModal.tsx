@@ -34,6 +34,8 @@ function readPurchaseParams(): { open: boolean; item: string | null } {
 function stripPurchaseParams() {
   if (typeof window === "undefined") return;
   const url = new URL(window.location.href);
+  // Skip if there are no params to strip.
+  if (!url.searchParams.has("purchase_success") && !url.searchParams.has("item")) return;
   url.searchParams.delete("purchase_success");
   url.searchParams.delete("item");
   // replaceState (not pushState) so back-button doesn't return to the

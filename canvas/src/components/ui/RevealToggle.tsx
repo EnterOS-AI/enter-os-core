@@ -13,14 +13,14 @@ interface RevealToggleProps {
 export function RevealToggle({
   revealed,
   onToggle,
-  label = 'Toggle visibility',
+  label = 'Toggle reveal secret',
 }: RevealToggleProps) {
   return (
     <button
       type="button"
       onClick={onToggle}
       aria-label={label}
-      className="reveal-toggle"
+      className="reveal-toggle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
       title={revealed ? 'Hide value' : 'Show value'}
     >
       {revealed ? <EyeOffIcon /> : <EyeIcon />}

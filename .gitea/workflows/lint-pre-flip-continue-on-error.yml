@@ -1,0 +1,141 @@
+name: Lint pre-flip continue-on-error
+
+# Pre-merge gate: blocks PRs that flip `continue-on-error: true → false`
+# on any job in `.gitea/workflows/*.yml` WITHOUT proof that the affected
+# job's recent runs on the target branch (PR base) are actually green.
+#
+# Empirical class: PR #656 / mc#774. PR #656 (RFC internal#219 Phase 4)
+# flipped 5 platform-build-class jobs `continue-on-error: true → false`
+# on the basis of a "verified green on main via combined-status check".
+# But that "green" was the LIE the prior `continue-on-error: true`
+# produced: Gitea Quirk #10 (internal#342 + dup #287) — a failed step
+# inside a `continue-on-error: true` job rolls up to a `success`
+# job-level status. The precondition the PR claimed to verify was
+# structurally fooled by the bug being flipped.
+#
+# mc#774 captured the surfaced defects (2 mutually-masked regressions):
+#   - Class 1: sqlmock helper drift since 2f36bb9a (24 days old)
+#   - Class 2: OFFSEC-001 contract collision since 7d1a189f (1 day old)
+#
+# Codified 04:35Z as hongming-pc2 charter §SOP-N rule (e)
+# "run-log-grep-before-flip" — now structurally enforced here at PR
+# time, ahead of merge.
+#
+# How the gate works:
+#   1. Read every `.gitea/workflows/*.yml` at the PR base SHA AND at
+#      the PR head SHA via `git show <sha>:<path>` (no checkout
+#      needed).
+#   2. Parse both sides via PyYAML AST (NOT grep — per
+#      `feedback_behavior_based_ast_gates`). Walk `jobs.<key>.
+#      continue-on-error` on each side. A flip is base=true,
+#      head=false.
+#   3. For each flipped job, render the commit-status context as
+#      `"{workflow.name} / {job.name or job.key} (push)"` — that's
+#      how Gitea Actions emits the per-context status on `main`/
+#      `staging` runs.
+#   4. Pull last 5 commits on the PR base branch, fetch combined
+#      commit-status per commit, scan for the target context. For
+#      each match, fetch the run log via the web-UI route
+#      `{server_url}/{repo}/actions/runs/{run_id}/jobs/{job_idx}/logs`
+#      (per `reference_gitea_actions_log_fetch` —
+#      Gitea 1.22.6 lacks REST `/actions/runs/*`; web-UI is the
+#      only working path, see also
+#      `reference_gitea_1_22_6_lacks_rest_rerun_endpoints`).
+#   5. Grep each log for `--- FAIL`, `FAIL\s`, `::error::`. If
+#      the status is `success` but the log shows any of these,
+#      the job was masked. Block the PR with `::error::`.
+#
+# Graceful-degrade contract (per task halt-conditions):
+#   - Log fetch 404 (act_runner pruned the log, transient outage):
+#     emit `::warning::` "log unavailable" — does NOT block.
+#   - Zero recent runs of the flipped job's context on the base
+#     branch (newly added workflow): emit `::warning::` "no run
+#     history to verify" — allow the flip. Chicken-and-egg
+#     exemption.
+#   - YAML parse error in one of the workflow files: warn-only,
+#     don't block — the YAML lint workflows catch this separately.
+#
+# Cross-links: PR#656, mc#774, PR#665 (interim re-mask),
+# Quirk #10 (internal#342 + dup #287), hongming-pc2 charter
+# §SOP-N rule (e), feedback_strict_root_only_after_class_a,
+# feedback_no_shared_persona_token_use.
+#
+# Phase contract (RFC internal#219 §1 ladder):
+#   - This workflow lands at `continue-on-error: true` (Phase 3 —
+#     surface defects without blocking). Follow-up PR flips it to
+#     `false` ONLY after this workflow's own recent runs on `main`
+#     are confirmed clean — exactly the discipline the workflow
+#     itself enforces. Eat your own dogfood.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.gitea/workflows/**'
+      - '.gitea/scripts/lint_pre_flip_continue_on_error.py'
+      - '.gitea/workflows/lint-pre-flip-continue-on-error.yml'
+
+env:
+  # Per `feedback_act_runner_github_server_url` — without this,
+  # actions/checkout and friends default to github.com → break.
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+permissions:
+  contents: read
+  # Need read on the API to pull combined commit-status + commit list
+  # for the base branch. The job-log fetch uses the same token via
+  # the web-UI route (Gitea 1.22.6 accepts `Authorization: token ...`
+  # there).
+  pull-requests: read
+
+concurrency:
+  group: lint-pre-flip-coe-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: Verify continue-on-error flips have run-log proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    # Phase 3 (RFC internal#219 §1): surface broken flips without blocking
+    # the PR yet. Follow-up flips this to `false` once the workflow itself
+    # has clean recent runs on main. mc#774 interim — remove when CoE→false.
+    continue-on-error: true  # mc#774
+    steps:
+      - name: Check out PR head (full history for base-SHA access)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # `git show <base-sha>:<path>` needs the base SHA's blobs.
+          # Shallow=1 would miss it. Same rationale as
+          # check-migration-collisions.yml.
+          fetch-depth: 0
+      - name: Set up Python (PyYAML for AST parsing)
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Install PyYAML
+        # Same pin as ci-required-drift.yml — keep dependencies
+        # uniform so a Gitea runner cache hits across both jobs.
+        run: python -m pip install --quiet 'PyYAML==6.0.2'
+      - name: Ensure base ref is reachable locally
+        # `actions/checkout@v6 fetch-depth=0` usually pulls the base
+        # too, but explicit-fetch is cheap insurance against the
+        # form-of-ref differences across Gitea runner versions
+        # (mirrors the comment in check-migration-collisions.yml).
+        run: |
+          git fetch origin "${{ github.event.pull_request.base.ref }}" || true
+      - name: Run lint
+        env:
+          # Auto-injected by Gitea Actions; sufficient scope for
+          # combined-status + commit-list + log fetch via web-UI
+          # route. NO repo-admin needed (unlike the
+          # branch_protections endpoint).
+          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITEA_HOST: git.moleculesai.app
+          REPO: ${{ github.repository }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Last 5 commits on the base branch is the spec default.
+          RECENT_COMMITS_N: '5'
+        run: python3 .gitea/scripts/lint_pre_flip_continue_on_error.py

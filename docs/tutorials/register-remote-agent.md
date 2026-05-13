@@ -117,7 +117,7 @@ This keeps secrets out of environment blocks and allows rotation without restart
 
 ### Step 4: Start the heartbeat loop
 
-The heartbeat keeps your agent visible on the canvas. Send it every **30 seconds**:
+The heartbeat keeps your agent visible on the canvas and reports runtime state to the platform. Send it every **30 seconds**:
 
 ```python
 import requests, time
@@ -130,7 +130,14 @@ while True:
     resp = requests.post(
         f"{PLATFORM_URL}/registry/heartbeat",
         headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
-        json={"workspace_id": WORKSPACE_ID},
+        json={
+            "workspace_id": WORKSPACE_ID,
+            "active_tasks": 0,          # number of tasks currently being processed
+            "current_task": None,       # optional: short description of what the agent is doing
+            "uptime_seconds": 0,        # optional: seconds since agent started
+            "error_rate": 0.0,         # optional: fraction of requests that errored in the last period
+            "runtime_state": "idle",    # one of: idle, working, paused, error
+        },
     )
     if resp.status_code != 200:
         print(f"Heartbeat failed: {resp.status_code} {resp.text}")
@@ -139,29 +146,44 @@ while True:
 
 If the platform misses three consecutive heartbeats (90 seconds), it marks the agent as `offline` on the canvas. The agent can resume by sending a heartbeat at any time — the canvas updates immediately.
 
+> **Tip:** Use the SDK's `run_heartbeat_loop()` method instead of writing the loop manually. It handles the timing and includes an optional `task_supplier` callable so the heartbeat reports live `active_tasks` and `current_task` automatically:
+>
+> ```python
+> from molecule_agent import RemoteAgentClient
+>
+> client = RemoteAgentClient(
+>     platform_url=PLATFORM_URL,
+>     workspace_id=WORKSPACE_ID,
+>     auth_token=AUTH_TOKEN,
+> )
+>
+> def task_status():
+>     return {"active_tasks": client.get_active_task_count(), "current_task": client.get_current_task_name()}
+>
+> client.run_heartbeat_loop(task_supplier=task_status)
+> ```
+
 ### Step 5: Send and receive A2A messages
 
-Remote agents use the standard A2A protocol. Your agent polls for inbound tasks:
+Remote agents use the standard A2A protocol. Use the SDK's `fetch_inbound()` method to poll for inbound tasks:
 
-```bash
-curl -s -X POST "${PLATFORM_URL}/a2a" \
-  -H "Authorization: Bearer ${AUTH_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -H "X-Workspace-ID: ${WORKSPACE_ID}" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "message/send",
-    "params": {
-      "message": {
-        "role": "user",
-        "parts": [{"kind": "text", "text": "Hello from a remote agent"}]
-      }
-    }
-  }'
+```python
+from molecule_agent import RemoteAgentClient
+
+client = RemoteAgentClient(
+    platform_url=PLATFORM_URL,
+    workspace_id=WORKSPACE_ID,
+    auth_token=AUTH_TOKEN,
+)
+
+# Poll for inbound tasks (call this in your agent's main loop)
+task = client.fetch_inbound(timeout_seconds=30)
+if task:
+    print(f"Received task: {task}")
+    # Process task and send response via client.send_result(...)
 ```
 
-The `X-Workspace-ID` header identifies which workspace the message originates from. Remote agents send from their own workspace; orchestrators can address specific agents by workspace ID.
+The SDK handles the `X-Workspace-ID` header automatically. Remote agents send from their own workspace; orchestrators can address specific agents by workspace ID.
 
 ### Step 6: Verify the agent appears on the canvas
 

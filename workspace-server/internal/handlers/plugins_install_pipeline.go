@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"archive/tar"
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -19,7 +18,6 @@ import (
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/envx"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/plugins"
-	"github.com/docker/docker/api/types/container"
 	"github.com/gin-gonic/gin"
 )
 
@@ -434,53 +432,6 @@ func regexpEscapeForAwk(s string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
-}
-
-// copyPluginToContainer creates a tar from a host directory and copies it into /configs/plugins/<name>/.
-// The tar entries are prefixed with plugins/<name>/ so Docker creates the directory structure.
-func (h *PluginsHandler) copyPluginToContainer(ctx context.Context, containerName, hostDir, pluginName string) error {
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-
-	err := filepath.Walk(hostDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(hostDir, path)
-		if err != nil {
-			return err
-		}
-
-		header, err := tar.FileInfoHeader(info, "")
-		if err != nil {
-			return err
-		}
-		// Prefix: plugins/<pluginName>/<rel> → extracts under /configs/
-		header.Name = filepath.Join("plugins", pluginName, rel)
-
-		if err := tw.WriteHeader(header); err != nil {
-			return err
-		}
-		if !info.IsDir() {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			if _, err := tw.Write(data); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create tar from %s: %w", hostDir, err)
-	}
-	if err := tw.Close(); err != nil {
-		return fmt.Errorf("failed to close tar: %w", err)
-	}
-
-	// Copy to /configs — the tar's plugins/<name>/ prefix creates the directory
-	return h.docker.CopyToContainer(ctx, containerName, "/configs", &buf, container.CopyToContainerOptions{})
 }
 
 // streamDirAsTar writes every regular file + dir under `root` to the tar

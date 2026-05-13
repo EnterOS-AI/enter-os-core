@@ -128,8 +128,8 @@ export function FileTreeContextMenu({ x, y, items, onClose }: Props) {
           }}
           className={
             item.destructive
-              ? "w-full text-left px-3 py-1 text-bad hover:bg-red-900/30 focus:bg-red-900/30 focus:outline-none disabled:opacity-40 disabled:pointer-events-none transition-colors"
-              : "w-full text-left px-3 py-1 text-ink-mid hover:bg-surface-card hover:text-ink focus:bg-surface-card focus:text-ink focus:outline-none disabled:opacity-40 disabled:pointer-events-none transition-colors"
+              ? "w-full text-left px-3 py-1 text-bad hover:bg-red-900/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-1 disabled:opacity-40 disabled:pointer-events-none transition-colors"
+              : "w-full text-left px-3 py-1 text-ink-mid hover:bg-surface-card hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 disabled:opacity-40 disabled:pointer-events-none transition-colors"
           }
         >
           {item.icon && <span className="inline-block w-4 mr-1.5 text-ink-mid">{item.icon}</span>}

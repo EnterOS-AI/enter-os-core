@@ -62,7 +62,7 @@ func (h *WorkspaceHandler) RotateExternalCredentials(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "lookup failed"})
 		return
 	}
-	if runtime != "external" {
+	if !isExternalLikeRuntime(runtime) {
 		// Rotating a hermes/claude-code workspace's bearer would not
 		// just break the ssh-EIC tunnel auth on the platform side — it
 		// would also leave the workspace's in-container heartbeat with
@@ -73,9 +73,9 @@ func (h *WorkspaceHandler) RotateExternalCredentials(c *gin.Context) {
 		// here so the canvas can show "rotate is for external workspaces;
 		// click Restart instead" rather than silently corrupting state.
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "rotate is only valid for runtime=external workspaces",
+			"error":   "rotate is only valid for external/BYO-compute workspaces",
 			"runtime": runtime,
-			"hint":    "use POST /workspaces/:id/restart for non-external runtimes",
+			"hint":    "use POST /workspaces/:id/restart for container-backed runtimes",
 		})
 		return
 	}
@@ -139,9 +139,9 @@ func (h *WorkspaceHandler) GetExternalConnection(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "lookup failed"})
 		return
 	}
-	if runtime != "external" {
+	if !isExternalLikeRuntime(runtime) {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "connection payload is only valid for runtime=external workspaces",
+			"error":   "connection payload is only valid for external/BYO-compute workspaces",
 			"runtime": runtime,
 		})
 		return

@@ -20,8 +20,8 @@
 # Env vars required:
 #   CF_API_TOKEN        — Cloudflare token with zone:dns:edit
 #   CF_ZONE_ID          — the zone (moleculesai.app)
-#   CP_PROD_ADMIN_TOKEN — CP admin bearer for api.moleculesai.app
-#   CP_STAGING_ADMIN_TOKEN — CP admin bearer for staging-api.moleculesai.app
+#   CP_ADMIN_API_TOKEN — CP admin bearer for api.moleculesai.app
+#   CP_STAGING_ADMIN_API_TOKEN — CP admin bearer for staging-api.moleculesai.app
 #   AWS_*               — standard AWS creds (default region us-east-2)
 #
 # Exit codes:
@@ -58,21 +58,21 @@ need() {
 }
 need CF_API_TOKEN
 need CF_ZONE_ID
-need CP_PROD_ADMIN_TOKEN
-need CP_STAGING_ADMIN_TOKEN
+need CP_ADMIN_API_TOKEN
+need CP_STAGING_ADMIN_API_TOKEN
 
 log() { echo "[$(date -u +%H:%M:%S)] $*"; }
 
 # --- Gather live sets ------------------------------------------------------
 
 log "Fetching CP prod org slugs..."
-PROD_SLUGS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_PROD_ADMIN_TOKEN" \
+PROD_SLUGS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_ADMIN_API_TOKEN" \
   "https://api.moleculesai.app/cp/admin/orgs?limit=500" \
   | python3 -c "import json,sys; print(' '.join(o['slug'] for o in json.load(sys.stdin).get('orgs',[])))")
 log "  prod orgs: $(echo "$PROD_SLUGS" | wc -w | tr -d ' ')"
 
 log "Fetching CP staging org slugs..."
-STAGING_SLUGS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_STAGING_ADMIN_TOKEN" \
+STAGING_SLUGS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_STAGING_ADMIN_API_TOKEN" \
   "https://staging-api.moleculesai.app/cp/admin/orgs?limit=500" \
   | python3 -c "import json,sys; print(' '.join(o['slug'] for o in json.load(sys.stdin).get('orgs',[])))")
 log "  staging orgs: $(echo "$STAGING_SLUGS" | wc -w | tr -d ' ')"
@@ -97,6 +97,33 @@ log "  live EC2s: $(echo "$EC2_NAMES" | wc -w | tr -d ' ')"
 log "Fetching Cloudflare DNS records..."
 CF_JSON=$(curl -sS -m 15 -H "Authorization: Bearer $CF_API_TOKEN" \
   "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records?per_page=500")
+if ! echo "$CF_JSON" | python3 -c '
+import json, sys
+
+try:
+    payload = json.load(sys.stdin)
+except Exception as exc:
+    print(f"ERROR: Cloudflare returned non-JSON response: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+if not payload.get("success", False) or not isinstance(payload.get("result"), list):
+    errors = payload.get("errors") or []
+    if errors:
+        detail = "; ".join(
+            "{code}: {message}".format(
+                code=err.get("code", "unknown"),
+                message=err.get("message", "unknown error"),
+            )
+            for err in errors
+        )
+    else:
+        detail = "unexpected result type {}".format(type(payload.get("result")).__name__)
+    print(f"ERROR: Cloudflare DNS list failed: {detail}", file=sys.stderr)
+    raise SystemExit(1)
+'; then
+  log "Cloudflare DNS list failed; verify CF_API_TOKEN has Zone:DNS:Edit and CF_ZONE_ID is the moleculesai.app zone."
+  exit 1
+fi
 TOTAL_CF=$(echo "$CF_JSON" | python3 -c "import json,sys; print(len(json.load(sys.stdin)['result']))")
 log "  CF records: $TOTAL_CF"
 

@@ -52,9 +52,10 @@ function makeStore(
   nodes: Node<WorkspaceNodeData>[] = [],
   edges: Edge[] = [],
   selectedNodeId: string | null = null,
-  agentMessages: Record<string, Array<{ id: string; content: string; timestamp: string }>> = {}
+  agentMessages: Record<string, Array<{ id: string; content: string; timestamp: string }>> = {},
+  liveAnnouncement = ""
 ) {
-  const state = { nodes, edges, selectedNodeId, agentMessages };
+  const state = { nodes, edges, selectedNodeId, agentMessages, liveAnnouncement };
   const get = () => state;
   const set = vi.fn((partial: Record<string, unknown>) => {
     Object.assign(state, partial);

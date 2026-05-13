@@ -1,0 +1,79 @@
+# sop-tier-refire — issue_comment-triggered refire of sop-tier-check.
+#
+# Closes internal#292. Gitea 1.22.6 doesn't refire workflows on the
+# `pull_request_review` event (go-gitea/gitea#33700); the `sop-tier-check`
+# workflow's review-event subscription is silently dead. The result:
+# PRs that get their approving review AFTER the tier-check ran on open/
+# synchronize keep their failing status check forever, and the only way
+# to merge is the admin force-merge path (audited via `audit-force-merge`
+# but the audit trail keeps growing; see `feedback_never_admin_merge_bypass`).
+#
+# Workaround pattern from `feedback_pull_request_review_no_refire`:
+# `issue_comment` events DO fire reliably on 1.22.6. When a repo
+# MEMBER/OWNER/COLLABORATOR comments `/refire-tier-check` on a PR, this
+# workflow re-runs the sop-tier-check logic and POSTs the resulting
+# status to the PR head SHA directly. No empty commit, no git history
+# bloat, no cascade re-fire of every other workflow on the PR.
+#
+# SECURITY MODEL:
+#
+# 1. `pull_request` exists on the issue (issue_comment fires on issues
+#    AND PRs; we only want PRs).
+# 2. `comment.author_association` must be MEMBER/OWNER/COLLABORATOR.
+#    Per the internal#292 core-security review (review#1066 ask): anyone
+#    can comment, but only repo collaborators+ can flip the status.
+#    Without this gate, a drive-by commenter on a public-issue-tracker
+#    surface could trigger a status flip.
+# 3. Comment body must contain `/refire-tier-check` — a slash-command-
+#    shaped trigger (not just any comment word). Prevents accidental
+#    triggering from prose like "we should refire tests" in a review.
+# 4. This workflow does NOT check out PR HEAD code. Like sop-tier-check,
+#    it only HTTP-calls the Gitea API. Trust boundary preserved.
+#
+# Note: `issue_comment` fires from the BASE branch's workflow file. There
+# is no `pull_request_target` equivalent to set; the trigger inherently
+# loads the workflow from the default branch.
+#
+# Rate-limit: a 1s pre-sleep + a "skip if status posted in last 30s"
+# guard prevents comment-spam from thrashing the status. See the script.
+
+name: sop-tier-check refire (issue_comment)
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  refire:
+    # Three gates, all required:
+    #   - comment is on a PR (not a plain issue)
+    #   - commenter is MEMBER, OWNER, or COLLABORATOR
+    #   - comment body contains the slash-command trigger
+    if: |
+      github.event.issue.pull_request != null &&
+      contains(fromJson('["MEMBER","OWNER","COLLABORATOR"]'), github.event.comment.author_association) &&
+      contains(github.event.comment.body, '/refire-tier-check')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Check out base branch (for the script)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # Load the script from the default branch (main), matching the
+          # sop-tier-check.yml security model.
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Re-evaluate sop-tier-check and POST status
+        env:
+          # Same org-level secret sop-tier-check.yml + audit-force-merge.yml use.
+          # Fallback to GITHUB_TOKEN with a clear error if missing.
+          GITEA_TOKEN: ${{ secrets.SOP_TIER_CHECK_TOKEN || secrets.GITHUB_TOKEN }}
+          GITEA_HOST: git.moleculesai.app
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+          # Set to '1' for diagnostic per-API-call output. Off by default.
+          SOP_DEBUG: '0'
+        run: bash .gitea/scripts/sop-tier-refire.sh

@@ -165,7 +165,10 @@ async def test_agent_error_handling():
 
     eq.enqueue_event.assert_called_once()
     error_msg = str(eq.enqueue_event.call_args[0][0])
-    assert "model crashed" in error_msg
+    # sanitize_agent_error strips the raw exception message from the UI;
+    # raw detail goes to workspace logs only. This is the secure behaviour.
+    assert "Agent error (RuntimeError)" in error_msg
+    assert "model crashed" not in error_msg
 
 
 @pytest.mark.asyncio
@@ -1200,8 +1203,102 @@ async def test_terminal_error_routes_via_updater_failed():
         "terminal error Message must route via updater.failed() in task mode"
     )
     err_msg = eq._failed_calls[-1]
-    assert "model crashed" in str(err_msg)
+    # sanitize_agent_error strips the raw exception message from the UI;
+    # raw detail goes to workspace logs only.
+    assert "Agent error (RuntimeError)" in str(err_msg)
+    assert "model crashed" not in str(err_msg)
     # And complete() must NOT have been called on the failure path.
     assert not eq._complete_calls, (
         "complete() should not fire when execute() raises"
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #354 — delegation results auto-resume gap
+# ---------------------------------------------------------------------------
+# heartbeat.py's _check_delegations writes completed delegation rows to
+# DELEGATION_RESULTS_FILE and sends a self-message to wake the agent.
+# read_delegation_results() in executor_helpers.py atomically reads+consumes
+# that file. The fix wires this consumer into _core_execute so the agent
+# receives delegation results as context in the next turn — closing the gap
+# where parallel delegate_task calls return after the SDK turn ends and the
+# agent has no way to discover the results.
+
+@pytest.mark.asyncio
+async def test_delegation_results_injected_into_user_input(monkeypatch):
+    """When delegation results exist, they are prepended to the user input
+    passed to the agent so the agent can act on them without an explicit
+    check_task_status call."""
+    import a2a_executor
+    from unittest.mock import patch
+
+    pending_results = (
+        "- [completed] Delegation abc123: Checked 3 issues\n"
+        "  Response: 3 open, 0 critical\n"
+        "- [failed] Delegation def456: Scan PR #352\n"
+        "  Error: peer workspace offline"
+    )
+
+    # Patch read_delegation_results at the module level where a2a_executor
+    # imported it so the _core_execute call picks it up.
+    with patch.object(a2a_executor, "read_delegation_results", return_value=pending_results):
+        agent = MagicMock()
+        agent.astream_events = MagicMock(return_value=_stream(_text_chunk("Got it")))
+        executor = LangGraphA2AExecutor(agent)
+
+        part = MagicMock()
+        part.text = "What's the status?"
+        context = _make_context([part], "ctx-deleg", task_id="task-deleg")
+        eq = _make_event_queue()
+        eq._complete_calls = []
+        eq._failed_calls = []
+
+        await executor.execute(context, eq)
+
+        # Verify the agent received the injected context
+        agent.astream_events.assert_called_once()
+        call_args = agent.astream_events.call_args
+        messages = call_args[0][0]["messages"]
+
+        # The last message should be a human turn with the injected context
+        human_turn = messages[-1]
+        assert human_turn[0] == "human"
+        # Must contain the delegation results marker
+        assert "[Delegation results available]" in human_turn[1]
+        # Must contain the completed delegation
+        assert "abc123" in human_turn[1]
+        assert "3 open" in human_turn[1]
+        # Must contain the failed delegation
+        assert "def456" in human_turn[1]
+        # Must contain the original user message
+        assert "What's the status?" in human_turn[1]
+
+
+@pytest.mark.asyncio
+async def test_no_delegation_results_no_injection(monkeypatch):
+    """When no delegation results exist, user input is passed through unchanged."""
+    import a2a_executor
+    from unittest.mock import patch
+
+    with patch.object(a2a_executor, "read_delegation_results", return_value=""):
+        agent = MagicMock()
+        agent.astream_events = MagicMock(return_value=_stream(_text_chunk("ok")))
+        executor = LangGraphA2AExecutor(agent)
+
+        part = MagicMock()
+        part.text = "Hello"
+        context = _make_context([part], "ctx-clean", task_id="task-clean")
+        eq = _make_event_queue()
+        eq._complete_calls = []
+        eq._failed_calls = []
+
+        await executor.execute(context, eq)
+
+        agent.astream_events.assert_called_once()
+        call_args = agent.astream_events.call_args
+        messages = call_args[0][0]["messages"]
+        human_turn = messages[-1]
+        assert human_turn[0] == "human"
+        # Must NOT contain the injection marker
+        assert "[Delegation results available]" not in human_turn[1]
+        assert human_turn[1] == "Hello"

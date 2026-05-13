@@ -28,7 +28,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-CANONICAL_FILE = Path(".github/workflows/secret-scan.yml")
+CANONICAL_FILE = Path(".gitea/workflows/secret-scan.yml")
 
 # Public consumer mirrors. Each entry is (label, raw_url) — raw_url
 # points at the file's RAW content on the consumer's default branch

@@ -210,7 +210,7 @@ export function OnboardingWizard() {
               // Was hover:bg-surface-card on top of bg-surface-card —
               // silent no-op hover. Lift to surface-elevated, matching
               // the Cancel pattern in ConfirmDialog.
-              className="px-3 py-1.5 bg-surface-card hover:bg-surface-elevated hover:text-ink rounded-lg text-[11px] text-ink-mid transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-sunken"
+              className="px-3 py-1.5 bg-surface-card hover:bg-surface-elevated hover:text-ink rounded-lg text-[11px] text-ink-mid transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
             >
               Next
             </button>

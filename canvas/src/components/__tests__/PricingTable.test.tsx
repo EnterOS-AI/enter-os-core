@@ -145,6 +145,17 @@ describe("PricingTable", () => {
     expect(mockedStartCheckout).not.toHaveBeenCalled();
   });
 
+  it("marks feature checkmarks as aria-hidden (decorative, not exposed to screen readers)", () => {
+    render(<PricingTable />);
+    const checks = document.body.querySelectorAll('[aria-hidden="true"]');
+    // Every feature list has a ✓ glyph; all should be aria-hidden.
+    expect(checks.length).toBeGreaterThan(0);
+    // The checkmark spans use text-accent (decorative SVG-like glyphs).
+    checks.forEach((el) => {
+      expect(el.textContent?.trim()).toBe("✓");
+    });
+  });
+
   it("disables the button while a checkout call is in flight", async () => {
     mockedFetchSession.mockResolvedValue({
       user_id: "u1",

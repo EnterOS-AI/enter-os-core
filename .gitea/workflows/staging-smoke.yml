@@ -1,0 +1,346 @@
+name: Staging SaaS smoke (every 30 min)
+
+# Renamed from canary-staging.yml on 2026-05-11 per Hongming directive
+# ("canary naming changed to staging for all"). Originally ported from
+# .github/workflows/canary-staging.yml on 2026-05-11 per RFC
+# internal#219 §1 sweep. Differences from the GitHub version:
+#   - Dropped `workflow_dispatch.inputs` (Gitea 1.22.6 parser rejects them
+#     per feedback_gitea_workflow_dispatch_inputs_unsupported).
+#   - Dropped `merge_group:` (no Gitea merge queue).
+#   - Dropped `environment:` blocks (Gitea has no environments).
+#   - Workflow-level env.GITHUB_SERVER_URL pinned per
+#     feedback_act_runner_github_server_url.
+#   - `continue-on-error: true` on each job (RFC §1 contract).
+#
+
+# Minimum viable health check: provisions one Hermes workspace on a fresh
+# staging org, sends one A2A message, verifies PONG, tears down. ~8 min
+# wall clock. Pages on failure by opening a GitHub issue; auto-closes the
+# issue on the next green run.
+#
+# The full-SaaS workflow (e2e-staging-saas.yml) covers the broader surface
+# but runs only on provisioning-critical pushes + nightly — this one
+# catches drift in the 30-min window between those runs (AMI health, CF
+# cert rotation, WorkOS session stability, etc.).
+#
+# Lean mode: E2E_MODE=smoke skips the child workspace + HMA memory +
+# peers/activity checks. One parent workspace + one A2A turn is enough
+# to signal "SaaS stack end-to-end is alive."
+
+on:
+  schedule:
+    # Every 30 min. Cron on GitHub-hosted runners has a known drift of
+    # a few minutes under load — that's fine for a smoke check.
+    - cron: '*/30 * * * *'
+# Serialise with the full-SaaS workflow so they don't contend for the
+# same org-create quota on staging. Different group key from
+# e2e-staging-saas since we don't mind queueing smoke runs behind one
+# full run, but two smoke runs SHOULD queue against each other.
+concurrency:
+  group: staging-smoke
+  cancel-in-progress: false
+
+permissions:
+  # Needed to open / close the alerting issue.
+  issues: write
+  contents: read
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  smoke:
+    name: Staging SaaS smoke
+    runs-on: ubuntu-latest
+    # NOTE: Phase 3 (RFC #219 §1) `continue-on-error: true` removed
+    # 2026-05-11. The "surface broken workflows without blocking"
+    # rationale was correctly applied to advisory/lint workflows but
+    # wrong for this smoke — it is the 30-min canary cadence for the
+    # entire staging SaaS stack, and silent failure here masks the
+    # exact regressions the smoke exists to surface (AMI rot, CF cert
+    # drift, WorkOS session breakage, secret rotations). Same class of
+    # failure as PR#461 (`sweep-stale-e2e-orgs`) where Phase-3 silent
+    # failure leaked EC2. The four other `e2e-staging-*` workflows
+    # KEEP `continue-on-error: true` per RFC #219 §1 — they are
+    # advisory and matrix-style; this one is the canary. A follow-up
+    # `notify-failure` step below also surfaces breakage to ops even
+    # if branch-protection wiring is adjusted to keep this off the
+    # required-checks list.
+    # 25 min headroom over the 15-min TLS-readiness deadline in
+    # tests/e2e/test_staging_full_saas.sh (#2107). Without the buffer
+    # the job is killed at the wall-clock 15:00 mark BEFORE the bash
+    # `fail` + diagnostic burst can fire, leaving every cancellation
+    # silent. Sibling staging E2E jobs run at 20-45 min — keeping the
+    # smoke tighter than them so a true wedge still surfaces here
+    # first.
+    timeout-minutes: 25
+
+    env:
+      MOLECULE_CP_URL: https://staging-api.moleculesai.app
+      # 2026-05-11: secret canonicalised from MOLECULE_STAGING_ADMIN_TOKEN
+      # (dead in org secret store) to CP_STAGING_ADMIN_API_TOKEN per
+      # internal#322 — see this PR for the cross-workflow sweep.
+      MOLECULE_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+      # MiniMax is the smoke's PRIMARY LLM auth path post-2026-05-04.
+      # Switched from hermes+OpenAI after #2578 (the staging OpenAI key
+      # account went over quota and stayed dead for 36+ hours, taking
+      # the smoke red the entire time). claude-code template's
+      # `minimax` provider routes ANTHROPIC_BASE_URL to
+      # api.minimax.io/anthropic and reads MINIMAX_API_KEY at boot —
+      # ~5-10x cheaper per token than gpt-4.1-mini AND on a separate
+      # billing account, so OpenAI quota collapse no longer wedges the
+      # smoke. Mirrors the migration continuous-synth-e2e.yml made on
+      # 2026-05-03 (#265) for the same reason. tests/e2e/test_staging_
+      # full_saas.sh branches SECRETS_JSON on which key is present —
+      # MiniMax wins when set.
+      E2E_MINIMAX_API_KEY: ${{ secrets.MOLECULE_STAGING_MINIMAX_API_KEY }}
+      # Direct-Anthropic alternative for operators who don't want to
+      # set up a MiniMax account (priority below MiniMax — first
+      # non-empty wins in test_staging_full_saas.sh's secrets-injection
+      # block). See #2578 PR comment for the rationale.
+      E2E_ANTHROPIC_API_KEY: ${{ secrets.MOLECULE_STAGING_ANTHROPIC_API_KEY }}
+      # OpenAI fallback — kept wired so an operator-dispatched run with
+      # E2E_RUNTIME=hermes overridden via workflow_dispatch can still
+      # exercise the OpenAI path without re-editing the workflow.
+      E2E_OPENAI_API_KEY: ${{ secrets.MOLECULE_STAGING_OPENAI_API_KEY }}
+      E2E_MODE: smoke
+      E2E_RUNTIME: claude-code
+      # Pin the smoke to a specific MiniMax model rather than relying
+      # on the per-runtime default (which could resolve to "sonnet" →
+      # direct Anthropic and defeat the cost saving). M2.7-highspeed
+      # is "Token Plan only" but cheap-per-token and fast.
+      E2E_MODEL_SLUG: MiniMax-M2.7-highspeed
+      E2E_RUN_ID: "smoke-${{ github.run_id }}"
+      # Debug-only: when an operator dispatches with keep_on_failure=true,
+      # the smoke script's E2E_KEEP_ORG=1 path skips teardown so the
+      # tenant org + EC2 stay alive for SSM-based log capture. Cron runs
+      # never set this (the input only exists on workflow_dispatch) so
+      # unattended cron always tears down. See molecule-core#129
+      # failure mode #1 — capturing the actual exception requires
+      # docker logs from the live container.
+      E2E_KEEP_ORG: ${{ github.event.inputs.keep_on_failure == 'true' && '1' || '0' }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Verify admin token present
+        run: |
+          if [ -z "$MOLECULE_ADMIN_TOKEN" ]; then
+            echo "::error::CP_STAGING_ADMIN_API_TOKEN not set"
+            exit 2
+          fi
+
+      - name: Verify LLM key present
+        run: |
+          # Per-runtime key check — claude-code uses MiniMax; hermes /
+          # langgraph (operator-dispatched only) use OpenAI. Hard-fail
+          # rather than soft-skip per the lesson from synth E2E #2578:
+          # an empty key silently falls through to the wrong
+          # SECRETS_JSON branch and the smoke fails 5 min later with
+          # a confusing auth error instead of the clean "secret
+          # missing" message at the top.
+          case "${E2E_RUNTIME}" in
+            claude-code)
+              # Either MiniMax OR direct-Anthropic works — first
+              # non-empty wins in the test script's secrets-injection
+              # priority chain. Operators only need to set ONE of these
+              # secrets; we don't force a choice between them.
+              if [ -n "${E2E_MINIMAX_API_KEY:-}" ]; then
+                required_secret_name="MOLECULE_STAGING_MINIMAX_API_KEY"
+                required_secret_value="${E2E_MINIMAX_API_KEY}"
+              elif [ -n "${E2E_ANTHROPIC_API_KEY:-}" ]; then
+                required_secret_name="MOLECULE_STAGING_ANTHROPIC_API_KEY"
+                required_secret_value="${E2E_ANTHROPIC_API_KEY}"
+              else
+                required_secret_name="MOLECULE_STAGING_MINIMAX_API_KEY or MOLECULE_STAGING_ANTHROPIC_API_KEY"
+                required_secret_value=""
+              fi
+              ;;
+            langgraph|hermes)
+              required_secret_name="MOLECULE_STAGING_OPENAI_API_KEY"
+              required_secret_value="${E2E_OPENAI_API_KEY:-}"
+              ;;
+            *)
+              echo "::warning::Unknown E2E_RUNTIME='${E2E_RUNTIME}' — skipping LLM-key check"
+              required_secret_name=""
+              required_secret_value="present"
+              ;;
+          esac
+          if [ -n "$required_secret_name" ] && [ -z "$required_secret_value" ]; then
+            echo "::error::${required_secret_name} secret not set for runtime=${E2E_RUNTIME} — A2A will fail at request time with 'No LLM provider configured'"
+            exit 2
+          fi
+          echo "LLM key present ✓ (runtime=${E2E_RUNTIME}, key=${required_secret_name}, len=${#required_secret_value})"
+
+      - name: Smoke run
+        id: smoke
+        run: bash tests/e2e/test_staging_full_saas.sh
+
+      # Alerting: open a sticky issue on the FIRST failure; comment on
+      # subsequent failures; auto-close on next green. Comment-on-existing
+      # de-duplicates so a single open issue accumulates the streak —
+      # ops sees one issue with N comments rather than N issues.
+      #
+      # Why no consecutive-failures threshold (e.g., wait 3 runs before
+      # filing): the prior threshold check used
+      # `github.rest.actions.listWorkflowRuns()` which Gitea 1.22.6 does
+      # not expose (returns 404). On Gitea Actions the threshold call
+      # ALWAYS failed, breaking the entire alerting step and going days
+      # silent on real regressions (38h+ chronic red on 2026-05-07/08
+      # before this fix; tracked in molecule-core#129). Filing on first
+      # failure is also better UX — we want to know about the first red,
+      # not wait 90 min for it to "count." Real flakes get one issue +
+      # a quick close-on-green; persistent reds accumulate comments.
+      - name: Open issue on failure (Gitea API)
+        if: failure()
+        env:
+          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ env.GITHUB_SERVER_URL }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          API="${SERVER_URL%/}/api/v1"
+          # Title kept stable across the canary-staging.yml → staging-smoke.yml
+          # rename (2026-05-11) so any open alert issue from the old name
+          # still title-matches and auto-closes on the next green run.
+          TITLE="Canary failing: staging SaaS smoke"
+          RUN_URL="${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
+
+          EXISTING=$(curl -fsS -H "Authorization: token $GITEA_TOKEN" \
+            "${API}/repos/${REPO}/issues?state=open&type=issues&limit=50" \
+            | jq -r --arg t "$TITLE" '.[] | select(.title==$t) | .number' | head -1)
+
+          if [ -n "$EXISTING" ]; then
+            curl -fsS -X POST -H "Authorization: token $GITEA_TOKEN" -H "Content-Type: application/json" \
+              "${API}/repos/${REPO}/issues/${EXISTING}/comments" \
+              -d "$(jq -nc --arg run "$RUN_URL" '{body: ("Smoke still failing. " + $run)}')" >/dev/null
+            echo "Commented on existing issue #${EXISTING}"
+          else
+            NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            BODY=$(jq -nc --arg t "$TITLE" --arg now "$NOW" --arg run "$RUN_URL" \
+              '{title: $t, body: ("Smoke run failed at " + $now + ".\n\nRun: " + $run + "\n\nThis issue auto-closes on the next green smoke run. Consecutive failures add a comment here rather than a new issue.")}')
+            curl -fsS -X POST -H "Authorization: token $GITEA_TOKEN" -H "Content-Type: application/json" \
+              "${API}/repos/${REPO}/issues" -d "$BODY" >/dev/null
+            echo "Opened smoke failure issue (first red)"
+          fi
+
+      - name: Auto-close smoke issue on success (Gitea API)
+        if: success()
+        env:
+          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ env.GITHUB_SERVER_URL }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          API="${SERVER_URL%/}/api/v1"
+          # Title kept stable across the canary-staging.yml → staging-smoke.yml
+          # rename so open alert issues from the old name still match.
+          TITLE="Canary failing: staging SaaS smoke"
+
+          NUMS=$(curl -fsS -H "Authorization: token $GITEA_TOKEN" \
+            "${API}/repos/${REPO}/issues?state=open&type=issues&limit=50" \
+            | jq -r --arg t "$TITLE" '.[] | select(.title==$t) | .number')
+
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          for N in $NUMS; do
+            curl -fsS -X POST -H "Authorization: token $GITEA_TOKEN" -H "Content-Type: application/json" \
+              "${API}/repos/${REPO}/issues/${N}/comments" \
+              -d "$(jq -nc --arg now "$NOW" '{body: ("Smoke recovered at " + $now + ". Closing.")}')" >/dev/null
+            curl -fsS -X PATCH -H "Authorization: token $GITEA_TOKEN" -H "Content-Type: application/json" \
+              "${API}/repos/${REPO}/issues/${N}" -d '{"state":"closed"}' >/dev/null
+            echo "Closed recovered smoke issue #${N}"
+          done
+
+      - name: Teardown safety net
+        if: always()
+        env:
+          ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+        run: |
+          set +e
+          # Slug prefix matches what test_staging_full_saas.sh emits
+          # in smoke mode:
+          #   SLUG="e2e-smoke-$(date +%Y%m%d)-${RUN_ID_SUFFIX}"
+          # Earlier (pre-2026-05-11 canary→staging rename) the prefix was
+          # `e2e-canary-`; both prefixes are matched here for one
+          # release cycle so cleanup still catches any in-flight org
+          # provisioned under the old prefix on an older runner that
+          # hasn't picked up the renamed script. Remove the canary
+          # fallback after one week of no-old-prefix observations.
+          orgs=$(curl -sS "$MOLECULE_CP_URL/cp/admin/orgs" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" 2>/dev/null \
+            | python3 -c "
+          import json, sys, os, datetime
+          run_id = os.environ.get('GITHUB_RUN_ID', '')
+          d = json.load(sys.stdin)
+          # Scope to slugs from THIS smoke run when GITHUB_RUN_ID is
+          # available; the smoke workflow sets E2E_RUN_ID='smoke-\${run_id}'
+          # so the slug suffix is '-smoke-\${run_id}-...'. Mirrors the
+          # full-mode safety net's per-run scoping (e2e-staging-saas.yml)
+          # added after the 2026-04-21 cross-run cleanup incident.
+          # Sweep both today AND yesterday's UTC dates so a run that
+          # crosses midnight still cleans up its own slug — see the
+          # 2026-04-26→27 canvas-safety-net incident.
+          today = datetime.date.today()
+          yesterday = today - datetime.timedelta(days=1)
+          dates = (today.strftime('%Y%m%d'), yesterday.strftime('%Y%m%d'))
+          if run_id:
+              prefixes = tuple(f'e2e-smoke-{d}-smoke-{run_id}' for d in dates) \
+                       + tuple(f'e2e-canary-{d}-canary-{run_id}' for d in dates)
+          else:
+              prefixes = tuple(f'e2e-smoke-{d}-' for d in dates) \
+                       + tuple(f'e2e-canary-{d}-' for d in dates)
+          candidates = [o['slug'] for o in d.get('orgs', [])
+                        if any(o.get('slug','').startswith(p) for p in prefixes)
+                        and o.get('status') not in ('purged',)]
+          print('\n'.join(candidates))
+          " 2>/dev/null)
+          # Per-slug DELETE with HTTP-code verification. The previous
+          # `... >/dev/null || true` swallowed every failure, so a 5xx
+          # or timeout from CP looked identical to "successfully cleaned
+          # up" and the tenant kept eating ~2 vCPU until the hourly
+          # stale sweep caught it (up to 2h later). Now we capture the
+          # response code and surface non-2xx as a workflow warning, so
+          # the run page shows which slug leaked. We still don't `exit 1`
+          # on cleanup failure — a single-smoke cleanup miss shouldn't
+          # fail-flag the smoke itself when the actual smoke check
+          # passed. The sweep-stale-e2e-orgs cron (now every 15 min,
+          # 30-min threshold) is the safety net for whatever slips past.
+          # See molecule-controlplane#420.
+          leaks=()
+          for slug in $orgs; do
+            # Tempfile-routed -w + set +e/-e prevents curl-exit-code
+            # pollution of the captured status (lint-curl-status-capture.yml).
+            set +e
+            curl -sS -o /tmp/smoke-cleanup.out -w "%{http_code}" \
+              -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
+              -H "Authorization: Bearer $ADMIN_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"confirm\":\"$slug\"}" >/tmp/smoke-cleanup.code
+            set -e
+            code=$(cat /tmp/smoke-cleanup.code 2>/dev/null || echo "000")
+            if [ "$code" = "200" ] || [ "$code" = "204" ]; then
+              echo "[teardown] deleted $slug (HTTP $code)"
+            else
+              echo "::warning::smoke teardown for $slug returned HTTP $code — sweep-stale-e2e-orgs will catch it within ~45 min. Body: $(head -c 300 /tmp/smoke-cleanup.out 2>/dev/null)"
+              leaks+=("$slug")
+            fi
+          done
+          if [ ${#leaks[@]} -gt 0 ]; then
+            echo "::warning::smoke teardown left ${#leaks[@]} leak(s): ${leaks[*]}"
+          fi
+          exit 0
+
+      - name: Notify on smoke failure
+        # Fail-loud companion to dropping `continue-on-error: true`.
+        # The Open-issue-on-failure step above handles the human-facing
+        # alert; this step emits a clearly-tagged ::error:: line that
+        # log-tail consumers (Loki SOPRefireRule, orchestrator triage
+        # loop) can grep on. Mirrors PR#461's sweep-stale-e2e-orgs
+        # pattern. Runs AFTER the teardown safety net (which is
+        # if: always()) so failures don't suppress cleanup.
+        if: failure()
+        run: |
+          echo "::error::staging-smoke FAILED — staging SaaS canary is red. See prior step logs + the auto-filed alert issue. Common causes: (a) CP_STAGING_ADMIN_API_TOKEN secret missing/rotated, (b) staging-api.moleculesai.app 5xx, (c) MiniMax/Anthropic LLM key dead, (d) AMI/CF/WorkOS drift. The 30-min cron will retry, but a chronic red here indicates the staging SaaS stack is broken end-to-end."
+          exit 1

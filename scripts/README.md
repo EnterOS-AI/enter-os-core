@@ -43,7 +43,7 @@ endpoint handler for the supported range.
 - `cleanup-rogue-workspaces.sh` — emergency teardown for leaked
   workspaces. Prompts for confirmation. Pair with the harnesses if a
   cleanup trap fails (see `cleanup_*_failed` events).
-- `canary-smoke.sh` — quick smoke test for canary releases.
+- `staging-smoke.sh` — quick smoke test for the staging canary fleet (formerly `canary-smoke.sh`).
 - `dev-start.sh` — local-dev platform bring-up.
 
 The rest are self-documenting in their header comments.

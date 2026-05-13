@@ -119,7 +119,7 @@ func TestResolveAgentURLForRestartSignal_CacheHit(t *testing.T) {
 // returned and propagated when neither Redis cache nor DB lookup succeeds.
 func TestResolveAgentURLForRestartSignal_DBError(t *testing.T) {
 	mock := setupTestDB(t) // must come before setupTestRedis so db.DB is correct
-	_ = setupTestRedis(t) // empty → cache miss
+	_ = setupTestRedis(t)  // empty → cache miss
 
 	h := newHandlerWithTestDeps(t)
 
@@ -209,10 +209,10 @@ func TestGracefulPreRestart_Success(t *testing.T) {
 	// Pre-populate Redis cache with the test server URL
 	_ = setupTestRedisWithURL(t, srv.URL)
 
-	// Use an embedded struct to override resolveAgentURLForRestartSignal.
+	// Use a wrapper so gracefulPreRestart runs through the embedded handler.
 	hWrapper := &resolveURLTestWrapper{
 		WorkspaceHandler: newHandlerWithTestDeps(t),
-		testURL:         srv.URL + "/agent",
+		testURL:          srv.URL + "/agent",
 	}
 
 	// gracefulPreRestart runs in a goroutine with its own timeout.
@@ -235,7 +235,7 @@ func TestGracefulPreRestart_NotImplemented(t *testing.T) {
 
 	hWrapper := &resolveURLTestWrapper{
 		WorkspaceHandler: newHandlerWithTestDeps(t),
-		testURL:         srv.URL + "/agent",
+		testURL:          srv.URL + "/agent",
 	}
 
 	hWrapper.gracefulPreRestart(context.Background(), "ws-noimpl-999")
@@ -253,7 +253,7 @@ func TestGracefulPreRestart_ConnectionRefused(t *testing.T) {
 
 	hWrapper := &resolveURLTestWrapper{
 		WorkspaceHandler: newHandlerWithTestDeps(t),
-		testURL:         "http://localhost:19999/agent",
+		testURL:          "http://localhost:19999/agent",
 	}
 
 	hWrapper.gracefulPreRestart(context.Background(), "ws-unreachable-000")
@@ -269,7 +269,7 @@ func TestGracefulPreRestart_URLResolutionError(t *testing.T) {
 
 	hWrapper := &resolveURLTestWrapper{
 		WorkspaceHandler: newHandlerWithTestDeps(t),
-		errToReturn:     context.DeadlineExceeded,
+		errToReturn:      context.DeadlineExceeded,
 	}
 
 	hWrapper.gracefulPreRestart(context.Background(), "ws-url-err-111")
@@ -279,19 +279,12 @@ func TestGracefulPreRestart_URLResolutionError(t *testing.T) {
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-// resolveURLTestWrapper embeds *WorkspaceHandler and overrides
-// resolveAgentURLForRestartSignal so tests can inject a fixed URL or error.
+// resolveURLTestWrapper embeds *WorkspaceHandler for tests that exercise
+// gracefulPreRestart through a wrapper value.
 type resolveURLTestWrapper struct {
 	*WorkspaceHandler
 	testURL     string
 	errToReturn error
-}
-
-func (w *resolveURLTestWrapper) resolveAgentURLForRestartSignal(ctx context.Context, workspaceID string) (string, error) {
-	if w.errToReturn != nil {
-		return "", w.errToReturn
-	}
-	return w.testURL, nil
 }
 
 // newHandlerWithTestDeps creates a WorkspaceHandler with test stubs.

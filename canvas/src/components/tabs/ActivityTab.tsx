@@ -247,7 +247,7 @@ function ActivityRow({
           : "bg-surface-card/60 border-line/40"
       }`}
     >
-      <button type="button" onClick={onToggle} className="w-full text-left px-3 py-2">
+      <button type="button" onClick={onToggle} className="w-full text-left px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1">
         {/* Top row: type badge + method + time */}
         <div className="flex items-center gap-2">
           <span className={`text-[8px] font-mono px-1.5 py-0.5 rounded ${typeStyle.text} ${typeStyle.bg} border ${typeStyle.border}`}>
