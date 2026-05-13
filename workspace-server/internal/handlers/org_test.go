@@ -354,39 +354,9 @@ func TestExpandWithEnv_UnsetVar(t *testing.T) {
 	}
 }
 
-func TestHasUnresolvedVarRef_NoVars(t *testing.T) {
-	if hasUnresolvedVarRef("plain text", "plain text") {
-		t.Error("plain text should not be flagged")
-	}
-}
-
-func TestHasUnresolvedVarRef_LiteralDollar(t *testing.T) {
-	// "$5" is a literal price, not a var ref — should NOT be flagged
-	if hasUnresolvedVarRef("price: $5", "price: $5") {
-		t.Error("literal $5 should not be flagged as unresolved")
-	}
-}
-
-func TestHasUnresolvedVarRef_Resolved(t *testing.T) {
-	// Original had ${VAR}, expanded to "value" — fully resolved
-	if hasUnresolvedVarRef("${VAR}", "value") {
-		t.Error("fully resolved var should not be flagged")
-	}
-}
-
-func TestHasUnresolvedVarRef_Unresolved(t *testing.T) {
-	// Original had ${VAR}, expanded to "" — unresolved
-	if !hasUnresolvedVarRef("${VAR}", "") {
-		t.Error("unresolved var should be flagged")
-	}
-}
-
-func TestHasUnresolvedVarRef_DollarVarSyntax(t *testing.T) {
-	// $VAR syntax (no braces) — also a real ref
-	if !hasUnresolvedVarRef("$MISSING_VAR", "") {
-		t.Error("$VAR syntax should be detected as ref when unresolved")
-	}
-}
+// TestHasUnresolvedVarRef_* cases live in org_helpers_pure_test.go to keep
+// pure-helper tests in their own file. Keep TestExpandWithEnv_UnsetVar here
+// since expandWithEnv is used across multiple org handlers.
 
 func eqStringSlice(a, b []string) bool {
 	if len(a) != len(b) {

@@ -1304,12 +1304,8 @@ func TestExtractResponseText_ValidJSONNoResult(t *testing.T) {
 	}
 }
 
-func TestExtractResponseText_ResultNotMap(t *testing.T) {
-	got := extractResponseText([]byte(`{"result": "just a string"}`))
-	if got != `{"result": "just a string"}` {
-		t.Errorf("result is string: got %q, want raw body", got)
-	}
-}
+// TestExtractResponseText_* cases live in delegation_extract_response_text_test.go
+// to keep pure-helper tests in their own file.
 
 func TestExtractResponseText_PartsTextKind(t *testing.T) {
 	body := []byte(`{"result":{"parts":[{"kind":"text","text":"Hello from agent"}]}}`)
