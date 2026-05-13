@@ -282,6 +282,7 @@ func TestListDelegations_WithResults(t *testing.T) {
 	dh := NewDelegationHandler(wh, broadcaster)
 
 	now := time.Now()
+	deadline := now.Add(6 * time.Hour)
 	// Ledger query returns rows — no fallback to activity_logs
 	rows := sqlmock.NewRows([]string{
 		"delegation_id", "caller_id", "callee_id", "task_preview",
@@ -290,10 +291,10 @@ func TestListDelegations_WithResults(t *testing.T) {
 	}).
 		AddRow("del-111", "ws-source", "ws-target",
 			"Delegating to ws-target", "pending", "", "",
-			&now, &now.Add(6*time.Hour), now, now).
+			&now, &deadline, now, now).
 		AddRow("del-222", "ws-source", "ws-target",
 			"Delegation completed (hello world)", "completed", "hello world", "",
-			&now, &now.Add(6*time.Hour), now, now.Add(time.Minute))
+			&now, &deadline, now, now.Add(time.Minute))
 
 	mock.ExpectQuery("SELECT d.delegation_id, d.caller_id, d.callee_id, d.task_preview").
 		WithArgs("ws-source").
@@ -1360,6 +1361,7 @@ func TestExtractResponseText_EmptyText(t *testing.T) {
 	got := extractResponseText(body)
 	if got != "" {
 		t.Errorf("empty text: got %q, want %q", got, "")
+	}
 }
 
 // ---------- ListDelegations: ledger has rows → returns them (no activity_logs fallback) ----------
@@ -1372,6 +1374,7 @@ func TestListDelegations_LedgerRowsReturned(t *testing.T) {
 	dh := NewDelegationHandler(wh, broadcaster)
 
 	now := time.Now()
+	deadline := now.Add(6 * time.Hour)
 	// Ledger query returns rows
 	ledgerRows := sqlmock.NewRows([]string{
 		"delegation_id", "caller_id", "callee_id", "task_preview",
@@ -1380,7 +1383,7 @@ func TestListDelegations_LedgerRowsReturned(t *testing.T) {
 	}).AddRow(
 		"del-ledger-001", "caller-uuid", "callee-uuid",
 		"Analyze the codebase for bugs", "in_progress", "", "",
-		&now, &now.Add(6*time.Hour), now, now,
+		&now, &deadline, now, now,
 	)
 	mock.ExpectQuery("SELECT d.delegation_id, d.caller_id, d.callee_id, d.task_preview").
 		WithArgs("caller-uuid").
@@ -1591,6 +1594,7 @@ func TestListDelegations_LedgerCompletedIncludesResultPreview(t *testing.T) {
 	dh := NewDelegationHandler(wh, broadcaster)
 
 	now := time.Now()
+	deadline := now.Add(6 * time.Hour)
 	ledgerRows := sqlmock.NewRows([]string{
 		"delegation_id", "caller_id", "callee_id", "task_preview",
 		"status", "result_preview", "error_detail", "last_heartbeat",
@@ -1598,7 +1602,7 @@ func TestListDelegations_LedgerCompletedIncludesResultPreview(t *testing.T) {
 	}).AddRow(
 		"del-complete-001", "caller-uuid", "callee-uuid",
 		"Run analysis", "completed", "Analysis complete: 42 issues found", "",
-		&now, &now.Add(6*time.Hour), now, now,
+		&now, &deadline, now, now,
 	)
 	mock.ExpectQuery("SELECT d.delegation_id, d.caller_id, d.callee_id, d.task_preview").
 		WithArgs("caller-uuid").
@@ -1645,6 +1649,7 @@ func TestListDelegations_LedgerFailedIncludesErrorDetail(t *testing.T) {
 	dh := NewDelegationHandler(wh, broadcaster)
 
 	now := time.Now()
+	deadline := now.Add(6 * time.Hour)
 	ledgerRows := sqlmock.NewRows([]string{
 		"delegation_id", "caller_id", "callee_id", "task_preview",
 		"status", "result_preview", "error_detail", "last_heartbeat",
@@ -1652,7 +1657,7 @@ func TestListDelegations_LedgerFailedIncludesErrorDetail(t *testing.T) {
 	}).AddRow(
 		"del-failed-001", "caller-uuid", "callee-uuid",
 		"Fetch data", "failed", "", "Callee workspace not reachable",
-		&now, &now.Add(6*time.Hour), now, now,
+		&now, &deadline, now, now,
 	)
 	mock.ExpectQuery("SELECT d.delegation_id, d.caller_id, d.callee_id, d.task_preview").
 		WithArgs("caller-uuid").
@@ -1682,7 +1687,6 @@ func TestListDelegations_LedgerFailedIncludesErrorDetail(t *testing.T) {
 		t.Errorf("expected error detail, got %v", resp[0]["error"])
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet sqlmock expectations: %v", err) (fix(delegations): ListDelegations falls back to delegations table before activity_logs)
+		t.Errorf("unmet sqlmock expectations: %v", err)
 	}
 }
- (fix(delegations): ListDelegations falls back to delegations table before activity_logs)
