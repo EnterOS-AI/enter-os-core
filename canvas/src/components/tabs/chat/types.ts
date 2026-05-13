@@ -26,13 +26,16 @@ export function createMessage(
   content: string,
   attachments?: ChatAttachment[],
 ): ChatMessage {
-  return {
+  const base = {
     id: crypto.randomUUID(),
     role,
     content,
-    ...(attachments && attachments.length > 0 ? { attachments } : {}),
     timestamp: new Date().toISOString(),
   };
+  if (attachments && attachments.length > 0) {
+    return Object.freeze({ ...base, attachments });
+  }
+  return Object.freeze(base);
 }
 
 // appendMessageDeduped adds a ChatMessage to `prev` unless the tail

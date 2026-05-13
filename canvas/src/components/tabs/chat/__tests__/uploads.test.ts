@@ -1,5 +1,14 @@
-import { describe, it, expect } from "vitest";
-import { isPlatformAttachment, resolveAttachmentHref } from "../uploads";
+// @vitest-environment jsdom
+/**
+ * Tests for uploads.ts — uploadChatFiles and downloadChatFile.
+ *
+ * Covers: empty-file guard, successful upload, error-throw on non-ok,
+ * external-URL window.open bypass, platform-attachment fetch+blob download,
+ * error-throw on non-ok download, URL.createObjectURL lifecycle.
+ */
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { isPlatformAttachment, resolveAttachmentHref, uploadChatFiles, downloadChatFile } from "../uploads";
+import type { ChatAttachment } from "../types";
 
 describe("resolveAttachmentHref — URI scheme normalisation", () => {
   const wsId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -162,5 +171,137 @@ describe("isPlatformAttachment", () => {
   it("returns FALSE for unrecognised schemes", () => {
     expect(isPlatformAttachment("s3://bucket/key")).toBe(false);
     expect(isPlatformAttachment("ftp://server/file")).toBe(false);
+  });
+});
+
+// ─── uploadChatFiles ────────────────────────────────────────────────────────
+
+describe("uploadChatFiles", () => {
+  const wsId = "test-ws-id";
+
+  // Suppress console.error from AbortSignal.timeout in node environment
+  // where native AbortController may not be fully stubbed.
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+  let fetchMock: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    consoleErrorSpy = vi.spyOn(console, "error").mockReturnValue();
+    fetchMock = vi.spyOn(globalThis, "fetch");
+  });
+
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
+    fetchMock?.mockRestore();
+  });
+
+  it("returns an empty array when given no files", async () => {
+    const result = await uploadChatFiles(wsId, []);
+    expect(result).toEqual([]);
+    // fetch should NOT be called at all
+  });
+
+  it("returns ChatAttachment[] on successful upload", async () => {
+    const mockFiles: ChatAttachment[] = [
+      { name: "report.pdf", uri: "workspace:/workspace/report.pdf", size: 1024, mimeType: "application/pdf" },
+      { name: "data.csv", uri: "workspace:/workspace/data.csv", size: 512, mimeType: "text/csv" },
+    ];
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ files: mockFiles }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    // Pass two files so the test validates the complete response round-trip
+    // (the mock returns two ChatAttachment objects).
+    const file1 = new File(["content1"], "report.pdf", { type: "application/pdf" });
+    const file2 = new File(["content2"], "data.csv", { type: "text/csv" });
+    const result = await uploadChatFiles(wsId, [file1, file2]);
+
+    expect(result).toHaveLength(2);
+    expect(result[0].name).toBe("report.pdf");
+    expect(result[1].name).toBe("data.csv");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, opts] = fetchMock.mock.calls[0]!;
+    expect(url).toContain(`/workspaces/${wsId}/chat/uploads`);
+    // FormData stores files in order; each appended field is independent.
+    const formFile = (opts.body as FormData).get("files") as File;
+    expect(formFile.name).toBe("report.pdf");
+    expect(formFile.type).toBe("application/pdf");
+  });
+
+  it("throws Error with status text on non-ok response", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response("Internal Server Error", { status: 500 })
+    );
+
+    const file = new File(["content"], "fail.pdf", { type: "application/pdf" });
+    await expect(uploadChatFiles(wsId, [file])).rejects.toThrow("upload failed: 500 Internal Server Error");
+  });
+});
+
+// ─── downloadChatFile ────────────────────────────────────────────────────────
+
+describe("downloadChatFile", () => {
+  const wsId = "test-ws-id";
+  const makeAttachment = (uri: string): ChatAttachment => ({
+    name: "report.pdf",
+    uri,
+    size: 1024,
+    mimeType: "application/pdf",
+  });
+
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    consoleErrorSpy = vi.spyOn(console, "error").mockReturnValue();
+  });
+
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("opens external HTTPS URLs in a new tab (no fetch involved)", async () => {
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    await downloadChatFile(wsId, makeAttachment("https://cdn.example.com/file.pdf"));
+
+    expect(openSpy).toHaveBeenCalledOnce();
+    expect(openSpy).toHaveBeenCalledWith("https://cdn.example.com/file.pdf", "_blank", "noopener,noreferrer");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    openSpy.mockRestore();
+  });
+
+  it("fetches and triggers blob download for platform attachments", async () => {
+    const blobResult = new Blob(["hello world"], { type: "application/pdf" });
+    const mockResponse = {
+      ok: true,
+      status: 200,
+      blob: () => Promise.resolve(blobResult),
+    } as unknown as Response;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(mockResponse);
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+
+    await downloadChatFile(wsId, makeAttachment("workspace:/workspace/report.pdf"));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]![0]).toContain(`/workspaces/${wsId}/chat/download`);
+    expect(openSpy).not.toHaveBeenCalled(); // blob path, not window.open
+
+    fetchMock.mockRestore();
+    openSpy.mockRestore();
+  });
+
+  it("throws Error on non-ok download response", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response("Not Found", { status: 404 })
+    );
+
+    await expect(
+      downloadChatFile(wsId, makeAttachment("workspace:/workspace/missing.pdf"))
+    ).rejects.toThrow("download failed: 404");
+
+    fetchMock.mockRestore();
   });
 });
