@@ -70,3 +70,100 @@ def test_api_raises_after_retry_budget(monkeypatch):
         assert "failed after 3 attempts" in str(exc)
     else:
         raise AssertionError("expected ApiError")
+
+
+def test_reap_compensates_failed_pr_context_when_push_equivalent_passed(monkeypatch):
+    mod = load_reaper()
+    posted = []
+
+    def fake_post(sha, context, target_url, *, description="", dry_run=False):
+        posted.append((sha, context, target_url, description, dry_run))
+
+    monkeypatch.setattr(mod, "post_compensating_status", fake_post)
+
+    counters = mod.reap(
+        {"CI": True, "Handlers Postgres Integration": True},
+        {
+            "statuses": [
+                {
+                    "context": "CI / Platform (Go) (pull_request)",
+                    "status": "failure",
+                    "target_url": "https://git.example.test/ci-pr",
+                },
+                {
+                    "context": "CI / Platform (Go) (push)",
+                    "status": "success",
+                },
+                {
+                    "context": (
+                        "Handlers Postgres Integration / "
+                        "Handlers Postgres Integration (pull_request)"
+                    ),
+                    "status": "failure",
+                    "target_url": "https://git.example.test/handlers-pr",
+                },
+                {
+                    "context": (
+                        "Handlers Postgres Integration / "
+                        "Handlers Postgres Integration (push)"
+                    ),
+                    "status": "success",
+                },
+            ],
+        },
+        "db3b7a93e31adc0cb072a6d177d92dd73275a191",
+    )
+
+    assert counters["compensated_pr_shadowed_by_push_success"] == 2
+    assert posted == [
+        (
+            "db3b7a93e31adc0cb072a6d177d92dd73275a191",
+            "CI / Platform (Go) (pull_request)",
+            "https://git.example.test/ci-pr",
+            mod.PR_SHADOW_COMPENSATION_DESCRIPTION,
+            False,
+        ),
+        (
+            "db3b7a93e31adc0cb072a6d177d92dd73275a191",
+            "Handlers Postgres Integration / Handlers Postgres Integration (pull_request)",
+            "https://git.example.test/handlers-pr",
+            mod.PR_SHADOW_COMPENSATION_DESCRIPTION,
+            False,
+        ),
+    ]
+
+
+def test_reap_preserves_failed_pr_context_without_push_success(monkeypatch):
+    mod = load_reaper()
+    posted = []
+    monkeypatch.setattr(
+        mod,
+        "post_compensating_status",
+        lambda sha, context, target_url, *, description="", dry_run=False: posted.append(
+            context
+        ),
+    )
+
+    counters = mod.reap(
+        {"CI": True},
+        {
+            "statuses": [
+                {
+                    "context": "CI / Platform (Go) (pull_request)",
+                    "status": "failure",
+                },
+                {
+                    "context": "CI / Platform (Go) (push)",
+                    "status": "failure",
+                },
+                {
+                    "context": "CI / Shellcheck (pull_request)",
+                    "status": "failure",
+                },
+            ],
+        },
+        "db3b7a93e31adc0cb072a6d177d92dd73275a191",
+    )
+
+    assert counters["preserved_pr_without_push_success"] == 2
+    assert posted == []
