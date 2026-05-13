@@ -274,10 +274,13 @@ describe("downloadChatFile", () => {
   });
 
   it("fetches and triggers blob download for platform attachments", async () => {
-    const blob = new Blob(["hello world"], { type: "application/pdf" });
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(blob, { status: 200 })
-    );
+    const blobResult = new Blob(["hello world"], { type: "application/pdf" });
+    const mockResponse = {
+      ok: true,
+      status: 200,
+      blob: () => Promise.resolve(blobResult),
+    } as unknown as Response;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(mockResponse);
     const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
 
     await downloadChatFile(wsId, makeAttachment("workspace:/workspace/report.pdf"));
