@@ -57,8 +57,8 @@ func TestBundleImport_ValidJSON(t *testing.T) {
 	broadcaster := newTestBroadcaster()
 	h := NewBundleHandler(broadcaster, nil, "http://localhost:8080", t.TempDir(), nil)
 
-	// bundle.Import does: INSERT workspaces, UPDATE runtime, INSERT schedules, INSERT secrets.
-	// bundle.Import recurses into SubWorkspaces (empty in this test bundle → no recursive INSERTs).
+	// bundle.Import does: INSERT workspaces, broadcast provisioning, then UPDATE runtime.
+	// bundle.Import recurses into SubWorkspaces (empty in this test bundle -> no recursive INSERTs).
 	mock.ExpectExec("INSERT INTO workspaces").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO structure_events").
