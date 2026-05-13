@@ -44,6 +44,7 @@ env:
   GITHUB_SERVER_URL: https://git.moleculesai.app
 
 jobs:
+  # bp-exempt: PR advisory bot; merge blocking is enforced by CI status and branch protection.
   gate-check:
     runs-on: ubuntu-latest
     # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.

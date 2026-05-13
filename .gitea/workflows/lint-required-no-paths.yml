@@ -69,6 +69,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # bp-exempt: meta-lint advisory; CI / all-required is the required aggregate.
   lint:
     name: lint-required-no-paths
     runs-on: ubuntu-latest

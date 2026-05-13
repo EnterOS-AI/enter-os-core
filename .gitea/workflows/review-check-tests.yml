@@ -41,6 +41,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # bp-exempt: review tooling regression suite; CI / all-required is the required aggregate.
   test:
     name: review-check.sh regression tests
     runs-on: ubuntu-latest
