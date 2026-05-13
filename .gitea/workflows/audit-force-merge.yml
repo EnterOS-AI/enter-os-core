@@ -1,89 +1,58 @@
-# audit-force-merge — emit `incident.force_merge` to the runner log when
-# a PR is merged with required-status checks NOT all green. Vector picks
+# audit-force-merge — emit `incident.force_merge` to runner stdout when
+# a PR is merged with required-status-checks not green. Vector picks
 # the JSON line off docker_logs and ships to Loki on
 # molecule-canonical-obs (per `reference_obs_stack_phase1`); query as:
 #
 #   {host="operator"} |= "event_type" |= "incident.force_merge" | json
 #
-# Companion to `audit-force-merge.sh` (script-extract pattern, same as
-# sop-tier-check). The audit observes BOTH UI-merged and REST-merged PRs
-# uniformly per `feedback_gh_cli_merge_lies_use_rest`.
+# Closes the §SOP-6 audit gap (the doc says force-merges write to
+# `structure_events`, but that table lives in the platform DB, not
+# Gitea-side; Loki is the practical equivalent for Gitea Actions
+# events). When the credential / observability stack converges later,
+# this can sync into structure_events from Loki via a backfill job —
+# the structured JSON shape is forward-compatible.
 #
-# Closes the §SOP-6 audit gap for the molecule-core repo. RFC:
-# internal#219 §6. Mirrors the same-named workflow in
-# molecule-controlplane; design rationale lives in the RFC, not here,
-# to keep the workflow file scannable.
+# Logic in `.gitea/scripts/audit-force-merge.sh` per the same script-
+# extract pattern as sop-tier-check.
 
 name: audit-force-merge
 
 # pull_request_target loads from the base branch — same security model
-# as sop-tier-check. Without this, a PR author could rewrite the
-# workflow on their own PR and skip the audit emission for their own
-# force-merge. The base-branch checkout below ALSO uses
-# `base.sha`, not `base.ref`, so a fast-moving base can't slip a
-# different audit script in under us.
+# as sop-tier-check. Without this, an attacker could rewrite the
+# workflow on a PR and skip the audit emission for their own
+# force-merge. See `.gitea/workflows/sop-tier-check.yml` for the full
+# rationale.
 on:
   pull_request_target:
     types: [closed]
 
-# `pull-requests: read` + `contents: read` covers everything the script
-# needs (fetch PR + commit statuses). `issues:` deliberately omitted —
-# audit fires-and-forgets to stdout, never opens issues.
-permissions:
-  contents: read
-  pull-requests: read
-
 jobs:
   audit:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     # Skip when PR is closed without merge — saves a runner.
     if: github.event.pull_request.merged == true
     steps:
       - name: Check out base branch (for the script)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
-          # base.sha pinning, NOT base.ref — see header rationale.
           ref: ${{ github.event.pull_request.base.sha }}
       - name: Detect force-merge + emit audit event
         env:
-          # Same org-level secret the sop-tier-check workflow uses;
-          # falls back to the auto-injected GITHUB_TOKEN if the
-          # org-level SOP_TIER_CHECK_TOKEN isn't set on a transitional
-          # repo.
+          # Same org-level secret the sop-tier-check workflow uses.
           GITEA_TOKEN: ${{ secrets.SOP_TIER_CHECK_TOKEN || secrets.GITHUB_TOKEN }}
           GITEA_HOST: git.moleculesai.app
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           # Required-status-check contexts to evaluate at merge time.
-          # Newline-separated. MUST mirror branch protection's
-          # status_check_contexts for protected branches
-          # (currently `main`; `staging` protection forthcoming per
-          # RFC internal#219 Phase 4).
-          #
-          # Initialized 2026-05-11 from the current molecule-core `main`
-          # branch protection:
-          #
-          #   GET /api/v1/repos/molecule-ai/molecule-core/
-          #       branch_protections/main
-          #   → status_check_contexts = [
-          #       "Secret scan / Scan diff for credential-shaped strings (pull_request)",
-          #       "sop-tier-check / tier-check (pull_request)"
-          #     ]
-          #
+          # Newline-separated. Mirror this against branch protection
+          # (settings → branches → protected branch → required checks).
           # Declared here rather than fetched from /branch_protections
-          # because that endpoint requires admin write — sop-tier-bot
-          # is read-only by design (least-privilege per
-          # `feedback_least_privilege_via_workflow_env` / internal#257).
-          # Drift between this env and the real protection list is
-          # auto-detected by `ci-required-drift.yml` (RFC §4 + §6),
-          # which opens a `[ci-drift]` issue within one hour.
-          #
-          # When the protection set changes (e.g. Phase 4 adds the
-          # `ci / all-required (pull_request)` sentinel), update BOTH
-          # branch protection AND this env in the SAME PR; drift-detect
-          # will otherwise file an issue for you.
+          # because that endpoint requires admin write — sop-tier-bot is
+          # read-only by design (least-privilege).
           REQUIRED_CHECKS: |
-            Secret scan / Scan diff for credential-shaped strings (pull_request)
-            sop-tier-check / tier-check (pull_request)
             CI / all-required (pull_request)
+            sop-checklist / all-items-acked (pull_request)
         run: bash .gitea/scripts/audit-force-merge.sh
