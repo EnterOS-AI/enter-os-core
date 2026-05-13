@@ -250,7 +250,7 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
             <div className="mb-1 flex items-center gap-1">
               {runtime === "external" ? (
                 <span
-                  className="text-[7px] font-mono px-1.5 py-0.5 rounded-md text-white bg-violet-600 border border-violet-700"
+                  className="text-[7px] font-mono px-1.5 py-0.5 rounded-md text-white bg-violet-800 border border-violet-900"
                   title="Phase 30 remote agent — runs outside this platform's Docker network. Lifecycle managed via heartbeat-based polling, not Docker exec."
                 >
                   ★ REMOTE

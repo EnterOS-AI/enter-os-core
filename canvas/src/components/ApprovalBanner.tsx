@@ -81,9 +81,9 @@ export function ApprovalBanner() {
                   disabled={pendingApprovalId !== null}
                   onClick={() => handleDecide(approval, "approved")}
                   aria-disabled={pendingApprovalId !== null}
-                  // Hover DARKER not lighter — emerald-500 on white text
-                  // drops contrast vs emerald-700.
-                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed text-xs rounded-lg text-white font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-amber-950 focus-visible:ring-emerald-400/70"
+                  // Hover goes DARKER — emerald-600 on white text is 3.3:1 (WCAG AA FAIL).
+                  // emerald-700 is 4.6:1 (WCAG AA PASS). Hover darkens to emerald-600.
+                  className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed text-xs rounded-lg text-white font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-amber-950 focus-visible:ring-emerald-400/70"
                 >
                   {pendingApprovalId === approval.id ? "…" : "Approve"}
                 </button>

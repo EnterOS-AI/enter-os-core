@@ -75,7 +75,7 @@ export function DropTargetBadge() {
       )}
       <div
         data-testid="drop-badge"
-        className="pointer-events-none absolute z-50 -translate-x-1/2 -translate-y-full rounded-md bg-emerald-500 px-2 py-0.5 text-[11px] font-medium text-emerald-50 shadow-lg shadow-emerald-950/40"
+        className="pointer-events-none absolute z-50 -translate-x-1/2 -translate-y-full rounded-md bg-emerald-500 px-2 py-0.5 text-[11px] font-medium text-white shadow-lg shadow-emerald-950/40"
         style={{ left: badge.x, top: badge.y - 6 }}
       >
         Drop into: {targetName}

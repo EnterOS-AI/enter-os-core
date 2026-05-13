@@ -298,7 +298,7 @@ export function SecretsSection({ workspaceId, requiredEnv }: { workspaceId: stri
             <button
               onClick={() => setGlobalMode(false)}
               className={`text-[10px] px-2 py-0.5 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 ${
-                !globalMode ? "bg-accent-strong/20 text-accent border border-accent/30" : "text-white-soft hover:text-white-mid"
+                !globalMode ? "bg-accent-strong/20 text-accent border border-accent/30" : "text-ink-soft hover:text-ink-mid"
               }`}
             >
               This Workspace
@@ -306,7 +306,7 @@ export function SecretsSection({ workspaceId, requiredEnv }: { workspaceId: stri
             <button
               onClick={() => setGlobalMode(true)}
               className={`text-[10px] px-2 py-0.5 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-1 ${
-                globalMode ? "bg-amber-600/20 text-warm border border-amber-500/30" : "text-white-soft hover:text-white-mid"
+                globalMode ? "bg-amber-600/20 text-warm border border-amber-500/30" : "text-ink-soft hover:text-ink-mid"
               }`}
             >
               Global (All Workspaces)

@@ -98,7 +98,7 @@ export function ConfirmDialog({
     confirmVariant === "danger"
       ? "bg-red-600 hover:bg-red-700 text-white"
       : confirmVariant === "warning"
-        ? "bg-amber-600 hover:bg-amber-700 text-white"
+        ? "bg-amber-800 hover:bg-amber-700 text-white"
         : "bg-accent hover:bg-accent-strong text-white";
 
   // Render via Portal so the fixed-position dialog escapes any containing block

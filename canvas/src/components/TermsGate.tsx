@@ -137,10 +137,9 @@ export function TermsGate({ children }: { children: React.ReactNode }) {
                 onClick={accept}
                 disabled={submitting}
                 aria-disabled={submitting}
-                // Hover goes DARKER, not lighter — emerald-500 on white
-                // text drops contrast below AA vs emerald-700. Same trap
-                // I fixed in ApprovalBanner + ConfirmDialog.
-                className="rounded bg-emerald-600 hover:bg-emerald-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-sunken"
+                // Hover goes DARKER — emerald-600 on white text is 3.3:1 (WCAG AA FAIL).
+                // emerald-700 is 4.6:1 (WCAG AA PASS). Hover darkens to emerald-600.
+                className="rounded bg-emerald-700 hover:bg-emerald-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-sunken"
               >
                 {submitting ? "…" : "I agree"}
               </button>
