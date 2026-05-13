@@ -31,17 +31,25 @@ export function extractMessageText(body: Record<string, unknown> | null): string
     if (text) return text;
 
     // Response: result.parts[].text or result.parts[].root.text
+    // Use the first part that has a direct text field; within that part,
+    // prefer direct text over root.text. Subsequent parts' root.text fields
+    // are ignored when a direct text exists in an earlier part.
     const result = body.result as Record<string, unknown> | undefined;
     const rParts = (result?.parts || []) as Array<Record<string, unknown>>;
-    const rText = rParts
-      .map((p) => {
-        if (p.text) return p.text as string;
-        const root = p.root as Record<string, unknown> | undefined;
-        return (root?.text as string) || "";
-      })
-      .filter(Boolean)
-      .join("\n");
-    if (rText) return rText;
+    const firstPartWithText = rParts.find(
+      (p) => typeof p.text === "string" && (p.text as string) !== ""
+    );
+    if (firstPartWithText) {
+      return firstPartWithText.text as string;
+    }
+    // No direct text found; use root.text from the first part (if present).
+    const firstPart = rParts[0];
+    if (firstPart) {
+      const root = firstPart.root as Record<string, unknown> | undefined;
+      if (typeof root?.text === "string" && root.text !== "") {
+        return root.text as string;
+      }
+    }
 
     if (typeof body.result === "string") return body.result;
   } catch { /* ignore */ }

@@ -87,11 +87,10 @@ describe("extractMessageText — response result format", () => {
     expect(extractMessageText(body)).toBe("Root response text");
   });
 
-  it("prefers parts[].text over parts[].root.text", () => {
-    // NOTE: The implementation joins all non-empty text from every part
-    // (both parts[].text and parts[].root.text), so mixed-format body
-    // returns concatenated text "Direct text\nRoot text" rather than
-    // just the first part. Update this test to reflect actual behavior.
+  it("prefers parts[].text over parts[].root.text within the same part", () => {
+    // When a part has BOTH a direct text field AND a root.text field,
+    // direct text wins. Subsequent parts' root.text fields are ignored
+    // when a direct text was found in an earlier part.
     const body = {
       result: {
         parts: [
@@ -100,8 +99,28 @@ describe("extractMessageText — response result format", () => {
         ],
       },
     };
-    // Implementation joins all parts with newlines: "Direct text\nRoot text"
-    expect(extractMessageText(body)).toBe("Direct text\nRoot text");
+    expect(extractMessageText(body)).toBe("Direct text");
+  });
+
+  it("falls back to root.text when no direct text exists", () => {
+    const body = {
+      result: {
+        parts: [{ root: { text: "Root only" } }],
+      },
+    };
+    expect(extractMessageText(body)).toBe("Root only");
+  });
+
+  it("ignores subsequent parts root.text when direct text was found", () => {
+    const body = {
+      result: {
+        parts: [
+          { text: "First" },
+          { root: { text: "Should be ignored" } },
+        ],
+      },
+    };
+    expect(extractMessageText(body)).toBe("First");
   });
 });
 

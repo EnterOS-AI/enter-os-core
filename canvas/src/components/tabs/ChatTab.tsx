@@ -67,7 +67,7 @@ interface A2AResponse {
 // Server-side counterpart in workspace-server/internal/channels/
 // manager.go has the same single-part bug; fix that too if/when a
 // channel-delivered reply (Slack, Lark, etc.) gets truncated.
-function extractReplyText(resp: A2AResponse): string {
+export function extractReplyText(resp: A2AResponse): string {
   const collect = (parts: A2APart[] | undefined): string => {
     if (!parts) return "";
     return parts

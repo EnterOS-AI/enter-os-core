@@ -3,55 +3,56 @@
  * Tests for Spinner component.
  *
  * Covers: sm/md/lg size classes, aria-hidden, motion-safe animate-spin class.
+ *
+ * NOTE: SVG elements use SVGAnimatedString for className (not a plain string),
+ * so we use getAttribute("class") instead of className for assertions.
  */
 import React from "react";
-import { render } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { render, cleanup } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
 import { Spinner } from "../Spinner";
 
+afterEach(cleanup);
+
+function getSvgClass(r: ReturnType<typeof render>): string {
+  const svg = r.container.querySelector("svg");
+  if (!svg) throw new Error("No SVG found");
+  return svg.getAttribute("class") ?? "";
+}
+
 describe("Spinner — size variants", () => {
-  // Use getAttribute("class") instead of .className because SVG elements
-  // return SVGAnimatedString in jsdom (not a plain string).
   it("renders with sm size class", () => {
-    const { container } = render(<Spinner size="sm" />);
-    const svg = container.querySelector("svg");
-    expect(svg).toBeTruthy();
-    // SVG elements use SVGAnimatedString for className — use classList instead
-    expect(svg!.classList.contains("w-3")).toBe(true);
-    expect(svg!.classList.contains("h-3")).toBe(true);
+    const r = render(<Spinner size="sm" />);
+    expect(getSvgClass(r)).toContain("w-3");
+    expect(getSvgClass(r)).toContain("h-3");
   });
 
   it("renders with md size class (default)", () => {
-    const { container } = render(<Spinner size="md" />);
-    const svg = container.querySelector("svg");
-    expect(svg?.classList.contains("w-4")).toBe(true);
-    expect(svg?.classList.contains("h-4")).toBe(true);
+    const r = render(<Spinner size="md" />);
+    expect(getSvgClass(r)).toContain("w-4");
+    expect(getSvgClass(r)).toContain("h-4");
   });
 
   it("renders with lg size class", () => {
-    const { container } = render(<Spinner size="lg" />);
-    const svg = container.querySelector("svg");
-    expect(svg?.classList.contains("w-5")).toBe(true);
-    expect(svg?.classList.contains("h-5")).toBe(true);
+    const r = render(<Spinner size="lg" />);
+    expect(getSvgClass(r)).toContain("w-5");
+    expect(getSvgClass(r)).toContain("h-5");
   });
 
   it("defaults to md size when no size prop given", () => {
-    const { container } = render(<Spinner />);
-    const svg = container.querySelector("svg");
-    expect(svg?.classList.contains("w-4")).toBe(true);
-    expect(svg?.classList.contains("h-4")).toBe(true);
+    const r = render(<Spinner />);
+    expect(getSvgClass(r)).toContain("w-4");
+    expect(getSvgClass(r)).toContain("h-4");
   });
 
   it("has aria-hidden=true so screen readers skip it", () => {
-    const { container } = render(<Spinner />);
-    const svg = container.querySelector("svg");
+    const r = render(<Spinner />);
+    const svg = r.container.querySelector("svg");
     expect(svg?.getAttribute("aria-hidden")).toBe("true");
   });
 
   it("includes the motion-safe:animate-spin class for CSS animation", () => {
-    const { container } = render(<Spinner />);
-    const svg = container.querySelector("svg");
-    expect(svg?.classList.contains("motion-safe:animate-spin")).toBe(true);
+    expect(getSvgClass(render(<Spinner />))).toContain("motion-safe:animate-spin");
   });
 
   it("renders exactly one SVG element", () => {
