@@ -136,7 +136,7 @@ func discoverWorkspacePeer(ctx context.Context, c *gin.Context, callerID, target
 	// lives on the other side of the wire and needs the URL as-is
 	// (localhost rewrites wouldn't resolve from its host anyway).
 	// Phase 30.6.
-	if wsRuntime == "external" {
+	if isExternalLikeRuntime(wsRuntime) {
 		if handled := writeExternalWorkspaceURL(ctx, c, callerID, targetID, wsName); handled {
 			return
 		}
@@ -181,7 +181,7 @@ func writeExternalWorkspaceURL(ctx context.Context, c *gin.Context, callerID, ta
 	outURL := wsURL
 	var callerRuntime string
 	db.DB.QueryRowContext(ctx, `SELECT COALESCE(runtime,'langgraph') FROM workspaces WHERE id = $1`, callerID).Scan(&callerRuntime)
-	if callerRuntime != "external" {
+	if !isExternalLikeRuntime(callerRuntime) {
 		outURL = strings.Replace(outURL, "127.0.0.1", "host.docker.internal", 1)
 		outURL = strings.Replace(outURL, "localhost", "host.docker.internal", 1)
 	}

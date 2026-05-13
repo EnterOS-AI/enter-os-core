@@ -103,11 +103,11 @@ func (h *WorkspaceHandler) Restart(c *gin.Context) {
 	// behavior agree, and surface a clear message instead of silently
 	// no-op'ing — the canvas can show the operator that the fix is on
 	// their side.
-	if dbRuntime == "external" {
+	if isExternalLikeRuntime(dbRuntime) {
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "noop",
-			"runtime": "external",
-			"message": "external workspaces are operator-driven — restart your local poller; platform has nothing to restart",
+			"runtime": dbRuntime,
+			"message": dbRuntime + " workspaces are operator-driven — restart your local agent; platform has nothing to restart",
 		})
 		return
 	}
@@ -547,7 +547,7 @@ func (h *WorkspaceHandler) runRestartCycle(workspaceID string) {
 	// Don't auto-restart external workspaces (no Docker container)
 	// or mock workspaces (no container, every reply is canned —
 	// see workspace-server/internal/handlers/mock_runtime.go).
-	if dbRuntime == "external" || dbRuntime == "mock" {
+	if isExternalLikeRuntime(dbRuntime) || dbRuntime == "mock" {
 		return
 	}
 

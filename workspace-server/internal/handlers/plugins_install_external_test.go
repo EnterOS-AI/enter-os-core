@@ -76,6 +76,34 @@ func TestPluginUninstall_ExternalRuntime_Returns422(t *testing.T) {
 	}
 }
 
+// TestPluginInstall_KimiRuntime_Returns422 — kimi-cli is BYO-compute,
+// same shape as external. Push-install via docker exec must be rejected.
+func TestPluginInstall_KimiRuntime_Returns422(t *testing.T) {
+	h := NewPluginsHandler(t.TempDir(), nil, nil).
+		WithRuntimeLookup(func(workspaceID string) (string, error) {
+			return "kimi-cli", nil
+		})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-kimi"}}
+	c.Request = httptest.NewRequest(
+		"POST",
+		"/workspaces/ws-kimi/plugins",
+		bytes.NewBufferString(`{"source":"local://my-plugin"}`),
+	)
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.Install(c)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("expected 422 for runtime='kimi-cli', got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "external runtimes") {
+		t.Errorf("expected error body to mention 'external runtimes', got: %s", w.Body.String())
+	}
+}
+
 // TestPluginInstall_ContainerBackedRuntime_FallsThroughGuard — the runtime
 // guard MUST NOT short-circuit container-backed runtimes. With
 // `runtime='claude-code'` the install proceeds past the guard; without a

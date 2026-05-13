@@ -242,7 +242,7 @@ func (h *PluginsHandler) isExternalRuntime(workspaceID string) bool {
 	if err != nil {
 		return false
 	}
-	return runtime == "external"
+	return isExternalLikeRuntime(runtime)
 }
 
 func (h *PluginsHandler) execAsRoot(ctx context.Context, containerName string, cmd []string) (string, error) {

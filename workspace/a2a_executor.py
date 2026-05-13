@@ -548,12 +548,7 @@ class LangGraphA2AExecutor(AgentExecutor):
                 # receive the error and stop polling.
                 await updater.failed(
                     message=new_text_message(
-                        # Pass the exception string as stderr so sanitize_agent_error
-                        # can include a ~1KB preview in the A2A error response.
-                        # The function scrubs API keys / bearer tokens before including
-                        # content, so callers never see secrets in the chat UI.
-                        # Fixes: roadmap item "SDK executor stderr swallowing".
-                        sanitize_agent_error(stderr=str(e)), task_id=task_id, context_id=context_id,
+                        sanitize_agent_error(exc=e), task_id=task_id, context_id=context_id
                     )
                 )
             finally:

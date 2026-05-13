@@ -165,7 +165,10 @@ async def test_agent_error_handling():
 
     eq.enqueue_event.assert_called_once()
     error_msg = str(eq.enqueue_event.call_args[0][0])
-    assert "model crashed" in error_msg
+    # sanitize_agent_error strips the raw exception message from the UI;
+    # raw detail goes to workspace logs only. This is the secure behaviour.
+    assert "Agent error (RuntimeError)" in error_msg
+    assert "model crashed" not in error_msg
 
 
 @pytest.mark.asyncio
@@ -1200,7 +1203,10 @@ async def test_terminal_error_routes_via_updater_failed():
         "terminal error Message must route via updater.failed() in task mode"
     )
     err_msg = eq._failed_calls[-1]
-    assert "model crashed" in str(err_msg)
+    # sanitize_agent_error strips the raw exception message from the UI;
+    # raw detail goes to workspace logs only.
+    assert "Agent error (RuntimeError)" in str(err_msg)
+    assert "model crashed" not in str(err_msg)
     # And complete() must NOT have been called on the failure path.
     assert not eq._complete_calls, (
         "complete() should not fire when execute() raises"

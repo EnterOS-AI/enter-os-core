@@ -18,7 +18,7 @@
 import { useCallback, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 
-type Tab = "python" | "curl" | "claude" | "mcp" | "hermes" | "codex" | "openclaw" | "fields";
+type Tab = "python" | "curl" | "claude" | "mcp" | "hermes" | "codex" | "openclaw" | "kimi" | "fields";
 
 export interface ExternalConnectionInfo {
   workspace_id: string;
@@ -58,6 +58,10 @@ export interface ExternalConnectionInfo {
   // openclaw gateway on loopback. Outbound-tools-only today; push
   // parity on an external openclaw needs a sessions.steer bridge.
   openclaw_snippet?: string;
+  // Kimi CLI setup snippet — self-contained Python heartbeat script
+  // that keeps a Kimi workspace online in poll mode. Optional for
+  // backward compat with platforms that haven't shipped the Kimi tab.
+  kimi_snippet?: string;
 }
 
 interface Props {
@@ -150,6 +154,11 @@ export function ExternalConnectModal({ info, onClose }: Props) {
     'WORKSPACE_TOKEN="<paste from create response>"',
     `WORKSPACE_TOKEN="${info.auth_token}"`,
   );
+  // Kimi snippet carries the placeholder inside the shell heredoc.
+  const filledKimi = info.kimi_snippet?.replace(
+    'MOLECULE_WORKSPACE_TOKEN=<paste from create response>',
+    `MOLECULE_WORKSPACE_TOKEN=${info.auth_token}`,
+  );
 
   return (
     <Dialog.Root open onOpenChange={(o) => !o && onClose()}>
@@ -189,6 +198,7 @@ export function ExternalConnectModal({ info, onClose }: Props) {
               if (filledHermes) tabs.push("hermes");
               if (filledCodex) tabs.push("codex");
               if (filledOpenClaw) tabs.push("openclaw");
+              if (filledKimi) tabs.push("kimi");
               tabs.push("curl", "fields");
               return tabs;
             })().map((t) => (
@@ -212,6 +222,8 @@ export function ExternalConnectModal({ info, onClose }: Props) {
                   ? "Codex"
                   : t === "openclaw"
                   ? "OpenClaw"
+                  : t === "kimi"
+                  ? "Kimi"
                   : t === "python"
                   ? "Python SDK"
                   : t === "mcp"
@@ -286,6 +298,15 @@ export function ExternalConnectModal({ info, onClose }: Props) {
                 copyKey="openclaw"
                 copied={copiedKey === "openclaw"}
                 onCopy={() => copy(filledOpenClaw, "openclaw")}
+              />
+            )}
+            {tab === "kimi" && filledKimi && (
+              <SnippetBlock
+                value={filledKimi}
+                label="Kimi CLI — self-contained Python bridge. Registers, heartbeats, polls for canvas messages, and echoes replies back. NAT-safe (no public URL). Run in a background terminal or via launchd."
+                copyKey="kimi"
+                copied={copiedKey === "kimi"}
+                onCopy={() => copy(filledKimi, "kimi")}
               />
             )}
             {tab === "fields" && (

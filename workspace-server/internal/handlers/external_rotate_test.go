@@ -82,6 +82,7 @@ func TestRotateExternalCredentials_HappyPath(t *testing.T) {
 		"curl_register_template", "python_snippet",
 		"claude_code_channel_snippet", "universal_mcp_snippet",
 		"hermes_channel_snippet", "codex_snippet", "openclaw_snippet",
+		"kimi_snippet",
 	} {
 		if _, ok := body.Connection[k]; !ok {
 			t.Errorf("payload missing snippet field: %s", k)

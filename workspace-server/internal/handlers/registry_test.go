@@ -1721,6 +1721,65 @@ func TestRegister_ExternalRuntime_DefaultsToPoll(t *testing.T) {
 	}
 }
 
+// TestRegister_KimiRuntime_DefaultsToPoll mirrors the external-runtime
+// poll-default test: a workspace whose existing row has runtime=kimi-cli
+// and empty delivery_mode must resolve to poll (laptop/NAT-safe default).
+func TestRegister_KimiRuntime_DefaultsToPoll(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewRegistryHandler(broadcaster)
+
+	const wsID = "ws-kimi-default-poll"
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM workspace_auth_tokens").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	mock.ExpectQuery(`SELECT delivery_mode, runtime FROM workspaces WHERE id`).
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"delivery_mode", "runtime"}).
+			AddRow(sql.NullString{}, "kimi-cli"))
+
+	mock.ExpectExec("INSERT INTO workspaces").
+		WithArgs(wsID, wsID, sql.NullString{}, `{"name":"a"}`, "poll").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT url FROM workspaces WHERE id").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"url"}).AddRow(""))
+	mock.ExpectExec("INSERT INTO structure_events").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM workspace_auth_tokens").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec("INSERT INTO workspace_auth_tokens").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`SELECT platform_inbound_secret FROM workspaces WHERE id = \$1`).
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"platform_inbound_secret"}).AddRow(nil))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/registry/register",
+		bytes.NewBufferString(`{"id":"`+wsID+`","agent_card":{"name":"a"}}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.Register(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["delivery_mode"] != "poll" {
+		t.Errorf("delivery_mode = %v, want %q (kimi runtime + empty mode → poll)",
+			resp["delivery_mode"], "poll")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
 // TestRegister_NonExternalRuntime_StillDefaultsToPush guards the
 // inverse: a non-external runtime (langgraph, hermes, etc.) with
 // empty delivery_mode keeps the historical push default. Catches
