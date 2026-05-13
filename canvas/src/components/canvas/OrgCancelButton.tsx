@@ -122,7 +122,7 @@ export function OrgCancelButton({ rootId, rootName, workspaceCount }: Props) {
           type="button"
           onClick={handleCancel}
           disabled={submitting}
-          className="mol-deploy-cancel px-2 py-0.5 rounded text-[10px] font-semibold"
+          className="mol-deploy-cancel px-2 py-0.5 rounded text-[10px] font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-1"
         >
           {submitting ? "Deleting…" : "Yes"}
         </button>
@@ -130,7 +130,7 @@ export function OrgCancelButton({ rootId, rootName, workspaceCount }: Props) {
           type="button"
           onClick={() => setConfirming(false)}
           disabled={submitting}
-          className="px-2 py-0.5 rounded bg-surface-card/80 hover:bg-surface-card text-[10px] text-ink"
+          className="px-2 py-0.5 rounded bg-surface-card/80 hover:bg-surface-card text-[10px] text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
         >
           No
         </button>
@@ -148,7 +148,7 @@ export function OrgCancelButton({ rootId, rootName, workspaceCount }: Props) {
         e.stopPropagation();
         setConfirming(true);
       }}
-      className="nodrag mol-deploy-cancel mol-deploy-cancel-pulse absolute -top-7 right-1 z-20 flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-semibold shadow-md"
+      className="nodrag mol-deploy-cancel mol-deploy-cancel-pulse absolute -top-7 right-1 z-20 flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-semibold shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-1"
       aria-label={`Cancel deployment of ${rootName}`}
     >
       <svg width="10" height="10" viewBox="0 0 16 16" aria-hidden="true">

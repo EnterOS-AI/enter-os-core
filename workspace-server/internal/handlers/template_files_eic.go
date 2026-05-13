@@ -117,14 +117,6 @@ func resolveWorkspaceRootPath(runtime, root string) string {
 // EIC misconfiguration.
 const eicFileOpTimeout = 30 * time.Second
 
-// eicFileOpTimeout was historically named eicFileWriteTimeout when the
-// only EIC op was writeFile. Keep an alias so any external test that
-// pinned the old name still compiles; rename can land as a follow-up
-// once we've gone a release without the alias being touched.
-//
-//nolint:revive // intentional alias for back-compat with prior tests.
-const eicFileWriteTimeout = eicFileOpTimeout
-
 // eicSSHSession describes an open EIC tunnel ready for an ssh subprocess.
 // Only valid inside the closure passed to withEICTunnel — the underlying
 // keypair + tunnel are torn down when the closure returns.

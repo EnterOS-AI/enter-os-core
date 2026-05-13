@@ -7,14 +7,16 @@
 // in place rather than duplicating.
 //
 // Usage:
-//   memory-backfill -dry-run                    # count + diff
-//   memory-backfill -apply                      # actually copy
-//   memory-backfill -apply -limit=10000         # cap rows per run
-//   memory-backfill -apply -workspace=<uuid>    # one workspace only
+//
+//	memory-backfill -dry-run                    # count + diff
+//	memory-backfill -apply                      # actually copy
+//	memory-backfill -apply -limit=10000         # cap rows per run
+//	memory-backfill -apply -workspace=<uuid>    # one workspace only
 //
 // Required env:
-//   DATABASE_URL                — workspace-server DB (read agent_memories)
-//   MEMORY_PLUGIN_URL           — target plugin (write memory_records)
+//
+//	DATABASE_URL                — workspace-server DB (read agent_memories)
+//	MEMORY_PLUGIN_URL           — target plugin (write memory_records)
 package main
 
 import (
@@ -251,7 +253,7 @@ func mapScopeToNamespace(ctx context.Context, r backfillResolver, workspaceID, s
 	if err != nil {
 		return "", fmt.Errorf("resolve writable: %w", err)
 	}
-	wantKind := contract.NamespaceKindWorkspace
+	var wantKind contract.NamespaceKind
 	switch scope {
 	case "LOCAL":
 		wantKind = contract.NamespaceKindWorkspace

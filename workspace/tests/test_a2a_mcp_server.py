@@ -252,23 +252,30 @@ def test_attachments_param_description_emphasizes_REQUIRED():
 
 
 def test_build_channel_notification_method_matches_claude_contract():
-    """Method MUST be `notifications/claude/channel` exactly — that's
-    what Claude Code's MCP runtime listens for as a conversation
+    """Method MUST be `notifications/claude/channel` when runtime=claude —
+    that's what Claude Code's MCP runtime listens for as a conversation
     interrupt. Same string as the bun channel bridge sends
     (server.ts:509) so this is a drop-in replacement."""
     from a2a_mcp_server import _build_channel_notification
 
-    payload = _build_channel_notification({
-        "activity_id": "act-1",
-        "text": "hello",
-        "peer_id": "",
-        "kind": "canvas_user",
-        "method": "message/send",
-        "created_at": "2026-05-01T00:00:00Z",
-    })
-
-    assert payload["method"] == "notifications/claude/channel"
-    assert payload["jsonrpc"] == "2.0"
+    with patch("a2a_mcp_server._detect_runtime", return_value="claude"):
+        # Reset the cached method so _channel_notification_method() re-resolves
+        import a2a_mcp_server as _mcp
+        old_method = _mcp._CHANNEL_NOTIFICATION_METHOD
+        _mcp._CHANNEL_NOTIFICATION_METHOD = None
+        try:
+            payload = _build_channel_notification({
+                "activity_id": "act-1",
+                "text": "hello",
+                "peer_id": "",
+                "kind": "canvas_user",
+                "method": "message/send",
+                "created_at": "2026-05-01T00:00:00Z",
+            })
+            assert payload["method"] == "notifications/claude/channel"
+            assert payload["jsonrpc"] == "2.0"
+        finally:
+            _mcp._CHANNEL_NOTIFICATION_METHOD = old_method
 
 
 def test_build_channel_notification_content_wraps_text_with_identity_and_reply_hint():
@@ -1618,80 +1625,91 @@ async def test_inbox_bridge_emits_channel_notification_to_writer():
     import os
     import threading
 
+    from unittest.mock import patch
+
     from a2a_mcp_server import _setup_inbox_bridge
 
-    # Real asyncio writer backed by an os.pipe — same shape as
-    # main() but isolated so we can read what was written.
-    read_fd, write_fd = os.pipe()
-    loop = asyncio.get_running_loop()
-    transport, protocol = await loop.connect_write_pipe(
-        asyncio.streams.FlowControlMixin,
-        os.fdopen(write_fd, "wb"),
-    )
-    writer = asyncio.StreamWriter(transport, protocol, None, loop)
-
-    try:
-        cb = _setup_inbox_bridge(writer, loop)
-
-        msg = {
-            # Production-shape UUID per the trust-boundary gate (#2488)
-            "activity_id": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
-            "text": "hello from peer",
-            "peer_id": "11111111-2222-3333-4444-555555555555",
-            "kind": "peer_agent",
-            "method": "message/send",
-            "created_at": "2026-05-01T22:00:00Z",
-        }
-
-        # Simulate the inbox poller daemon thread invoking the
-        # callback from a non-asyncio context — exactly the
-        # threading boundary the bridge has to cross.
-        threading.Thread(target=cb, args=(msg,), daemon=True).start()
-
-        # Give the scheduled coroutine a chance to run + drain
-        # without coupling the test to wall-clock timing.
-        for _ in range(20):
-            await asyncio.sleep(0.05)
-            data = os.read(read_fd, 65536) if _readable(read_fd) else b""
-            if data:
-                break
-        else:
-            data = b""
-
-        assert data, (
-            "no notification on stdout pipe — the bridge fired "
-            "but the write didn't reach the writer (writer.drain "
-            "swallowing or scheduling race)"
-        )
-        line = data.decode().strip()
-        payload = json.loads(line)
-
-        assert payload["jsonrpc"] == "2.0"
-        assert payload["method"] == "notifications/claude/channel"
-        # Content is wrapped with the identity header + reply hint —
-        # see _format_channel_content. The bridge test pins the full
-        # composition so a regression to "raw text only" surfaces here
-        # as well as in the per-formatter tests above.
-        assert payload["params"]["content"] == (
-            "[from peer-agent · peer_id=11111111-2222-3333-4444-555555555555]\n"
-            "hello from peer\n"
-            '↩ Reply: delegate_task({workspace_id: '
-            '"11111111-2222-3333-4444-555555555555", task: "..."})'
-        )
-        meta = payload["params"]["meta"]
-        assert meta["source"] == "molecule"
-        assert meta["kind"] == "peer_agent"
-        assert meta["peer_id"] == "11111111-2222-3333-4444-555555555555"
-        assert meta["activity_id"] == "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
-        assert meta["ts"] == "2026-05-01T22:00:00Z"
-    finally:
-        writer.close()
+    # Force claude runtime so the notification method is predictable
+    with patch("a2a_mcp_server._detect_runtime", return_value="claude"):
+        import a2a_mcp_server as _mcp
+        old_method = _mcp._CHANNEL_NOTIFICATION_METHOD
+        _mcp._CHANNEL_NOTIFICATION_METHOD = None
+        _mcp._channel_notification_method()  # prime cache
         try:
-            os.close(read_fd)
-        except OSError:
-            # read_fd may already be closed if writer.close() tore down the pair
-            # during teardown — best-effort cleanup, no signal worth surfacing.
-            pass
+            # Real asyncio writer backed by an os.pipe — same shape as
+            # main() but isolated so we can read what was written.
+            read_fd, write_fd = os.pipe()
+            loop = asyncio.get_running_loop()
+            transport, protocol = await loop.connect_write_pipe(
+                asyncio.streams.FlowControlMixin,
+                os.fdopen(write_fd, "wb"),
+            )
+            writer = asyncio.StreamWriter(transport, protocol, None, loop)
+
+            try:
+                cb = _setup_inbox_bridge(writer, loop)
+
+                msg = {
+                    # Production-shape UUID per the trust-boundary gate (#2488)
+                    "activity_id": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+                    "text": "hello from peer",
+                    "peer_id": "11111111-2222-3333-4444-555555555555",
+                    "kind": "peer_agent",
+                    "method": "message/send",
+                    "created_at": "2026-05-01T22:00:00Z",
+                }
+
+                # Simulate the inbox poller daemon thread invoking the
+                # callback from a non-asyncio context — exactly the
+                # threading boundary the bridge has to cross.
+                threading.Thread(target=cb, args=(msg,), daemon=True).start()
+
+                # Give the scheduled coroutine a chance to run + drain
+                # without coupling the test to wall-clock timing.
+                for _ in range(20):
+                    await asyncio.sleep(0.05)
+                    data = os.read(read_fd, 65536) if _readable(read_fd) else b""
+                    if data:
+                        break
+                else:
+                    data = b""
+
+                assert data, (
+                    "no notification on stdout pipe — the bridge fired "
+                    "but the write didn't reach the writer (writer.drain "
+                    "swallowing or scheduling race)"
+                )
+                line = data.decode().strip()
+                payload = json.loads(line)
+
+                assert payload["jsonrpc"] == "2.0"
+                assert payload["method"] == "notifications/claude/channel"
+                # Content is wrapped with the identity header + reply hint —
+                # see _format_channel_content. The bridge test pins the full
+                # composition so a regression to "raw text only" surfaces here
+                # as well as in the per-formatter tests above.
+                assert payload["params"]["content"] == (
+                    "[from peer-agent · peer_id=11111111-2222-3333-4444-555555555555]\n"
+                    "hello from peer\n"
+                    '↩ Reply: delegate_task({workspace_id: '
+                    '"11111111-2222-3333-4444-555555555555", task: "..."})'
+                )
+                meta = payload["params"]["meta"]
+                assert meta["source"] == "molecule"
+                assert meta["kind"] == "peer_agent"
+                assert meta["peer_id"] == "11111111-2222-3333-4444-555555555555"
+                assert meta["activity_id"] == "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
+                assert meta["ts"] == "2026-05-01T22:00:00Z"
+            finally:
+                writer.close()
+                try:
+                    os.close(read_fd)
+                except OSError:
+                    # read_fd may already be closed if writer.close() tore down the pair
+                    # during teardown — best-effort cleanup, no signal worth surfacing.
+                    pass
+        finally:
+            _mcp._CHANNEL_NOTIFICATION_METHOD = old_method
 
 
 async def test_inbox_bridge_swallows_closed_pipe_drain_error(monkeypatch):
@@ -1808,99 +1826,75 @@ def test_inbox_bridge_swallows_closed_loop_runtime_error():
 
 
 class TestStdioPipeAssertion:
-    """Pin _assert_stdio_is_pipe_compatible — the friendly fail-fast guard
-    that turns asyncio's `ValueError: Pipe transport is only for pipes,
-    sockets and character devices` into a clear operator message + exit 2.
+    """Pin _warn_if_stdio_not_pipe — the diagnostic warning that replaces
+    the old fatal _assert_stdio_is_pipe_compatible guard.
+
+    The universal stdio transport now works with ANY file descriptor
+    (pipes, regular files, PTYs, sockets), so the old exit-2 behavior
+    is gone. These tests verify the warning is emitted for non-pipe
+    stdio so operators still get diagnostic signal when debugging.
     See molecule-ai-workspace-runtime#61.
     """
 
-    def test_pipe_pair_passes_silently(self):
-        """Happy path — both fds are pipes (the production launch shape
-        from any MCP client). Should return None without printing or
-        exiting."""
-        from a2a_mcp_server import _assert_stdio_is_pipe_compatible
+    def test_pipe_pair_passes_silently(self, caplog):
+        """Happy path — both fds are pipes. No warning emitted."""
+        from a2a_mcp_server import _warn_if_stdio_not_pipe
 
         r, w = os.pipe()
         try:
-            # No exit, no stderr noise. We don't capture stderr here
-            # because pipe path should produce zero output.
-            _assert_stdio_is_pipe_compatible(stdin_fd=r, stdout_fd=w)
+            with caplog.at_level("WARNING"):
+                _warn_if_stdio_not_pipe(stdin_fd=r, stdout_fd=w)
+            assert "not a pipe" not in caplog.text
         finally:
             os.close(r)
             os.close(w)
 
-    def test_regular_file_stdout_exits_with_friendly_message(
-        self, tmp_path, capsys
-    ):
+    def test_regular_file_stdout_warns(self, tmp_path, caplog):
         """Reproducer for runtime#61: stdout redirected to a regular file.
-        Pre-fix this would surface upstream as
-        `ValueError: Pipe transport is only for pipes...`. Post-fix we
-        exit with code 2 and a stderr message that names the symptom +
-        fix."""
-        from a2a_mcp_server import _assert_stdio_is_pipe_compatible
+        Now emits a warning instead of exiting."""
+        from a2a_mcp_server import _warn_if_stdio_not_pipe
 
-        # stdin = pipe (so we isolate the stdout failure path);
-        # stdout = regular file (the bug condition).
         r, _w = os.pipe()
         regular = tmp_path / "captured.log"
         f = open(regular, "wb")
         try:
-            with pytest.raises(SystemExit) as excinfo:
-                _assert_stdio_is_pipe_compatible(
-                    stdin_fd=r, stdout_fd=f.fileno()
-                )
-            assert excinfo.value.code == 2
-            err = capsys.readouterr().err
-            # Names the failing stream + the asyncio constraint that
-            # would otherwise crash. Don't pin the exact wording — the
-            # asserts pin the operator-recoverable signal only.
-            assert "stdout" in err
-            assert "regular file" in err
-            assert "pipe" in err
+            with caplog.at_level("WARNING"):
+                _warn_if_stdio_not_pipe(stdin_fd=r, stdout_fd=f.fileno())
+            assert "stdout" in caplog.text
+            assert "not a pipe" in caplog.text
         finally:
             f.close()
             os.close(r)
 
-    def test_regular_file_stdin_exits_with_friendly_message(
-        self, tmp_path, capsys
-    ):
-        """Symmetric case — stdin redirected from a regular file. Same
-        asyncio constraint applies via connect_read_pipe."""
-        from a2a_mcp_server import _assert_stdio_is_pipe_compatible
+    def test_regular_file_stdin_warns(self, tmp_path, caplog):
+        """Symmetric case — stdin redirected from a regular file."""
+        from a2a_mcp_server import _warn_if_stdio_not_pipe
 
         regular = tmp_path / "input.json"
         regular.write_bytes(b'{"jsonrpc":"2.0","id":1,"method":"initialize"}\n')
         f = open(regular, "rb")
         _r, w = os.pipe()
         try:
-            with pytest.raises(SystemExit) as excinfo:
-                _assert_stdio_is_pipe_compatible(
-                    stdin_fd=f.fileno(), stdout_fd=w
-                )
-            assert excinfo.value.code == 2
-            err = capsys.readouterr().err
-            assert "stdin" in err
-            assert "regular file" in err
+            with caplog.at_level("WARNING"):
+                _warn_if_stdio_not_pipe(stdin_fd=f.fileno(), stdout_fd=w)
+            assert "stdin" in caplog.text
+            assert "not a pipe" in caplog.text
         finally:
             f.close()
             os.close(w)
 
-    def test_closed_fd_exits_with_stat_error(self, capsys):
-        """If stdio is closed (rare but seen in detached daemonized
-        contexts), os.fstat raises OSError. We catch it and exit 2 with
-        a guidance message instead of letting the traceback escape."""
-        from a2a_mcp_server import _assert_stdio_is_pipe_compatible
+    def test_closed_fd_warns_about_stat_error(self, caplog):
+        """If stdio is closed, os.fstat raises OSError. Warning is
+        skipped silently (can't stat the fd)."""
+        from a2a_mcp_server import _warn_if_stdio_not_pipe
 
         r, w = os.pipe()
         os.close(w)  # Now `w` is a stale fd — fstat will fail.
         try:
-            with pytest.raises(SystemExit) as excinfo:
-                _assert_stdio_is_pipe_compatible(
-                    stdin_fd=r, stdout_fd=w
-                )
-            assert excinfo.value.code == 2
-            err = capsys.readouterr().err
-            assert "cannot stat stdout" in err
+            with caplog.at_level("WARNING"):
+                _warn_if_stdio_not_pipe(stdin_fd=r, stdout_fd=w)
+            # No warning emitted because fstat failed before the check
+            assert "not a pipe" not in caplog.text
         finally:
             os.close(r)
 

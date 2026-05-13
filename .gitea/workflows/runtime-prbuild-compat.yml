@@ -1,0 +1,141 @@
+name: Runtime PR-Built Compatibility
+
+# Ported from .github/workflows/runtime-prbuild-compat.yml on 2026-05-11
+# per RFC internal#219 §1 sweep.
+#
+# Differences from the GitHub version:
+#   - Dropped `merge_group:` (no Gitea merge queue) and `workflow_dispatch:`
+#     (Gitea 1.22.6 parser-rejects workflow_dispatch with inputs and is
+#     finicky without them).
+#   - `dorny/paths-filter@v4` replaced with inline `git diff` (per PR#372
+#     pattern for ci.yml port).
+#   - on.paths references .gitea/workflows/runtime-prbuild-compat.yml.
+#   - Workflow-level env.GITHUB_SERVER_URL set.
+#   - `continue-on-error: true` on every job (RFC §1 contract).
+#
+# Companion to `runtime-pin-compat.yml`. That workflow tests what's
+# CURRENTLY PUBLISHED on PyPI; this workflow tests what WOULD BE
+# PUBLISHED if THIS PR merges.
+#
+# Why two workflows: the chicken-and-egg #128 fix added a "PR-built
+# wheel" job to the original runtime-pin-compat.yml, but both jobs
+# shared a `paths:` filter that was the union of their needs
+# (`workspace/**`). That meant the PyPI-latest job ran on every doc
+# edit even though the upstream PyPI artifact can't change with our
+# workspace/ source. Splitting the two means each gets a narrow
+# `paths:` filter that matches the inputs it actually depends on.
+#
+# Catches the failure mode where a PR adds an import requiring a newer
+# SDK than `workspace/requirements.txt` pins:
+#   1. Pip resolves the existing PyPI wheel + the old SDK pin -> smoke
+#      passes (it imports the OLD main.py from the wheel, not the PR's
+#      new main.py).
+#   2. Merge -> publish-runtime.yml ships a wheel WITH the new import.
+#   3. Tenant images redeploy -> all crash on first boot with ImportError.
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main, staging]
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+concurrency:
+  # event_name + sha keeps PR sync and the subsequent staging push on the
+  # same SHA from cancelling each other (per feedback_concurrency_group_per_sha).
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true
+    outputs:
+      wheel: ${{ steps.decide.outputs.wheel }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - id: decide
+        run: |
+          # Inline replacement for dorny/paths-filter — same pattern
+          # PR#372's ci.yml port used. Diffs against the PR base or the
+          # previous push SHA, then matches against the wheel-relevant
+          # path set.
+          BASE="${GITHUB_BASE_REF:-${{ github.event.before }}}"
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ -n "${{ github.event.pull_request.base.sha }}" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          fi
+          if [ -z "$BASE" ] || echo "$BASE" | grep -qE '^0+$'; then
+            # New branch or no previous SHA: treat as wheel-relevant.
+            echo "wheel=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! git cat-file -e "$BASE" 2>/dev/null; then
+            git fetch --depth=1 origin "$BASE" 2>/dev/null || true
+          fi
+          if ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "wheel=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BASE" HEAD)
+          if echo "$CHANGED" | grep -qE '^(workspace/|scripts/build_runtime_package\.py$|scripts/wheel_smoke\.py$|\.gitea/workflows/runtime-prbuild-compat\.yml$)'; then
+            echo "wheel=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "wheel=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ONE job (no job-level `if:`) that always runs and reports under the
+  # required-check name `PR-built wheel + import smoke`. Real work is
+  # gated per-step on `needs.detect-changes.outputs.wheel`.
+  local-build-install:
+    needs: detect-changes
+    name: PR-built wheel + import smoke
+    runs-on: ubuntu-latest
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true
+    steps:
+      - name: No-op pass (paths filter excluded this commit)
+        if: needs.detect-changes.outputs.wheel != 'true'
+        run: |
+          echo "No workspace/ / scripts/{build_runtime_package,wheel_smoke}.py / workflow changes — wheel gate satisfied without rebuilding."
+          echo "::notice::PR-built wheel + import smoke no-op pass (paths filter excluded this commit)."
+      - if: needs.detect-changes.outputs.wheel == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - if: needs.detect-changes.outputs.wheel == 'true'
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: workspace/requirements.txt
+      - name: Install build tooling
+        if: needs.detect-changes.outputs.wheel == 'true'
+        run: pip install build
+      - name: Build wheel from PR source (mirrors publish-runtime.yml)
+        if: needs.detect-changes.outputs.wheel == 'true'
+        # Use a fixed test version so the wheel filename is predictable.
+        # Doesn't reach PyPI — this build is local-only for the smoke.
+        run: |
+          python scripts/build_runtime_package.py \
+            --version "0.0.0.dev0+pin-compat" \
+            --out /tmp/runtime-build
+          cd /tmp/runtime-build && python -m build
+      - name: Install built wheel + workspace requirements
+        if: needs.detect-changes.outputs.wheel == 'true'
+        run: |
+          python -m venv /tmp/venv-built
+          /tmp/venv-built/bin/pip install --upgrade pip
+          /tmp/venv-built/bin/pip install /tmp/runtime-build/dist/*.whl
+          /tmp/venv-built/bin/pip install -r workspace/requirements.txt
+          /tmp/venv-built/bin/pip show molecule-ai-workspace-runtime a2a-sdk \
+            | grep -E '^(Name|Version):'
+      - name: Smoke import the PR-built wheel
+        if: needs.detect-changes.outputs.wheel == 'true'
+        # Same script publish-runtime.yml runs against the to-be-PyPI wheel.
+        run: |
+          /tmp/venv-built/bin/python "$GITHUB_WORKSPACE/scripts/wheel_smoke.py"

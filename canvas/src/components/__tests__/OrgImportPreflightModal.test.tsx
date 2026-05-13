@@ -18,7 +18,9 @@ import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/re
 //      endpoint is idempotent so no data hazard, but the extra
 //      PUT is wasteful and harder to reason about.
 
-const createSecretMock = vi.fn().mockResolvedValue(undefined);
+const { createSecretMock } = vi.hoisted(() => ({
+  createSecretMock: vi.fn().mockResolvedValue(undefined),
+}));
 
 vi.mock("@/lib/api/secrets", () => ({
   createSecret: (...args: unknown[]) => createSecretMock(...args),

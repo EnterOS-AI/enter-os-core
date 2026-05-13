@@ -1,0 +1,121 @@
+# status-reaper — Option B (compensating-status POST) for Gitea 1.22.6's
+# hardcoded `(push)` suffix on default-branch commit statuses.
+#
+# Tracking: molecule-core#? (this PR), internal#327 (sibling publish-runtime-bot),
+# internal#328 (sibling mc-drift-bot), internal#80 (upstream RFC). Sister
+# bots already deployed under the same per-persona-identity contract
+# (`feedback_per_agent_gitea_identity_default`).
+#
+# Root cause:
+#   Gitea 1.22.6 emits commit-status context as
+#     `<workflow_name> / <job_name> (push)`
+#   for ANY workflow run on the default branch's HEAD commit, REGARDLESS
+#   of the trigger event. Schedule- and workflow_dispatch-triggered runs
+#   on `main` therefore appear as `(push)` failures on the latest main
+#   commit, painting main red via a fake-push status. Verified on runs
+#   14525 + 14526 via Phase 1 evidence (3 sub-agents). No upstream fix
+#   in 1.23-1.26.1 (sibling a6f20db1 research).
+#
+# Why a cron-driven reaper, not workflow_run:
+#   Gitea 1.22.6 does NOT support `on: workflow_run` (verified via
+#   modules/actions/workflows.go enumeration; sister a6f20db1). The
+#   only event-shaped option that fires is cron. 5min is chosen to
+#   sit BETWEEN ci-required-drift (`:17` hourly) and main-red-watchdog
+#   (`:05` hourly) so the reaper sweeps red before the watchdog files
+#   a `[main-red]` issue (would-be false-positive).
+#
+# What the reaper does each tick:
+#   1. Parse `.gitea/workflows/*.yml`, classify each by whether `on:`
+#      contains a `push:` trigger (see script for workflow_id resolution
+#      including `name:` collision and `/`-in-name fail-loud lints).
+#   2. GET combined status for main HEAD.
+#   3. For each `failure` status whose context ends ` (push)`:
+#      - if workflow has push trigger: PRESERVE (real defect signal).
+#      - if workflow has no push trigger: POST a compensating
+#        `state=success` with the same context and a description that
+#        documents the workaround.
+#
+# What it does NOT do:
+#   - Mutate non-`(push)`-suffix statuses (e.g. `(pull_request)` from
+#     branch_protections required-checks — verified safe 2026-05-11).
+#   - Auto-revert. Same reasoning as main-red-watchdog.
+#   - Cancel runs. The runs themselves stay visible in Actions UI; the
+#     fix is at the commit-status surface only.
+#
+# Removal path: drop this workflow when Gitea ≥ 1.24 ships with a
+# real fix for the hardcoded-suffix bug. Audit issue (filed post-merge)
+# tracks the deletion as a follow-up sweep.
+
+name: status-reaper
+
+# IMPORTANT — Gitea 1.22.6 parser quirk per
+# `feedback_gitea_workflow_dispatch_inputs_unsupported`: do NOT add an
+# `inputs:` block here. Gitea 1.22.6 rejects the whole workflow as
+# "unknown on type" when `workflow_dispatch.inputs.X` is present.
+on:
+  # SCHEDULE RE-ENABLED 2026-05-12 rev3 — interim disable (mc#645) reverted now that
+  # rev3 widens DEFAULT_SWEEP_LIMIT 10 → 30 (covers retroactive-failure timing window).
+  # Sibling watchdog re-enabled in the same PR with timeout-minutes raised 5 → 15.
+  schedule:
+    # Every 5 minutes. Off-zero alignment with sibling cron workflows:
+    # ci-required-drift (`:17`), main-red-watchdog (`:05`),
+    # railway-pin-audit (`:23`). 5-min cadence gives a tight enough
+    # close on schedule-triggered false-reds that main-red-watchdog
+    # (hourly :05) almost never files an issue on the false case.
+    # rev3 keeps `*/5` unchanged per hongming-pc2 03:25Z review:
+    # "trades window-width-cheap for cadence-loady" — N=30 widens
+    # the lookback cheaply without doubling runner load via `*/2`.
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+# Compensating-status POST needs write on repo statuses; no other
+# write surface is touched. checkout still needs `contents: read`.
+permissions:
+  contents: read
+
+# NOTE: NO `concurrency:` block is intentional.
+# Gitea 1.22.6 doesn't honor `cancel-in-progress: false`: queued ticks
+# of the same group get cancelled-with-started=0 instead of waiting
+# (DB-verified 2026-05-12, runs 16053/16085 of status-reaper.yml).
+# The reaper's POST /statuses/{sha} is idempotent — Gitea de-dups by
+# context — so concurrent ticks are safe; accept them rather than
+# serialise via the broken mechanism.
+
+jobs:
+  reap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check out repo at default-branch HEAD
+        # BASE checkout per `feedback_pull_request_target_workflow_from_base`.
+        # The script reads .gitea/workflows/*.yml from the working tree to
+        # classify trigger sets; we must read main's CURRENT state, not
+        # the SHA a stale schedule fired against.
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Set up Python (PyYAML for workflow `on:` parse)
+        # Pinned to 3.12 to match sibling watchdog / ci-required-drift.
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - name: Install PyYAML
+        # PyYAML is needed because shell-grep on `on:` misses list/string
+        # forms and nested `push: { paths: ... }`. Same install pattern
+        # as ci-required-drift.yml (sub-2s install, no wheel cache).
+        run: python -m pip install --quiet 'PyYAML==6.0.2'
+
+      - name: Compensate operational push-suffix failures on main
+        env:
+          # claude-status-reaper persona token; provisioned by sibling
+          # aefaac1b 2026-05-11. Owns write:repository scope to POST
+          # /statuses/{sha} but NOTHING ELSE
+          # (`feedback_per_agent_gitea_identity_default`).
+          GITEA_TOKEN: ${{ secrets.STATUS_REAPER_TOKEN }}
+          GITEA_HOST: git.moleculesai.app
+          REPO: ${{ github.repository }}
+          WATCH_BRANCH: ${{ github.event.repository.default_branch }}
+          WORKFLOWS_DIR: .gitea/workflows
+        run: python3 .gitea/scripts/status-reaper.py

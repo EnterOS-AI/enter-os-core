@@ -34,6 +34,17 @@ WS_DIR="${2:?Missing workspace-templates dir}"
 ORG_DIR="${3:?Missing org-templates dir}"
 PLUGINS_DIR="${4:?Missing plugins dir}"
 
+# Strip JSON5-style // comments from manifest.json before parsing.
+# The automated Integration Tester appends a trailing comment
+# (// Triggered by ... ) which is valid JSON5 but not standard JSON.
+# jq's default parser rejects it. This sed removes only full-line comments
+# (lines starting with optional whitespace followed by //) before jq reads the file.
+_strip_comments() {
+    # Remove full-line // comments (whitespace-safe); pass-through for non-comment lines
+    sed 's/^[[:space:]]*\/\/.*//' "$MANIFEST"
+}
+MANIFEST_JSON="$(_strip_comments)"
+
 EXPECTED=0
 CLONED=0
 
@@ -88,15 +99,15 @@ clone_category() {
     mkdir -p "$target_dir"
 
     local count
-    count=$(jq -r ".${category} | length" "$MANIFEST")
+    count=$(echo "$MANIFEST_JSON" | jq -r ".${category} | length")
     EXPECTED=$((EXPECTED + count))
 
     local i=0
     while [ "$i" -lt "$count" ]; do
         local name repo ref
-        name=$(jq -r ".${category}[$i].name" "$MANIFEST")
-        repo=$(jq -r ".${category}[$i].repo" "$MANIFEST")
-        ref=$(jq -r ".${category}[$i].ref // \"main\"" "$MANIFEST")
+        name=$(echo "$MANIFEST_JSON" | jq -r ".${category}[$i].name")
+        repo=$(echo "$MANIFEST_JSON" | jq -r ".${category}[$i].repo")
+        ref=$(echo "$MANIFEST_JSON" | jq -r ".${category}[$i].ref // \"main\"")
 
         # Idempotent: skip if the target already looks populated. Lets the
         # README quickstart rerun setup.sh safely without having to delete

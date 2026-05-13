@@ -3,10 +3,11 @@
  * Tests for ThemeToggle component.
  *
  * Covers: renders all three options, aria radiogroup semantics,
- * aria-checked per option, setTheme calls on click, custom className prop.
+ * aria-checked per option, setTheme calls on click, keyboard navigation
+ * (arrow keys, Home/End), focus-visible rings, custom className prop.
  */
 import React from "react";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, act } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeToggle } from "../ThemeToggle";
 import * as themeProvider from "@/lib/theme-provider";
@@ -128,6 +129,86 @@ describe("ThemeToggle — interaction", () => {
     render(<ThemeToggle />);
     fireEvent.click(screen.getByRole("radio", { name: "Light" }));
     expect(mockSetTheme).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ThemeToggle — keyboard navigation (WCAG 2.1.1 / ARIA radiogroup)", () => {
+  beforeEach(() => {
+    vi.mocked(themeProvider.useTheme).mockReturnValue({
+      theme: "dark",
+      resolvedTheme: "dark",
+      setTheme: mockSetTheme,
+    });
+  });
+
+  it("moves to the next option on ArrowRight and wraps around", () => {
+    render(<ThemeToggle />);
+    const radios = screen.getAllByRole("radio");
+    // dark (index 2) is current; ArrowRight should wrap to light (index 0)
+    act(() => { radios[2].focus(); });
+    fireEvent.keyDown(radios[2], { key: "ArrowRight" });
+    expect(mockSetTheme).toHaveBeenCalledWith("light");
+  });
+
+  it("moves to the previous option on ArrowLeft", () => {
+    vi.mocked(themeProvider.useTheme).mockReturnValue({
+      theme: "light",
+      resolvedTheme: "light",
+      setTheme: mockSetTheme,
+    });
+    render(<ThemeToggle />);
+    const radios = screen.getAllByRole("radio");
+    // light (index 0) is current; ArrowLeft should go to dark (index 2)
+    act(() => { radios[0].focus(); });
+    fireEvent.keyDown(radios[0], { key: "ArrowLeft" });
+    expect(mockSetTheme).toHaveBeenCalledWith("dark");
+  });
+
+  it("moves to the next option on ArrowDown", () => {
+    vi.mocked(themeProvider.useTheme).mockReturnValue({
+      theme: "light",
+      resolvedTheme: "light",
+      setTheme: mockSetTheme,
+    });
+    render(<ThemeToggle />);
+    const radios = screen.getAllByRole("radio");
+    // light (index 0) is current; ArrowDown should go to system (index 1)
+    act(() => { radios[0].focus(); });
+    fireEvent.keyDown(radios[0], { key: "ArrowDown" });
+    expect(mockSetTheme).toHaveBeenCalledWith("system");
+  });
+
+  it("jumps to the first option on Home", () => {
+    vi.mocked(themeProvider.useTheme).mockReturnValue({
+      theme: "dark",
+      resolvedTheme: "dark",
+      setTheme: mockSetTheme,
+    });
+    render(<ThemeToggle />);
+    const radios = screen.getAllByRole("radio");
+    act(() => { radios[2].focus(); });
+    fireEvent.keyDown(radios[2], { key: "Home" });
+    expect(mockSetTheme).toHaveBeenCalledWith("light");
+  });
+
+  it("jumps to the last option on End", () => {
+    vi.mocked(themeProvider.useTheme).mockReturnValue({
+      theme: "light",
+      resolvedTheme: "light",
+      setTheme: mockSetTheme,
+    });
+    render(<ThemeToggle />);
+    const radios = screen.getAllByRole("radio");
+    act(() => { radios[0].focus(); });
+    fireEvent.keyDown(radios[0], { key: "End" });
+    expect(mockSetTheme).toHaveBeenCalledWith("dark");
+  });
+
+  it("does nothing on unrelated keys", () => {
+    render(<ThemeToggle />);
+    const radios = screen.getAllByRole("radio");
+    fireEvent.keyDown(radios[0], { key: "Enter" });
+    expect(mockSetTheme).not.toHaveBeenCalled();
   });
 });
 

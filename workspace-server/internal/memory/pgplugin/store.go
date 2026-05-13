@@ -80,7 +80,7 @@ func (s *Store) PatchNamespace(ctx context.Context, name string, body contract.N
 		}
 		parts = append(parts, fmt.Sprintf("metadata = $%d", idx))
 		args = append(args, metadata)
-		idx++
+		idx++ // advance so subsequent fields (if any) get correct positional index
 	}
 	query := fmt.Sprintf(`
 		UPDATE memory_namespaces SET %s
@@ -294,7 +294,9 @@ func (s *Store) Search(ctx context.Context, body contract.SearchRequest) (*contr
 
 // --- Helpers ---
 
-func scanNamespace(row interface{ Scan(dest ...interface{}) error }) (*contract.Namespace, error) {
+func scanNamespace(row interface {
+	Scan(dest ...interface{}) error
+}) (*contract.Namespace, error) {
 	var ns contract.Namespace
 	var kindStr string
 	var expires sql.NullTime
@@ -315,7 +317,9 @@ func scanNamespace(row interface{ Scan(dest ...interface{}) error }) (*contract.
 	return &ns, nil
 }
 
-func scanMemory(row interface{ Scan(dest ...interface{}) error }) (*contract.Memory, error) {
+func scanMemory(row interface {
+	Scan(dest ...interface{}) error
+}) (*contract.Memory, error) {
 	var m contract.Memory
 	var kindStr, sourceStr string
 	var expires sql.NullTime
@@ -375,7 +379,7 @@ func vectorString(v []float32) string {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		b.WriteString(fmt.Sprintf("%g", x))
+		fmt.Fprintf(&b, "%g", x)
 	}
 	b.WriteByte(']')
 	return b.String()

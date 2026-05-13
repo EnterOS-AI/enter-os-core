@@ -1,0 +1,113 @@
+# gate-check-v3 — automated PR gate detector
+#
+# Runs on every open PR (push/synchronize) and hourly via cron.
+# Posts a structured [gate-check-v3] STATUS: comment on the PR.
+#
+# Inputs:
+#   PR_NUMBER  — set via ${{ github.event.pull_request.number }} from the trigger
+#   POST_COMMENT — "true" to post/update comment on PR
+#
+# Gating logic (MVP signals 1,2,3,6):
+#   1. Author-aware agent-tag comment scan
+#   2. REQUEST_CHANGES reviews state machine
+#   3. Staleness detection (SOP-12: review.commit_id != PR.head_sha + >1 working day)
+#   6. CI required-checks awareness
+#
+# Exit code: 0=CLEAR, 1=BLOCKED, 2=ERROR
+
+name: gate-check-v3
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+  schedule:
+    # Hourly: refresh all open PRs
+    - cron: '8 * * * *'
+  # NOTE: `workflow_dispatch.inputs` block intentionally omitted.
+  # Gitea 1.22.6 parser rejects `workflow_dispatch.inputs.X` with
+  # "unknown on type" — it mis-treats the inputs sub-keys as top-level
+  # `on:` event types. Dropping the inputs block restores parsing.
+  # Manual dispatch from the Gitea UI works without the inputs schema
+  # (github.event.inputs.X returns empty); the script falls back to
+  # iterating all open PRs when PR_NUMBER is empty.
+  workflow_dispatch:
+
+permissions:
+  # read: contents — for checkout (base ref, not PR head for security)
+  # read: pull-requests — for reading PR info via API
+  # write: pull-requests — for posting/updating gate-check comments
+  #   Without this the token cannot POST/PATCH /issues/comments → 403.
+  contents: read
+  pull-requests: write
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  gate-check:
+    runs-on: ubuntu-latest
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true  # Never block on our own detector failing
+    steps:
+      - name: Check out BASE ref (never PR-head under pull_request_target)
+        # pull_request_target runs with repo secrets-context, so checking out
+        # the PR HEAD would execute PR-branch gate_check.py with secrets.
+        # Fix: always load gate_check.py from the trusted base/default ref.
+        # Bug-1 (self-loop exclusion) + Bug-3 (403→exit0) from #547 are
+        # kept; only this checkout-ref regresses to pre-#547 behavior.
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.ref_name }}
+
+      - name: Run gate-check-v3 (single PR mode)
+        if: github.event_name == 'pull_request_target' || github.event.inputs.pr_number != ''
+        env:
+          GITEA_TOKEN: ${{ secrets.SOP_TIER_CHECK_TOKEN || secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+          POST_COMMENT: ${{ github.event.inputs.post_comment || 'true' }}
+        run: |
+          set -euo pipefail
+          python3 tools/gate-check-v3/gate_check.py \
+            --repo "${{ github.repository }}" \
+            --pr "$PR_NUMBER" \
+            $([ "$POST_COMMENT" = "true" ] && echo "--post-comment")
+          echo "verdict=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Run gate-check-v3 (all open PRs — cron mode)
+        if: github.event_name == 'schedule'
+        env:
+          GITEA_TOKEN: ${{ secrets.SOP_TIER_CHECK_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Fetch all open PRs and run gate-check on each
+          # socket.setdefaulttimeout(15): defence-in-depth for missing SOP_TIER_CHECK_TOKEN.
+          # gate_check.py uses timeout=15 on every urlopen call; this catches the
+          # inline Python polling loop too (issue #603).
+          pr_numbers=$(python3 <<'PY'
+          import json
+          import os
+          import socket
+          import urllib.request
+
+          socket.setdefaulttimeout(15)
+          token = os.environ["GITEA_TOKEN"]
+          repo = os.environ["REPO"]
+          req = urllib.request.Request(
+              f"https://git.moleculesai.app/api/v1/repos/{repo}/pulls?state=open&limit=100",
+              headers={"Authorization": f"token {token}", "Accept": "application/json"},
+          )
+          with urllib.request.urlopen(req) as r:
+              prs = json.loads(r.read())
+          for pr in prs:
+              print(pr["number"])
+          PY
+          )
+          for pr in $pr_numbers; do
+            echo "Checking PR #$pr..."
+            python3 tools/gate-check-v3/gate_check.py \
+              --repo "${{ github.repository }}" \
+              --pr "$pr" \
+              --post-comment \
+              || true
+          done

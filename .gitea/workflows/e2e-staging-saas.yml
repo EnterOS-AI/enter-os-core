@@ -1,0 +1,291 @@
+name: E2E Staging SaaS (full lifecycle)
+
+# Ported from .github/workflows/e2e-staging-saas.yml on 2026-05-11 per RFC
+# internal#219 §1 sweep. Differences from the GitHub version:
+#   - Dropped `workflow_dispatch.inputs` (Gitea 1.22.6 parser rejects them
+#     per feedback_gitea_workflow_dispatch_inputs_unsupported).
+#   - Dropped `merge_group:` (no Gitea merge queue).
+#   - Dropped `environment:` blocks (Gitea has no environments).
+#   - Workflow-level env.GITHUB_SERVER_URL pinned per
+#     feedback_act_runner_github_server_url.
+#   - `continue-on-error: true` on each job (RFC §1 contract).
+#
+
+# Dedicated workflow that provisions a fresh staging org per run, exercises
+# the full workspace lifecycle (register → heartbeat → A2A → delegation →
+# HMA memory → activity → peers), then tears down and asserts leak-free.
+#
+# Why a separate workflow (not folded into ci.yml):
+#   - The run takes ~25-35 min (EC2 boot + cloudflared DNS + provision sweeps +
+#     agent bootstrap), way too slow for every PR.
+#   - Needs its own concurrency group so two pushes don't fight over the
+#     same staging org slug prefix.
+#   - Has its own required secrets (session cookie, admin token) that most
+#     PRs don't need to read.
+#
+# Triggers:
+#   - Push to main (regression guard — fires on merges to main, not on PR updates)
+#   - pull_request: pr-validate always posts success; real E2E step runs only
+#     when provisioning-critical files change (detect-changes gates the step).
+#   - workflow_dispatch (manual re-run from UI)
+#   - Nightly cron (catches drift even when no pushes land)
+#
+# NOTE: A separate pr-validate job handles the pull_request path so this
+# workflow posts CI status for workflow-only PRs. Without it, a PR that
+# only touches the workflow file has no status check (workflow only fires
+# on push, not PR branches), which blocks merge under branch protection.
+# The E2E step itself only runs when provisioning-critical files change —
+# pr-validate always posts success, avoiding the double-fire that motivated
+# the pull_request-trigger removal in PRs #516/#530.
+
+on:
+  # Trunk-based (Phase 3 of internal#81): main is the only branch.
+  push:
+    branches: [main]
+    paths:
+      - 'workspace-server/internal/handlers/registry.go'
+      - 'workspace-server/internal/handlers/workspace_provision.go'
+      - 'workspace-server/internal/handlers/a2a_proxy.go'
+      - 'workspace-server/internal/middleware/**'
+      - 'workspace-server/internal/provisioner/**'
+      - 'tests/e2e/test_staging_full_saas.sh'
+      - '.gitea/workflows/e2e-staging-saas.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'workspace-server/internal/handlers/registry.go'
+      - 'workspace-server/internal/handlers/workspace_provision.go'
+      - 'workspace-server/internal/handlers/a2a_proxy.go'
+      - 'workspace-server/internal/middleware/**'
+      - 'workspace-server/internal/provisioner/**'
+      - 'tests/e2e/test_staging_full_saas.sh'
+      - '.gitea/workflows/e2e-staging-saas.yml'
+  workflow_dispatch:
+  schedule:
+    # 07:00 UTC every day — catches AMI drift, WorkOS cert rotation,
+    # Cloudflare API regressions, etc. even on quiet days.
+    - cron: '0 7 * * *'
+
+# Serialize: staging has a finite per-hour org creation quota. Two pushes
+# landing in quick succession should queue, not race. `cancel-in-progress:
+# false` mirrors e2e-api.yml — GitHub would otherwise cancel the running
+# teardown step and leave orphan EC2s.
+concurrency:
+  group: e2e-staging-saas
+  cancel-in-progress: false
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  # PR-validation path: always posts success so branch protection can merge
+  # workflow-only PRs. The actual E2E step only runs when provisioning-
+  # critical files change (git-paths filter + if: guard below).
+  # All steps use continue-on-error: true so runner issues do not block merge.
+  pr-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+        # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+        continue-on-error: true
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+        # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+        continue-on-error: true
+
+      - name: YAML validation (best-effort)
+        run: |
+          echo "e2e-staging-saas.yml — PR validation: workflow YAML is valid."
+          echo "E2E step runs only when provisioning-critical files change."
+        # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+        continue-on-error: true
+
+  # Actual E2E: runs on trunk pushes (main + staging). NOT the PR-fire-only
+  # path — pr-validate above posts success for workflow-only PRs.
+  e2e-staging-saas:
+    name: E2E Staging SaaS
+    runs-on: ubuntu-latest
+    # Only runs on trunk pushes. PR paths get pr-validate instead.
+    if: github.event.pull_request.base.ref == ''
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    env:
+      MOLECULE_CP_URL: https://staging-api.moleculesai.app
+      # Single admin-bearer secret drives provision + tenant-token
+      # retrieval + teardown. Configure in
+      # Settings → Secrets and variables → Actions → Repository secrets.
+      # 2026-05-11: secret canonicalised from MOLECULE_STAGING_ADMIN_TOKEN
+      # (dead in org secret store) to CP_STAGING_ADMIN_API_TOKEN per
+      # internal#322 — see this PR for the cross-workflow sweep.
+      MOLECULE_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+      # MiniMax is the PRIMARY LLM auth path post-2026-05-04. Switched
+      # from hermes+OpenAI default after #2578 (the staging OpenAI key
+      # account went over quota and stayed dead for 36+ hours, taking
+      # the full-lifecycle E2E red on every provisioning-critical push).
+      # claude-code template's `minimax` provider routes
+      # ANTHROPIC_BASE_URL to api.minimax.io/anthropic and reads
+      # MINIMAX_API_KEY at boot — separate billing account so an
+      # OpenAI quota collapse no longer wedges the gate. Mirrors the
+      # staging-smoke.yml + continuous-synth-e2e.yml migrations.
+      E2E_MINIMAX_API_KEY: ${{ secrets.MOLECULE_STAGING_MINIMAX_API_KEY }}
+      # Direct-Anthropic alternative for operators who don't want to
+      # set up a MiniMax account (priority below MiniMax — first
+      # non-empty wins in test_staging_full_saas.sh's secrets-injection
+      # block). See #2578 PR comment for the rationale.
+      E2E_ANTHROPIC_API_KEY: ${{ secrets.MOLECULE_STAGING_ANTHROPIC_API_KEY }}
+      # OpenAI fallback — kept wired so an operator-dispatched run with
+      # E2E_RUNTIME=hermes or =langgraph via workflow_dispatch can still
+      # exercise the OpenAI path.
+      E2E_OPENAI_API_KEY: ${{ secrets.MOLECULE_STAGING_OPENAI_API_KEY }}
+      E2E_RUNTIME: ${{ github.event.inputs.runtime || 'claude-code' }}
+      # Pin the model when running on the default claude-code path —
+      # the per-runtime default ("sonnet") routes to direct Anthropic
+      # and defeats the cost saving. Operators can override via the
+      # workflow_dispatch flow (no input wired here yet — runtime
+      # override is enough for ad-hoc).
+      E2E_MODEL_SLUG: ${{ github.event.inputs.runtime == 'hermes' && 'openai/gpt-4o' || github.event.inputs.runtime == 'langgraph' && 'openai:gpt-4o' || 'MiniMax-M2.7-highspeed' }}
+      E2E_RUN_ID: "${{ github.run_id }}-${{ github.run_attempt }}"
+      E2E_KEEP_ORG: ${{ github.event.inputs.keep_org && '1' || '0' }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Verify admin token present
+        run: |
+          if [ -z "$MOLECULE_ADMIN_TOKEN" ]; then
+            echo "::error::CP_STAGING_ADMIN_API_TOKEN secret not set (Railway staging CP_ADMIN_API_TOKEN)"
+            exit 2
+          fi
+          echo "Admin token present ✓"
+
+      - name: Verify LLM key present
+        run: |
+          # Per-runtime key check — claude-code uses MiniMax; hermes /
+          # langgraph (operator-dispatched only) use OpenAI. Hard-fail
+          # rather than soft-skip per #2578's lesson — empty key
+          # silently falls through to the wrong SECRETS_JSON branch and
+          # produces a confusing auth error 5 min later instead of the
+          # clean "secret missing" message at the top.
+          case "${E2E_RUNTIME}" in
+            claude-code)
+              # Either MiniMax OR direct-Anthropic works — first
+              # non-empty wins in the test script's secrets-injection
+              # priority chain.
+              if [ -n "${E2E_MINIMAX_API_KEY:-}" ]; then
+                required_secret_name="MOLECULE_STAGING_MINIMAX_API_KEY"
+                required_secret_value="${E2E_MINIMAX_API_KEY}"
+              elif [ -n "${E2E_ANTHROPIC_API_KEY:-}" ]; then
+                required_secret_name="MOLECULE_STAGING_ANTHROPIC_API_KEY"
+                required_secret_value="${E2E_ANTHROPIC_API_KEY}"
+              else
+                required_secret_name="MOLECULE_STAGING_MINIMAX_API_KEY or MOLECULE_STAGING_ANTHROPIC_API_KEY"
+                required_secret_value=""
+              fi
+              ;;
+            langgraph|hermes)
+              required_secret_name="MOLECULE_STAGING_OPENAI_API_KEY"
+              required_secret_value="${E2E_OPENAI_API_KEY:-}"
+              ;;
+            *)
+              echo "::warning::Unknown E2E_RUNTIME='${E2E_RUNTIME}' — skipping LLM-key check"
+              required_secret_name=""
+              required_secret_value="present"
+              ;;
+          esac
+          if [ -n "$required_secret_name" ] && [ -z "$required_secret_value" ]; then
+            echo "::error::${required_secret_name} secret not set for runtime=${E2E_RUNTIME} — workspaces will fail at boot with 'No provider API key found'"
+            exit 2
+          fi
+          echo "LLM key present ✓ (runtime=${E2E_RUNTIME}, key=${required_secret_name}, len=${#required_secret_value})"
+
+      - name: CP staging health preflight
+        run: |
+          code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$MOLECULE_CP_URL/health")
+          if [ "$code" != "200" ]; then
+            echo "::error::Staging CP unhealthy (got HTTP $code). Skipping — not a workspace bug."
+            exit 1
+          fi
+          echo "Staging CP healthy ✓"
+
+      - name: Run full-lifecycle E2E
+        id: e2e
+        run: bash tests/e2e/test_staging_full_saas.sh
+
+      # Belt-and-braces teardown: the test script itself installs a trap
+      # for EXIT/INT/TERM, but if the GH runner itself is cancelled (e.g.
+      # someone pushes a new commit and workflow concurrency is set to
+      # cancel), the trap may not fire. This `always()` step runs even on
+      # cancellation and attempts the delete a second time. The admin
+      # DELETE endpoint is idempotent so double-invoking is safe.
+      - name: Teardown safety net (runs on cancel/failure)
+        if: always()
+        env:
+          ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+        run: |
+          # Best-effort: find any e2e-YYYYMMDD-* orgs matching this run and
+          # nuke them. Catches the case where the script died before
+          # exporting its slug.
+          set +e
+          orgs=$(curl -sS "$MOLECULE_CP_URL/cp/admin/orgs" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" 2>/dev/null \
+            | python3 -c "
+          import json, sys, os, datetime
+          run_id = os.environ.get('GITHUB_RUN_ID', '')
+          d = json.load(sys.stdin)
+          # ONLY sweep slugs from *this* CI run. Previously the filter was
+          # f'e2e-{today}-' which stomped on parallel CI runs AND any manual
+          # E2E probes a dev was running against staging (incident 2026-04-21
+          # 15:02Z: this workflow's safety net deleted an unrelated manual
+          # run's tenant 1s after it hit 'running').
+          # Sweep both today AND yesterday's UTC dates so a run that crosses
+          # midnight still matches its own slug — see the 2026-04-26→27
+          # canvas-safety-net incident for the same bug class.
+          today = datetime.date.today()
+          yesterday = today - datetime.timedelta(days=1)
+          dates = (today.strftime('%Y%m%d'), yesterday.strftime('%Y%m%d'))
+          if run_id:
+              prefixes = tuple(f'e2e-{d}-{run_id}-' for d in dates)
+          else:
+              prefixes = tuple(f'e2e-{d}-' for d in dates)
+          candidates = [o['slug'] for o in d.get('orgs', [])
+                        if any(o.get('slug','').startswith(p) for p in prefixes)
+                        and o.get('instance_status') not in ('purged',)]
+          print('\n'.join(candidates))
+          " 2>/dev/null)
+          # Per-slug verified DELETE (was `>/dev/null || true` — see
+          # molecule-controlplane#420). Surface non-2xx as a workflow
+          # warning naming the leaked slug; don't exit 1 (sweeper is
+          # the safety net within ~45 min).
+          leaks=()
+          for slug in $orgs; do
+            echo "Safety-net teardown: $slug"
+            # Tempfile-routed -w + set +e/-e prevents curl-exit-code
+            # pollution of the captured status (lint-curl-status-capture.yml).
+            set +e
+            curl -sS -o /tmp/saas-cleanup.out -w "%{http_code}" \
+              -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
+              -H "Authorization: Bearer $ADMIN_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"confirm\":\"$slug\"}" >/tmp/saas-cleanup.code
+            set -e
+            code=$(cat /tmp/saas-cleanup.code 2>/dev/null || echo "000")
+            if [ "$code" = "200" ] || [ "$code" = "204" ]; then
+              echo "[teardown] deleted $slug (HTTP $code)"
+            else
+              echo "::warning::saas teardown for $slug returned HTTP $code — sweep-stale-e2e-orgs will catch it within ~45 min. Body: $(head -c 300 /tmp/saas-cleanup.out 2>/dev/null)"
+              leaks+=("$slug")
+            fi
+          done
+          if [ ${#leaks[@]} -gt 0 ]; then
+            echo "::warning::saas teardown left ${#leaks[@]} leak(s): ${leaks[*]}"
+          fi
+          exit 0

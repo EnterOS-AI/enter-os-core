@@ -58,6 +58,7 @@ const SAMPLE_INFO = {
   hermes_channel_snippet: "# hermes ws=ws-test",
   codex_snippet: "# codex ws=ws-test",
   openclaw_snippet: "# openclaw ws=ws-test",
+  kimi_snippet: "# kimi ws=ws-test",
 };
 
 describe("ExternalConnectionSection", () => {

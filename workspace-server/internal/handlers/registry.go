@@ -158,7 +158,7 @@ func (h *RegistryHandler) resolveDeliveryMode(ctx context.Context, workspaceID, 
 	if existing.Valid && existing.String != "" {
 		return existing.String, nil
 	}
-	if runtime.Valid && runtime.String == "external" {
+	if runtime.Valid && isExternalLikeRuntime(runtime.String) {
 		return models.DeliveryModePoll, nil
 	}
 	return models.DeliveryModePush, nil

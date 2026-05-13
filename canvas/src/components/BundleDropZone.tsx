@@ -43,7 +43,9 @@ export function BundleDropZone() {
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (e.dataTransfer.types.includes("Files")) {
+    // Guard against jsdom (no File API / dataTransfer.types) and other
+    // environments where dataTransfer may be null/undefined.
+    if (e.dataTransfer?.types?.includes("Files")) {
       setIsDragging(true);
     }
   }, []);
@@ -58,6 +60,7 @@ export function BundleDropZone() {
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(false);
+    if (!e.dataTransfer?.files?.length) return;
     const file = Array.from(e.dataTransfer.files).find(
       (f) => f.name.endsWith(".bundle.json")
     );

@@ -189,6 +189,49 @@ describe("TermsGate — accept flow", () => {
   });
 });
 
+describe("TermsGate — I agree button accessibility", () => {
+  it("shows ellipsis on the I agree button while POST is in flight", async () => {
+    // Deferred POST so we can control when it resolves and observe the
+    // mid-flight button state without fake timers.
+    let resolvePost: (r: Response) => void;
+    const postDeferred = new Promise<Response>((r) => { resolvePost = r; });
+    // Intercept: terms-status → pending (first fetch), POST deferred (second).
+    mockFetch(new Response(JSON.stringify({ accepted: false }), { status: 200 }));
+    vi.spyOn(global, "fetch").mockImplementation(
+      () => postDeferred as unknown as Promise<Response>
+    );
+
+    render(<TermsGate><div>App content</div></TermsGate>);
+    await waitFor(() => screen.getByRole("dialog"));
+    fireEvent.click(screen.getByRole("button", { name: /i agree/i }));
+
+    // Ellipsis replaces "I agree" while POST is in flight
+    expect(screen.queryByRole("button", { name: /i agree/i })).toBeNull();
+    expect(screen.getAllByRole("button").some((b) => b.textContent === "…")).toBeTruthy();
+
+    act(() => { resolvePost!(new Response("ok", { status: 200 })); });
+  });
+
+  it("has aria-disabled while submitting", async () => {
+    let resolvePost: (r: Response) => void;
+    const postDeferred = new Promise<Response>((r) => { resolvePost = r; });
+    mockFetch(new Response(JSON.stringify({ accepted: false }), { status: 200 }));
+    vi.spyOn(global, "fetch").mockImplementation(
+      () => postDeferred as unknown as Promise<Response>
+    );
+
+    render(<TermsGate><div>App content</div></TermsGate>);
+    await waitFor(() => screen.getByRole("dialog"));
+    fireEvent.click(screen.getByRole("button", { name: /i agree/i }));
+
+    // Find the ellipsis button and check aria-disabled
+    const ellipsisBtn = screen.getAllByRole("button").find((b) => b.textContent === "…");
+    expect(ellipsisBtn?.getAttribute("aria-disabled")).toBe("true");
+
+    act(() => { resolvePost!(new Response("ok", { status: 200 })); });
+  });
+});
+
 describe("TermsGate — error state", () => {
   it("shows an error alert when terms-status fetch fails with non-401", async () => {
     mockFetch(new Response("Gateway Timeout", { status: 504 }));

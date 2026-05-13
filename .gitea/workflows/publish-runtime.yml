@@ -12,7 +12,24 @@ name: publish-runtime
 #   - Replaced `github.ref_name` (GitHub-only) with `${GITHUB_REF#refs/tags/}`
 #     — Gitea Actions exposes github.ref (the full ref) but not ref_name
 #   - Dropped `merge_group` trigger (Gitea has no merge queue)
-#   - Dropped `staging` branch trigger (no staging branch exists in this repo)
+#
+# 2026-05-10 (issue #348): originally restored `staging`/`main` branch +
+# `workspace/**` path-filter trigger in PR #349.
+#
+# 2026-05-11 (issue #351): REVERTED the branches+paths trigger from THIS
+# file. Bundling `paths` with `tags` under a single `on.push` key caused
+# Gitea Actions to never dispatch the workflow for tag-push events (0
+# runs in `action_run` for workflow_id='publish-runtime.yml' since the
+# port, including the runtime-v1.0.0 tag — which is why PyPI is still at
+# 0.1.129 despite a v1.0.0 Gitea tag existing).
+#
+# The auto-bump-on-workspace-edit trigger now lives in
+# `.gitea/workflows/publish-runtime-autobump.yml`. That file computes the
+# next version from PyPI's latest and pushes a `runtime-v$VERSION` tag,
+# which THIS file then picks up via the tags-only trigger below.
+#
+# This decoupling means Gitea's path-vs-tag evaluator never has to
+# disambiguate — each file has a single unambiguous trigger shape.
 #
 # PyPI publishing: requires PYPI_TOKEN repository secret (or org-level secret).
 # Set via: repo Settings → Actions → Variables and Secrets → New Secret.
@@ -26,11 +43,17 @@ on:
     tags:
       - "runtime-v*"
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Version to publish (e.g. 0.1.6). Required for manual dispatch."
-        required: true
-        type: string
+  # 2026-05-11 (root cause of #351 / 0 runs ever):
+  # Gitea 1.22.6's workflow parser rejects `workflow_dispatch.inputs.version`
+  # with "unknown on type" — it mis-treats the inputs sub-keys as top-level
+  # `on:` event types. Log line:
+  #   actions/workflows.go:DetectWorkflows() [W] ignore invalid workflow
+  #   "publish-runtime.yml": unknown on type: map["version": {...}]
+  # That `[W] ignore invalid workflow` is silent UX — the workflow never
+  # registers, so it never fires for ANY event (push.tags included).
+  # Removing the inputs block restores parsing. Manual dispatch from the
+  # Gitea UI now triggers the PyPI auto-bump fallback in `Derive version`
+  # below (no `inputs.version` to read).
 
 permissions:
   contents: read
@@ -55,20 +78,15 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Derive version (tag, manual input, or PyPI auto-bump)
+      - name: Derive version (tag or PyPI auto-bump)
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.version }}"
-          elif echo "$GITHUB_REF" | grep -q "^refs/tags/runtime-v"; then
+          if echo "$GITHUB_REF" | grep -q "^refs/tags/runtime-v"; then
             # Tag is `runtime-vX.Y.Z` — strip the prefix.
             VERSION="${GITHUB_REF#refs/tags/runtime-v}"
           else
-            # Fallback: derive from PyPI latest + patch bump.
-            # (The staging-push auto-bump trigger is dropped on Gitea —
-            # no staging branch exists. This fallback path is kept for
-            # robustness if a future automation uses workflow_dispatch without
-            # an explicit version input.)
+            # workflow_dispatch path (no inputs supported on Gitea 1.22.6) or
+            # any other non-tag trigger: derive from PyPI latest + patch bump.
             LATEST=$(curl -fsS --retry 3 https://pypi.org/pypi/molecule-ai-workspace-runtime/json \
               | python -c "import sys,json; print(json.load(sys.stdin)['info']['version'])")
             MAJOR=$(echo "$LATEST" | cut -d. -f1)
@@ -121,6 +139,14 @@ jobs:
           /tmp/smoke/bin/python "$GITHUB_WORKSPACE/scripts/wheel_smoke.py"
 
       - name: Publish to PyPI
+        # working-directory matches the preceding Build/Verify steps. Without
+        # this, twine runs from the default workspace checkout dir where
+        # `dist/` doesn't exist and fails with:
+        #   ERROR InvalidDistribution: Cannot find file (or expand pattern): 'dist/*'
+        # Caught on the first-ever successful dispatch of this workflow
+        # (run 5097, 2026-05-11 02:08Z) — every other step in the publish
+        # job already had this working-directory; Publish was missing it.
+        working-directory: ${{ runner.temp }}/runtime-build
         env:
           # PYPI_TOKEN: repository secret scoped to molecule-ai-workspace-runtime.
           # Set via: Settings → Actions → Variables and Secrets → New Secret.
@@ -181,13 +207,23 @@ jobs:
 
           # Stage (b): download wheel + SHA256 compare against what we built.
           # Catches Fastly stale-content serving old bytes under a new version URL.
-          HASH=$(python -m pip download \
-                    --no-deps \
-                    --no-cache-dir \
-                    --dest /tmp/wheel-probe \
-                    "molecule-ai-workspace-runtime==${RUNTIME_VERSION}" \
-                    2>/dev/null \
-                 && sha256sum /tmp/wheel-probe/*.whl | awk '{print $1}')
+          #
+          # Caught run 5196 (first-ever successful publish, 2026-05-11): the
+          # previous one-liner `HASH=$(pip download ... && sha256sum ...)`
+          # captured pip's stdout (`Collecting molecule-ai-workspace-runtime
+          # ==X.Y.Z`) into HASH, then the SHA comparison failed against the
+          # leaked `Collecting...` string. `2>/dev/null` silences stderr but
+          # NOT stdout; pip writes its progress to stdout by default.
+          # Fix: split into two steps, silence pip's stdout explicitly, capture
+          # only sha256sum's output into HASH.
+          python -m pip download \
+            --no-deps \
+            --no-cache-dir \
+            --dest /tmp/wheel-probe \
+            --quiet \
+            "molecule-ai-workspace-runtime==${RUNTIME_VERSION}" \
+            >/dev/null 2>&1
+          HASH=$(sha256sum /tmp/wheel-probe/*.whl | awk '{print $1}')
           if [ "$HASH" != "$EXPECTED_SHA256" ]; then
             echo "::error::PyPI propagated $RUNTIME_VERSION but wheel content SHA256 mismatch."
             echo "::error::Expected: $EXPECTED_SHA256"

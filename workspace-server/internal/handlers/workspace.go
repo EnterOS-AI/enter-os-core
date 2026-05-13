@@ -428,13 +428,16 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 	//       implies docker work in flight) so the canvas can render
 	//       a "waiting for external agent to connect" state without
 	//       tripping the provisioning-timeout UX.
-	if payload.External || payload.Runtime == "external" {
+	if payload.External || isExternalLikeRuntime(payload.Runtime) {
 		var connectionToken string
 		if payload.URL != "" {
 			// URL already validated by validateAgentURL above (before BeginTx).
 			// Now persist it: the external URL is set after the workspace row
 			// commits so that a failed URL UPDATE doesn't roll back the row.
-			db.DB.ExecContext(ctx, `UPDATE workspaces SET url = $1, status = $2, runtime = 'external', updated_at = now() WHERE id = $3`, payload.URL, models.StatusOnline, id)
+			// Preserve BYO-compute runtime label (kimi, kimi-cli, external) —
+			// don't coerce to generic "external" so the canvas can show the
+			// correct runtime name in the node card.
+			db.DB.ExecContext(ctx, `UPDATE workspaces SET url = $1, status = $2, runtime = $3, updated_at = now() WHERE id = $4`, payload.URL, models.StatusOnline, normalizeExternalRuntime(payload.Runtime), id)
 			if err := db.CacheURL(ctx, id, payload.URL); err != nil {
 				log.Printf("External workspace: failed to cache URL for %s: %v", id, err)
 			}
@@ -446,7 +449,8 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 			// in awaiting_agent. First POST /registry/register call
 			// from the external agent (with this token + its URL)
 			// flips the row to online.
-			db.DB.ExecContext(ctx, `UPDATE workspaces SET status = $1, runtime = 'external', updated_at = now() WHERE id = $2`, models.StatusAwaitingAgent, id)
+			// Preserve BYO-compute runtime label (kimi, kimi-cli, external).
+			db.DB.ExecContext(ctx, `UPDATE workspaces SET status = $1, runtime = $2, updated_at = now() WHERE id = $3`, models.StatusAwaitingAgent, normalizeExternalRuntime(payload.Runtime), id)
 			tok, tokErr := wsauth.IssueToken(ctx, db.DB, id)
 			if tokErr != nil {
 				log.Printf("External workspace %s: token issuance failed: %v", id, tokErr)

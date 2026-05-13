@@ -91,16 +91,19 @@ export function SearchDialog() {
   if (!open) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-[70] flex items-start justify-center pt-[20vh] bg-black/50 backdrop-blur-sm"
-      onClick={() => setOpen(false)}
-    >
+    <div className="fixed inset-0 z-[70] flex items-start justify-center pt-[20vh]">
+      {/* Backdrop — interactive dismiss area; aria-hidden so screen readers ignore it */}
+      <div
+        className="absolute inset-0 bg-black/50 backdrop-blur-sm cursor-pointer"
+        onClick={() => setOpen(false)}
+        aria-hidden="true"
+      />
+      {/* Dialog */}
       <div
         role="dialog"
         aria-modal="true"
         aria-label="Search workspaces"
-        className="w-[420px] bg-surface/95 backdrop-blur-xl border border-line/60 rounded-2xl shadow-2xl shadow-black/50 overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
+        className="relative z-[71] w-[420px] bg-surface/95 backdrop-blur-xl border border-line/60 rounded-2xl shadow-2xl shadow-black/50 overflow-hidden"
       >
         {/* Search input */}
         <div className="flex items-center gap-3 px-4 py-3 border-b border-line/40">
@@ -144,8 +147,10 @@ export function SearchDialog() {
                 id={`search-result-${node.id}`}
                 role="option"
                 aria-selected={index === focusedIndex}
+                tabIndex={index === focusedIndex ? 0 : -1}
                 onClick={() => handleSelect(node.id)}
-                className={`w-full px-4 py-2.5 flex items-center gap-3 text-left transition-colors ${
+                onFocus={() => { setFocusedIndex(index); inputRef.current?.focus(); }}
+                className={`w-full px-4 py-2.5 flex items-center gap-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface ${
                   index === focusedIndex ? "bg-surface-card/60" : "hover:bg-surface-card/40"
                 }`}
               >

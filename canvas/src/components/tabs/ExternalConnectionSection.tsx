@@ -87,7 +87,7 @@ export function ExternalConnectionSection({ workspaceId }: Props) {
           type="button"
           onClick={showConnection}
           disabled={busy !== null}
-          className="px-3 py-1.5 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid disabled:opacity-30 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+          className="px-3 py-1.5 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid disabled:opacity-30 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
         >
           {busy === "show" ? "Loading…" : "Show connection info"}
         </button>
@@ -95,7 +95,7 @@ export function ExternalConnectionSection({ workspaceId }: Props) {
           type="button"
           onClick={() => setConfirmRotate(true)}
           disabled={busy !== null}
-          className="px-3 py-1.5 bg-red-900/30 hover:bg-red-900/50 border border-red-800/60 text-xs rounded text-bad disabled:opacity-30 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-600/60"
+          className="px-3 py-1.5 bg-red-900/30 hover:bg-red-900/50 border border-red-800/60 text-xs rounded text-bad disabled:opacity-30 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-1"
         >
           {busy === "rotate" ? "Rotating…" : "Rotate credentials"}
         </button>
@@ -124,14 +124,14 @@ export function ExternalConnectionSection({ workspaceId }: Props) {
               <button
                 type="button"
                 onClick={() => setConfirmRotate(false)}
-                className="px-3 py-1.5 bg-surface-card text-xs rounded text-ink-mid"
+                className="px-3 py-1.5 bg-surface-card text-xs rounded text-ink-mid focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={doRotate}
-                className="px-3 py-1.5 bg-red-700 hover:bg-red-600 text-xs rounded text-white"
+                className="px-3 py-1.5 bg-red-700 hover:bg-red-600 text-xs rounded text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-1"
               >
                 Rotate
               </button>

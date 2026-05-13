@@ -365,7 +365,7 @@ jobs:
           cache: pip
           cache-dependency-path: workspace/requirements.txt
       - if: needs.changes.outputs.python == 'true'
-        run: pip install -r requirements.txt pytest pytest-asyncio pytest-cov
+        run: pip install -r requirements.txt pytest pytest-asyncio pytest-cov sqlalchemy>=2.0.0
       # Coverage flags + fail-under floor moved into workspace/pytest.ini
       # (issue #1817) so local `pytest` and CI use identical config.
       - if: needs.changes.outputs.python == 'true'

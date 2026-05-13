@@ -179,6 +179,51 @@ func TestRestartHandler_ExternalRuntimeNoOps(t *testing.T) {
 	}
 }
 
+func TestRestartHandler_KimiRuntimeNoOps(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+
+	mock.ExpectQuery("SELECT status, name, tier, COALESCE").
+		WithArgs("ws-kimi").
+		WillReturnRows(sqlmock.NewRows([]string{"status", "name", "tier", "runtime"}).
+			AddRow("offline", "Kimi Agent", 1, "kimi-cli"))
+
+	mock.ExpectQuery("SELECT parent_id FROM workspaces WHERE id =").
+		WithArgs("ws-kimi").
+		WillReturnRows(sqlmock.NewRows([]string{"parent_id"}))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-kimi"}}
+	c.Request = httptest.NewRequest("POST", "/workspaces/ws-kimi/restart", nil)
+
+	handler.Restart(c)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got, _ := resp["status"].(string); got != "noop" {
+		t.Errorf("expected status=noop, got %v", resp["status"])
+	}
+	if got, _ := resp["runtime"].(string); got != "kimi-cli" {
+		t.Errorf("expected runtime=kimi-cli, got %v", resp["runtime"])
+	}
+	if msg, _ := resp["message"].(string); !strings.Contains(msg, "operator-driven") {
+		t.Errorf("expected message about operator-driven, got %v", resp["message"])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
 func TestRestartHandler_NilProvisionerReturns503(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)

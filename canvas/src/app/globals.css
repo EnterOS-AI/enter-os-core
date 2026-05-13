@@ -274,4 +274,17 @@ body {
   .react-flow__node {
     animation: none !important;
   }
+
+  /* React Flow Controls toolbar buttons — WCAG 2.4.7 focus-visible */
+  .react-flow__controls button:focus-visible {
+    outline: 2px solid var(--accent, #3b5bdb);
+    outline-offset: 2px;
+  }
+
+  /* React Flow Minimap nodes — WCAG 2.4.7 focus-visible */
+  .react-flow__minimap:focus-visible,
+  .react-flow__minimap svg:focus-visible {
+    outline: 2px solid var(--accent, #3b5bdb);
+    outline-offset: 2px;
+  }
 }

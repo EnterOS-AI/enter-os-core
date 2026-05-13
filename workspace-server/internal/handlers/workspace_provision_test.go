@@ -13,7 +13,6 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/plugins"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/provisioner"
-	"github.com/Molecule-AI/molecule-monorepo/platform/pkg/provisionhook"
 	"gopkg.in/yaml.v3"
 )
 
@@ -49,7 +48,7 @@ func TestConfigDirName(t *testing.T) {
 		{"abc-def-ghi", "ws-abc-def-ghi"},
 		{"abcdefghijklmnop", "ws-abcdefghijkl"}, // truncated at 12
 		{"short", "ws-short"},
-		{"123456789012", "ws-123456789012"}, // exactly 12
+		{"123456789012", "ws-123456789012"},  // exactly 12
 		{"1234567890123", "ws-123456789012"}, // 13 chars, truncated
 	}
 
@@ -483,11 +482,11 @@ func TestSanitizeRuntime_Allowlist(t *testing.T) {
 		{"openclaw", "openclaw"},
 		{"hermes", "hermes"},
 		{"codex", "codex"},
-		{"langgraph", "claude-code"},     // deprecated → default
-		{"deepagents", "claude-code"},    // deprecated → default
-		{"crewai", "claude-code"},        // deprecated → default
-		{"autogen", "claude-code"},       // deprecated → default
-		{"not-a-runtime", "claude-code"}, // unknown → default
+		{"langgraph", "claude-code"},       // deprecated → default
+		{"deepagents", "claude-code"},      // deprecated → default
+		{"crewai", "claude-code"},          // deprecated → default
+		{"autogen", "claude-code"},         // deprecated → default
+		{"not-a-runtime", "claude-code"},   // unknown → default
 		{"../../sensitive", "claude-code"}, // path traversal probe → default
 		{"langgraph\nevil", "claude-code"}, // newline injection → default (not in allowlist)
 	}
@@ -533,7 +532,7 @@ func TestSeedInitialMemories_TruncatesOversizedContent(t *testing.T) {
 		},
 		{
 			name:         "well under limit — passes through unchanged",
-			contentLen:     50_000,
+			contentLen:   50_000,
 			expectInsert: true,
 		},
 	}
@@ -1008,13 +1007,6 @@ func TestSeedInitialMemories_OversizedWithSecrets(t *testing.T) {
 // Each test injects a known-internal error and verifies the response body
 // or broadcast payload contains ONLY the generic prod-safe message.
 
-// errInternalDB is a pkg-level error whose .Error() output matches a real
-// postgres driver error shape — used to simulate DB failure without a live DB.
-var errInternalDB = fmt.Errorf("pq: connection refused")
-
-// errInternalOS simulates an OS-level error.
-var errInternalOS = fmt.Errorf("operation failed: no such file or directory")
-
 // captureBroadcaster is a test broadcaster that captures the last data
 // payload passed to RecordAndBroadcast so tests can inspect it. Now
 // satisfies events.EventEmitter (#1814) directly — RecordAndBroadcast
@@ -1022,7 +1014,6 @@ var errInternalOS = fmt.Errorf("operation failed: no such file or directory")
 // WorkspaceHandler paths under test call it.
 type captureBroadcaster struct {
 	lastData map[string]interface{}
-	lastErr  error
 }
 
 // BroadcastOnly is required to satisfy events.EventEmitter. None of the
@@ -1040,46 +1031,6 @@ func (c *captureBroadcaster) RecordAndBroadcast(_ context.Context, _, _ string, 
 		c.lastData = cpy
 	}
 	return nil
-}
-
-// unsafeErrorStrings lists substrings that must NEVER appear in external-facing
-// error responses. Covers DB driver errors, OS errors, and internal paths.
-var unsafeErrorStrings = []string{
-	"pq:",
-	"pq ",
-	"connection refused",
-	"deadlock",
-	"no such file",
-	"/var/",
-	"/tmp/",
-	"postgres",
-	"PostgreSQL",
-	"sql: ",
-	":8080",
-	"127.0.0.1",
-	"localhost",
-	"secret",
-	"token",
-}
-
-// containsUnsafeString checks whether any prohibited substring appears in
-// a string value recursively (handles nested maps for safety).
-func containsUnsafeString(v interface{}) bool {
-	switch v := v.(type) {
-	case string:
-		for _, unsafe := range unsafeErrorStrings {
-			if strings.Contains(v, unsafe) {
-				return true
-			}
-		}
-	case map[string]interface{}:
-		for _, val := range v {
-			if containsUnsafeString(val) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // TestProvisionWorkspace_NoInternalErrorsInBroadcast asserts that provisionWorkspace
@@ -1251,12 +1202,12 @@ func TestProvisionWorkspaceCP_NoInternalErrorsInBroadcast(t *testing.T) {
 			continue
 		}
 		for _, leakMarker := range []string{
-			"t3.large",                // machine type
-			"ami-0abcd1234efgh5678",   // AMI id
-			"vpc-deadbeef",            // VPC id
-			"subnet-cafef00d",         // subnet id
-			"InvalidSubnet.Conflict",  // raw upstream HTTP body
-			"CP API rejected",         // raw error string head
+			"t3.large",               // machine type
+			"ami-0abcd1234efgh5678",  // AMI id
+			"vpc-deadbeef",           // VPC id
+			"subnet-cafef00d",        // subnet id
+			"InvalidSubnet.Conflict", // raw upstream HTTP body
+			"CP API rejected",        // raw error string head
 		} {
 			if strings.Contains(s, leakMarker) {
 				t.Errorf("broadcast leaked %q in payload value %q", leakMarker, s)
@@ -1267,17 +1218,6 @@ func TestProvisionWorkspaceCP_NoInternalErrorsInBroadcast(t *testing.T) {
 		t.Errorf("sqlmock expectations not met: %v", err)
 	}
 }
-
-// mockEnvMutator is a provisionhook.Registry stub that always returns a fixed error.
-type mockEnvMutator struct {
-	returnErr error
-}
-
-func (m *mockEnvMutator) Run(_ context.Context, _ string, _ map[string]string) error {
-	return m.returnErr
-}
-
-func (m *mockEnvMutator) Register(_ provisionhook.EnvMutator) {}
 
 // TestResolveAndStage_NoInternalErrorsInHTTPErr asserts that
 // resolveAndStage never puts internal error detail (resolver error

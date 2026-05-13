@@ -827,14 +827,14 @@ function ErrorMessage({ msg }: { msg: CommMessage }) {
               type="button"
               onClick={handleRestart}
               disabled={restarting}
-              className="px-2 py-0.5 rounded bg-red-900/50 hover:bg-red-800/60 border border-red-700/40 text-[10px] text-red-200 disabled:opacity-50 transition-colors"
+              className="px-2 py-0.5 rounded bg-red-900/50 hover:bg-red-800/60 border border-red-700/40 text-[10px] text-red-200 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-1"
             >
               {restarting ? "Restarting…" : `Restart ${msg.peerName}`}
             </button>
             <button
               type="button"
               onClick={handleOpen}
-              className="px-2 py-0.5 rounded bg-surface-card hover:bg-surface-card border border-line/50 text-[10px] text-ink-mid transition-colors"
+              className="px-2 py-0.5 rounded bg-surface-card hover:bg-surface-card border border-line/50 text-[10px] text-ink-mid transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
             >
               Open {msg.peerName}
             </button>
