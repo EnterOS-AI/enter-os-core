@@ -33,7 +33,7 @@ func TestLoadRuntimesFromManifest_StripsDefaultSuffix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	want := []string{"claude-code", "langgraph", "hermes", "external"}
+	want := []string{"claude-code", "langgraph", "hermes", "external", "kimi", "kimi-cli"}
 	for _, w := range want {
 		if _, ok := got[w]; !ok {
 			t.Errorf("want runtime %q in set, missing. got=%v", w, keys(got))
@@ -59,8 +59,10 @@ func TestLoadRuntimesFromManifest_ExternalAlwaysInjected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if _, ok := got["external"]; !ok {
-		t.Errorf("external must be injected even when absent from manifest: %v", keys(got))
+	for _, must := range []string{"external", "kimi", "kimi-cli"} {
+		if _, ok := got[must]; !ok {
+			t.Errorf("%s must be injected even when absent from manifest: %v", must, keys(got))
+		}
 	}
 }
 
@@ -95,7 +97,7 @@ func TestRealManifestParses(t *testing.T) {
 		t.Fatalf("real manifest load: %v", err)
 	}
 	// Core runtimes we always expect to ship.
-	for _, must := range []string{"langgraph", "hermes", "claude-code", "external"} {
+	for _, must := range []string{"langgraph", "hermes", "claude-code", "external", "kimi", "kimi-cli"} {
 		if _, ok := got[must]; !ok {
 			t.Errorf("real manifest missing runtime %q — got=%v", must, keys(got))
 		}

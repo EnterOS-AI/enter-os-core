@@ -9,6 +9,8 @@ const RUNTIME_NAMES: Record<string, string> = {
   openclaw: "OpenClaw",
   crewai: "CrewAI",
   autogen: "AutoGen",
+  kimi: "Kimi",
+  "kimi-cli": "Kimi CLI",
 };
 
 export function runtimeDisplayName(runtime: string): string {

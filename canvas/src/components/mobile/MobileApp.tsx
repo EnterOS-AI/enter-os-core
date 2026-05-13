@@ -20,6 +20,7 @@ import { MobileMe } from "./MobileMe";
 import { MobileSpawn } from "./MobileSpawn";
 import { usePalette } from "./palette";
 import { MobileAccentProvider } from "./palette-context";
+import { SearchDialog } from "@/components/SearchDialog";
 
 type Route = "home" | "canvas" | "detail" | "chat" | "comms" | "me";
 
@@ -204,6 +205,8 @@ export function MobileApp() {
       {showTabBar && <TabBar dark={dark} active={activeTab} onChange={onTabChange} />}
 
       {showSpawn && <MobileSpawn dark={dark} onClose={() => setShowSpawn(false)} />}
+
+      <SearchDialog />
     </main>
     </MobileAccentProvider>
   );
