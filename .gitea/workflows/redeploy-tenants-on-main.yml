@@ -36,17 +36,19 @@ name: redeploy-tenants-on-main
 #
 # Runtime ordering:
 #   1. publish-workspace-server-image completes → new :staging-<sha> in ECR.
-#   2. This workflow fires via workflow_run, calls redeploy-fleet with
-#      target_tag=staging-<sha>. No CDN propagation wait needed —
-#      ECR image manifest is consistent immediately after push.
+#   2. The merge that updates publish-workspace-server-image.yml triggers
+#      this push/path-filtered workflow, which calls redeploy-fleet with
+#      target_tag=staging-<sha>. No CDN propagation wait needed — ECR image
+#      manifest is consistent immediately after push.
 #   3. Calls redeploy-fleet with canary_slug (if set) and a soak
 #      period. Canary proves the image boots; batches follow.
 #   4. Any failure aborts the rollout and leaves older tenants on the
 #      prior image — safer default than half-and-half state.
 #
-# Rollback path: re-run this workflow with a specific SHA pinned via
-# the workflow_dispatch input. That calls redeploy-fleet with
-# target_tag=<sha>, re-pulling the older image on every tenant.
+# Rollback path: set PROD_MANUAL_REDEPLOY_TARGET_TAG as a repo/org
+# variable or secret, run workflow_dispatch, then unset it after the
+# rollback. That calls redeploy-fleet with target_tag=<value>,
+# re-pulling the pinned image on every tenant.
 
 on:
   push:
@@ -117,7 +119,7 @@ jobs:
         #      dead (staging-verify soft-skips without canary fleet, so
         #      the only thing retagging `:latest` today is the manual
         #      promote-latest.yml — last run 2026-04-28). Auto-trigger
-        #      from workflow_run uses workflow_run.head_sha; manual
+        #      from the main push uses github.sha; manual
         #      dispatch with no variable falls through to github.sha.
         env:
           PROD_MANUAL_REDEPLOY_TARGET_TAG: ${{ vars.PROD_MANUAL_REDEPLOY_TARGET_TAG || secrets.PROD_MANUAL_REDEPLOY_TARGET_TAG || '' }}
@@ -292,10 +294,10 @@ jobs:
           if [ "$TARGET_TAG" != "latest" ] \
              && [ "$TARGET_TAG" != "$EXPECTED_SHA" ] \
              && [ "$TARGET_TAG" != "staging-$EXPECTED_SHORT" ]; then
-            # workflow_dispatch with a pinned tag that isn't the head
+            # Manual redeploy with a pinned tag that isn't the head
             # SHA — operator is rolling back / pinning. Skip the
             # verification because we don't have the expected SHA in
-            # this context (would need to crane-inspect the GHCR
+            # this context (would need to inspect the ECR
             # manifest, which is a follow-up). Failing-open here is
             # safe: the operator chose the tag deliberately.
             #
