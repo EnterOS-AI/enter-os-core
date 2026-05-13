@@ -487,11 +487,13 @@ func (h *OrgHandler) createWorkspaceTree(ws OrgWorkspace, parentID *string, absX
 		// timeout (caught 2026-05-08 right after dev-only org/import).
 		loadPersonaEnvFile(ws.FilesDir, envVars)
 		if orgBaseDir != "" {
-			// 1. Org root .env (shared defaults)
-			parseEnvFile(filepath.Join(orgBaseDir, ".env"), envVars)
-			// 2. Workspace-specific .env (overrides)
-			if ws.FilesDir != "" {
-				parseEnvFile(filepath.Join(orgBaseDir, ws.FilesDir, ".env"), envVars)
+			// Load org root and workspace-specific .env files. loadWorkspaceEnv
+			// applies resolveInsideRoot to ws.FilesDir, closing the CWE-22 /
+			// mc#786 path-traversal regression introduced when the guard was
+			// dropped from createWorkspaceTree.
+			workspaceEnv := loadWorkspaceEnv(orgBaseDir, ws.FilesDir)
+			for k, v := range workspaceEnv {
+				envVars[k] = v // workspace-specific overrides org root
 			}
 		}
 		// Store as workspace secrets via DB (encrypted if key is set, raw otherwise)
