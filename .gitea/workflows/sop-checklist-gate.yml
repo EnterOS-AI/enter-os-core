@@ -69,7 +69,7 @@ name: sop-checklist-gate
 
 on:
   pull_request_target:
-    types: [opened, edited, synchronize, reopened]
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
   issue_comment:
     types: [created, edited, deleted]
 
