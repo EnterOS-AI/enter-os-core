@@ -352,6 +352,9 @@ func queryPeerMaps(query string, args ...interface{}) ([]map[string]interface{},
 
 		result = append(result, peer)
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("queryPeerMaps scan error: %v", err)
+	}
 	return result, nil
 }
 

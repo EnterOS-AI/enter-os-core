@@ -645,6 +645,9 @@ func (h *DelegationHandler) ListDelegations(c *gin.Context) {
 		}
 		delegations = append(delegations, entry)
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("ListDelegations scan error: %v", err)
+	}
 
 	if delegations == nil {
 		delegations = []map[string]interface{}{}
