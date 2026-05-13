@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 )
 
@@ -52,6 +53,7 @@ func TestBundleImport_InvalidJSON(t *testing.T) {
 
 func TestBundleImport_ValidJSON(t *testing.T) {
 	mock := setupTestDB(t)
+	_ = setupTestRedis(t)
 	broadcaster := newTestBroadcaster()
 	h := NewBundleHandler(broadcaster, nil, "http://localhost:8080", t.TempDir(), nil)
 
@@ -59,11 +61,9 @@ func TestBundleImport_ValidJSON(t *testing.T) {
 	// bundle.Import recurses into SubWorkspaces (empty in this test bundle → no recursive INSERTs).
 	mock.ExpectExec("INSERT INTO workspaces").
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO structure_events").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE workspaces SET runtime").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO workspace_schedules").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO workspace_secrets").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	body := `{"name": "test-workspace", "schema": "1.0", "tier": 3}`

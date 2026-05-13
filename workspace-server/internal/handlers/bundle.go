@@ -49,6 +49,10 @@ func (h *BundleHandler) Import(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid bundle"})
 		return
 	}
+	if b.Schema == "" || b.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid bundle"})
+		return
+	}
 
 	ctx := c.Request.Context()
 	result := bundle.Import(ctx, &b, nil, h.broadcaster, h.provisioner, h.platformURL)
