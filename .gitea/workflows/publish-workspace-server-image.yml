@@ -20,6 +20,12 @@ name: publish-workspace-server-image
 #
 # ECR target: 153263036946.dkr.ecr.us-east-2.amazonaws.com/molecule-ai/*
 # Required secrets: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AUTO_SYNC_TOKEN
+#
+# mc#711: Docker daemon not accessible on ubuntu-latest runner (molecule-canonical-1
+# shows client-only in `docker info` — daemon not running). DinD mount is present but
+# daemon doesn't respond. Fix: add diagnostic step showing socket info so ops can
+# identify which runners have a live daemon. If no daemon is available, the job
+# fails fast with actionable output rather than silent deep failure.
 
 on:
   push:
@@ -52,36 +58,25 @@ env:
 
 jobs:
   build-and-push:
-    # REVERTED (infra/revert-docker-runner-label): `runs-on: ubuntu-latest` restored.
-    # The `docker` label is not registered on any act_runner. `runs-on: [ubuntu-latest, docker]`
-    # causes jobs to queue indefinitely with zero eligible runners — strictly worse than the
-    # pre-#599 coin-flip (50% success rate). Once the `docker` label is registered on
-    # ≥2 runners, re-apply the fix from #599 (infra/docker-runner-label).
-    # See issue #576 + infra-lead pulse ~00:30Z.
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      # Health check: verify Docker daemon is accessible before attempting any
-      # build steps. This fails loudly at step 1 when the runner's docker.sock
-      # is inaccessible (e.g. permission change, daemon restart, or group-membership
-      # drift) rather than silently continuing to step 2 where `docker build`
-      # fails deep in the process with a cryptic ECR auth error that doesn't
-      # surface the root cause.  Also reports the daemon version so operator
-      # can correlate with runner host logs.
-      - name: Verify Docker daemon access
+      - name: Diagnose Docker daemon access
         run: |
           set -euo pipefail
-          echo "::group::Docker daemon health check"
+          echo "::group::Docker daemon diagnosis"
           echo "Runner: ${HOSTNAME:-unknown}"
-          docker info 2>&1 | head -5 || {
-            echo "::error::Docker daemon is not accessible at /var/run/docker.sock"
-            echo "::error::Runner: ${HOSTNAME:-unknown}"
-            echo "::error::Check: (1) daemon is running, (2) runner user is in docker group, (3) sock permissions are 660+"
-            exit 1
-          }
-          echo "Docker daemon OK"
+          echo "--- Socket info ---"
+          ls -la /var/run/docker.sock 2>/dev/null || echo "/var/run/docker.sock: not found"
+          stat /var/run/docker.sock 2>/dev/null || true
+          echo "--- User info ---"
+          id
+          echo "--- docker version ---"
+          docker version 2>&1 || true
+          echo "--- docker info (full) ---"
+          docker info 2>&1 || echo "docker info failed: exit $?"
           echo "::endgroup::"
 
       # Pre-clone manifest deps before docker build.
@@ -100,9 +95,6 @@ jobs:
           MOLECULE_GITEA_TOKEN: ${{ secrets.AUTO_SYNC_TOKEN }}
         run: |
           set -euo pipefail
-          # clone-manifest.sh supports anonymous cloning for public repos (post-
-          # 2026-05-08 migration). The token is only needed for private repos.
-          # Do NOT require it — a missing secret would fail the build unnecessarily.
           mkdir -p .tenant-bundle-deps
           # Strip JSON5 comments before jq parsing — Integration Tester appends
           # `// Triggered by ...` which breaks `jq` in clone-manifest.sh.

@@ -55,6 +55,7 @@ jobs:
   # The actual bump work happens on the main/staging push after merge.
   pr-validate:
     runs-on: ubuntu-latest
+    # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true  # do not block PR merge on operational failures
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
