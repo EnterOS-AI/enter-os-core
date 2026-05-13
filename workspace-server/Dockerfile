@@ -35,7 +35,22 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o /memory-plugin ./cmd/memory-plugin-postgres
 
 FROM alpine:3.20@sha256:c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e
-RUN apk add --no-cache ca-certificates git tzdata wget
+# docker-cli is required by internal/provisioner/localbuild.go which
+# shells out via exec.Command("docker", "image", "inspect"/"build"/"tag", ...)
+# whenever Resolve().Mode == RegistryModeLocal — which is the permanent
+# mode post-2026-05-06 (Molecule-AI GitHub org suspended → GHCR
+# unreachable → MOLECULE_IMAGE_REGISTRY unset → registry_mode.go falls
+# through to RegistryModeLocal). Without docker-cli here the platform
+# fails every workspace re-provision with `local-build: image inspect
+# for molecule-local/workspace-template-<runtime>:<sha> failed
+# (exec: "docker": executable file not found in $PATH)` and the
+# workspace stays status=failed. The Docker SOCKET is already mounted
+# (entrypoint.sh adds the platform user to the docker group) — only
+# the CLI binary was missing. Caught after sdk-lead + CP-QA went down
+# this way during the MiniMax-switch attempt + after-Class-A audit.
+# Related: Task #194 / Issue #63 (local-build path added);
+# `feedback_workspace_image_ghcr_dead`.
+RUN apk add --no-cache ca-certificates docker-cli git tzdata wget
 COPY --from=builder /platform /platform
 COPY --from=builder /memory-plugin /memory-plugin
 COPY workspace-server/migrations /migrations
