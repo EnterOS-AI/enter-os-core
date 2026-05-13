@@ -7,6 +7,7 @@ import (
 	"go/parser"
 	"go/token"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/models"
@@ -71,6 +72,8 @@ func TestPreflight_ContainerRunning_ReturnsNil(t *testing.T) {
 // triggers the offline-flip + WORKSPACE_OFFLINE broadcast + async restart.
 // This is the load-bearing case — saves the caller 2-30s of network timeout.
 func TestPreflight_ContainerNotRunning_StructuredFastFail(t *testing.T) {
+	const wsID = "ws-dead-456"
+	resetRestartStatesFor(wsID)
 	mock := setupTestDB(t)
 	_ = setupTestRedis(t)
 	stub := &preflightLocalProv{running: false, err: nil}
@@ -79,14 +82,14 @@ func TestPreflight_ContainerNotRunning_StructuredFastFail(t *testing.T) {
 
 	// Expect the offline-flip UPDATE.
 	mock.ExpectExec(`UPDATE workspaces SET status =`).
-		WithArgs(models.StatusOffline, "ws-dead-456").
+		WithArgs(models.StatusOffline, wsID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	// Broadcaster's INSERT INTO structure_events fires too — best-effort
 	// log entry for the WORKSPACE_OFFLINE event. Match permissively.
 	mock.ExpectExec(`INSERT INTO structure_events`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	proxyErr := h.preflightContainerHealth(context.Background(), "ws-dead-456")
+	proxyErr := h.preflightContainerHealth(context.Background(), wsID)
 	if proxyErr == nil {
 		t.Fatal("preflight should return *proxyA2AError when container not running")
 	}
@@ -107,6 +110,32 @@ func TestPreflight_ContainerNotRunning_StructuredFastFail(t *testing.T) {
 	// h.broadcaster.RecordAndBroadcast call but not asserted here — the
 	// real *events.Broadcaster doesn't expose received events for inspection.
 	// The DB UPDATE expectation is sufficient to pin the offline-flip path.
+	waitRestartByIDGoroutineIdle(t, wsID)
+}
+
+func waitRestartByIDGoroutineIdle(t *testing.T, wsID string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	sawState := false
+	for time.Now().Before(deadline) {
+		sv, ok := restartStates.Load(wsID)
+		if ok {
+			sawState = true
+			st := sv.(*restartState)
+			st.mu.Lock()
+			running := st.running
+			st.mu.Unlock()
+			if !running {
+				resetRestartStatesFor(wsID)
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !sawState {
+		t.Fatalf("preflight did not start RestartByID goroutine for %s", wsID)
+	}
+	t.Fatalf("RestartByID goroutine for %s did not drain before test cleanup", wsID)
 }
 
 // TestPreflight_TransientError_FailsSoftAsAlive — IsRunning(true,err): the
