@@ -1,6 +1,6 @@
 name: lint-required-context-exists-in-bp
 
-# Tier 2g hard-gate lint (per internal#350) — diff-based PR-time
+# Tier 2g hard-gate lint (per mc#774) — diff-based PR-time
 # check. When a PR adds a NEW commit-status emission (workflow YAML
 # `name:` + job `name:`-or-key + on:-event), the workflow file must
 # carry one of three directives adjacent to the new job:
@@ -16,7 +16,7 @@ name: lint-required-context-exists-in-bp
 # PR#656 added `CI / all-required (pull_request)` as a sentinel
 # context that workflows emit, but BP did NOT list it. When
 # platform-build failed, all-required failed, but BP let the PR
-# merge anyway → cascade to mc#664. With this lint, PR#656 would
+# merge anyway → cascade to mc#774. With this lint, PR#656 would
 # have been blocked until either the BP PATCH ran alongside OR
 # the author added a `bp-required: pending` directive.
 #
@@ -27,7 +27,7 @@ name: lint-required-context-exists-in-bp
 # share the workflow-context enumeration helpers
 # (`_event_map`, `workflow_contexts`, `_job_display`) but the
 # semantics are intentionally distinct so they're separate scripts.
-# Co-design is documented in internal#350.
+# Co-design is documented in mc#774.
 #
 # Directive comment lives in the workflow file (NOT PR body)
 # ----------------------------------------------------------
@@ -42,13 +42,13 @@ name: lint-required-context-exists-in-bp
 # Lands at `continue-on-error: true` (Phase 3 — surface the
 # pattern without blocking PRs while the directive convention
 # beds in). After 7 days of clean runs on `main` with no false
-# positives, follow-up flips to `false`. Tracking: internal#350.
+# positives, follow-up flips to `false`. Tracking: mc#774.
 #
 # Cross-links
 # -----------
-# - internal#350 (the RFC that specs this lint)
+# - mc#774 (the RFC that specs this lint)
 # - PR#656 (the empirical case)
-# - mc#664 (the surfaced cascade)
+# - mc#774 (the surfaced cascade)
 # - feedback_phantom_required_check_after_gitea_migration (Tier 2f cousin)
 # - feedback_behavior_based_ast_gates
 #
@@ -83,8 +83,8 @@ jobs:
     timeout-minutes: 5
     # Phase 3 (RFC #219 §1): surface the pattern without blocking PRs
     # while the directive convention beds in. Follow-up flip to false
-    # after 7 clean days on main. internal#350.
-    continue-on-error: true  # mc#664 Phase 3 — flip to false after 7 clean main runs
+    # after 7 clean days on main. mc#774.
+    continue-on-error: true  # mc#774 Phase 3 — flip to false after 7 clean main runs
     steps:
       - name: Check out PR head with full history (need base SHA blobs)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2

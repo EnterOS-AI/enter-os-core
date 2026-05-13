@@ -31,7 +31,7 @@ jobs:
     name: Weekly Platform-Go Surface
     runs-on: ubuntu-latest
     # continue-on-error: surface only, never block
-    # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     defaults:
       run:

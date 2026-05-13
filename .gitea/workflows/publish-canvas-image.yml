@@ -9,18 +9,12 @@ name: publish-canvas-image
 #   - Workflow-level env.GITHUB_SERVER_URL pinned per
 #     feedback_act_runner_github_server_url.
 #   - `continue-on-error: true` on each job (RFC §1 contract).
-#   - **Open question for review**: this workflow pushes the canvas
-#     image to `ghcr.io`. GHCR was retired during the 2026-05-06
-#     Gitea migration in favor of ECR (per staging-verify.yml header
-#     notes). The image may not be consumable post-migration. Two
-#     options for follow-up: (a) retarget to
-#     `153263036946.dkr.ecr.us-east-2.amazonaws.com/molecule-ai/canvas`,
-#     or (b) retire this workflow entirely and route canvas deploys
-#     via the operator-host build path. tier:low + continue-on-error
-#     means failed pushes do not block PRs.
+#   - Retargeted the image push from GHCR to ECR. GHCR was retired during
+#     the 2026-05-06 Gitea migration, and Gitea's GITHUB_TOKEN cannot
+#     authenticate to ghcr.io.
 #
 
-# Builds and pushes the canvas Docker image to GHCR whenever a commit lands
+# Builds and pushes the canvas Docker image to ECR whenever a commit lands
 # on main that touches canvas code. Previously canvas changes were visible in
 # CI (npm run build passed) but the live container was never updated —
 # operators had to manually run `docker compose build canvas` each time.
@@ -45,10 +39,10 @@ on:
 
 permissions:
   contents: read
-  packages: write  # required to push to ghcr.io/${{ github.repository_owner }}/*
+  packages: write
 
 env:
-  IMAGE_NAME: ghcr.io/molecule-ai/canvas
+  IMAGE_NAME: 153263036946.dkr.ecr.us-east-2.amazonaws.com/molecule-ai/canvas
   GITHUB_SERVER_URL: https://git.moleculesai.app
 
 jobs:
@@ -62,21 +56,42 @@ jobs:
     # See issue #576 + infra-lead pulse ~00:30Z.
     runs-on: ubuntu-latest
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
-    # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Log in to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to ECR
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-2
+        run: |
+          set -euo pipefail
+          ECR_REGISTRY="${IMAGE_NAME%%/*}"
+          aws ecr get-login-password --region us-east-2 | \
+            docker login --username AWS --password-stdin "${ECR_REGISTRY}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Ensure ECR repository exists
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-2
+        run: |
+          set -euo pipefail
+          repo_path="${IMAGE_NAME#*/}"
+          if ! aws ecr describe-repositories --repository-names "${repo_path}" --region us-east-2 >/dev/null 2>&1; then
+            aws ecr create-repository \
+              --repository-name "${repo_path}" \
+              --image-scanning-configuration scanOnPush=true \
+              --region us-east-2 >/dev/null
+          fi
 
       # Health check: verify Docker daemon is accessible before attempting any
       # build steps. This fails loudly at step 1 when the runner's docker.sock
@@ -126,7 +141,7 @@ jobs:
           echo "platform_url=${PLATFORM_URL}" >> "$GITHUB_OUTPUT"
           echo "ws_url=${WS_URL}" >> "$GITHUB_OUTPUT"
 
-      - name: Build & push canvas image to GHCR
+      - name: Build & push canvas image to ECR
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           context: ./canvas
@@ -142,6 +157,6 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.source=https://git.moleculesai.app/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.description=Molecule AI canvas (Next.js 15 + React Flow)
