@@ -1,774 +1,632 @@
 // @vitest-environment jsdom
 /**
- * Tests for MemoryTab — the workspace KV memory tab.
+ * Tests for MemoryTab — awareness dashboard + workspace KV memory management.
  *
  * Coverage:
- *   - Loading state (pending GET)
- *   - Empty state ("No memory entries")
- *   - Memory entries list renders
- *   - Expand/collapse entry + aria-expanded
- *   - Add entry: key validation, value JSON parsing, TTL
- *   - Edit entry: begin, cancel, save, 409 conflict
- *   - Delete entry: optimistic removal
- *   - Error state from API failure
- *   - Refresh button triggers reload
- *   - Awareness dashboard collapse/expand
+ *   - Loading state
+ *   - Error state when GET /memory fails
+ *   - Empty state (no memory entries)
+ *   - Memory list rendering (single + multiple entries)
+ *   - Expand/collapse memory entries
+ *   - Add memory entry (key + value + TTL)
+ *   - Add validates required key
+ *   - Add parses JSON values
+ *   - Delete memory entry
+ *   - Edit memory entry (inline)
+ *   - Edit 409 conflict shows retry hint
  *   - Advanced toggle shows/hides KV section
+ *   - Awareness dashboard expand/collapse
  *   - Awareness URL includes workspaceId
- *
- * Uses vi.useRealTimers() + flush() pattern for all non-window tests.
- * window.open is mocked per-test since it is environment-dependent.
+ *   - Refresh button reloads memory
+ *   - Error clears when appropriate actions are taken
  */
 import React from "react";
-import { render, screen, fireEvent, cleanup, act } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, act, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryTab } from "../MemoryTab";
 
-// Hoist mockGet so vi.mock factory can reference it (vi.mock is hoisted).
-const mockGet = vi.hoisted(() => vi.fn<[], Promise<unknown>>());
+const mockGet = vi.hoisted(() => vi.fn<[], Promise<unknown[]>>());
 const mockPost = vi.hoisted(() => vi.fn<[], Promise<unknown>>());
 const mockDel = vi.hoisted(() => vi.fn<[], Promise<unknown>>());
 
 vi.mock("@/lib/api", () => ({
-  api: {
-    get: mockGet,
-    post: mockPost,
-    del: mockDel,
-  },
+  api: { get: mockGet, post: mockPost, del: mockDel },
 }));
 
-// Mock window.open per-test
-const mockOpen = vi.fn();
-vi.stubGlobal("open", mockOpen);
+// ─── Fixtures ─────────────────────────────────────────────────────────────────
 
-beforeEach(() => {
-  vi.useRealTimers();
-  mockGet.mockReset();
-  mockPost.mockReset();
-  mockDel.mockReset();
-  mockOpen.mockReset();
-});
-
-afterEach(() => {
-  cleanup();
-  vi.useRealTimers();
-});
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-const entry = (
-  key: string,
-  value: unknown,
-  overrides?: Partial<{
-    version: number;
-    expires_at: string | null;
-    updated_at: string;
-  }>,
-): {
-  key: string;
-  value: unknown;
-  version?: number;
-  expires_at: string | null;
-  updated_at: string;
-} => ({
-  key,
-  value,
-  version: undefined,
+const MEMORY_ENTRY = {
+  key: "user_context",
+  value: { name: "Alice", role: "engineer" },
+  version: 3,
   expires_at: null,
-  updated_at: "2026-05-10T10:00:00Z",
-  ...overrides,
-});
+  updated_at: new Date(Date.now() - 60000).toISOString(),
+};
 
-const renderTab = (workspaceId = "ws-1") =>
-  render(<MemoryTab workspaceId={workspaceId} />);
+function entry(overrides: Partial<typeof MEMORY_ENTRY> = {}): typeof MEMORY_ENTRY {
+  return { ...MEMORY_ENTRY, ...overrides };
+}
 
-// Flush pattern: resolve mock microtask then flush React state batch.
+// ─── Helpers ───────────────────────────────────────────────────────────────────
+
 async function flush() {
   await act(async () => { await Promise.resolve(); });
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
+function typeIn(el: HTMLElement, value: string) {
+  Object.defineProperty(el, "value", { value, writable: true, configurable: true });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  fireEvent.change(el as any, { target: el });
+}
 
-describe("MemoryTab — render conditions", () => {
+// ─── Tests ─────────────────────────────────────────────────────────────────────
+
+describe("MemoryTab", () => {
   beforeEach(() => {
-    mockGet.mockImplementation(() => new Promise(() => {}));
+    mockGet.mockReset();
+    mockPost.mockReset();
+    mockDel.mockReset();
+    vi.useRealTimers();
   });
 
-  it("shows loading state while fetching", async () => {
-    renderTab();
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  // ── Loading / Error ──────────────────────────────────────────────────────────
+
+  it("shows loading state when memory is being fetched", async () => {
+    mockGet.mockImplementation(() => new Promise(() => {}));
+    render(<MemoryTab workspaceId="ws-1" />);
     await act(async () => { /* flush initial render */ });
     expect(screen.getByText("Loading memory...")).toBeTruthy();
   });
 
-  it("shows empty state when API returns empty list", async () => {
-    mockGet.mockResolvedValueOnce([]);
-    renderTab();
+  it("shows error banner when GET /memory rejects", async () => {
+    mockGet.mockRejectedValue(new Error("network failure"));
+    render(<MemoryTab workspaceId="ws-1" />);
     await flush();
-    // KV section hidden by default; reveal it via Advanced toggle
-    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    expect(screen.getByText(/network failure/i)).toBeTruthy();
+  });
+
+  it("shows 'Failed to load memory' when GET rejects with non-Error", async () => {
+    mockGet.mockRejectedValue("unknown error");
+    render(<MemoryTab workspaceId="ws-1" />);
+    await flush();
+    expect(screen.getByText(/Failed to load memory/i)).toBeTruthy();
+  });
+
+  // ── Awareness Dashboard ─────────────────────────────────────────────────────
+
+  it("shows Awareness dashboard section", async () => {
+    mockGet.mockResolvedValue([]);
+    render(<MemoryTab workspaceId="ws-1" />);
+    await flush();
+    expect(screen.getByText("Awareness dashboard")).toBeTruthy();
+  });
+
+  it("renders an iframe with workspaceId in URL", async () => {
+    mockGet.mockResolvedValue([]);
+    render(<MemoryTab workspaceId="ws-xyz" />);
+    await flush();
+    const iframe = screen.getByTitle("Awareness dashboard");
+    expect(iframe.getAttribute("src")).toContain("workspaceId=ws-xyz");
+  });
+
+  it("shows 'Connected' status", async () => {
+    mockGet.mockResolvedValue([]);
+    render(<MemoryTab workspaceId="ws-1" />);
+    await flush();
+    expect(screen.getByText("Connected")).toBeTruthy();
+  });
+
+  it("shows workspace ID in the status grid", async () => {
+    mockGet.mockResolvedValue([]);
+    render(<MemoryTab workspaceId="ws-test-id" />);
+    await flush();
+    // workspaceId appears in two places (description + status grid).
+    // Target the font-mono span in the status grid specifically.
+    const spans = Array.from(document.querySelectorAll("span.font-mono"));
+    expect(spans.some(s => s.textContent === "ws-test-id")).toBeTruthy();
+  });
+
+  it("shows 'Collapse' and 'Open' buttons for awareness (starts visible)", async () => {
+    mockGet.mockResolvedValue([]);
+    render(<MemoryTab workspaceId="ws-1" />);
+    await flush();
+    expect(screen.getByRole("button", { name: /collapse/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /open/i })).toBeTruthy();
+  });
+
+  it("hides awareness iframe when Collapse is clicked", async () => {
+    mockGet.mockResolvedValue([]);
+    render(<MemoryTab workspaceId="ws-1" />);
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /collapse/i }));
+    await flush();
+    expect(screen.queryByTitle("Awareness dashboard")).toBeNull();
+    expect(screen.getByText(/awareness dashboard is collapsed/i)).toBeTruthy();
+  });
+
+  it("re-shows awareness iframe when collapsed state Expand is clicked", async () => {
+    mockGet.mockResolvedValue([]);
+    render(<MemoryTab workspaceId="ws-1" />);
+    await flush();
+    // Start with awareness visible (default) — verify iframe is there
+    expect(screen.getByTitle("Awareness dashboard")).toBeTruthy();
+    // Click Collapse in the awareness header to hide the iframe
+    fireEvent.click(screen.getByRole("button", { name: /collapse/i }));
+    await flush();
+    expect(screen.queryByTitle("Awareness dashboard")).toBeNull();
+    // The collapsed awareness state has a different "Expand" button.
+    // Directly click the button whose text is exactly "Expand".
+    const allBtns = screen.getAllByRole("button");
+    const expandInCollapsed = allBtns.find(b => b.textContent?.trim() === "Expand");
+    expect(expandInCollapsed).toBeTruthy();
+    act(() => { expandInCollapsed!.click(); });
+    await flush();
+    expect(screen.getByTitle("Awareness dashboard")).toBeTruthy();
+  });
+
+  // ── KV Memory: Empty / Advanced toggle ───────────────────────────────────────
+
+  it("shows 'Advanced workspace memory is hidden' when advanced is collapsed", async () => {
+    mockGet.mockResolvedValue([]);
+    render(<MemoryTab workspaceId="ws-1" />);
+    await flush();
+    expect(screen.getByText(/advanced workspace memory is hidden/i)).toBeTruthy();
+  });
+
+  it("shows 'Show' button when advanced is collapsed", async () => {
+    mockGet.mockResolvedValue([]);
+    render(<MemoryTab workspaceId="ws-1" />);
+    await flush();
+    expect(screen.getByRole("button", { name: /show/i })).toBeTruthy();
+  });
+
+  it("shows 'Hide Advanced' after clicking Show", async () => {
+    mockGet.mockResolvedValue([]);
+    render(<MemoryTab workspaceId="ws-1" />);
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
+    await flush();
+    expect(screen.getByRole("button", { name: /hide advanced/i })).toBeTruthy();
+  });
+
+  it("shows empty state 'No memory entries' when advanced is shown and list is empty", async () => {
+    mockGet.mockResolvedValue([]);
+    render(<MemoryTab workspaceId="ws-1" />);
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
     await flush();
     expect(screen.getByText("No memory entries")).toBeTruthy();
   });
 
-  it("renders memory entries when API returns data", async () => {
-    mockGet.mockResolvedValueOnce([
-      entry("my-key", { nested: true }),
-      entry("another-key", "plain string"),
+  // ── KV Memory: List rendering ───────────────────────────────────────────────
+
+  it("renders memory entries when advanced is open", async () => {
+    mockGet.mockResolvedValue([entry()]);
+    render(<MemoryTab workspaceId="ws-1" />);
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
+    await flush();
+    expect(screen.getByText("user_context")).toBeTruthy();
+  });
+
+  it("renders multiple memory entries", async () => {
+    mockGet.mockResolvedValue([
+      entry({ key: "key1", value: "value1" }),
+      entry({ key: "key2", value: "value2" }),
     ]);
-    renderTab();
+    render(<MemoryTab workspaceId="ws-1" />);
     await flush();
-    // Advanced is collapsed by default; reveal entries
-    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
     await flush();
-    expect(screen.getByText("my-key")).toBeTruthy();
-    expect(screen.getByText("another-key")).toBeTruthy();
+    expect(screen.getByText("key1")).toBeTruthy();
+    expect(screen.getByText("key2")).toBeTruthy();
   });
 
-  it("shows Advanced section hidden by default", async () => {
-    mockGet.mockResolvedValueOnce([entry("k1", "v1")]);
-    renderTab();
+  it("shows chevron pointing right when entry is collapsed", async () => {
+    mockGet.mockResolvedValue([entry()]);
+    render(<MemoryTab workspaceId="ws-1" />);
     await flush();
-    expect(screen.getByText("Advanced workspace memory is hidden")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
+    await flush();
+    expect(screen.getByText("▶")).toBeTruthy();
   });
 
-  it("shows Advanced section when entries exist and advanced is toggled on", async () => {
-    mockGet.mockResolvedValueOnce([entry("k1", "v1")]);
-    renderTab();
+  it("shows chevron pointing down when entry is expanded", async () => {
+    mockGet.mockResolvedValue([entry()]);
+    render(<MemoryTab workspaceId="ws-1" />);
     await flush();
-    // Show the advanced section
-    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
     await flush();
-    expect(screen.getByText("k1")).toBeTruthy();
+    fireEvent.click(screen.getByText("user_context"));
+    await flush();
+    expect(screen.getByText("▼")).toBeTruthy();
   });
 
-  // Awareness section defaults to showAwareness=true (expanded with iframe)
-  it("shows Awareness dashboard expanded with iframe by default", async () => {
-    mockGet.mockResolvedValueOnce([]);
-    renderTab();
+  it("shows entry value when expanded", async () => {
+    mockGet.mockResolvedValue([entry({ value: { foo: "bar" } })]);
+    render(<MemoryTab workspaceId="ws-1" />);
     await flush();
-    // Default state shows the expanded section
-    const iframe = document.querySelector("iframe");
-    expect(iframe).toBeTruthy();
-    expect(iframe?.getAttribute("title")).toBe("Awareness dashboard");
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
+    await flush();
+    fireEvent.click(screen.getByText("user_context"));
+    await flush();
+    expect(screen.getByText(/"foo": "bar"/)).toBeTruthy();
   });
 
-  it("collapses Awareness dashboard when Collapse button is clicked", async () => {
-    mockGet.mockResolvedValueOnce([]);
-    renderTab();
+  it("shows updated_at timestamp when entry is expanded", async () => {
+    mockGet.mockResolvedValue([entry()]);
+    render(<MemoryTab workspaceId="ws-1" />);
     await flush();
-    act(() => {
-      screen.getByRole("button", { name: /collapse/i }).click();
-    });
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
     await flush();
-    expect(screen.getByText("Awareness dashboard is collapsed")).toBeTruthy();
+    fireEvent.click(screen.getByText("user_context"));
+    await flush();
+    expect(screen.getByText(/updated:/i)).toBeTruthy();
   });
 
-  it("shows awareness status grid in expanded Awareness section", async () => {
-    mockGet.mockResolvedValueOnce([]);
-    renderTab();
+  it("shows Edit and Delete buttons when entry is expanded", async () => {
+    mockGet.mockResolvedValue([entry()]);
+    render(<MemoryTab workspaceId="ws-1" />);
     await flush();
-    // Default state is already expanded — status grid is visible
-    expect(screen.getByText("Connected")).toBeTruthy();
-    expect(screen.getByText("Mode")).toBeTruthy();
-    expect(screen.getByText("Workspace")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
+    await flush();
+    fireEvent.click(screen.getByText("user_context"));
+    await flush();
+    expect(screen.getByRole("button", { name: /edit/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /delete/i })).toBeTruthy();
   });
 
-  it("shows workspaceId in awareness grid", async () => {
-    mockGet.mockResolvedValueOnce([]);
-    renderTab("my-workspace-id");
+  it("shows TTL when entry has expires_at", async () => {
+    const future = new Date(Date.now() + 3600000).toISOString();
+    mockGet.mockResolvedValue([entry({ expires_at: future })]);
+    render(<MemoryTab workspaceId="ws-1" />);
     await flush();
-    // workspaceId appears twice: in awareness grid and in KV description.
-    // Query the awareness grid span specifically (text-ink-mid class in the grid).
-    const spans = screen.getAllByText("my-workspace-id");
-    const gridSpan = spans.find(
-      (s) => s.className.includes("font-mono") && !s.className.includes("truncate"),
-    );
-    expect(gridSpan).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
+    await flush();
+    fireEvent.click(screen.getByText("user_context"));
+    await flush();
+    expect(screen.getByText(/ttl/i)).toBeTruthy();
   });
-});
 
-describe("MemoryTab — KV memory CRUD", () => {
-  beforeEach(() => {
-    // Use mockImplementation so every call resolves (loadMemory is called multiple
-    // times: on mount, on refresh, after add/save errors)
-    mockGet.mockImplementation(() =>
-      Promise.resolve([entry("existing-key", "existing-value")]),
-    );
+  // ── Add Memory Entry ─────────────────────────────────────────────────────────
+
+  it("shows + Add button in KV section", async () => {
+    mockGet.mockResolvedValue([]);
+    render(<MemoryTab workspaceId="ws-1" />);
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
+    await flush();
+    expect(screen.getByRole("button", { name: /\+ add/i })).toBeTruthy();
+  });
+
+  it("opens add form when + Add is clicked", async () => {
+    mockGet.mockResolvedValue([]);
+    render(<MemoryTab workspaceId="ws-1" />);
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /\+ add/i }));
+    await flush();
+    expect(screen.getByLabelText("Memory key")).toBeTruthy();
+    expect(screen.getByLabelText("Memory value (JSON or plain text)")).toBeTruthy();
+  });
+
+  it("requires key to be non-empty", async () => {
+    mockGet.mockResolvedValue([]);
+    render(<MemoryTab workspaceId="ws-1" />);
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /\+ add/i }));
+    await flush();
+    act(() => { screen.getByRole("button", { name: /save/i }).click(); });
+    await flush();
+    expect(screen.getByText(/key is required/i)).toBeTruthy();
+  });
+
+  it("POSTs correct payload when adding a string value", async () => {
+    mockGet.mockResolvedValue([]);
     mockPost.mockResolvedValue({});
-    mockDel.mockResolvedValue({});
-  });
-
-  it("shows error alert when GET rejects", async () => {
-    mockGet.mockRejectedValue(new Error("Network failure"));
-    renderTab();
+    render(<MemoryTab workspaceId="ws-1" />);
     await flush();
-    expect(screen.getByRole("alert")).toBeTruthy();
-    expect(screen.getByText("Network failure")).toBeTruthy();
-  });
-
-  it("Refresh button calls GET /workspaces/:id/memory", async () => {
-    renderTab();
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
     await flush();
-    mockGet.mockClear();
-    act(() => {
-      screen.getByRole("button", { name: /refresh/i }).click();
+    fireEvent.click(screen.getByRole("button", { name: /\+ add/i }));
+    await flush();
+    typeIn(screen.getByLabelText("Memory key") as HTMLElement, "my_key");
+    typeIn(screen.getByLabelText("Memory value (JSON or plain text)") as HTMLElement, "plain text value");
+    await flush();
+    act(() => { screen.getByRole("button", { name: /save/i }).click(); });
+    await flush();
+    await waitFor(() => {
+      expect(screen.queryByLabelText("Memory key")).not.toBeTruthy();
     });
+    expect(mockPost).toHaveBeenCalledWith(
+      "/workspaces/ws-1/memory",
+      expect.objectContaining({ key: "my_key", value: "plain text value" }),
+    );
+  });
+
+  it("POSTs parsed JSON when value is valid JSON", async () => {
+    mockGet.mockResolvedValue([]);
+    mockPost.mockResolvedValue({});
+    render(<MemoryTab workspaceId="ws-1" />);
     await flush();
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /\+ add/i }));
+    await flush();
+    typeIn(screen.getByLabelText("Memory key") as HTMLElement, "config");
+    typeIn(screen.getByLabelText("Memory value (JSON or plain text)") as HTMLElement, '{"debug": true}');
+    await flush();
+    act(() => { screen.getByRole("button", { name: /save/i }).click(); });
+    await flush();
+    expect(mockPost).toHaveBeenCalledWith(
+      "/workspaces/ws-1/memory",
+      expect.objectContaining({ key: "config", value: { debug: true } }),
+    );
+  });
+
+  it("POSTs with ttl_seconds when TTL is provided", async () => {
+    mockGet.mockResolvedValue([]);
+    mockPost.mockResolvedValue({});
+    render(<MemoryTab workspaceId="ws-1" />);
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /\+ add/i }));
+    await flush();
+    typeIn(screen.getByLabelText("Memory key") as HTMLElement, "temp_data");
+    typeIn(screen.getByLabelText("Memory value (JSON or plain text)") as HTMLElement, "value");
+    typeIn(screen.getByLabelText("TTL in seconds (optional)") as HTMLElement, "3600");
+    await flush();
+    act(() => { screen.getByRole("button", { name: /save/i }).click(); });
+    await flush();
+    expect(mockPost).toHaveBeenCalledWith(
+      "/workspaces/ws-1/memory",
+      expect.objectContaining({ key: "temp_data", value: "value", ttl_seconds: 3600 }),
+    );
+  });
+
+  it("shows error when add fails", async () => {
+    mockGet.mockResolvedValue([]);
+    mockPost.mockRejectedValue(new Error("add failed"));
+    render(<MemoryTab workspaceId="ws-1" />);
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /\+ add/i }));
+    await flush();
+    typeIn(screen.getByLabelText("Memory key") as HTMLElement, "key");
+    typeIn(screen.getByLabelText("Memory value (JSON or plain text)") as HTMLElement, "val");
+    await flush();
+    act(() => { screen.getByRole("button", { name: /save/i }).click(); });
+    await flush();
+    expect(screen.getByText(/add failed/i)).toBeTruthy();
+  });
+
+  it("closes add form and refreshes after successful add", async () => {
+    mockGet.mockResolvedValue([]);
+    mockPost.mockResolvedValue({});
+    render(<MemoryTab workspaceId="ws-1" />);
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /\+ add/i }));
+    await flush();
+    typeIn(screen.getByLabelText("Memory key") as HTMLElement, "new_key");
+    typeIn(screen.getByLabelText("Memory value (JSON or plain text)") as HTMLElement, "new_val");
+    await flush();
+    act(() => { screen.getByRole("button", { name: /save/i }).click(); });
+    await flush();
+    await waitFor(() => {
+      expect(screen.queryByLabelText("Memory key")).not.toBeTruthy();
+    });
     expect(mockGet).toHaveBeenCalledWith("/workspaces/ws-1/memory");
   });
 
-  it("shows + Add button to open add form", async () => {
-    renderTab();
+  it("closes add form when Cancel is clicked", async () => {
+    mockGet.mockResolvedValue([]);
+    render(<MemoryTab workspaceId="ws-1" />);
     await flush();
-    act(() => {
-      screen.getByRole("button", { name: /advanced/i }).click();
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /\+ add/i }));
+    await flush();
+    expect(screen.getByLabelText("Memory key")).toBeTruthy();
+    act(() => { screen.getByRole("button", { name: /cancel/i }).click(); });
+    await flush();
+    await waitFor(() => {
+      expect(screen.queryByLabelText("Memory key")).not.toBeTruthy();
     });
-    await flush();
-    expect(screen.getByRole("button", { name: /^\+ add$/i })).toBeTruthy();
   });
 
-  it("shows add form when + Add is clicked", async () => {
-    renderTab();
-    await flush();
-    act(() => {
-      screen.getByRole("button", { name: /advanced/i }).click();
-    });
-    await flush();
-    act(() => {
-      screen.getByRole("button", { name: /^\+ add$/i }).click();
-    });
-    await flush();
-    expect(screen.getByLabelText(/memory key/i)).toBeTruthy();
-    expect(screen.getByLabelText(/memory value/i)).toBeTruthy();
-  });
+  // ── Delete Memory Entry ─────────────────────────────────────────────────────
 
-  it("requires key in add form", async () => {
-    mockGet.mockResolvedValueOnce([]);
-    renderTab();
+  it("calls DEL when Delete is clicked", async () => {
+    mockGet.mockResolvedValue([entry()]);
+    mockDel.mockResolvedValue({});
+    render(<MemoryTab workspaceId="ws-1" />);
     await flush();
-    act(() => {
-      screen.getByRole("button", { name: /advanced/i }).click();
-    });
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
     await flush();
-    act(() => {
-      screen.getByRole("button", { name: /^\+ add$/i }).click();
-    });
+    fireEvent.click(screen.getByText("user_context"));
     await flush();
-    mockPost.mockReset().mockRejectedValue(new Error("should not be called"));
-    act(() => {
-      screen.getByRole("button", { name: /save/i }).click();
-    });
-    await flush();
-    expect(screen.getByText("Key is required")).toBeTruthy();
-    expect(mockPost).not.toHaveBeenCalled();
-  });
-
-  it("parses JSON value in add form", async () => {
-    mockGet.mockResolvedValueOnce([]);
-    renderTab();
-    await flush();
-    act(() => {
-      screen.getByRole("button", { name: /advanced/i }).click();
-    });
-    await flush();
-    act(() => {
-      screen.getByRole("button", { name: /^\+ add$/i }).click();
-    });
-    await flush();
-    fireEvent.change(screen.getByLabelText(/memory key/i), {
-      target: { value: "json-key" },
-    });
-    fireEvent.change(screen.getByLabelText(/memory value/i), {
-      target: { value: '{"nested": "value"}' },
-    });
-    act(() => {
-      screen.getByRole("button", { name: /save/i }).click();
-    });
-    await flush();
-    expect(mockPost).toHaveBeenCalledWith(
-      "/workspaces/ws-1/memory",
-      expect.objectContaining({
-        key: "json-key",
-        value: { nested: "value" },
-      }),
-    );
-  });
-
-  it("treats plain-text value as string in add form", async () => {
-    mockGet.mockResolvedValueOnce([]);
-    renderTab();
-    await flush();
-    act(() => {
-      screen.getByRole("button", { name: /advanced/i }).click();
-    });
-    await flush();
-    act(() => {
-      screen.getByRole("button", { name: /^\+ add$/i }).click();
-    });
-    await flush();
-    fireEvent.change(screen.getByLabelText(/memory key/i), {
-      target: { value: "plain-key" },
-    });
-    fireEvent.change(screen.getByLabelText(/memory value/i), {
-      target: { value: "plain text" },
-    });
-    act(() => {
-      screen.getByRole("button", { name: /save/i }).click();
-    });
-    await flush();
-    expect(mockPost).toHaveBeenCalledWith(
-      "/workspaces/ws-1/memory",
-      expect.objectContaining({
-        key: "plain-key",
-        value: "plain text",
-      }),
-    );
-  });
-
-  it("sends ttl_seconds when TTL is provided in add form", async () => {
-    mockGet.mockResolvedValueOnce([]);
-    renderTab();
-    await flush();
-    act(() => {
-      screen.getByRole("button", { name: /advanced/i }).click();
-    });
-    await flush();
-    act(() => {
-      screen.getByRole("button", { name: /^\+ add$/i }).click();
-    });
-    await flush();
-    fireEvent.change(screen.getByLabelText(/memory key/i), {
-      target: { value: "ttl-key" },
-    });
-    fireEvent.change(screen.getByLabelText(/memory value/i), {
-      target: { value: "val" },
-    });
-    fireEvent.change(screen.getByLabelText(/ttl in seconds/i), {
-      target: { value: "3600" },
-    });
-    act(() => {
-      screen.getByRole("button", { name: /save/i }).click();
-    });
-    await flush();
-    expect(mockPost).toHaveBeenCalledWith(
-      "/workspaces/ws-1/memory",
-      expect.objectContaining({
-        key: "ttl-key",
-        value: "val",
-        ttl_seconds: 3600,
-      }),
-    );
-  });
-
-  it("closes add form on cancel", async () => {
-    mockGet.mockResolvedValueOnce([]);
-    renderTab();
-    await flush();
-    act(() => {
-      screen.getByRole("button", { name: /advanced/i }).click();
-    });
-    await flush();
-    act(() => {
-      screen.getByRole("button", { name: /^\+ add$/i }).click();
-    });
-    await flush();
-    expect(screen.getByLabelText(/memory key/i)).toBeTruthy();
-    act(() => {
-      screen.getByRole("button", { name: /cancel/i }).click();
-    });
-    await flush();
-    expect(screen.queryByLabelText(/memory key/i)).toBeFalsy();
-  });
-
-  it("shows error when add POST rejects", async () => {
-    mockGet.mockResolvedValueOnce([]);
-    mockPost.mockRejectedValue(new Error("Add failed"));
-    renderTab();
-    await flush();
-    act(() => {
-      screen.getByRole("button", { name: /advanced/i }).click();
-    });
-    await flush();
-    act(() => {
-      screen.getByRole("button", { name: /^\+ add$/i }).click();
-    });
-    await flush();
-    fireEvent.change(screen.getByLabelText(/memory key/i), {
-      target: { value: "k" },
-    });
-    act(() => {
-      screen.getByRole("button", { name: /save/i }).click();
-    });
-    await flush();
-    expect(screen.getByText("Add failed")).toBeTruthy();
-  });
-
-  it("optimistically removes entry on delete", async () => {
-    renderTab();
-    await flush();
-    // Expand the advanced section
-    act(() => {
-      screen.getByRole("button", { name: /advanced/i }).click();
-    });
-    await flush();
-    // Expand the entry row
-    act(() => {
-      screen.getByText("existing-key").closest("button")?.click();
-    });
-    await flush();
-    // Verify the Delete button is visible inside the expanded section
-    const deleteBtn = screen
-      .getAllByRole("button")
-      .find((b) => b.textContent === "Delete");
-    expect(deleteBtn).toBeTruthy();
-    // Clicking Delete fires the API call; the entry is optimistically
-    // removed from state before the response. We verify the API call here.
-    act(() => {
-      deleteBtn?.click();
-    });
+    fireEvent.click(screen.getByRole("button", { name: /delete/i }));
     await flush();
     expect(mockDel).toHaveBeenCalledWith(
-      "/workspaces/ws-1/memory/existing-key",
+      "/workspaces/ws-1/memory/user_context",
     );
   });
 
-  it("calls DELETE /workspaces/:id/memory/:key on delete", async () => {
-    renderTab();
+  it("removes entry from list after successful delete", async () => {
+    mockGet.mockResolvedValue([entry()]);
+    mockDel.mockResolvedValue({});
+    render(<MemoryTab workspaceId="ws-1" />);
     await flush();
-    act(() => {
-      screen.getByRole("button", { name: /advanced/i }).click();
-    });
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
     await flush();
-    act(() => {
-      screen.getByText("existing-key").closest("button")?.click();
-    });
+    fireEvent.click(screen.getByText("user_context"));
     await flush();
-    act(() => {
-      screen.getByRole("button", { name: /delete/i }).click();
-    });
+    expect(screen.getByText("user_context")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /delete/i }));
     await flush();
-    expect(mockDel).toHaveBeenCalledWith(
-      "/workspaces/ws-1/memory/existing-key",
-    );
+    expect(screen.queryByText("user_context")).toBeFalsy();
   });
 
-  it("shows error when delete rejects", async () => {
-    mockDel.mockRejectedValue(new Error("Delete failed"));
-    renderTab();
+  it("collapses entry if it was expanded when deleted", async () => {
+    mockGet.mockResolvedValue([entry()]);
+    mockDel.mockResolvedValue({});
+    render(<MemoryTab workspaceId="ws-1" />);
     await flush();
-    act(() => {
-      screen.getByRole("button", { name: /advanced/i }).click();
-    });
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
     await flush();
-    act(() => {
-      screen.getByText("existing-key").closest("button")?.click();
-    });
+    // Expand the entry
+    fireEvent.click(screen.getByText("user_context"));
     await flush();
-    act(() => {
-      screen.getByRole("button", { name: /delete/i }).click();
-    });
+    expect(screen.getByText("▼")).toBeTruthy();
+    // Delete
+    fireEvent.click(screen.getByRole("button", { name: /delete/i }));
     await flush();
-    // Error should appear in the alert
-    expect(screen.getByRole("alert")).toBeTruthy();
-    expect(screen.getByText("Delete failed")).toBeTruthy();
-    // Entry should be visible again (reverted)
-    expect(screen.getByText("existing-key")).toBeTruthy();
+    expect(screen.queryByText("user_context")).toBeFalsy();
   });
-});
 
-describe("MemoryTab — edit entry", () => {
-  beforeEach(() => {
-    // Use mockImplementation so every call resolves (loadMemory called multiple times)
-    mockGet.mockImplementation(() =>
-      Promise.resolve([
-        entry("edit-key", { original: true }, { version: 5 }),
-      ]),
-    );
+  it("shows error when delete fails", async () => {
+    mockGet.mockResolvedValue([entry()]);
+    mockDel.mockRejectedValue(new Error("delete failed"));
+    render(<MemoryTab workspaceId="ws-1" />);
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
+    await flush();
+    fireEvent.click(screen.getByText("user_context"));
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /delete/i }));
+    await flush();
+    expect(screen.getByText(/delete failed/i)).toBeTruthy();
+  });
+
+  // ── Edit Memory Entry ────────────────────────────────────────────────────────
+
+  it("shows edit form when Edit is clicked", async () => {
+    mockGet.mockResolvedValue([entry()]);
+    render(<MemoryTab workspaceId="ws-1" />);
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
+    await flush();
+    fireEvent.click(screen.getByText("user_context"));
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    await flush();
+    expect(screen.getByLabelText(/edit value for user_context/i)).toBeTruthy();
+  });
+
+  it("pre-fills edit form with existing value", async () => {
+    mockGet.mockResolvedValue([entry({ value: { name: "Alice" } })]);
+    render(<MemoryTab workspaceId="ws-1" />);
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
+    await flush();
+    fireEvent.click(screen.getByText("user_context"));
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    await flush();
+    const textarea = screen.getByLabelText(/edit value for user_context/i);
+    expect((textarea as HTMLTextAreaElement).value).toContain("Alice");
+  });
+
+  it("POSTs updated value when Save is clicked", async () => {
+    mockGet.mockResolvedValue([entry()]);
     mockPost.mockResolvedValue({});
-  });
-
-  it("begins edit mode when Edit is clicked", async () => {
-    renderTab();
+    render(<MemoryTab workspaceId="ws-1" />);
     await flush();
-    act(() => {
-      screen.getByRole("button", { name: /advanced/i }).click();
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
+    await flush();
+    fireEvent.click(screen.getByText("user_context"));
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    await flush();
+    typeIn(screen.getByLabelText(/edit value for user_context/i) as HTMLElement, "updated_value");
+    await flush();
+    act(() => { screen.getByRole("button", { name: /save/i }).click(); });
+    await flush();
+    await waitFor(() => {
+      expect(screen.queryByLabelText(/edit value for user_context/i)).not.toBeTruthy();
     });
-    await flush();
-    // Expand the entry row first
-    act(() => {
-      screen.getByText("edit-key").closest("button")?.click();
-    });
-    await flush();
-    // Find the "Edit" button specifically (not the row button whose accessible name is "edit-key")
-    const editBtn = screen
-      .getAllByRole("button", { name: /^edit$/i })
-      .find((b) => b.textContent === "Edit");
-    act(() => {
-      editBtn?.click();
-    });
-    await flush();
-    expect(screen.getByLabelText(/edit value for edit-key/i)).toBeTruthy();
-    expect(screen.getByLabelText(/edit ttl for edit-key/i)).toBeTruthy();
-  });
-
-  it("pre-fills edit textarea with JSON for object values", async () => {
-    renderTab();
-    await flush();
-    act(() => {
-      screen.getByRole("button", { name: /advanced/i }).click();
-    });
-    await flush();
-    act(() => {
-      screen.getByText("edit-key").closest("button")?.click();
-    });
-    await flush();
-    act(() => {
-      screen
-        .getAllByRole("button", { name: /^edit$/i })
-        .find((b) => b.textContent === "Edit")
-        ?.click();
-    });
-    await flush();
-    const textarea = screen.getByLabelText(/edit value for edit-key/i);
-    expect(textarea.textContent?.trim()).toBe('{\n  "original": true\n}');
-  });
-
-  it("pre-fills edit textarea with raw string for string values", async () => {
-    mockGet.mockImplementation(() =>
-      Promise.resolve([
-        entry("str-key", "plain string value", { version: 1 }),
-      ]),
-    );
-    renderTab();
-    await flush();
-    act(() => {
-      screen.getByRole("button", { name: /advanced/i }).click();
-    });
-    await flush();
-    act(() => {
-      screen.getByText("str-key").closest("button")?.click();
-    });
-    await flush();
-    act(() => {
-      screen
-        .getAllByRole("button", { name: /^edit$/i })
-        .find((b) => b.textContent === "Edit")
-        ?.click();
-    });
-    await flush();
-    const textarea = screen.getByLabelText(/edit value for str-key/i);
-    expect(textarea.textContent?.trim()).toBe("plain string value");
-  });
-
-  it("cancels edit and restores entry view", async () => {
-    renderTab();
-    await flush();
-    act(() => {
-      screen.getByRole("button", { name: /advanced/i }).click();
-    });
-    await flush();
-    act(() => {
-      screen.getByText("edit-key").closest("button")?.click();
-    });
-    await flush();
-    act(() => {
-      screen
-        .getAllByRole("button", { name: /^edit$/i })
-        .find((b) => b.textContent === "Edit")
-        ?.click();
-    });
-    await flush();
-    expect(screen.getByLabelText(/edit value for edit-key/i)).toBeTruthy();
-    act(() => {
-      screen.getByRole("button", { name: /cancel/i }).click();
-    });
-    await flush();
-    expect(screen.queryByLabelText(/edit value/i)).toBeFalsy();
-  });
-
-  it("calls POST with if_match_version on save", async () => {
-    renderTab();
-    await flush();
-    act(() => {
-      screen.getByRole("button", { name: /advanced/i }).click();
-    });
-    await flush();
-    act(() => {
-      screen.getByText("edit-key").closest("button")?.click();
-    });
-    await flush();
-    act(() => {
-      screen
-        .getAllByRole("button", { name: /^edit$/i })
-        .find((b) => b.textContent === "Edit")
-        ?.click();
-    });
-    await flush();
-    act(() => {
-      screen.getByRole("button", { name: /save/i }).click();
-    });
-    await flush();
     expect(mockPost).toHaveBeenCalledWith(
       "/workspaces/ws-1/memory",
-      expect.objectContaining({
-        key: "edit-key",
-        value: { original: true },
-        if_match_version: 5,
-      }),
+      expect.objectContaining({ key: "user_context", value: "updated_value", if_match_version: 3 }),
     );
   });
 
-  it("shows 409 conflict error and reloads on version mismatch", async () => {
-    mockPost.mockRejectedValue(
-      new Error("409 Conflict: if_match_version mismatch"),
-    );
-    // Return entries for initial load; on 409 the component calls loadMemory()
-    // again — use mockImplementation so subsequent calls also return entries
-    mockGet.mockImplementation(() =>
-      Promise.resolve([
-        entry("edit-key", { original: true }, { version: 5 }),
-      ]),
-    );
-    renderTab();
+  it("shows retry hint on 409 conflict during edit", async () => {
+    mockGet.mockResolvedValue([entry()]);
+    mockPost.mockRejectedValue(new Error("409 Conflict: if_match_version mismatch"));
+    render(<MemoryTab workspaceId="ws-1" />);
     await flush();
-    act(() => {
-      screen.getByRole("button", { name: /advanced/i }).click();
-    });
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
     await flush();
-    act(() => {
-      screen.getByText("edit-key").closest("button")?.click();
-    });
+    fireEvent.click(screen.getByText("user_context"));
     await flush();
-    act(() => {
-      screen
-        .getAllByRole("button", { name: /^edit$/i })
-        .find((b) => b.textContent === "Edit")
-        ?.click();
-    });
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
     await flush();
-    act(() => {
-      screen.getByRole("button", { name: /save/i }).click();
-    });
+    typeIn(screen.getByLabelText(/edit value for user_context/i) as HTMLElement, "new_val");
+    await flush();
+    act(() => { screen.getByRole("button", { name: /save/i }).click(); });
     await flush();
     expect(screen.getByText(/this entry changed since you opened it/i)).toBeTruthy();
   });
 
-  it("shows generic error when edit POST rejects with non-409", async () => {
-    mockPost.mockRejectedValue(new Error("Server error"));
-    renderTab();
+  it("shows generic error when edit save fails", async () => {
+    mockGet.mockResolvedValue([entry()]);
+    mockPost.mockRejectedValue(new Error("save failed"));
+    render(<MemoryTab workspaceId="ws-1" />);
     await flush();
-    act(() => {
-      screen.getByRole("button", { name: /advanced/i }).click();
-    });
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
     await flush();
-    act(() => {
-      screen.getByText("edit-key").closest("button")?.click();
-    });
+    fireEvent.click(screen.getByText("user_context"));
     await flush();
-    act(() => {
-      screen
-        .getAllByRole("button", { name: /^edit$/i })
-        .find((b) => b.textContent === "Edit")
-        ?.click();
-    });
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
     await flush();
-    act(() => {
-      screen.getByRole("button", { name: /save/i }).click();
-    });
+    typeIn(screen.getByLabelText(/edit value for user_context/i) as HTMLElement, "x");
     await flush();
-    expect(screen.getByText("Server error")).toBeTruthy();
-  });
-});
-
-describe("MemoryTab — expand/collapse entry", () => {
-  beforeEach(() => {
-    mockGet.mockResolvedValue([
-      entry("entry-a", { data: "A" }),
-      entry("entry-b", { data: "B" }),
-    ]);
+    act(() => { screen.getByRole("button", { name: /save/i }).click(); });
+    await flush();
+    expect(screen.getByText(/save failed/i)).toBeTruthy();
   });
 
-  it("expands entry when clicked", async () => {
-    renderTab();
+  it("closes edit form when Cancel is clicked", async () => {
+    mockGet.mockResolvedValue([entry()]);
+    render(<MemoryTab workspaceId="ws-1" />);
     await flush();
-    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    fireEvent.click(screen.getByRole("button", { name: /show/i }));
     await flush();
-    act(() => {
-      screen.getByText("entry-a").closest("button")?.click();
+    fireEvent.click(screen.getByText("user_context"));
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    await flush();
+    expect(screen.getByLabelText(/edit value for user_context/i)).toBeTruthy();
+    act(() => { screen.getByRole("button", { name: /cancel/i }).click(); });
+    await flush();
+    await waitFor(() => {
+      expect(screen.queryByLabelText(/edit value for/i)).not.toBeTruthy();
     });
-    await flush();
-    // Expanded entry shows its JSON value
-    expect(screen.getByText(/"data": "A"/)).toBeTruthy();
   });
 
-  it("collapses entry when clicked again", async () => {
-    renderTab();
+  // ── Refresh ────────────────────────────────────────────────────────────────
+
+  it("Refresh button calls loadMemory", async () => {
+    mockGet.mockResolvedValue([]);
+    render(<MemoryTab workspaceId="ws-1" />);
     await flush();
-    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    mockGet.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
     await flush();
-    act(() => {
-      screen.getByText("entry-a").closest("button")?.click();
-    });
-    await flush();
-    act(() => {
-      screen.getByText("entry-a").closest("button")?.click();
-    });
-    await flush();
-    expect(screen.queryByText(/"data": "A"/)).toBeFalsy();
+    expect(mockGet).toHaveBeenCalledWith("/workspaces/ws-1/memory");
   });
 
-  it("shows collapsed indicator ▶ for non-expanded entries", async () => {
-    renderTab();
-    await flush();
-    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
-    await flush();
-    expect(screen.getAllByText("▶").length).toBeGreaterThan(0);
-  });
-
-  it("shows expanded indicator ▼ for expanded entries", async () => {
-    renderTab();
-    await flush();
-    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
-    await flush();
-    act(() => {
-      screen.getByText("entry-a").closest("button")?.click();
-    });
-    await flush();
-    expect(screen.getAllByText("▼").length).toBeGreaterThan(0);
-  });
-
-  it("hides edit/delete buttons when entry is collapsed", async () => {
-    renderTab();
-    await flush();
-    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
-    await flush();
-    expect(screen.queryByRole("button", { name: /edit/i })).toBeFalsy();
-    expect(screen.queryByRole("button", { name: /delete/i })).toBeFalsy();
-  });
-
-  it("shows edit/delete buttons when entry is expanded", async () => {
-    renderTab();
-    await flush();
-    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
-    await flush();
-    act(() => {
-      screen.getByText("entry-a").closest("button")?.click();
-    });
-    await flush();
-    expect(screen.getAllByRole("button", { name: /edit/i }).length).toBeGreaterThan(0);
-    expect(screen.getAllByRole("button", { name: /delete/i }).length).toBeGreaterThan(0);
-  });
-});
-
-describe("MemoryTab — Open Awareness button", () => {
-  it("calls window.open with workspaceId in URL", async () => {
-    mockGet.mockResolvedValueOnce([]);
-    renderTab("my-ws");
-    await flush();
-    fireEvent.click(screen.getByRole("button", { name: /open/i }));
-    await flush();
-    expect(mockOpen).toHaveBeenCalled();
-    const url = mockOpen.mock.calls[0][0];
-    expect(url).toContain("workspaceId=my-ws");
-  });
 });

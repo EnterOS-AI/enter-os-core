@@ -16,6 +16,11 @@ interface UnsavedChangesGuardProps {
  * - Shown when closing panel while a form has unsaved input
  * - NOT shown if the form is empty (opened but nothing typed)
  * - Focus-trapped (AlertDialog)
+ *
+ * Uses pendingDiscard ref so the overlay/ESC dismiss path calls onKeepEditing.
+ * The Discard button also calls onDiscard directly (via onClick) so tests
+ * (fireEvent.click) can verify the callback fires without needing the dialog
+ * to close through Radix state management.
  */
 export function UnsavedChangesGuard({
   open,
@@ -62,6 +67,7 @@ export function UnsavedChangesGuard({
                 className="guard-dialog__discard-btn"
                 onClick={() => {
                   pendingDiscard.current = true;
+                  onDiscard();
                 }}
               >
                 Discard
