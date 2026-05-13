@@ -39,6 +39,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	mdb "github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 	_ "github.com/lib/pq"
@@ -64,12 +65,16 @@ func integrationDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if err := conn.Ping(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := conn.PingContext(ctx); err != nil {
 		t.Fatalf("ping: %v", err)
 	}
 	// Each test gets a fresh table state — fail loud if cleanup fails so
 	// a bad test doesn't pollute the next one.
-	if _, err := conn.ExecContext(context.Background(), `DELETE FROM delegations`); err != nil {
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel2()
+	if _, err := conn.ExecContext(ctx2, `DELETE FROM delegations`); err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
 	// Wire the package-level db.DB so production helpers (recordLedgerInsert,
@@ -145,16 +150,11 @@ func TestIntegration_ResultPreviewPreservedThroughCompletion(t *testing.T) {
 	}
 }
 
-// TestIntegration_ResultPreviewBuggyOrderIsLost — DIAGNOSTIC test that
-// confirms the ORIGINAL buggy order does lose the preview. Useful when
-// auditing similar wiring elsewhere.
-//
-// This is documented behavior: it asserts the same-status replay no-op
-// works as designed in DelegationLedger.SetStatus. The fix in
-// delegation.go is to AVOID this order, not to change SetStatus's
-// same-status semantics (which the operator dashboard relies on for
-// idempotent completion notifications).
-func TestIntegration_ResultPreviewBuggyOrderIsLost(t *testing.T) {
+// Same-status terminal replays remain idempotent, but if the first terminal
+// write lacked result_preview, a later same-status replay carrying the preview
+// should fill that missing field once. This protects legacy call ordering and
+// mirrors the failure-path error_detail repair.
+func TestIntegration_ResultPreviewSameStatusReplayFillsMissingPreview(t *testing.T) {
 	conn := integrationDB(t)
 	t.Setenv("DELEGATION_LEDGER_WRITE", "1")
 
@@ -162,16 +162,17 @@ func TestIntegration_ResultPreviewBuggyOrderIsLost(t *testing.T) {
 	caller := "11111111-1111-1111-1111-111111111111"
 	callee := "22222222-2222-2222-2222-222222222222"
 
-	// BUGGY sequence in production-shape order: queued → dispatched →
-	// completed (no preview) → completed (preview ignored as same-status).
+	// Legacy sequence: queued → dispatched → completed (no preview) →
+	// completed (preview). The second completed replay should repair the
+	// missing preview without changing status.
 	recordLedgerInsert(context.Background(), caller, callee, id, "the question", "")
-	recordLedgerStatus(context.Background(), id, "dispatched", "", "")            // pre-completion stage
-	recordLedgerStatus(context.Background(), id, "completed", "", "")             // inner first
-	recordLedgerStatus(context.Background(), id, "completed", "", "the answer")   // outer same-status no-op
+	recordLedgerStatus(context.Background(), id, "dispatched", "", "")
+	recordLedgerStatus(context.Background(), id, "completed", "", "")
+	recordLedgerStatus(context.Background(), id, "completed", "", "the answer")
 
 	_, preview, _ := readLedgerRow(t, conn, id)
-	if preview != "" {
-		t.Errorf("buggy-order preview was unexpectedly non-empty: %q (SetStatus same-status no-op contract may have changed)", preview)
+	if preview != "the answer" {
+		t.Errorf("same-status replay should fill missing preview; got %q", preview)
 	}
 }
 

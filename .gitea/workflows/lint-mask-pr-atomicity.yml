@@ -1,6 +1,6 @@
 name: lint-mask-pr-atomicity
 
-# Tier 2d hard-gate lint (per internal#350) — blocks PRs that touch
+# Tier 2d hard-gate lint (per mc#664) — blocks PRs that touch
 # `.gitea/workflows/ci.yml` and modify ONLY ONE of {continue-on-error,
 # all-required.sentinel.needs} without a `Paired: #NNN` reference in
 # the PR body or in a commit message.
@@ -37,11 +37,11 @@ name: lint-mask-pr-atomicity
 # This workflow lands at `continue-on-error: true` (Phase 3 — surface
 # regressions without blocking PRs while the rule beds in).
 # Follow-up PR flips to `false` once we have ≥3 days of clean runs on
-# `main` and no false-positives. Tracking issue: internal#350.
+# `main` and no false-positives. Tracking issue: mc#664.
 #
 # Cross-links
 # -----------
-# - internal#350 (the RFC that specs this lint)
+# - mc#664 (the RFC that specs this lint)
 # - PR#665 / PR#668 (the empirical split-pair)
 # - mc#664 (the main-red incident the split caused)
 # - feedback_strict_root_only_after_class_a
@@ -91,7 +91,8 @@ jobs:
     # Phase 3 (RFC #219 §1): surface broken shapes without blocking
     # PRs. Follow-up PR flips this to `false` once recent runs on main
     # are confirmed clean (eat-our-own-dogfood discipline mirrors
-    # PR#673's same-shape comment). Tracking: internal#350.
+    # PR#673's same-shape comment). Tracking: mc#664.
+    # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     steps:
       - name: Check out PR head with full history (need base SHA blobs)

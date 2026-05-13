@@ -72,8 +72,33 @@ export function TabBar({
     { id: "comms", label: "Comms", icon: "pulse" },
     { id: "me", label: "Me", icon: "user" },
   ];
+
+  const handleKeyDown = (e: React.KeyboardEvent, idx: number) => {
+    let nextIdx: number | null = null;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+      nextIdx = (idx + 1) % tabs.length;
+    } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+      nextIdx = (idx - 1 + tabs.length) % tabs.length;
+    } else if (e.key === "Home") {
+      nextIdx = 0;
+    } else if (e.key === "End") {
+      nextIdx = tabs.length - 1;
+    }
+    if (nextIdx !== null) {
+      e.preventDefault();
+      onChange(tabs[nextIdx]!.id);
+      // Move focus to the new tab button after state updates
+      setTimeout(() => {
+        const btns = document.querySelectorAll('[role="tab"]');
+        (btns[nextIdx!] as HTMLButtonElement | null)?.focus();
+      }, 0);
+    }
+  };
+
   return (
     <div
+      role="tablist"
+      aria-label="Mobile navigation"
       style={{
         position: "absolute",
         left: 14,
@@ -95,13 +120,18 @@ export function TabBar({
         padding: "0 10px",
       }}
     >
-      {tabs.map((t) => {
+      {tabs.map((t, idx) => {
         const on = active === t.id;
         return (
           <button
             key={t.id}
+            role="tab"
             type="button"
+            tabIndex={on ? 0 : -1}
+            aria-selected={on}
+            aria-label={t.label}
             onClick={() => onChange(t.id)}
+            onKeyDown={(e) => handleKeyDown(e, idx)}
             style={{
               background: "none",
               border: "none",
@@ -116,6 +146,7 @@ export function TabBar({
             }}
           >
             <span
+              aria-hidden="true"
               style={{
                 width: 36,
                 height: 28,
@@ -256,6 +287,7 @@ export function AgentCard({
   return (
     <button
       type="button"
+      aria-label={`${agent.name}, status: ${agent.status}, tier ${agent.tier}${agent.remote ? ", remote" : ""}`}
       onClick={onClick}
       style={{
         display: "block",
@@ -389,6 +421,9 @@ export function FilterChips({
   ];
   return (
     <div
+      role="toolbar"
+      aria-label="Filter agents"
+      aria-activedescendant={value ? `filter-${value}` : undefined}
       style={{
         display: "flex",
         gap: 6,
@@ -402,7 +437,10 @@ export function FilterChips({
         return (
           <button
             key={o.id}
+            id={`filter-${o.id}`}
+            role="radio"
             type="button"
+            aria-checked={on}
             onClick={() => onChange(o.id)}
             style={{
               display: "inline-flex",
@@ -422,6 +460,7 @@ export function FilterChips({
           >
             {o.label}
             <span
+              aria-hidden="true"
               style={{
                 fontSize: 10.5,
                 opacity: 0.7,
