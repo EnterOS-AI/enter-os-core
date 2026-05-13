@@ -103,6 +103,7 @@ jobs:
   detect-changes:
     runs-on: ubuntu-latest
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     outputs:
       api: ${{ steps.decide.outputs.api }}
@@ -154,6 +155,7 @@ jobs:
     name: E2E API Smoke Test
     runs-on: ubuntu-latest
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     timeout-minutes: 15
     env:
@@ -164,7 +166,6 @@ jobs:
       # we let Docker assign an ephemeral host port.
       PG_CONTAINER: pg-e2e-api-${{ github.run_id }}-${{ github.run_attempt }}
       REDIS_CONTAINER: redis-e2e-api-${{ github.run_id }}-${{ github.run_attempt }}
-      PORT: "8080"
     steps:
       - name: No-op pass (paths filter excluded this commit)
         if: needs.detect-changes.outputs.api != 'true'
@@ -268,6 +269,20 @@ jobs:
         if: needs.detect-changes.outputs.api == 'true'
         working-directory: workspace-server
         run: go build -o platform-server ./cmd/server
+      - name: Pick platform port
+        if: needs.detect-changes.outputs.api == 'true'
+        run: |
+          PLATFORM_PORT=$(python3 - <<'PY'
+          import socket
+
+          with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+              s.bind(("127.0.0.1", 0))
+              print(s.getsockname()[1])
+          PY
+          )
+          echo "PORT=${PLATFORM_PORT}" >> "$GITHUB_ENV"
+          echo "BASE=http://127.0.0.1:${PLATFORM_PORT}" >> "$GITHUB_ENV"
+          echo "Platform host port: ${PLATFORM_PORT}"
       - name: Start platform (background)
         if: needs.detect-changes.outputs.api == 'true'
         working-directory: workspace-server
@@ -280,7 +295,7 @@ jobs:
         if: needs.detect-changes.outputs.api == 'true'
         run: |
           for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:8080/health > /dev/null; then
+            if curl -sf "$BASE/health" > /dev/null; then
               echo "Platform up after ${i}s"
               exit 0
             fi

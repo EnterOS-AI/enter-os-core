@@ -42,19 +42,19 @@ import (
 	"net"
 	"net/http"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
-	"github.com/alicebob/miniredis/v2"
 )
 
 // integrationDB is imported from delegation_ledger_integration_test.go.
 // Each test gets a fresh table state.
 
 const testDelegationID = "del-159-test-integration"
-const testSourceID    = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-const testTargetID   = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+const testSourceID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+const testTargetID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 
 // rawHTTPServer starts a TCP listener, serves one HTTP response, and closes.
 // It runs in a background goroutine so the test can proceed immediately after
@@ -73,7 +73,7 @@ func rawHTTPServer(t *testing.T, statusCode int, body string) (serverURL string,
 		t.Fatalf("rawHTTPServer listen: %v", err)
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
-	serverURL = "http://127.0.0.1:" + itoa(port) + "/"
+	serverURL = "http://127.0.0.1:" + strconv.Itoa(port) + "/"
 
 	connCh := make(chan net.Conn, 1)
 	go func() {
@@ -125,31 +125,15 @@ func rawHTTPServer(t *testing.T, statusCode int, body string) (serverURL string,
 	return serverURL, closeFn
 }
 
-// itoa is an inline integer-to-string helper (avoids importing strconv in tests).
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	if n < 0 {
-		return "-" + itoa(-n)
-	}
-	digits := []byte{}
-	for n > 0 {
-		digits = append([]byte{byte('0' + n%10)}, digits...)
-		n /= 10
-	}
-	return string(digits)
-}
-
 // buildHTTPResponse constructs a minimal HTTP/1.1 response.
 func buildHTTPResponse(statusCode int, body string) []byte {
 	statusText := http.StatusText(statusCode)
 	if statusText == "" {
 		statusText = "Unknown"
 	}
-	header := "HTTP/1.1 " + itoa(statusCode) + " " + statusText + "\r\n" +
+	header := "HTTP/1.1 " + strconv.Itoa(statusCode) + " " + statusText + "\r\n" +
 		"Content-Type: application/json\r\n" +
-		"Content-Length: " + itoa(len(body)) + "\r\n" +
+		"Content-Length: " + strconv.Itoa(len(body)) + "\r\n" +
 		"Connection: close\r\n" +
 		"\r\n"
 	return []byte(header + body)
@@ -183,7 +167,7 @@ func setupIntegrationFixtures(t *testing.T, conn *sql.DB) func() {
 
 	reqBody, _ := json.Marshal(map[string]any{
 		"delegation_id": testDelegationID,
-		"task":         "do work",
+		"task":          "do work",
 	})
 	if _, err := conn.ExecContext(ctx, `
 		INSERT INTO activity_logs
@@ -245,14 +229,13 @@ func stack() string {
 }
 
 // runWithTimeout calls fn in a goroutine and fails t if it doesn't return within
-// timeout. cancel is passed to fn so it can propagate cancellation to
+// timeout. ctx is passed to fn so it can propagate cancellation to
 // executeDelegation's DB and network operations — without this, the goroutine
 // leaks indefinitely when the test times out (context.Background() never cancels).
-// When the timeout fires, cancel() propagates through all blocking ops and the
-// goroutine exits cleanly via runtime.Goexit().
-func runWithTimeout(t *testing.T, timeout time.Duration, fn func(cancel func())) {
+func runWithTimeout(t *testing.T, timeout time.Duration, fn func(context.Context)) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel() // no-op if ctx expires naturally
+	defer cancel()
 
 	done := make(chan struct{})
 	var panicErr interface{}
@@ -263,7 +246,7 @@ func runWithTimeout(t *testing.T, timeout time.Duration, fn func(cancel func()))
 			}
 			close(done)
 		}()
-		fn(cancel)
+		fn(ctx)
 	}()
 
 	select {
@@ -272,11 +255,8 @@ func runWithTimeout(t *testing.T, timeout time.Duration, fn func(cancel func()))
 			t.Fatalf("executeDelegation panicked: %v\n%s", panicErr, stack())
 		}
 	case <-ctx.Done():
-		// Timeout: cancel the context so executeDelegation's blocking calls
-		// (DB ops, network) unblock. Then exit this goroutine so the
-		// channel closes and the select in the main goroutine can detect
-		// the panic from t.Fatalf and terminate cleanly.
-		runtime.Goexit()
+		cancel()
+		t.Fatalf("executeDelegation timed out after %s\n%s", timeout, stack())
 	}
 }
 
@@ -322,7 +302,7 @@ func TestIntegration_ExecuteDelegation_DeliveryConfirmedProxyError_TreatsAsSucce
 	})
 
 	start := time.Now()
-	runWithTimeout(t, 30*time.Second, func(cancel func()) {
+	runWithTimeout(t, 30*time.Second, func(ctx context.Context) {
 		dh.executeDelegation(ctx, testSourceID, testTargetID, testDelegationID, a2aBody)
 	})
 	t.Logf("executeDelegation took %v", time.Since(start))
@@ -374,7 +354,7 @@ func TestIntegration_ExecuteDelegation_ProxyErrorNon2xx_RemainsFailed(t *testing
 		},
 	})
 	start := time.Now()
-	runWithTimeout(t, 30*time.Second, func(cancel func()) {
+	runWithTimeout(t, 30*time.Second, func(ctx context.Context) {
 		dh.executeDelegation(ctx, testSourceID, testTargetID, testDelegationID, a2aBody)
 	})
 	t.Logf("executeDelegation took %v", time.Since(start))
@@ -423,7 +403,7 @@ func TestIntegration_ExecuteDelegation_ProxyErrorEmptyBody_RemainsFailed(t *test
 		},
 	})
 	start := time.Now()
-	runWithTimeout(t, 30*time.Second, func(cancel func()) {
+	runWithTimeout(t, 30*time.Second, func(ctx context.Context) {
 		dh.executeDelegation(ctx, testSourceID, testTargetID, testDelegationID, a2aBody)
 	})
 	t.Logf("executeDelegation took %v", time.Since(start))
@@ -471,7 +451,7 @@ func TestIntegration_ExecuteDelegation_CleanProxyResponse_Unchanged(t *testing.T
 		},
 	})
 	start := time.Now()
-	runWithTimeout(t, 30*time.Second, func(cancel func()) {
+	runWithTimeout(t, 30*time.Second, func(ctx context.Context) {
 		dh.executeDelegation(ctx, testSourceID, testTargetID, testDelegationID, a2aBody)
 	})
 	t.Logf("executeDelegation took %v", time.Since(start))
@@ -516,7 +496,7 @@ func TestIntegration_ExecuteDelegation_RedisDown_FallsBackToDB(t *testing.T) {
 		},
 	})
 	start := time.Now()
-	runWithTimeout(t, 30*time.Second, func(cancel func()) {
+	runWithTimeout(t, 30*time.Second, func(ctx context.Context) {
 		dh.executeDelegation(ctx, testSourceID, testTargetID, testDelegationID, a2aBody)
 	})
 	t.Logf("executeDelegation took %v", time.Since(start))
