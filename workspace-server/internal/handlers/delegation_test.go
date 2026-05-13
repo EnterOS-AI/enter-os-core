@@ -233,14 +233,21 @@ func TestListDelegations_Empty(t *testing.T) {
 	wh := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
 	dh := NewDelegationHandler(wh, broadcaster)
 
-	rows := sqlmock.NewRows([]string{
-		"id", "activity_type", "source_id", "target_id",
-		"summary", "status", "error_detail", "response_body",
-		"delegation_id", "created_at",
-	})
+	// Ledger returns empty → falls back to activity_logs (also empty)
+	mock.ExpectQuery("SELECT d.delegation_id, d.caller_id, d.callee_id, d.task_preview").
+		WithArgs("ws-source").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"delegation_id", "caller_id", "callee_id", "task_preview",
+			"status", "result_preview", "error_detail", "last_heartbeat",
+			"deadline", "created_at", "updated_at",
+		}))
 	mock.ExpectQuery("SELECT id, activity_type").
 		WithArgs("ws-source").
-		WillReturnRows(rows)
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "activity_type", "source_id", "target_id",
+			"summary", "status", "error_detail", "response_body",
+			"delegation_id", "created_at",
+		}))
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -260,9 +267,12 @@ func TestListDelegations_Empty(t *testing.T) {
 	if len(resp) != 0 {
 		t.Errorf("expected empty array, got %d entries", len(resp))
 	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
 }
 
-// ---------- ListDelegations: with results → 200 with entries ----------
+// ---------- ListDelegations: with results (ledger only, no activity_logs fallback) ----------
 
 func TestListDelegations_WithResults(t *testing.T) {
 	mock := setupTestDB(t)
@@ -272,19 +282,21 @@ func TestListDelegations_WithResults(t *testing.T) {
 	dh := NewDelegationHandler(wh, broadcaster)
 
 	now := time.Now()
+	deadline := now.Add(6 * time.Hour)
+	// Ledger query returns rows — no fallback to activity_logs
 	rows := sqlmock.NewRows([]string{
-		"id", "activity_type", "source_id", "target_id",
-		"summary", "status", "error_detail", "response_body",
-		"delegation_id", "created_at",
+		"delegation_id", "caller_id", "callee_id", "task_preview",
+		"status", "result_preview", "error_detail", "last_heartbeat",
+		"deadline", "created_at", "updated_at",
 	}).
-		AddRow("1", "delegation", "ws-source", "ws-target",
+		AddRow("del-111", "ws-source", "ws-target",
 			"Delegating to ws-target", "pending", "", "",
-			"del-111", now).
-		AddRow("2", "delegation", "ws-source", "ws-target",
-			"Delegation completed (hello world)", "completed", "", "hello world",
-			"del-111", now.Add(time.Minute))
+			&now, &deadline, now, now).
+		AddRow("del-222", "ws-source", "ws-target",
+			"Delegation completed (hello world)", "completed", "hello world", "",
+			&now, &deadline, now, now.Add(time.Minute))
 
-	mock.ExpectQuery("SELECT id, activity_type").
+	mock.ExpectQuery("SELECT d.delegation_id, d.caller_id, d.callee_id, d.task_preview").
 		WithArgs("ws-source").
 		WillReturnRows(rows)
 
@@ -308,14 +320,11 @@ func TestListDelegations_WithResults(t *testing.T) {
 	}
 
 	// Check first entry (pending delegation)
-	if resp[0]["type"] != "delegation" {
-		t.Errorf("expected type 'delegation', got %v", resp[0]["type"])
+	if resp[0]["delegation_id"] != "del-111" {
+		t.Errorf("expected delegation_id 'del-111', got %v", resp[0]["delegation_id"])
 	}
 	if resp[0]["status"] != "pending" {
 		t.Errorf("expected status 'pending', got %v", resp[0]["status"])
-	}
-	if resp[0]["delegation_id"] != "del-111" {
-		t.Errorf("expected delegation_id 'del-111', got %v", resp[0]["delegation_id"])
 	}
 	if resp[0]["source_id"] != "ws-source" {
 		t.Errorf("expected source_id 'ws-source', got %v", resp[0]["source_id"])
@@ -323,8 +332,14 @@ func TestListDelegations_WithResults(t *testing.T) {
 	if resp[0]["target_id"] != "ws-target" {
 		t.Errorf("expected target_id 'ws-target', got %v", resp[0]["target_id"])
 	}
+	if resp[0]["_ledger"] != true {
+		t.Errorf("expected _ledger=true marker, got %v", resp[0]["_ledger"])
+	}
 
 	// Check second entry (completed, has response_preview)
+	if resp[1]["delegation_id"] != "del-222" {
+		t.Errorf("expected delegation_id 'del-222', got %v", resp[1]["delegation_id"])
+	}
 	if resp[1]["status"] != "completed" {
 		t.Errorf("expected status 'completed', got %v", resp[1]["status"])
 	}
@@ -1364,3 +1379,331 @@ func TestExtractResponseText_EmptyText(t *testing.T) {
 		t.Errorf("empty text: got %q, want %q", got, "")
 	}
 }
+
+// ---------- ListDelegations: ledger has rows → returns them (no activity_logs fallback) ----------
+
+func TestListDelegations_LedgerRowsReturned(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	wh := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+	dh := NewDelegationHandler(wh, broadcaster)
+
+	now := time.Now()
+	deadline := now.Add(6 * time.Hour)
+	// Ledger query returns rows
+	ledgerRows := sqlmock.NewRows([]string{
+		"delegation_id", "caller_id", "callee_id", "task_preview",
+		"status", "result_preview", "error_detail", "last_heartbeat",
+		"deadline", "created_at", "updated_at",
+	}).AddRow(
+		"del-ledger-001", "caller-uuid", "callee-uuid",
+		"Analyze the codebase for bugs", "in_progress", "", "",
+		&now, &deadline, now, now,
+	)
+	mock.ExpectQuery("SELECT d.delegation_id, d.caller_id, d.callee_id, d.task_preview").
+		WithArgs("caller-uuid").
+		WillReturnRows(ledgerRows)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "caller-uuid"}}
+	c.Request = httptest.NewRequest("GET", "/workspaces/caller-uuid/delegations", nil)
+
+	dh.ListDelegations(c)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp []map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(resp))
+	}
+	if resp[0]["delegation_id"] != "del-ledger-001" {
+		t.Errorf("expected delegation_id 'del-ledger-001', got %v", resp[0]["delegation_id"])
+	}
+	if resp[0]["status"] != "in_progress" {
+		t.Errorf("expected status 'in_progress', got %v", resp[0]["status"])
+	}
+	if resp[0]["_ledger"] != true {
+		t.Errorf("expected _ledger=true marker, got %v", resp[0]["_ledger"])
+	}
+	if resp[0]["source_id"] != "caller-uuid" {
+		t.Errorf("expected source_id 'caller-uuid', got %v", resp[0]["source_id"])
+	}
+	if resp[0]["target_id"] != "callee-uuid" {
+		t.Errorf("expected target_id 'callee-uuid', got %v", resp[0]["target_id"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// ---------- ListDelegations: ledger empty → falls back to activity_logs ----------
+
+func TestListDelegations_LedgerEmptyFallsBackToActivityLogs(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	wh := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+	dh := NewDelegationHandler(wh, broadcaster)
+
+	// Ledger returns empty → falls back to activity_logs
+	mock.ExpectQuery("SELECT d.delegation_id, d.caller_id, d.callee_id, d.task_preview").
+		WithArgs("ws-source").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"delegation_id", "caller_id", "callee_id", "task_preview",
+			"status", "result_preview", "error_detail", "last_heartbeat",
+			"deadline", "created_at", "updated_at",
+		}))
+
+	now := time.Now()
+	activityRows := sqlmock.NewRows([]string{
+		"id", "activity_type", "source_id", "target_id",
+		"summary", "status", "error_detail", "response_body",
+		"delegation_id", "created_at",
+	}).AddRow(
+		"act-001", "delegation", "ws-source", "ws-target",
+		"Delegating to ws-target", "pending", "", "",
+		"del-old-001", now,
+	)
+	mock.ExpectQuery("SELECT id, activity_type").
+		WithArgs("ws-source").
+		WillReturnRows(activityRows)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-source"}}
+	c.Request = httptest.NewRequest("GET", "/workspaces/ws-source/delegations", nil)
+
+	dh.ListDelegations(c)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp []map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("expected 1 entry from fallback, got %d", len(resp))
+	}
+	if resp[0]["delegation_id"] != "del-old-001" {
+		t.Errorf("expected delegation_id 'del-old-001' from activity_logs, got %v", resp[0]["delegation_id"])
+	}
+	if resp[0]["type"] != "delegation" {
+		t.Errorf("expected type 'delegation' from activity_logs, got %v", resp[0]["type"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// ---------- ListDelegations: both ledger and activity_logs empty → [] ----------
+
+func TestListDelegations_BothEmptyReturnsEmptyArray(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	wh := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+	dh := NewDelegationHandler(wh, broadcaster)
+
+	// Ledger empty
+	mock.ExpectQuery("SELECT d.delegation_id, d.caller_id, d.callee_id, d.task_preview").
+		WithArgs("ws-source").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"delegation_id", "caller_id", "callee_id", "task_preview",
+			"status", "result_preview", "error_detail", "last_heartbeat",
+			"deadline", "created_at", "updated_at",
+		}))
+	// activity_logs also empty
+	mock.ExpectQuery("SELECT id, activity_type").
+		WithArgs("ws-source").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "activity_type", "source_id", "target_id",
+			"summary", "status", "error_detail", "response_body",
+			"delegation_id", "created_at",
+		}))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-source"}}
+	c.Request = httptest.NewRequest("GET", "/workspaces/ws-source/delegations", nil)
+
+	dh.ListDelegations(c)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp []interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if len(resp) != 0 {
+		t.Errorf("expected empty array, got %d entries", len(resp))
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// ---------- ListDelegations: ledger query error → falls back to activity_logs ----------
+
+func TestListDelegations_LedgerQueryErrorFallsBackToActivityLogs(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	wh := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+	dh := NewDelegationHandler(wh, broadcaster)
+
+	// Ledger query fails → fallback to activity_logs
+	mock.ExpectQuery("SELECT d.delegation_id, d.caller_id, d.callee_id, d.task_preview").
+		WithArgs("ws-source").
+		WillReturnError(fmt.Errorf("table does not exist"))
+
+	now := time.Now()
+	activityRows := sqlmock.NewRows([]string{
+		"id", "activity_type", "source_id", "target_id",
+		"summary", "status", "error_detail", "response_body",
+		"delegation_id", "created_at",
+	}).AddRow(
+		"act-002", "delegation", "ws-source", "ws-target",
+		"Some task", "completed", "", "result here",
+		"del-pre-318", now,
+	)
+	mock.ExpectQuery("SELECT id, activity_type").
+		WithArgs("ws-source").
+		WillReturnRows(activityRows)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-source"}}
+	c.Request = httptest.NewRequest("GET", "/workspaces/ws-source/delegations", nil)
+
+	dh.ListDelegations(c)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp []map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if len(resp) != 1 || resp[0]["delegation_id"] != "del-pre-318" {
+		t.Errorf("expected 1 activity_logs entry, got %v", resp)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// ---------- ListDelegations: ledger completed delegation includes result_preview ----------
+
+func TestListDelegations_LedgerCompletedIncludesResultPreview(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	wh := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+	dh := NewDelegationHandler(wh, broadcaster)
+
+	now := time.Now()
+	deadline := now.Add(6 * time.Hour)
+	ledgerRows := sqlmock.NewRows([]string{
+		"delegation_id", "caller_id", "callee_id", "task_preview",
+		"status", "result_preview", "error_detail", "last_heartbeat",
+		"deadline", "created_at", "updated_at",
+	}).AddRow(
+		"del-complete-001", "caller-uuid", "callee-uuid",
+		"Run analysis", "completed", "Analysis complete: 42 issues found", "",
+		&now, &deadline, now, now,
+	)
+	mock.ExpectQuery("SELECT d.delegation_id, d.caller_id, d.callee_id, d.task_preview").
+		WithArgs("caller-uuid").
+		WillReturnRows(ledgerRows)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "caller-uuid"}}
+	c.Request = httptest.NewRequest("GET", "/workspaces/caller-uuid/delegations", nil)
+
+	dh.ListDelegations(c)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp []map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(resp))
+	}
+	if resp[0]["status"] != "completed" {
+		t.Errorf("expected status 'completed', got %v", resp[0]["status"])
+	}
+	if resp[0]["response_preview"] != "Analysis complete: 42 issues found" {
+		t.Errorf("expected response_preview, got %v", resp[0]["response_preview"])
+	}
+	if resp[0]["error"] != nil {
+		t.Errorf("expected no error on completed, got %v", resp[0]["error"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// ---------- ListDelegations: ledger failed delegation includes error_detail ----------
+
+func TestListDelegations_LedgerFailedIncludesErrorDetail(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	wh := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+	dh := NewDelegationHandler(wh, broadcaster)
+
+	now := time.Now()
+	deadline := now.Add(6 * time.Hour)
+	ledgerRows := sqlmock.NewRows([]string{
+		"delegation_id", "caller_id", "callee_id", "task_preview",
+		"status", "result_preview", "error_detail", "last_heartbeat",
+		"deadline", "created_at", "updated_at",
+	}).AddRow(
+		"del-failed-001", "caller-uuid", "callee-uuid",
+		"Fetch data", "failed", "", "Callee workspace not reachable",
+		&now, &deadline, now, now,
+	)
+	mock.ExpectQuery("SELECT d.delegation_id, d.caller_id, d.callee_id, d.task_preview").
+		WithArgs("caller-uuid").
+		WillReturnRows(ledgerRows)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "caller-uuid"}}
+	c.Request = httptest.NewRequest("GET", "/workspaces/caller-uuid/delegations", nil)
+
+	dh.ListDelegations(c)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp []map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(resp))
+	}
+	if resp[0]["status"] != "failed" {
+		t.Errorf("expected status 'failed', got %v", resp[0]["status"])
+	}
+	if resp[0]["error"] != "Callee workspace not reachable" {
+		t.Errorf("expected error detail, got %v", resp[0]["error"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
