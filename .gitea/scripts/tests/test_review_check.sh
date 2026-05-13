@@ -15,6 +15,7 @@
 #   T11 — bash syntax check (bash -n passes)
 #   T12 — jq filter: non-author APPROVED → in candidate list; dismissed → excluded
 #   T13 — missing required env GITEA_TOKEN → exits 1 with error
+#   T14 — non-default-base PR exits 0 without requiring review
 #
 # Hostile-self-review (per feedback_assert_exact_not_substring):
 # this test MUST FAIL if the script is absent. Verified by running
@@ -73,7 +74,7 @@ assert_file_mode() {
     return
   fi
   local got_mode
-  got_mode=$(stat -c '%a' "$path" 2>/dev/null || echo "000")
+  got_mode=$(stat -c '%a' "$path" 2>/dev/null || stat -f '%Lp' "$path" 2>/dev/null || echo "000")
   if [ "$expected_mode" = "$got_mode" ]; then
     echo "  PASS  $label (mode=$got_mode)"
     PASS=$((PASS + 1))
@@ -194,8 +195,9 @@ for a in "$@"; do
 done
 exec /usr/bin/curl "${new_args[@]}"
 CURL_SHIM
-# Now substitute FIXPORT with the actual port number
-sed -i "s/FIXPORT/${FIX_PORT}/g" "$FIXTURE_DIR/bin/curl"
+# Now substitute FIXPORT with the actual port number. Use perl rather than
+# sed -i so the test runs on both GNU sed and BSD/macOS sed.
+perl -0pi -e "s/FIXPORT/${FIX_PORT}/g" "$FIXTURE_DIR/bin/curl"
 chmod +x "$FIXTURE_DIR/bin/curl"
 
 # Helper: run the script with fixture environment
@@ -210,6 +212,7 @@ run_review_check() {
     GITEA_HOST="fixture.local" \
     REPO="molecule-ai/molecule-core" \
     PR_NUMBER="999" \
+    DEFAULT_BRANCH="main" \
     TEAM="qa" \
     TEAM_ID="20" \
     REVIEW_CHECK_DEBUG="0" \
@@ -252,6 +255,14 @@ T4_OUT=$(run_review_check "T4_reviews_empty")
 T4_RC=$(cat "$FIX_STATE_DIR/last_rc")
 assert_eq "T4 exit code 1 (no candidates)" "1" "$T4_RC"
 assert_contains "T4 awaiting non-author APPROVE" "awaiting non-author APPROVE" "$T4_OUT"
+
+# T14 — non-default-base PR should not make the default branch red.
+echo
+echo "== T14 non-default base PR =="
+T14_OUT=$(run_review_check "T14_non_default_base")
+T14_RC=$(cat "$FIX_STATE_DIR/last_rc")
+assert_eq "T14 exit code 0 (non-default base no-op)" "0" "$T14_RC"
+assert_contains "T14 not applicable notice" "gate not applicable" "$T14_OUT"
 
 # T5 — only author reviews → exit 1
 echo
@@ -296,10 +307,10 @@ echo "== T10 CURL_AUTH_FILE =="
 # Verify the token-file logic directly: create a temp file with the
 # same mktemp pattern, write the header with printf, chmod 600, then assert.
 T10_TOKEN="secret-test-token-abc123"
-T10_AUTHFILE=$(mktemp -p /tmp curl-auth.test.XXXXXX)
+T10_AUTHFILE=$(mktemp "${TMPDIR:-/tmp}/curl-auth.test.XXXXXX")
 chmod 600 "$T10_AUTHFILE"
 printf 'header = "Authorization: token %s"\n' "$T10_TOKEN" > "$T10_AUTHFILE"
-assert_file_mode "T10a mktemp -p /tmp mode 600 (CURL_AUTH_FILE pattern)" "$T10_AUTHFILE" "600"
+assert_file_mode "T10a mktemp authfile mode 600 (CURL_AUTH_FILE pattern)" "$T10_AUTHFILE" "600"
 assert_file_contains "T10b printf header format (CURL_AUTH_FILE content)" "$T10_AUTHFILE" "Authorization: token secret-test-token-abc123"
 assert_file_contains "T10c 'header =' curl-config syntax" "$T10_AUTHFILE" 'header = "Authorization: token '
 rm -f "$T10_AUTHFILE"

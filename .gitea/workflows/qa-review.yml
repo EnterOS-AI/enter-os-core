@@ -158,6 +158,7 @@ jobs:
           #   pull_request_target → github.event.pull_request.number
           #   issue_comment       → github.event.issue.number
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           TEAM: qa
           TEAM_ID: '20'
           REVIEW_CHECK_DEBUG: '0'

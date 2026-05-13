@@ -488,6 +488,21 @@ def run(repo: str, pr_number: int, post_comment: bool = False) -> dict:
         owner, name = repo.split("/", 1)
         pr = api_get(f"/repos/{owner}/{name}/pulls/{pr_number}")
         base_ref = pr.get("base", {}).get("ref", "main")
+        default_branch = os.environ.get("DEFAULT_BRANCH", "main")
+        if base_ref != default_branch:
+            result = {
+                "verdict": "CLEAR",
+                "repo": repo,
+                "pr": pr_number,
+                "skipped": True,
+                "reason": (
+                    f"PR targets {base_ref}, not protected default branch "
+                    f"{default_branch}"
+                ),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            print(json.dumps(result, indent=2))
+            return result
 
         gates = [
             signal_1_comment_scan(pr_number, repo),
