@@ -163,15 +163,67 @@ async def handle_tool_call(name: str, arguments: dict) -> str:
 
 # --- MCP Notification bridge ---
 
-# `notifications/claude/channel` matches the contract used by the
-# molecule-mcp-claude-channel bun bridge (server.ts:509). Claude Code's
-# MCP runtime treats this method as a conversation interrupt — `content`
-# becomes the agent turn, `meta` is structured metadata. Notification-
-# capable hosts (Claude Code today; any compliant client tomorrow)
-# get push UX automatically; pollers (`wait_for_message` / `inbox_peek`)
-# still work unchanged. See task #46 + the deprecation path documented
-# in workspace/inbox.py:set_notification_callback.
-_CHANNEL_NOTIFICATION_METHOD = "notifications/claude/channel"
+# Runtime-adaptive notification method. Each MCP host uses a different
+# JSON-RPC notification method for inbound push. Detect at startup so
+# the inbox poller emits the right shape for the host that spawned us.
+#
+# Detection order (first match wins):
+#   CLAUDE_CODE / CLAUDE_CODE_VERSION  → notifications/claude/channel
+#   OPENCLAW_SESSION_ID / OPENCLAW_GATEWAY_PORT → notifications/openclaw/channel
+#   CURSOR_MCP / CURSOR_TRACE_ID       → notifications/cursor/channel
+#   HERMES_RUNTIME / HERMES_WORKSPACE_ID → notifications/hermes/channel
+#   fallback                           → notifications/message
+#
+# The method is resolved once at startup and cached in
+# _CHANNEL_NOTIFICATION_METHOD. Tests can override by patching
+# _detect_runtime() or setting the env var before import.
+_DETECTED_RUNTIME: str | None = None
+
+
+def _detect_runtime() -> str:
+    """Detect which MCP host spawned this process."""
+    global _DETECTED_RUNTIME
+    if _DETECTED_RUNTIME is not None:
+        return _DETECTED_RUNTIME
+
+    env = os.environ
+    if env.get("CLAUDE_CODE") or env.get("CLAUDE_CODE_VERSION"):
+        _DETECTED_RUNTIME = "claude"
+    elif env.get("OPENCLAW_SESSION_ID") or env.get("OPENCLAW_GATEWAY_PORT"):
+        _DETECTED_RUNTIME = "openclaw"
+    elif env.get("CURSOR_MCP") or env.get("CURSOR_TRACE_ID"):
+        _DETECTED_RUNTIME = "cursor"
+    elif env.get("HERMES_RUNTIME") or env.get("HERMES_WORKSPACE_ID"):
+        _DETECTED_RUNTIME = "hermes"
+    else:
+        _DETECTED_RUNTIME = "generic"
+
+    logger.debug(f"Detected MCP runtime: {_DETECTED_RUNTIME}")
+    return _DETECTED_RUNTIME
+
+
+def _notification_method_for_runtime(runtime: str) -> str:
+    """Return the JSON-RPC notification method for the given runtime."""
+    return {
+        "claude": "notifications/claude/channel",
+        "openclaw": "notifications/openclaw/channel",
+        "cursor": "notifications/cursor/channel",
+        "hermes": "notifications/hermes/channel",
+        "generic": "notifications/message",
+    }.get(runtime, "notifications/message")
+
+
+# Lazily resolved so tests can patch _detect_runtime() before the first
+# notification is built. The value is read once per process lifetime.
+_CHANNEL_NOTIFICATION_METHOD: str | None = None
+
+
+def _channel_notification_method() -> str:
+    """Return the cached notification method for the detected runtime."""
+    global _CHANNEL_NOTIFICATION_METHOD
+    if _CHANNEL_NOTIFICATION_METHOD is None:
+        _CHANNEL_NOTIFICATION_METHOD = _notification_method_for_runtime(_detect_runtime())
+    return _CHANNEL_NOTIFICATION_METHOD
 
 
 # ============= Trust-boundary gates for channel-notification meta ==============
@@ -569,7 +621,7 @@ def _build_channel_notification(msg: dict) -> dict:
     )
     return {
         "jsonrpc": "2.0",
-        "method": _CHANNEL_NOTIFICATION_METHOD,
+        "method": _channel_notification_method(),
         "params": {
             "content": content,
             "meta": meta,
@@ -632,66 +684,69 @@ def _format_channel_content(
 # --- MCP Server (JSON-RPC over stdio) ---
 
 
-def _assert_stdio_is_pipe_compatible(
-    stdin_fd: int = 0, stdout_fd: int = 1
-) -> None:
-    """Fail fast with a friendly message when stdio isn't pipe-compatible.
+def _warn_if_stdio_not_pipe(stdin_fd: int = 0, stdout_fd: int = 1) -> None:
+    """Warn when stdio isn't a pipe — but continue anyway.
 
-    asyncio.connect_read_pipe / connect_write_pipe accept only pipes,
-    sockets, and character devices. When molecule-mcp is launched with
-    stdout redirected to a regular file (CI smoke tests, ad-hoc local
-    debugging that captures output), the asyncio call later raises
-    ``ValueError: Pipe transport is only for pipes, sockets and character
-    devices`` from inside the event loop — surfaced to the operator as a
-    confusing traceback. Detect early and exit cleanly with guidance
-    instead. See molecule-ai-workspace-runtime#61.
+    The legacy asyncio.connect_read_pipe / connect_write_pipe transport
+    rejected regular files, PTYs, and sockets with:
+        ValueError: Pipe transport is only for pipes, sockets and
+        character devices
+    We now use direct buffer I/O which works with ANY file descriptor,
+    so this is a diagnostic-only warning for operators debugging setup
+    issues. See molecule-ai-workspace-runtime#61.
     """
     for name, fd in (("stdin", stdin_fd), ("stdout", stdout_fd)):
         try:
             mode = os.fstat(fd).st_mode
-        except OSError as exc:
-            print(
-                f"molecule-mcp: cannot stat {name} (fd={fd}): {exc}.\n"
-                f"  This MCP server expects bidirectional pipe stdio. Launch it from\n"
-                f"  an MCP-aware client (Claude Code, Cursor, etc.) — not detached\n"
-                f"  from a terminal or with stdio closed.",
-                file=sys.stderr,
+        except OSError:
+            continue
+        if not (stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode) or stat.S_ISCHR(mode)):
+            logger.warning(
+                f"molecule-mcp: {name} (fd={fd}) is not a pipe/socket/char-device. "
+                f"This is fine — the universal stdio transport handles regular files, "
+                f"PTYs, and sockets. If you see garbled output, launch from an "
+                f"MCP-aware client (Claude Code, Cursor, OpenClaw, etc.)."
             )
-            sys.exit(2)
-        if not (
-            stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode) or stat.S_ISCHR(mode)
-        ):
-            print(
-                f"molecule-mcp: {name} (fd={fd}) is a regular file, not a pipe,\n"
-                f"  socket, or character device — asyncio's stdio transport rejects\n"
-                f"  it with `ValueError: Pipe transport is only for pipes, sockets\n"
-                f"  and character devices`. Common causes:\n"
-                f"      molecule-mcp > out.txt           # stdout → regular file (fails)\n"
-                f"      molecule-mcp < input.json        # stdin  → regular file (fails)\n"
-                f"  Launch molecule-mcp from an MCP-aware client (Claude Code, Cursor,\n"
-                f"  hermes, OpenCode, etc.) so stdio is wired to a pipe pair, or use\n"
-                f"  `tee`/process substitution if you need to capture output:\n"
-                f"      molecule-mcp 2>&1 | tee out.txt  # stdout stays a pipe",
-                file=sys.stderr,
-            )
-            sys.exit(2)
 
 
 async def main():  # pragma: no cover
-    """Run MCP server on stdio — reads JSON-RPC requests, writes responses."""
-    reader = asyncio.StreamReader()
-    protocol = asyncio.StreamReaderProtocol(reader)
-    await asyncio.get_event_loop().connect_read_pipe(lambda: protocol, sys.stdin)
+    """Run MCP server on stdio — reads JSON-RPC requests, writes responses.
 
-    writer_transport, writer_protocol = await asyncio.get_event_loop().connect_write_pipe(
-        asyncio.streams.FlowControlMixin, sys.stdout
-    )
-    writer = asyncio.StreamWriter(writer_transport, writer_protocol, None, asyncio.get_event_loop())
+    Uses sys.stdin.buffer / sys.stdout.buffer directly instead of
+    asyncio.connect_read_pipe / connect_write_pipe. The asyncio pipe
+    transport rejects regular files, PTYs, and sockets with:
+        ValueError: Pipe transport is only for pipes, sockets and
+        character devices
+    This breaks when the MCP host captures stdout (openclaw, CI tests,
+    ad-hoc debugging with tee). Reading/writing the buffer directly
+    works with ANY file descriptor.
+
+    See molecule-ai-workspace-runtime#61.
+    """
+    loop = asyncio.get_event_loop()
+    # sys.stdin.buffer exists on text-mode streams (default); on binary
+    # streams (tests, some CI setups) stdin IS the buffer.
+    stdin = getattr(sys.stdin, "buffer", sys.stdin)
+    stdout = getattr(sys.stdout, "buffer", sys.stdout)
 
     async def write_response(response: dict):
         data = json.dumps(response) + "\n"
-        writer.write(data.encode())
-        await writer.drain()
+        stdout.write(data.encode())
+        stdout.flush()
+
+    # Build a StreamWriter-compatible wrapper for the inbox bridge.
+    # The bridge expects a writer with .write() and .drain() methods.
+    class _StdoutWriter:
+        def __init__(self, buf):
+            self._buf = buf
+
+        def write(self, data: bytes) -> None:
+            self._buf.write(data)
+
+        async def drain(self) -> None:
+            self._buf.flush()
+
+    writer = _StdoutWriter(stdout)
 
     # Wire the inbox → MCP notification bridge. The bridge body lives
     # in `_setup_inbox_bridge` so the threading + asyncio + stdout
@@ -701,22 +756,27 @@ async def main():  # pragma: no cover
         _setup_inbox_bridge(writer, asyncio.get_running_loop())
     )
 
-    buffer = ""
+    # Log runtime detection for operator diagnostics
+    runtime = _detect_runtime()
+    logger.info(f"MCP stdio transport ready (runtime={runtime}, "
+                f"notification_method={_channel_notification_method()})")
+
+    buffer = b""
     while True:
         try:
-            chunk = await reader.read(65536)
+            chunk = await loop.run_in_executor(None, stdin.read, 65536)
             if not chunk:
                 break
-            buffer += chunk.decode(errors="replace")
+            buffer += chunk
 
-            while "\n" in buffer:
-                line, buffer = buffer.split("\n", 1)
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
                 line = line.strip()
                 if not line:
                     continue
 
                 try:
-                    request = json.loads(line)
+                    request = json.loads(line.decode(errors="replace"))
                 except json.JSONDecodeError:
                     continue
 
@@ -780,7 +840,7 @@ def cli_main() -> None:  # pragma: no cover
     break every external-runtime operator's MCP install — the 0.1.16
     ``main_sync`` rename incident is the cautionary precedent.
     """
-    _assert_stdio_is_pipe_compatible()
+    _warn_if_stdio_not_pipe()
     asyncio.run(main())
 
 
