@@ -153,7 +153,7 @@ func TestMergeSystemMessages_EmptySlice(t *testing.T) {
 func TestMergeSystemMessages_NilSlice(t *testing.T) {
 	var input []map[string]interface{}
 	got := mergeSystemMessages(input)
-	if got != nil && len(got) != 0 {
+	if len(got) != 0 {
 		t.Errorf("nil: got %v, want nil/empty", got)
 	}
 }

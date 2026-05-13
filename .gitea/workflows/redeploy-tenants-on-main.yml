@@ -1,0 +1,336 @@
+name: manual-redeploy-tenants-on-main
+
+# Ported from .github/workflows/redeploy-tenants-on-main.yml on 2026-05-11 per RFC
+# internal#219 §1 sweep. Differences from the GitHub version:
+#   - Dropped `workflow_dispatch.inputs` (Gitea 1.22.6 parser rejects them
+#     per feedback_gitea_workflow_dispatch_inputs_unsupported).
+#   - Dropped `merge_group:` (no Gitea merge queue).
+#   - Dropped `environment:` blocks (Gitea has no environments).
+#   - Workflow-level env.GITHUB_SERVER_URL pinned per
+#     feedback_act_runner_github_server_url.
+#   - `continue-on-error: true` on each job (RFC §1 contract).
+#   - Gitea 1.22.6 does not support workflow_run (task #81). This Gitea
+#     fallback is manual-only; automatic production deploy is attached to
+#     publish-workspace-server-image.yml after image push succeeds.
+#
+
+# Manual production tenant redeploy fallback.
+#
+# Primary automatic production deployment now lives in
+# publish-workspace-server-image.yml:
+#   build images -> wait for `CI / all-required (push)` green on the same SHA
+#   -> call production redeploy-fleet.
+#
+# This workflow remains as an operator fallback. By default it reruns current
+# main; set repo variable PROD_MANUAL_REDEPLOY_TARGET_TAG to a known-good
+# `staging-<sha>` tag for rollback.
+#
+# Why this workflow exists: publish-workspace-server-image builds and
+# pushes a new platform-tenant :<sha> to ECR on every merge to main,
+# but running tenants pulled their image once at boot and never re-pull.
+# Users see stale code indefinitely.
+#
+# This workflow closes the gap by calling the control-plane admin
+# endpoint that performs a canary-first, batched, health-gated rolling
+# redeploy across every live tenant. Implemented in molecule-ai/
+# molecule-controlplane as POST /cp/admin/tenants/redeploy-fleet
+# (feat/tenant-auto-redeploy, landing alongside this workflow).
+#
+# Registry: ECR (153263036946.dkr.ecr.us-east-2.amazonaws.com/
+# molecule-ai/platform-tenant). GHCR was retired 2026-05-07 during the
+# Gitea suspension migration. The staging-verify.yml promote step now
+# uses the same redeploy-fleet endpoint (fixes the silent-GHCR gap).
+#
+# Any failure aborts the rollout and leaves older tenants on the prior image.
+
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  # No write scopes needed — the workflow hits an external CP endpoint,
+  # not the GitHub API.
+
+# No `concurrency:` block here. Gitea 1.22.6 can cancel queued runs despite
+# `cancel-in-progress: false`; operators should not dispatch overlapping manual
+# production redeploys.
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  redeploy:
+    runs-on: ubuntu-latest
+    continue-on-error: false
+    timeout-minutes: 25
+    steps:
+      - name: Note on ECR propagation
+        # ECR image manifests are consistent immediately after push — no
+        # CDN cache to wait for. The old GHCR-based workflow had a 30s
+        # sleep to avoid race conditions; ECR makes that unnecessary.
+        run: echo "ECR image available immediately after push — proceeding."
+
+      - name: Compute target tag
+        id: tag
+        # Gitea 1.22.6 does not support workflow_dispatch inputs reliably.
+        # Use repo variable PROD_MANUAL_REDEPLOY_TARGET_TAG for rollback.
+        env:
+          HEAD_SHA: ${{ github.sha }}
+          MANUAL_TARGET_TAG: ${{ vars.PROD_MANUAL_REDEPLOY_TARGET_TAG || '' }}
+        run: |
+          set -euo pipefail
+          if [ -n "${MANUAL_TARGET_TAG:-}" ]; then
+            echo "target_tag=$MANUAL_TARGET_TAG" >> "$GITHUB_OUTPUT"
+            echo "Using operator-pinned manual target tag: $MANUAL_TARGET_TAG"
+          else
+            SHORT="${HEAD_SHA:0:7}"
+            echo "target_tag=staging-$SHORT" >> "$GITHUB_OUTPUT"
+            echo "Using manual fallback tag: staging-$SHORT (head_sha=$HEAD_SHA)"
+          fi
+
+      - name: Call CP redeploy-fleet
+        # CP_ADMIN_API_TOKEN must be set as a repo/org secret on
+        # molecule-ai/molecule-core, matching the staging/prod CP's
+        # CP_ADMIN_API_TOKEN env. Stored in Railway, mirrored to this
+        # repo's secrets for CI.
+        env:
+          CP_URL: ${{ vars.PROD_CP_URL || 'https://api.moleculesai.app' }}
+          CP_ADMIN_API_TOKEN: ${{ secrets.CP_ADMIN_API_TOKEN }}
+          TARGET_TAG: ${{ steps.tag.outputs.target_tag }}
+          CANARY_SLUG: ${{ vars.PROD_AUTO_DEPLOY_CANARY_SLUG || 'hongming' }}
+          SOAK_SECONDS: ${{ vars.PROD_AUTO_DEPLOY_SOAK_SECONDS || '60' }}
+          BATCH_SIZE: ${{ vars.PROD_AUTO_DEPLOY_BATCH_SIZE || '3' }}
+          DRY_RUN: ${{ vars.PROD_AUTO_DEPLOY_DRY_RUN || false }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${CP_ADMIN_API_TOKEN:-}" ]; then
+            echo "::error::CP_ADMIN_API_TOKEN secret not set — skipping redeploy"
+            echo "::notice::Set CP_ADMIN_API_TOKEN in repo secrets to enable auto-redeploy."
+            exit 1
+          fi
+
+          BODY=$(jq -nc \
+            --arg tag "$TARGET_TAG" \
+            --arg canary "$CANARY_SLUG" \
+            --argjson soak "$SOAK_SECONDS" \
+            --argjson batch "$BATCH_SIZE" \
+            --argjson dry "$DRY_RUN" \
+            '{
+              target_tag: $tag,
+              canary_slug: $canary,
+              soak_seconds: $soak,
+              batch_size: $batch,
+              dry_run: $dry
+            }')
+
+          echo "POST $CP_URL/cp/admin/tenants/redeploy-fleet"
+          echo "  body: $BODY"
+
+          HTTP_RESPONSE=$(mktemp)
+          HTTP_CODE_FILE=$(mktemp)
+          # Route -w into its own tempfile so curl's exit code (e.g. 56
+          # on connection-reset, 22 on --fail-with-body 4xx/5xx) can't
+          # pollute the captured stdout. The previous inline-substitution
+          # shape produced "000000" on connection reset (curl wrote
+          # "000" via -w, then the inline echo-fallback appended another
+          # "000") — caught on the 2026-05-04 redeploy of sha 2b862f6.
+          # set +e/-e keeps the non-zero curl exit from tripping the
+          # outer pipeline. See lint-curl-status-capture.yml for the
+          # CI gate that pins this fix shape.
+          set +e
+          curl -sS -o "$HTTP_RESPONSE" -w '%{http_code}' \
+            -m 1200 \
+            -H "Authorization: Bearer $CP_ADMIN_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -X POST "$CP_URL/cp/admin/tenants/redeploy-fleet" \
+            -d "$BODY" >"$HTTP_CODE_FILE"
+          set -e
+          # Stderr from curl (e.g. dial errors with -sS) goes to the runner
+          # log so operators can see WHY a connection failed. Stdout is
+          # captured to $HTTP_CODE_FILE because that's where -w writes.
+          HTTP_CODE=$(cat "$HTTP_CODE_FILE" 2>/dev/null || echo "000")
+          [ -z "$HTTP_CODE" ] && HTTP_CODE="000"
+
+          echo "HTTP $HTTP_CODE"
+          jq '{ok, result_count: (.results // [] | length)}' "$HTTP_RESPONSE" || true
+
+          # Pretty-print per-tenant results in the job summary so
+          # ops can see which tenants were redeployed without drilling
+          # into the raw response.
+          {
+            echo "## Tenant redeploy fleet"
+            echo ""
+            echo "**Target tag:** \`$TARGET_TAG\`"
+            echo "**Canary:** \`$CANARY_SLUG\` (soak ${SOAK_SECONDS}s)"
+            echo "**Batch size:** $BATCH_SIZE"
+            echo "**Dry run:** $DRY_RUN"
+            echo "**HTTP:** $HTTP_CODE"
+            echo ""
+            echo "### Per-tenant result"
+            echo ""
+            echo '| Slug | Phase | SSM Status | Exit | Healthz | Error present |'
+            echo '|------|-------|------------|------|---------|---------------|'
+            jq -r '.results[]? | "| \(.slug) | \(.phase) | \(.ssm_status // "-") | \(.ssm_exit_code) | \(.healthz_ok) | \((.error // "") != "") |"' "$HTTP_RESPONSE" || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::redeploy-fleet returned HTTP $HTTP_CODE"
+            exit 1
+          fi
+          OK=$(jq -r '.ok' "$HTTP_RESPONSE")
+          if [ "$OK" != "true" ]; then
+            echo "::error::redeploy-fleet reported ok=false (see summary for which tenant halted the rollout)"
+            exit 1
+          fi
+          echo "::notice::Tenant fleet redeploy reported ssm_status=Success — verifying actual image roll on each tenant..."
+
+          # Stash the response for the verify step. $RUNNER_TEMP outlasts
+          # the step boundary; $HTTP_RESPONSE doesn't.
+          cp "$HTTP_RESPONSE" "$RUNNER_TEMP/redeploy-response.json"
+
+      - name: Verify each tenant /buildinfo matches published SHA
+        # ROOT FIX FOR #2395.
+        #
+        # `redeploy-fleet`'s `ssm_status=Success` means "the SSM RPC
+        # didn't error" — NOT "the new image is running on the tenant."
+        # `:latest` lives in the local Docker daemon's image cache; if
+        # the SSM document does `docker compose up -d` without an
+        # explicit `docker pull`, the daemon serves the previously-
+        # cached digest and the container restarts on stale code.
+        # 2026-04-30 incident: hongmingwang's tenant reported
+        # ssm_status=Success at 17:00:53Z but kept serving pre-501a42d7
+        # chat_files for 30+ min — the lazy-heal fix never reached the
+        # user despite green deploy + green redeploy.
+        #
+        # This step closes the gap by curling each tenant's /buildinfo
+        # endpoint (added in workspace-server/internal/buildinfo +
+        # /Dockerfile* GIT_SHA build-arg, this PR) and comparing the
+        # returned git_sha to the SHA the workflow expects. Mismatches
+        # fail the workflow, which is what `ok=true` should have
+        # guaranteed all along.
+        #
+        # Manual Gitea fallback redeploys current main's staging-<sha> tag, so
+        # the expected SHA is github.sha.
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          TARGET_TAG: ${{ steps.tag.outputs.target_tag }}
+          # Tenant subdomain template — slugs from the response are
+          # appended. Production CP issues `<slug>.moleculesai.app`;
+          # staging CP issues `<slug>.staging.moleculesai.app`. This
+          # workflow runs on main → prod CP → no `staging.` infix.
+          TENANT_DOMAIN: 'moleculesai.app'
+        run: |
+          set -euo pipefail
+
+          EXPECTED_SHORT="${EXPECTED_SHA:0:7}"
+          if [ "$TARGET_TAG" != "latest" ] \
+             && [ "$TARGET_TAG" != "$EXPECTED_SHA" ] \
+             && [ "$TARGET_TAG" != "staging-$EXPECTED_SHORT" ]; then
+            # workflow_dispatch with a pinned tag that isn't the head
+            # SHA — operator is rolling back / pinning. Skip the
+            # verification because we don't have the expected SHA in
+            # this context (would need to crane-inspect the GHCR
+            # manifest, which is a follow-up). Failing-open here is
+            # safe: the operator chose the tag deliberately.
+            #
+            # `staging-<short_head_sha>` IS verified — it's the new
+            # auto-trigger default (see Compute target tag step) and
+            # the digest under that tag SHOULD match EXPECTED_SHA.
+            echo "::notice::target_tag=$TARGET_TAG (operator-pinned) — skipping per-tenant SHA verification."
+            exit 0
+          fi
+
+          RESP="$RUNNER_TEMP/redeploy-response.json"
+          if [ ! -s "$RESP" ]; then
+            echo "::error::redeploy-response.json missing or empty — verify step ran without a response to read"
+            exit 1
+          fi
+
+          # Pull only successfully-redeployed tenants. Any tenant that
+          # halted the rollout already failed the previous step, so we
+          # don't double-count them here.
+          mapfile -t SLUGS < <(jq -r '.results[]? | select(.healthz_ok == true) | .slug' "$RESP")
+          if [ ${#SLUGS[@]} -eq 0 ]; then
+            echo "::warning::No tenants reported healthz_ok — nothing to verify"
+            exit 0
+          fi
+
+          echo "Verifying ${#SLUGS[@]} tenant(s) against EXPECTED_SHA=${EXPECTED_SHA:0:7}..."
+
+          # Two distinct failure modes — STALE (the #2395 bug class, hard-fail)
+          # vs UNREACHABLE (teardown race, soft-warn). See the staging variant's
+          # comment for the full rationale; same logic applies on prod even
+          # though prod has fewer ephemeral tenants — the asymmetry would be a
+          # gratuitous fork.
+          STALE_COUNT=0
+          UNREACHABLE_COUNT=0
+          STALE_LINES=()
+          UNREACHABLE_LINES=()
+          for slug in "${SLUGS[@]}"; do
+            URL="https://${slug}.${TENANT_DOMAIN}/buildinfo"
+            # 30s total: tenant just SSM-restarted, may still be coming
+            # up. Retry-on-empty rather than retry-on-status — we want
+            # to fail fast on "responded with wrong SHA", not "still
+            # warming up".
+            BODY=$(curl -sS --max-time 30 --retry 3 --retry-delay 5 --retry-connrefused "$URL" || true)
+            ACTUAL_SHA=$(echo "$BODY" | jq -r '.git_sha // ""' 2>/dev/null || echo "")
+            if [ -z "$ACTUAL_SHA" ]; then
+              UNREACHABLE_COUNT=$((UNREACHABLE_COUNT + 1))
+              UNREACHABLE_LINES+=("| $slug | (no /buildinfo response) | ${EXPECTED_SHA:0:7} | ⚠ unreachable (likely teardown race) |")
+              continue
+            fi
+            if [ "$ACTUAL_SHA" = "$EXPECTED_SHA" ]; then
+              echo "  $slug: ${ACTUAL_SHA:0:7} ✓"
+            else
+              STALE_COUNT=$((STALE_COUNT + 1))
+              STALE_LINES+=("| $slug | ${ACTUAL_SHA:0:7} | ${EXPECTED_SHA:0:7} | ❌ stale |")
+            fi
+          done
+
+          {
+            echo ""
+            echo "### Per-tenant /buildinfo verification"
+            echo ""
+            echo "Expected SHA: \`${EXPECTED_SHA:0:7}\`"
+            echo ""
+            if [ $STALE_COUNT -gt 0 ]; then
+              echo "**${STALE_COUNT} STALE tenant(s) — these did NOT pick up the new image despite ssm_status=Success:**"
+              echo ""
+              echo "| Slug | Actual /buildinfo SHA | Expected | Status |"
+              echo "|------|----------------------|----------|--------|"
+              for line in "${STALE_LINES[@]}"; do echo "$line"; done
+              echo ""
+            fi
+            if [ $UNREACHABLE_COUNT -gt 0 ]; then
+              echo "**${UNREACHABLE_COUNT} unreachable tenant(s) — likely teardown race (soft-warn, not failing):**"
+              echo ""
+              echo "| Slug | Actual /buildinfo SHA | Expected | Status |"
+              echo "|------|----------------------|----------|--------|"
+              for line in "${UNREACHABLE_LINES[@]}"; do echo "$line"; done
+              echo ""
+            fi
+            if [ $STALE_COUNT -eq 0 ] && [ $UNREACHABLE_COUNT -eq 0 ]; then
+              echo "All ${#SLUGS[@]} tenants returned matching SHA. ✓"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ $UNREACHABLE_COUNT -gt 0 ]; then
+            echo "::warning::$UNREACHABLE_COUNT tenant(s) unreachable post-redeploy. Likely benign teardown race — CP healthz monitor catches real outages."
+          fi
+
+          # Belt-and-suspenders sanity floor: same logic as the staging
+          # variant — see that file's comment for the full rationale.
+          # Floor only applies when fleet >= 4; below that, staging-verify
+          # is the actual gate.
+          TOTAL_VERIFIED=${#SLUGS[@]}
+          if [ $TOTAL_VERIFIED -ge 4 ] && [ $UNREACHABLE_COUNT -gt $((TOTAL_VERIFIED / 2)) ]; then
+            echo "::error::$UNREACHABLE_COUNT of $TOTAL_VERIFIED tenant(s) unreachable — exceeds 50% threshold on a fleet large enough that this signals a real outage, not teardown race."
+            exit 1
+          fi
+
+          if [ $STALE_COUNT -gt 0 ]; then
+            echo "::error::$STALE_COUNT tenant(s) returned a stale SHA. ssm_status=Success was misleading — see job summary."
+            exit 1
+          fi
+
+          echo "::notice::Tenant fleet redeploy complete — all reachable tenants on ${EXPECTED_SHA:0:7} (${UNREACHABLE_COUNT} unreachable, soft-warned)."

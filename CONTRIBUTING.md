@@ -156,6 +156,16 @@ and run CI manually.
 | python-lint | pytest with coverage |
 | e2e-api | Full API test suite (62 tests) |
 | shellcheck | Shell script linting |
+| review-check-tests | `review-check.sh` evaluator regression suite (13 scenarios) |
+| ops-scripts | Python unittest suite for `scripts/*.py` |
+
+## Local Testing
+
+### review-check.sh
+```bash
+bash .gitea/scripts/tests/test_review_check.sh
+```
+Runs the full regression suite against a fixture HTTP server. No network access required.
 
 ## Code Style
 

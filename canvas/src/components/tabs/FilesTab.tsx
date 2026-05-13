@@ -9,6 +9,7 @@ import { FileEditor } from "./FilesTab/FileEditor";
 import { NotAvailablePanel } from "./FilesTab/NotAvailablePanel";
 import { useFilesApi } from "./FilesTab/useFilesApi";
 import { buildTree } from "./FilesTab/tree";
+import { isExternalLikeRuntime } from "@/lib/externalRuntimes";
 
 // Re-exports preserved for external imports (e.g. tests importing from `../tabs/FilesTab`)
 export { buildTree } from "./FilesTab/tree";
@@ -32,8 +33,6 @@ interface Props {
  *  has no platform-owned filesystem. Otherwise the user loses access to
  *  a real surface (e.g. claude-code SaaS workspaces have files served
  *  by ListFiles via EIC; they belong on the rendering path, not here). */
-const RUNTIMES_WITHOUT_FILES = new Set(["external"]);
-
 export function FilesTab({ workspaceId, data }: Props) {
   // Early-return for runtimes whose filesystem is not platform-owned.
   // Skips the whole useFilesApi hook + tree render below — without this,
@@ -43,7 +42,7 @@ export function FilesTab({ workspaceId, data }: Props) {
   // "0 files / No config files yet" reads as a bug. The placeholder
   // makes the absence intentional and points the user at the right
   // surface (Chat).
-  if (data && RUNTIMES_WITHOUT_FILES.has(data.runtime)) {
+  if (data && isExternalLikeRuntime(data.runtime)) {
     return <NotAvailablePanel runtime={data.runtime} />;
   }
   return <PlatformOwnedFilesTab workspaceId={workspaceId} />;

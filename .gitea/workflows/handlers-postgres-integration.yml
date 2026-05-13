@@ -1,0 +1,284 @@
+name: Handlers Postgres Integration
+
+# Ported from .github/workflows/handlers-postgres-integration.yml on 2026-05-11 per RFC
+# internal#219 §1 sweep. Differences from the GitHub version:
+#   - Dropped `workflow_dispatch.inputs` (Gitea 1.22.6 parser rejects them
+#     per feedback_gitea_workflow_dispatch_inputs_unsupported).
+#   - Dropped `merge_group:` (no Gitea merge queue).
+#   - Dropped `environment:` blocks (Gitea has no environments).
+#   - Workflow-level env.GITHUB_SERVER_URL pinned per
+#     feedback_act_runner_github_server_url.
+#   - `continue-on-error: true` on each job (RFC §1 contract).
+#
+
+# Real-Postgres integration tests for workspace-server/internal/handlers/.
+# Triggered on every PR/push that touches the handlers package.
+#
+# Why this workflow exists
+# ------------------------
+# Strict-sqlmock unit tests pin which SQL statements fire — they're fast
+# and let us iterate without a DB. But sqlmock CANNOT detect bugs that
+# depend on the row state AFTER the SQL runs. The result_preview-lost
+# bug shipped to staging in PR #2854 because every unit test was
+# satisfied with "an UPDATE statement fired" — none verified the row's
+# preview field actually landed. The local-postgres E2E that retrofit
+# self-review caught it took 2 minutes to set up and would have caught
+# the bug at PR-time.
+#
+# Why this workflow does NOT use `services: postgres:` (Class B fix)
+# ------------------------------------------------------------------
+# Our act_runner config has `container.network: host` (operator host
+# /opt/molecule/runners/config.yaml), which act_runner applies to BOTH
+# the job container AND every service container. With host-net, two
+# concurrent runs of this workflow both try to bind 0.0.0.0:5432 — the
+# second postgres FATALs with `could not create any TCP/IP sockets:
+# Address in use`, and Docker auto-removes it (act_runner sets
+# AutoRemove:true on service containers). By the time the migrations
+# step runs `psql`, the postgres container is gone, hence
+# `Connection refused` then `failed to remove container: No such
+# container` at cleanup time.
+#
+# Per-job `container.network` override is silently ignored by
+# act_runner — `--network and --net in the options will be ignored.`
+# appears in the runner log. Documented constraint.
+#
+# So we sidestep `services:` entirely. The job container still uses
+# host-net (inherited from runner config; required for cache server
+# discovery on the bridge IP 172.18.0.17:42631). We launch a sibling
+# postgres on the existing `molecule-core-net` bridge with a
+# UNIQUE name per run — `pg-handlers-${RUN_ID}-${RUN_ATTEMPT}` — and
+# read its bridge IP via `docker inspect`. A host-net job container
+# can reach a bridge-net container directly via the bridge IP (verified
+# manually on operator host 2026-05-08).
+#
+# Trade-offs vs. the original `services:` shape:
+#   + No host-port collision; N parallel runs share the bridge cleanly
+#   + `if: always()` cleanup runs even on test-step failure
+#   - One more step in the workflow (+~3 lines)
+#   - Requires `molecule-core-net` to exist on the operator host
+#     (it does; declared in docker-compose.yml + docker-compose.infra.yml)
+#
+# Class B Hongming-owned CICD red sweep, 2026-05-08.
+#
+# Cost: ~30s job (postgres pull from cache + go build + 4 tests).
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main, staging]
+concurrency:
+  group: handlers-pg-integ-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  detect-changes:
+    name: detect-changes
+    runs-on: ubuntu-latest
+    # mc#774 Phase 3 (RFC §1): surface broken workflows without blocking.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true
+    outputs:
+      handlers: ${{ steps.filter.outputs.handlers }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - id: filter
+        # Inline replacement for dorny/paths-filter — see e2e-api.yml.
+        run: |
+          BASE="${GITHUB_BASE_REF:-${{ github.event.before }}}"
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ -n "${{ github.event.pull_request.base.sha }}" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          fi
+          if [ -z "$BASE" ] || echo "$BASE" | grep -qE '^0+$'; then
+            echo "handlers=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! git cat-file -e "$BASE" 2>/dev/null; then
+            git fetch --depth=1 origin "$BASE" 2>/dev/null || true
+          fi
+          if ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "handlers=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BASE" HEAD)
+          if echo "$CHANGED" | grep -qE '^(workspace-server/internal/handlers/|workspace-server/internal/wsauth/|workspace-server/migrations/|\.gitea/workflows/handlers-postgres-integration\.yml$)'; then
+            echo "handlers=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "handlers=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Single-job-with-per-step-if pattern: always runs to satisfy the
+  # required-check name on branch protection; real work gates on the
+  # paths filter. See ci.yml's Platform (Go) for the same shape.
+  integration:
+    name: Handlers Postgres Integration
+    needs: detect-changes
+    runs-on: ubuntu-latest
+    # mc#774 Phase 3 (RFC §1): surface broken workflows without blocking.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true
+    env:
+      # Unique name per run so concurrent jobs don't collide on the
+      # bridge network. ${RUN_ID}-${RUN_ATTEMPT} is unique even across
+      # workflow_dispatch reruns of the same run_id.
+      PG_NAME: pg-handlers-${{ github.run_id }}-${{ github.run_attempt }}
+      # Bridge network already exists on the operator host (declared
+      # in docker-compose.yml + docker-compose.infra.yml).
+      PG_NETWORK: molecule-core-net
+    defaults:
+      run:
+        working-directory: workspace-server
+    steps:
+      - if: needs.detect-changes.outputs.handlers != 'true'
+        working-directory: .
+        run: echo "No handlers/migrations changes — skipping; this job always runs to satisfy the required-check name."
+
+      - if: needs.detect-changes.outputs.handlers == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - if: needs.detect-changes.outputs.handlers == 'true'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 'stable'
+
+      - if: needs.detect-changes.outputs.handlers == 'true'
+        name: Start sibling Postgres on bridge network
+        working-directory: .
+        run: |
+          # Sanity: the bridge network must exist on the operator host.
+          # Hard-fail loud if it doesn't — easier to spot than a silent
+          # auto-create that diverges from the rest of the stack.
+          if ! docker network inspect "${PG_NETWORK}" >/dev/null 2>&1; then
+            echo "::error::Bridge network '${PG_NETWORK}' missing on operator host. Re-run docker-compose.infra.yml or check ops handbook."
+            exit 1
+          fi
+
+          # If a stale container with the same name exists (rerun on
+          # the same run_id), wipe it first.
+          docker rm -f "${PG_NAME}" >/dev/null 2>&1 || true
+
+          docker run -d \
+            --name "${PG_NAME}" \
+            --network "${PG_NETWORK}" \
+            --health-cmd "pg_isready -U postgres" \
+            --health-interval 5s \
+            --health-timeout 5s \
+            --health-retries 10 \
+            -e POSTGRES_PASSWORD=test \
+            -e POSTGRES_DB=molecule \
+            postgres:15-alpine >/dev/null
+
+          # Read back the bridge IP. Always present immediately after
+          # `docker run -d` for bridge networks.
+          PG_HOST=$(docker inspect "${PG_NAME}" \
+            --format "{{(index .NetworkSettings.Networks \"${PG_NETWORK}\").IPAddress}}")
+          if [ -z "${PG_HOST}" ]; then
+            echo "::error::Could not resolve PG_HOST for ${PG_NAME} on ${PG_NETWORK}"
+            docker logs "${PG_NAME}" || true
+            exit 1
+          fi
+          echo "PG_HOST=${PG_HOST}" >> "$GITHUB_ENV"
+          echo "INTEGRATION_DB_URL=postgres://postgres:test@${PG_HOST}:5432/molecule?sslmode=disable" >> "$GITHUB_ENV"
+          echo "Started ${PG_NAME} at ${PG_HOST}:5432"
+
+      - if: needs.detect-changes.outputs.handlers == 'true'
+        name: Apply migrations to Postgres service
+        env:
+          PGPASSWORD: test
+        run: |
+          # Wait for postgres to actually accept connections. Docker's
+          # health-cmd handles container-side readiness, but the wire
+          # to the bridge IP is best-tested with pg_isready directly.
+          for i in {1..15}; do
+            if pg_isready -h "${PG_HOST}" -p 5432 -U postgres -q; then break; fi
+            echo "waiting for postgres at ${PG_HOST}:5432..."; sleep 2
+          done
+
+          # Apply every .up.sql in lexicographic order with
+          # ON_ERROR_STOP=0 — failing migrations are SKIPPED rather than
+          # blocking the suite. This handles the current schema state
+          # where a few historical migrations (e.g. 017_memories_fts_*)
+          # depend on tables that were later renamed/dropped and so
+          # cannot replay from scratch. The migrations that DO succeed
+          # land their tables, which is sufficient for the integration
+          # tests in handlers/.
+          #
+          # Why not maintain a curated allowlist: every new migration
+          # touching a handlers/-tested table would have to update this
+          # workflow. With apply-all-or-skip, a future migration that
+          # adds a column to delegations runs automatically (its base
+          # table 049_delegations.up.sql already succeeded above it in
+          # the order). Operators only need to revisit this if the
+          # migration chain becomes legitimately replayable end-to-end.
+          #
+          # Per-migration result is logged so a failed migration that
+          # SHOULD have been replayable surfaces in the CI log instead
+          # of silently failing.
+          # Apply both *.sql (legacy, lives next to its module) and
+          # *.up.sql (newer up/down convention) in a single
+          # lexicographically-sorted pass. Excluding *.down.sql so the
+          # newest-naming-convention pairs don't undo themselves mid-run.
+          # Pre-#149-followup this loop only globbed *.up.sql, which
+          # silently skipped 001_workspaces.sql + 009_activity_logs.sql
+          # — fine while no integration test depended on those tables,
+          # not fine once a cross-table atomicity test came in.
+          set +e
+          for migration in $(ls migrations/*.sql 2>/dev/null | grep -v '\.down\.sql$' | sort); do
+            if psql -h "${PG_HOST}" -U postgres -d molecule -v ON_ERROR_STOP=1 \
+                  -f "$migration" >/dev/null 2>&1; then
+              echo "✓ $(basename "$migration")"
+            else
+              echo "⊘ $(basename "$migration") (skipped — see comment in workflow)"
+            fi
+          done
+          set -e
+
+          # Sanity: the delegations + workspaces + activity_logs tables
+          # MUST exist for the integration tests to be meaningful. Hard-
+          # fail if any didn't land — that would be a real regression we
+          # want loud.
+          for tbl in delegations workspaces activity_logs pending_uploads; do
+            if ! psql -h "${PG_HOST}" -U postgres -d molecule -tA \
+                -c "SELECT 1 FROM information_schema.tables WHERE table_name = '$tbl'" \
+                | grep -q 1; then
+              echo "::error::$tbl table missing after migration replay — handler integration tests would be meaningless"
+              exit 1
+            fi
+            echo "✓ $tbl table present"
+          done
+
+      - if: needs.detect-changes.outputs.handlers == 'true'
+        name: Run integration tests
+        run: |
+          # INTEGRATION_DB_URL is exported by the start-postgres step;
+          # points at the per-run bridge IP, not 127.0.0.1, so concurrent
+          # workflow runs don't fight over a host-net 5432 port.
+          go test -tags=integration -timeout 5m -v ./internal/handlers/ -run "^TestIntegration_"
+
+      - if: failure() && needs.detect-changes.outputs.handlers == 'true'
+        name: Diagnostic dump on failure
+        env:
+          PGPASSWORD: test
+        run: |
+          echo "::group::postgres container status"
+          docker ps -a --filter "name=${PG_NAME}" --format '{{.Status}} {{.Names}}' || true
+          docker logs "${PG_NAME}" 2>&1 | tail -50 || true
+          echo "::endgroup::"
+          echo "::group::delegations table state"
+          psql -h "${PG_HOST}" -U postgres -d molecule -c "SELECT * FROM delegations LIMIT 50;" || true
+          echo "::endgroup::"
+
+      - if: always() && needs.detect-changes.outputs.handlers == 'true'
+        name: Stop sibling Postgres
+        working-directory: .
+        run: |
+          # always() so containers don't leak when migrations or tests
+          # fail. The cleanup is best-effort: if the container is
+          # already gone (e.g. concurrent rerun race), don't fail the job.
+          docker rm -f "${PG_NAME}" >/dev/null 2>&1 || true
+          echo "Cleaned up ${PG_NAME}"

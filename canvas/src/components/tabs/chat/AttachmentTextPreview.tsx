@@ -148,7 +148,7 @@ export function AttachmentTextPreview({ workspaceId, attachment, onDownload, ton
         <button
           type="button"
           onClick={() => onDownload(attachment)}
-          className="text-ink-mid hover:text-ink"
+          className="text-ink-mid hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
           title={`Download ${attachment.name}`}
           aria-label={`Download ${attachment.name}`}
         >
@@ -162,7 +162,7 @@ export function AttachmentTextPreview({ workspaceId, attachment, onDownload, ton
         <button
           type="button"
           onClick={() => setExpanded(true)}
-          className="block w-full text-center text-[10px] text-ink-mid hover:text-ink py-1 border-t border-line/40"
+          className="block w-full text-center text-[10px] text-ink-mid hover:text-ink py-1 border-t border-line/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
         >
           Show all {lines.length} lines
         </button>
@@ -173,7 +173,7 @@ export function AttachmentTextPreview({ workspaceId, attachment, onDownload, ton
           <button
             type="button"
             onClick={() => onDownload(attachment)}
-            className="underline"
+            className="underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
           >
             download full file
           </button>

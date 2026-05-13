@@ -120,7 +120,6 @@ func WorkspaceAuth(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing workspace auth token"})
-		return
 	}
 }
 
@@ -325,7 +324,6 @@ func CanvasOrBearer(database *sql.DB) gin.HandlerFunc {
 		}
 
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "admin auth required"})
-		return
 	}
 }
 

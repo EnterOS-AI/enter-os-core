@@ -154,10 +154,28 @@ func (l *DelegationLedger) SetStatus(ctx context.Context,
 		return err
 	}
 
-	// Same-status replay (e.g. duplicate completion notification): no-op,
-	// don't bump updated_at, no error.
+	// Same-status replay (e.g. duplicate completion notification): usually a
+	// no-op. If the replay carries terminal detail that the first write lacked,
+	// fill the missing nullable column once. This keeps duplicate notifications
+	// idempotent while preserving the first observed result/error when a legacy
+	// path wrote the terminal status before it had the detail payload.
 	if current == status {
-		return nil
+		if errorDetail == "" && resultPreview == "" {
+			return nil
+		}
+		_, err = l.db.ExecContext(ctx, `
+			UPDATE delegations
+			SET error_detail = COALESCE(error_detail, NULLIF($2, '')),
+			    result_preview = COALESCE(result_preview, NULLIF($3, '')),
+			    updated_at = CASE
+			      WHEN (error_detail IS NULL AND NULLIF($2, '') IS NOT NULL)
+			        OR (result_preview IS NULL AND NULLIF($3, '') IS NOT NULL)
+			      THEN now()
+			      ELSE updated_at
+			    END
+			WHERE delegation_id = $1
+		`, delegationID, errorDetail, textutil.TruncateBytesNoMarker(resultPreview, previewCap))
+		return err
 	}
 
 	// Forward-only on terminal states.

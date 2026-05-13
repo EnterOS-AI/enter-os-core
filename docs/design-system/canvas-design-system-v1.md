@@ -1,6 +1,6 @@
 # Canvas Design System v1 — VERIFIED
 
-> **Status:** VERIFIED — Cross-referenced against molecule-core/canvas/src/ (2026-05-09)
+> **Status:** VERIFIED — Cross-referenced against molecule-core/canvas/src/ (2026-05-09, updated 2026-05-10 evening)
 > **Authors:** Core-FE (draft), Core-UIUX (verification + updates)
 > **Source files verified:**
 > - `canvas/src/app/globals.css`
@@ -302,8 +302,8 @@ type ResolvedTheme = "light" | "dark";
 ## 5. Accessibility Rules (WCAG 2.1 AA) — VERIFIED
 
 ### 5.1 Focus Management ✅ VERIFIED
-- All interactive elements have `focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950`
-- No `outline-none` without equivalent focus ring
+- All interactive elements have `focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1` (WCAG 2.4.7 — ring only appears for keyboard users, not mouse/touch)
+- `focus-visible:outline-none` used only when paired with an explicit `focus-visible:ring-*` replacement
 - Radix Dialog traps focus automatically
 
 ### 5.2 Semantic HTML ✅ VERIFIED

@@ -90,7 +90,11 @@ export function ConsoleModal({ workspaceId, workspaceName, open, onClose }: Prop
 
   return createPortal(
     <div className="fixed inset-0 z-[9999] flex items-center justify-center">
-      <div aria-hidden="true" className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+      <div
+        className="absolute inset-0 bg-black/70 backdrop-blur-sm cursor-pointer"
+        onClick={onClose}
+        aria-label="Close terminal"
+      />
       <div
         role="dialog"
         aria-modal="true"
@@ -165,7 +169,7 @@ export function ConsoleModal({ workspaceId, workspaceName, open, onClose }: Prop
                   showToast("Copy requires HTTPS — please select and copy manually", "info");
                 }
               }}
-              className="px-3 py-1.5 text-[11px] text-ink-mid hover:text-ink bg-surface-card hover:bg-surface-elevated border border-line hover:border-line-soft rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
+              className="px-3 py-1.5 text-[11px] text-ink-mid hover:text-ink bg-surface-card hover:bg-surface-elevated border border-line hover:border-line-soft rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
             >
               Copy
             </button>

@@ -1,0 +1,101 @@
+name: Runtime Pin Compatibility
+
+# Ported from .github/workflows/runtime-pin-compat.yml on 2026-05-11 per
+# RFC internal#219 §1 sweep.
+#
+# Differences from the GitHub version:
+#   - Dropped `merge_group:` (no Gitea merge queue) and
+#     `workflow_dispatch:` (no inputs, but the trigger itself is
+#     parser-rejected when inputs are absent in some Gitea 1.22.x
+#     builds; safest to drop entirely — manual runs go via cron-trigger
+#     bump or push-with-paths-filter).
+#   - on.paths references .gitea/workflows/runtime-pin-compat.yml (this
+#     file) instead of the .github/ one.
+#   - Workflow-level env.GITHUB_SERVER_URL set.
+#   - `continue-on-error: true` on the job (RFC §1 contract).
+#
+# CI gate that prevents the 5-hour staging outage from 2026-04-24 from
+# recurring (controlplane#253). The original failure mode:
+#   1. molecule-ai-workspace-runtime 0.1.13 declared `a2a-sdk<1.0` in its
+#      requires_dist metadata (incorrect — it actually imports
+#      a2a.server.routes which only exists in a2a-sdk 1.0+)
+#   2. `pip install molecule-ai-workspace-runtime` resolved cleanly
+#   3. `from molecule_runtime.main import main_sync` raised ImportError
+#   4. Every tenant workspace crashed; the canary tenant caught it but
+#      only after 5 hours of degraded staging
+#
+# This workflow installs the CURRENTLY PUBLISHED runtime from PyPI on
+# top of `workspace/requirements.txt` and smoke-imports. Catches:
+#   - Upstream PyPI yanks
+#   - Bad re-releases of molecule-ai-workspace-runtime
+#   - Already-shipped wheels that stop importing because a transitive
+#     dep moved underneath
+
+on:
+  push:
+    branches: [main, staging]
+    paths:
+      # Narrow filter: pypi-latest is sensitive only to changes that
+      # affect what we're INSTALLING (requirements.txt) or WHAT THE
+      # CHECK ITSELF DOES (this workflow file). Edits to workspace/
+      # source code don't change what's on PyPI right now, so they
+      # don't change this gate's verdict.
+      - 'workspace/requirements.txt'
+      - '.gitea/workflows/runtime-pin-compat.yml'
+  pull_request:
+    branches: [main, staging]
+    paths:
+      - 'workspace/requirements.txt'
+      - '.gitea/workflows/runtime-pin-compat.yml'
+  # Daily catch for upstream PyPI publishes that break the pin combo
+  # without any change in our repo (e.g. someone re-yanks an a2a-sdk
+  # release or molecule-ai-workspace-runtime publishes a bad bump).
+  schedule:
+    - cron: '0 13 * * *'  # 06:00 PT
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pypi-latest-install:
+    name: PyPI-latest install + import smoke
+    runs-on: ubuntu-latest
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking
+    # the PR. Follow-up PR flips this off after surfaced defects are
+    # triaged.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: workspace/requirements.txt
+      - name: Install runtime + workspace requirements
+        # Install order is load-bearing: install the runtime FIRST so pip
+        # honors whatever a2a-sdk constraint the runtime metadata declares
+        # (this is the surface that broke in 2026-04-24 — runtime declared
+        # `a2a-sdk<1.0` but actually needed >=1.0). The follow-up install
+        # of workspace/requirements.txt then upgrades a2a-sdk to the
+        # constraint our runtime image actually pins. The import smoke
+        # below verifies the upgraded combination is consistent.
+        run: |
+          python -m venv /tmp/venv
+          /tmp/venv/bin/pip install --upgrade pip
+          /tmp/venv/bin/pip install molecule-ai-workspace-runtime
+          /tmp/venv/bin/pip install -r workspace/requirements.txt
+          /tmp/venv/bin/pip show molecule-ai-workspace-runtime a2a-sdk \
+            | grep -E '^(Name|Version):'
+      - name: Smoke import — fail if metadata declares deps that don't satisfy real imports
+        # WORKSPACE_ID is validated at import time by platform_auth.py — EC2
+        # user-data sets it from the cloud-init template; set a placeholder
+        # here so the import smoke doesn't trip on the env-var guard.
+        env:
+          WORKSPACE_ID: 00000000-0000-0000-0000-000000000001
+        run: |
+          /tmp/venv/bin/python -c "from molecule_runtime.main import main_sync; print('runtime imports OK')"

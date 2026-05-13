@@ -182,7 +182,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
                   setRole(data.role || "");
                   setTier(data.tier);
                 }}
-                className="px-3 py-1 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid"
+                className="px-3 py-1 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
               >
                 Cancel
               </button>
@@ -211,7 +211,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
                   type="button"
                   onClick={handleRestart}
                   disabled={restarting}
-                  className="px-3 py-1 bg-green-700 hover:bg-green-600 text-xs rounded text-white disabled:opacity-50"
+                  className="px-3 py-1 bg-green-700 hover:bg-green-600 text-xs rounded text-white disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
                 >
                   {restarting ? "Restarting..." : data.status === "failed" ? "Retry" : "Restart"}
                 </button>
@@ -220,7 +220,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
             <button
               type="button"
               onClick={() => setEditing(true)}
-              className="mt-2 px-3 py-1 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid"
+              className="mt-2 px-3 py-1 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
             >
               Edit
             </button>
@@ -247,7 +247,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
           <button
             type="button"
             onClick={() => setConsoleOpen(true)}
-            className="mt-2 px-3 py-1 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid border border-line"
+            className="mt-2 px-3 py-1 bg-surface-card hover:bg-surface-card text-xs rounded text-ink-mid border border-line focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
           >
             View console output
           </button>
@@ -293,7 +293,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
                 key={p.id}
                 type="button"
                 onClick={() => selectNode(p.id)}
-                className="w-full flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-card text-left"
+                className="w-full flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-card text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
               >
                 <StatusDot status={p.status} />
                 <span className="text-xs text-ink">{p.name}</span>
@@ -353,7 +353,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
             type="button"
             ref={deleteButtonRef}
             onClick={() => setConfirmDelete(true)}
-            className="px-3 py-1 bg-surface-card hover:bg-red-900 border border-line hover:border-red-700 text-xs rounded text-ink-mid hover:text-bad transition-colors"
+            className="px-3 py-1 bg-surface-card hover:bg-red-900 border border-line hover:border-red-700 text-xs rounded text-ink-mid hover:text-bad transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-1"
           >
             Delete Workspace
           </button>
@@ -402,7 +402,7 @@ function Row({ label, value, mono }: { label: string; value: string; mono?: bool
   );
 }
 
-function getSkills(card: Record<string, unknown> | null): { id: string; description?: string }[] {
+export function getSkills(card: Record<string, unknown> | null): { id: string; description?: string }[] {
   if (!card) return [];
   const skills = card.skills;
   if (!Array.isArray(skills)) return [];

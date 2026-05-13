@@ -109,21 +109,6 @@ func (h *WorkspaceHandler) State(c *gin.Context) {
 	})
 }
 
-// sensitiveUpdateFields documents fields that carry elevated risk — kept as
-// an explicit list for code readability and future audits. Auth is now fully
-// enforced at the router layer (WorkspaceAuth middleware, #680 IDOR fix);
-// this map is no longer used for in-handler gate logic but is preserved to
-// surface the risk classification clearly.
-//
-// budget_limit is intentionally NOT here — the dedicated PATCH
-// /workspaces/:id/budget (AdminAuth) is the only write path (#611).
-var sensitiveUpdateFields = map[string]struct{}{
-	"tier":          {},
-	"parent_id":     {},
-	"runtime":       {},
-	"workspace_dir": {},
-}
-
 // Update handles PATCH /workspaces/:id
 func (h *WorkspaceHandler) Update(c *gin.Context) {
 	id := c.Param("id")
@@ -160,9 +145,7 @@ func (h *WorkspaceHandler) Update(c *gin.Context) {
 
 	// Auth is fully enforced at the router layer (WorkspaceAuth middleware, #680).
 	// WorkspaceAuth validates that the caller holds a valid bearer token for this
-	// specific workspace — no additional auth gate is needed here. The
-	// sensitiveUpdateFields map above documents the risk classification for
-	// auditors but is no longer used as a runtime gate.
+	// specific workspace — no additional auth gate is needed here.
 
 	// #120: guard — return 404 for nonexistent workspace IDs instead of
 	// silently applying zero-row UPDATEs and returning 200.

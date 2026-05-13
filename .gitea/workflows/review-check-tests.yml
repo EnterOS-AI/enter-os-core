@@ -1,0 +1,71 @@
+name: review-check-tests
+
+# Runs review-check.sh regression tests on every PR + push that touches
+# the evaluator script or its test fixtures.
+#
+# Follows RFC#324 follow-up (issue #540):
+#   .gitea/scripts/review-check.sh is load-bearing for PR merge gates.
+#   It has ZERO production CI coverage. This workflow closes that gap.
+#
+# Design choices:
+#   - Bash test harness (not bats). The existing test_review_check.sh
+#     uses a custom assert_eq/assert_contains framework that is already
+#     working and covers all 13 acceptance criteria (issue #540 §Acceptance).
+#     Converting to bats would be refactoring, not closing the gap.
+#   - No bats dependency: the runner-base image needs no extra tooling.
+#   - continue-on-error: false — these tests must pass; a failure means
+#     the review-gate evaluator is broken and must not be merged.
+
+on:
+  push:
+    branches: [main, staging]
+    paths:
+      - '.gitea/scripts/review-check.sh'
+      - '.gitea/scripts/tests/test_review_check.sh'
+      - '.gitea/scripts/tests/_review_check_fixture.py'
+      - '.gitea/workflows/review-check-tests.yml'
+  pull_request:
+    branches: [main, staging]
+    paths:
+      - '.gitea/scripts/review-check.sh'
+      - '.gitea/scripts/tests/test_review_check.sh'
+      - '.gitea/scripts/tests/_review_check_fixture.py'
+      - '.gitea/workflows/review-check-tests.yml'
+  workflow_dispatch:
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: review-check.sh regression tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install jq
+        # Required for T12 jq-filter test case. Gitea Actions runners (ubuntu-latest
+        # label) do not bundle jq. Install via apt-get first (reliable for Ubuntu
+        # runners with internet access to package mirrors). Falls back to GitHub
+        # binary download. GitHub releases may be blocked on some runner networks
+        # (infra#241 follow-up).
+        # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+        continue-on-error: true
+        run: |
+          if apt-get update -qq && apt-get install -y -qq jq; then
+            echo "::notice::jq installed via apt-get: $(jq --version)"
+          elif timeout 120 curl -sSL \
+            "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64" \
+            -o /usr/local/bin/jq && chmod +x /usr/local/bin/jq; then
+            echo "::notice::jq binary downloaded: $(/usr/local/bin/jq --version)"
+          else
+            echo "::warning::jq install failed — apt-get and GitHub download both failed."
+          fi
+          jq --version 2>/dev/null || echo "::notice::jq not yet available — continuing"
+
+      - name: Run review-check.sh regression suite
+        run: bash .gitea/scripts/tests/test_review_check.sh

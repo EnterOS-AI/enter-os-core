@@ -12,8 +12,8 @@ import (
 // time. The Go convention `export_test.go` keeps this seam OUT of the
 // production binary — files ending in _test.go are stripped at build
 // time, so this re-export only exists during `go test`.
-func StartSweeperWithIntervalForTest(ctx context.Context, storage Storage, ackRetention, interval time.Duration) {
-	startSweeperWithInterval(ctx, storage, ackRetention, interval, nil)
+func StartSweeperWithIntervalForTest(ctx context.Context, storage Storage, ackRetention, interval time.Duration, done chan struct{}) {
+	startSweeperWithInterval(ctx, storage, ackRetention, interval, done)
 }
 
 // StartSweeperForTest starts the sweeper and returns a done channel

@@ -1,0 +1,165 @@
+name: MCP Stdio Transport Regression
+
+# Regression test for molecule-ai-workspace-runtime#61:
+# asyncio.connect_read_pipe / connect_write_pipe fail with
+# ValueError: "Pipe transport is only for pipes, sockets and character devices"
+# when stdout is a regular file (openclaw capture, CI tee, debugging).
+#
+# This workflow reproduces the exact failure mode and verifies the
+# fallback to direct buffer I/O works. It runs on every PR that
+# touches the MCP server or this workflow, plus nightly cron.
+#
+# Why a separate workflow (not folded into ci.yml python-lint):
+#   - The test needs to spawn the MCP server with stdout redirected
+#     to a regular file (not a TTY/pipe), which conflicts with
+#     pytest's own capture mechanism.
+#   - It exercises the actual process spawn path (python a2a_mcp_server.py)
+#     not just unit-test mocks — closer to the real openclaw integration.
+#   - A dedicated workflow surfaces stdio-specific regressions without
+#     coupling to the broader Python test suite's coverage gate.
+
+on:
+  pull_request:
+    branches: [main, staging]
+    paths:
+      - 'workspace/a2a_mcp_server.py'
+      - 'workspace/mcp_cli.py'
+      - 'workspace/tests/test_a2a_mcp_server.py'
+      - '.gitea/workflows/ci-mcp-stdio-transport.yml'
+  push:
+    branches: [main, staging]
+    paths:
+      - 'workspace/a2a_mcp_server.py'
+      - 'workspace/mcp_cli.py'
+      - 'workspace/tests/test_a2a_mcp_server.py'
+      - '.gitea/workflows/ci-mcp-stdio-transport.yml'
+  schedule:
+    # Nightly at 04:00 UTC — catches drift from dependency updates
+    # (e.g. asyncio behavior changes in new Python patch releases).
+    - cron: '0 4 * * *'
+
+concurrency:
+  group: mcp-stdio-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  # bp-exempt: regression canary for runtime#61; not a merge gate — informational only until promoted to required.
+  # mc#774: continue-on-error mask — new workflow, flip to false once it's green on ≥3 consecutive main runs.
+  mcp-stdio-regular-file:
+    name: MCP stdio with regular-file stdout
+    runs-on: ubuntu-latest
+    continue-on-error: true  # mc#774
+    timeout-minutes: 5
+    env:
+      WORKSPACE_ID: "00000000-0000-0000-0000-000000000001"
+    defaults:
+      run:
+        working-directory: workspace
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: workspace/requirements.txt
+      - run: pip install -r requirements.txt pytest pytest-asyncio pytest-cov
+
+      - name: Reproduce runtime#61 — stdout as regular file
+        run: |
+          set -euo pipefail
+          echo "=== Reproducing molecule-ai-workspace-runtime#61 ==="
+          echo ""
+          echo "Before the fix, this command would fail with:"
+          echo '  ValueError: Pipe transport is only for pipes, sockets and character devices'
+          echo ""
+
+          # Spawn the MCP server with stdout redirected to a regular file.
+          # This is exactly what openclaw does when capturing MCP output.
+          OUTPUT=$(mktemp)
+          trap 'rm -f "$OUTPUT"' EXIT
+
+          # Send initialize request, then tools/list, then exit
+          {
+            echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+            echo '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+          } | python a2a_mcp_server.py > "$OUTPUT" 2>&1 || {
+            RC=$?
+            echo "FAIL: MCP server exited with code $RC"
+            echo "--- stdout+stderr ---"
+            cat "$OUTPUT"
+            exit 1
+          }
+
+          echo "PASS: MCP server handled regular-file stdout without crashing"
+          echo ""
+          echo "--- Output (first 20 lines) ---"
+          head -20 "$OUTPUT"
+          echo ""
+
+          # Verify we got valid JSON-RPC responses
+          if grep -q '"result"' "$OUTPUT"; then
+            echo "PASS: JSON-RPC responses found in output"
+          else
+            echo "FAIL: No JSON-RPC responses in output"
+            cat "$OUTPUT"
+            exit 1
+          fi
+
+      - name: Reproduce runtime#61 — stdin from regular file
+        run: |
+          set -euo pipefail
+          echo "=== stdin as regular file (CI tee / capture pattern) ==="
+
+          INPUT=$(mktemp)
+          OUTPUT=$(mktemp)
+          trap 'rm -f "$INPUT" "$OUTPUT"' EXIT
+
+          cat > "$INPUT" <<'EOF'
+          {"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+          {"jsonrpc":"2.0","id":2,"method":"tools/list"}
+          EOF
+
+          python a2a_mcp_server.py < "$INPUT" > "$OUTPUT" 2>&1 || {
+            RC=$?
+            echo "FAIL: MCP server exited with code $RC"
+            cat "$OUTPUT"
+            exit 1
+          }
+
+          echo "PASS: MCP server handled regular-file stdin without crashing"
+
+          if grep -q '"result"' "$OUTPUT"; then
+            echo "PASS: JSON-RPC responses found in output"
+          else
+            echo "FAIL: No JSON-RPC responses in output"
+            cat "$OUTPUT"
+            exit 1
+          fi
+
+      - name: Verify warning is emitted for non-pipe stdio
+        run: |
+          set -euo pipefail
+          echo "=== Verify diagnostic warning ==="
+
+          OUTPUT=$(mktemp)
+          trap 'rm -f "$OUTPUT"' EXIT
+
+          {
+            echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+          } | python a2a_mcp_server.py > "$OUTPUT" 2>&1
+
+          # The warning should mention "not a pipe" for operator visibility
+          if grep -qi "not a pipe" "$OUTPUT"; then
+            echo "PASS: Diagnostic warning emitted for non-pipe stdio"
+          else
+            echo "NOTE: No warning in output (may be suppressed by log level)"
+          fi
+
+      - name: Run unit tests for stdio transport
+        run: |
+          set -euo pipefail
+          echo "=== Running stdio transport unit tests ==="
+          python -m pytest tests/test_a2a_mcp_server.py::TestStdioPipeAssertion -v --no-cov

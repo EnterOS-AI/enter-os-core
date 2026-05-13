@@ -262,16 +262,16 @@ func (h *AdminMemoriesHandler) Import(c *gin.Context) {
 // because workspaces sharing a team/org root see identical namespaces.
 //
 // New strategy:
-//   1. Single SQL pass walks parent_id chains, returning each
-//      workspace's root_id alongside its name.
-//   2. Group workspaces by root → unique tree count is typically <<
-//      workspace count.
-//   3. Resolve namespaces ONCE per root (any workspace under that
-//      root produces the same readable list).
-//   4. Build a UNION of namespaces across all roots; single plugin
-//      search call.
-//   5. Map each memory back to a workspace_name via a namespace→ws
-//      lookup table built up from step 3.
+//  1. Single SQL pass walks parent_id chains, returning each
+//     workspace's root_id alongside its name.
+//  2. Group workspaces by root → unique tree count is typically <<
+//     workspace count.
+//  3. Resolve namespaces ONCE per root (any workspace under that
+//     root produces the same readable list).
+//  4. Build a UNION of namespaces across all roots; single plugin
+//     search call.
+//  5. Map each memory back to a workspace_name via a namespace→ws
+//     lookup table built up from step 3.
 //
 // Net cost: 1 SQL + N_roots resolver calls + 1 plugin call (vs
 // N_workspaces resolver + N_workspaces plugin in the old code).
@@ -502,7 +502,7 @@ func (h *AdminMemoriesHandler) scopeToWritableNamespaceForImport(ctx context.Con
 	if err != nil {
 		return "", err
 	}
-	wantKind := contract.NamespaceKindWorkspace
+	var wantKind contract.NamespaceKind
 	switch strings.ToUpper(scope) {
 	case "", "LOCAL":
 		wantKind = contract.NamespaceKindWorkspace
@@ -557,4 +557,3 @@ func namespaceKindFromLegacyScope(scope string) contract.NamespaceKind {
 		return contract.NamespaceKindWorkspace
 	}
 }
-

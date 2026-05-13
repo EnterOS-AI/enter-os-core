@@ -33,11 +33,11 @@ GITEA_SSH_KEY_PATH=/etc/molecule-bootstrap/personas/dev-lead/ssh_priv
 	loadPersonaEnvFile("dev-lead", out)
 
 	want := map[string]string{
-		"GITEA_USER":           "dev-lead",
-		"GITEA_USER_EMAIL":     "dev-lead@agents.moleculesai.app",
-		"GITEA_TOKEN":          "abc123",
-		"GITEA_TOKEN_SCOPES":   "write:repository,write:issue,read:user",
-		"GITEA_SSH_KEY_PATH":   "/etc/molecule-bootstrap/personas/dev-lead/ssh_priv",
+		"GITEA_USER":         "dev-lead",
+		"GITEA_USER_EMAIL":   "dev-lead@agents.moleculesai.app",
+		"GITEA_TOKEN":        "abc123",
+		"GITEA_TOKEN_SCOPES": "write:repository,write:issue,read:user",
+		"GITEA_SSH_KEY_PATH": "/etc/molecule-bootstrap/personas/dev-lead/ssh_priv",
 	}
 	if len(out) != len(want) {
 		t.Fatalf("got %d keys, want %d: %#v", len(out), len(want), out)
@@ -152,13 +152,8 @@ func TestIsSafeRoleName_Acceptance(t *testing.T) {
 			t.Errorf("isSafeRoleName(%q) = false; want true", s)
 		}
 	}
+	// trailing-hyphen IS allowed; only include actually-bad names:
 	bad := []string{
-		"", ".", "..", "with/slash", "/abs", "dot.in.middle",
-		"with space", "back\\slash", "trailing-", // trailing-hyphen is fine actually
-		"with$dollar", "with?question", "newline\nsplit",
-	}
-	// trailing-hyphen IS allowed; remove from "bad" list:
-	bad = []string{
 		"", ".", "..", "with/slash", "/abs", "dot.in.middle",
 		"with space", "back\\slash", "with$dollar", "with?question",
 		"newline\nsplit",

@@ -42,7 +42,7 @@ func setupTestDBForQueueTests(t *testing.T) sqlmock.Sqlmock {
 // ──────────────────────────────────────────────────────────────────────────────
 
 func TestPriorityConstants(t *testing.T) {
-	if !(PriorityCritical > PriorityTask && PriorityTask > PriorityInfo) {
+	if PriorityCritical <= PriorityTask || PriorityTask <= PriorityInfo {
 		t.Errorf("priority ordering broken: critical=%d task=%d info=%d",
 			PriorityCritical, PriorityTask, PriorityInfo)
 	}
@@ -196,7 +196,9 @@ func drainSetup(t *testing.T, workspaceID string) (sqlmock.Sqlmock, *WorkspaceHa
 }
 
 // expectQueueBudgetCheck registers the mock for checkWorkspaceBudget's query:
-//   SELECT budget_limit, COALESCE(monthly_spend, 0) FROM workspaces WHERE id = $1
+//
+//	SELECT budget_limit, COALESCE(monthly_spend, 0) FROM workspaces WHERE id = $1
+//
 // Must be called AFTER expectDequeueNextOk — DequeueNext (BEGIN→SELECT→UPDATE→COMMIT)
 // runs before proxyA2ARequest which calls checkWorkspaceBudget.
 // Named distinctly from handlers_test.go's expectBudgetCheck (which uses MatchPsql
@@ -233,7 +235,9 @@ func drainItem(wsID string) *QueuedItem {
 }
 
 // expectDequeueNextOk sets up sqlmock for DequeueNext's transaction:
-//   BEGIN → SELECT FOR UPDATE SKIP LOCKED → UPDATE status='dispatched', attempts=attempts+1 → COMMIT
+//
+//	BEGIN → SELECT FOR UPDATE SKIP LOCKED → UPDATE status='dispatched', attempts=attempts+1 → COMMIT
+//
 // SQL strings are EXACT matches to the handler code — QueryMatcherEqual verifies verbatim.
 func expectDequeueNextOk(mock sqlmock.Sqlmock, item *QueuedItem) {
 	mock.ExpectBegin()

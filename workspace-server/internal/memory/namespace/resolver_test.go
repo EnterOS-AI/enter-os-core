@@ -22,14 +22,7 @@ const chainQuerySnippet = "WITH RECURSIVE chain"
 // Helper makes per-test mock setup terser.
 func setupMockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
 	t.Helper()
-	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
-	if err != nil {
-		t.Fatalf("sqlmock new: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	// We use QueryMatcherEqual but with regex-based ExpectQuery elsewhere
-	// for flexibility. Actually swap to regex for the recursive query:
-	db, mock, err = sqlmock.New() // default = regex
+	db, mock, err := sqlmock.New() // default = regex
 	if err != nil {
 		t.Fatalf("sqlmock new: %v", err)
 	}
@@ -186,8 +179,8 @@ func TestWalkChain_RowsErr(t *testing.T) {
 
 func TestDerive(t *testing.T) {
 	cases := []struct {
-		name              string
-		chain             []chainNode
+		name                      string
+		chain                     []chainNode
 		wantWS, wantTeam, wantOrg string
 	}{
 		{

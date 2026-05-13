@@ -1,0 +1,133 @@
+name: lint-mask-pr-atomicity
+
+# Tier 2d hard-gate lint (per mc#774) — blocks PRs that touch
+# `.gitea/workflows/ci.yml` and modify ONLY ONE of {continue-on-error,
+# all-required.sentinel.needs} without a `Paired: #NNN` reference in
+# the PR body or in a commit message.
+#
+# Why this exists
+# ---------------
+# PR#665 (interim `continue-on-error: true` on `platform-build`) and
+# PR#668 (sentinel-`needs` demotion of the same job) were designed as a
+# pair but merged solo — #665 landed at 04:47Z 2026-05-12, #668 was
+# still open at 05:07Z when the main-red watchdog (#674) fired. Result:
+# ~20 minutes of `main` red and a cascade of false-positives on
+# unrelated PRs. This lint structurally prevents that class.
+#
+# How the gate works
+# ------------------
+# 1. The workflow runs on every PR whose diff touches ci.yml (paths
+#    filter). It is NOT a required check on `main` because the rule is
+#    diff-based — running it on PRs that don't touch ci.yml would
+#    produce a `pending` status forever (per
+#    `feedback_path_filtered_workflow_cant_be_required`).
+# 2. The script reads `BASE_SHA:ci.yml` and `HEAD_SHA:ci.yml`, parses
+#    both via PyYAML AST (per `feedback_behavior_based_ast_gates` — no
+#    grep, no regex on the raw text — so a YAML-shape refactor still
+#    detects).
+# 3. Walks `jobs.*.continue-on-error` on each side; flags any value
+#    diff. Reads `jobs.all-required.needs` on each side; flags any
+#    set diff (order-insensitive — `needs:` is engine-unordered).
+# 4. If both predicates fired → atomic, OK. If neither → no risk, OK.
+#    If exactly one fired → require `Paired: #NNN` in PR body OR in
+#    any commit message between base..head; else fail.
+#
+# Phase contract (RFC internal#219 §1 ladder)
+# -------------------------------------------
+# This workflow lands at `continue-on-error: true` (Phase 3 — surface
+# regressions without blocking PRs while the rule beds in).
+# Follow-up PR flips to `false` once we have ≥3 days of clean runs on
+# `main` and no false-positives. Tracking issue: mc#774.
+#
+# Cross-links
+# -----------
+# - mc#774 (the RFC that specs this lint)
+# - PR#665 / PR#668 (the empirical split-pair)
+# - mc#774 (the main-red incident the split caused)
+# - feedback_strict_root_only_after_class_a
+# - feedback_behavior_based_ast_gates
+#
+# Auth: only needs the auto-injected GITHUB_TOKEN (read-only, repo
+# scope). No DRIFT_BOT_TOKEN needed — Tier 2d does NOT call
+# branch_protections (Tier 2g/f do).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    # `edited` is included because the rule depends on PR_BODY: a user
+    # may add `Paired: #NNN` after first push to satisfy the lint. The
+    # rerun on `edited` lets the PR turn green without an empty
+    # commit. Gitea 1.22.6 fires `edited` on body changes — verified
+    # via gitea-source/models/issues/pull_list.go::triggerNewPRWebhook.
+    paths:
+      - '.gitea/workflows/ci.yml'
+      - '.gitea/scripts/lint_mask_pr_atomicity.py'
+      - '.gitea/workflows/lint-mask-pr-atomicity.yml'
+      - 'tests/test_lint_mask_pr_atomicity.py'
+
+env:
+  # Belt-and-suspenders against the runner-default trap
+  # (feedback_act_runner_github_server_url). Runners are configured
+  # with this env via /opt/molecule/runners/config.yaml, but pinning
+  # at the workflow level protects against a runner regenerated
+  # without the config file.
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# Per-PR concurrency — re-pushes cancel previous runs to keep the
+# queue short. The lint is cheap (one git show + log + a YAML parse).
+concurrency:
+  group: lint-mask-pr-atomicity-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: lint-mask-pr-atomicity
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Phase 3 (RFC #219 §1): surface broken shapes without blocking
+    # PRs. Follow-up PR flips this to `false` once recent runs on main
+    # are confirmed clean (eat-our-own-dogfood discipline mirrors
+    # PR#673's same-shape comment). Tracking: mc#774.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true
+    steps:
+      - name: Check out PR head with full history (need base SHA blobs)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # `git show <base-sha>:<path>` needs the base SHA's blobs.
+          # Shallow=1 would miss it. Same rationale as PR#673 and
+          # check-migration-collisions.yml.
+          fetch-depth: 0
+      - name: Set up Python (PyYAML for AST parsing)
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Install PyYAML
+        # Same pin as ci-required-drift.yml + the rest of the Tier 2
+        # lint family — keep runner-cache hits uniform.
+        run: python -m pip install --quiet 'PyYAML==6.0.2'
+      - name: Ensure base ref is reachable locally
+        # fetch-depth=0 usually pulls the base too, but explicit-fetch
+        # is cheap insurance against runner-version drift (matches the
+        # comment in check-migration-collisions.yml and PR#673).
+        run: |
+          git fetch origin "${{ github.event.pull_request.base.ref }}" || true
+      - name: Run lint-mask-pr-atomicity
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # PR body — the script greps for `Paired: #NNN`.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          CI_WORKFLOW_PATH: .gitea/workflows/ci.yml
+          SENTINEL_JOB_KEY: all-required
+        run: python3 .gitea/scripts/lint_mask_pr_atomicity.py
+      - name: Run lint-mask-pr-atomicity unit tests
+        # Run the test suite in-CI so the lint's own behaviour is
+        # verified on every change. Matches lint-workflow-yaml.yml.
+        run: |
+          python -m pip install --quiet pytest
+          python3 -m pytest tests/test_lint_mask_pr_atomicity.py -v

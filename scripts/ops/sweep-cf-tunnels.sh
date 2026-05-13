@@ -31,8 +31,8 @@
 #                          token must include the tunnel scope.)
 #   CF_ACCOUNT_ID       — the account that owns the tunnels (visible
 #                          in dash.cloudflare.com URL path)
-#   CP_PROD_ADMIN_TOKEN — CP admin bearer for api.moleculesai.app
-#   CP_STAGING_ADMIN_TOKEN — CP admin bearer for staging-api.moleculesai.app
+#   CP_ADMIN_API_TOKEN — CP admin bearer for api.moleculesai.app
+#   CP_STAGING_ADMIN_API_TOKEN — CP admin bearer for staging-api.moleculesai.app
 #
 # Exit codes:
 #   0  — dry-run completed or sweep executed successfully
@@ -72,21 +72,21 @@ need() {
 }
 need CF_API_TOKEN
 need CF_ACCOUNT_ID
-need CP_PROD_ADMIN_TOKEN
-need CP_STAGING_ADMIN_TOKEN
+need CP_ADMIN_API_TOKEN
+need CP_STAGING_ADMIN_API_TOKEN
 
 log() { echo "[$(date -u +%H:%M:%S)] $*"; }
 
 # --- Gather live sets ------------------------------------------------------
 
 log "Fetching CP prod org slugs..."
-PROD_SLUGS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_PROD_ADMIN_TOKEN" \
+PROD_SLUGS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_ADMIN_API_TOKEN" \
   "https://api.moleculesai.app/cp/admin/orgs?limit=500" \
   | python3 -c "import json,sys; print(' '.join(o['slug'] for o in json.load(sys.stdin).get('orgs',[])))")
 log "  prod orgs: $(echo "$PROD_SLUGS" | wc -w | tr -d ' ')"
 
 log "Fetching CP staging org slugs..."
-STAGING_SLUGS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_STAGING_ADMIN_TOKEN" \
+STAGING_SLUGS=$(curl -sS -m 15 -H "Authorization: Bearer $CP_STAGING_ADMIN_API_TOKEN" \
   "https://staging-api.moleculesai.app/cp/admin/orgs?limit=500" \
   | python3 -c "import json,sys; print(' '.join(o['slug'] for o in json.load(sys.stdin).get('orgs',[])))")
 log "  staging orgs: $(echo "$STAGING_SLUGS" | wc -w | tr -d ' ')"
@@ -195,9 +195,9 @@ for t in d.get("result", []):
 
 # --- Summarize + safety gate ----------------------------------------------
 
-DELETE_COUNT=$(echo "$DECISIONS" | python3 -c "import json,sys; print(sum(1 for l in sys.stdin if json.loads(l)['action']=='delete'))")
+DELETE_COUNT=$(printf '%s' "$DECISIONS" | python3 -c "import json,sys; print(sum(1 for l in sys.stdin if json.loads(l)['action']=='delete'))")
 KEEP_COUNT=$((TOTAL_TUNNELS - DELETE_COUNT))
-TENANT_TUNNELS=$(echo "$DECISIONS" | python3 -c "
+TENANT_TUNNELS=$(printf '%s' "$DECISIONS" | python3 -c "
 import json, sys
 n = sum(1 for l in sys.stdin if json.loads(l)['reason'] != 'not-a-tenant-tunnel')
 print(n)
@@ -212,7 +212,7 @@ log "  would keep:             $KEEP_COUNT"
 log ""
 
 # Per-reason breakdown of deletes
-echo "$DECISIONS" | python3 -c "
+printf '%s' "$DECISIONS" | python3 -c "
 import json,sys,collections
 c = collections.Counter()
 for l in sys.stdin:
@@ -242,7 +242,7 @@ if [ "$DRY_RUN" = "1" ]; then
   log "Dry run complete. Pass --execute to actually delete $DELETE_COUNT tunnels."
   log ""
   log "First 20 tunnels that would be deleted:"
-  echo "$DECISIONS" | python3 -c "
+  printf '%s' "$DECISIONS" | python3 -c "
 import json, sys
 shown = 0
 for l in sys.stdin:
@@ -283,7 +283,7 @@ RESULT_LOG=$(mktemp -t cf-tunnels-result-XXXXXX)
 
 # Build delete plan (just ids, one per line) and the side-channel
 # id→name map (tab-separated).
-echo "$DECISIONS" | python3 -c '
+printf '%s' "$DECISIONS" | python3 -c '
 import json, os, sys
 plan_path = sys.argv[1]
 map_path = sys.argv[2]

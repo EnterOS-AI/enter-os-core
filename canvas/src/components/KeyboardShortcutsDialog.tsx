@@ -151,8 +151,9 @@ export function KeyboardShortcutsDialog({ open, onClose }: Props) {
     <div className="fixed inset-0 z-[9999] flex items-center justify-center">
       {/* Backdrop */}
       <div
-        className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+        className="absolute inset-0 bg-black/60 backdrop-blur-sm cursor-pointer"
         onClick={onClose}
+        aria-label="Close keyboard shortcuts dialog"
       />
 
       {/* Dialog */}

@@ -143,7 +143,7 @@ export function AttachmentImage({ workspaceId, attachment, onDownload, tone }: P
         type="button"
         onClick={() => setOpen(true)}
         title={`Preview ${attachment.name}`}
-        className={`group relative inline-block max-w-full rounded-lg overflow-hidden border focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 ${
+        className={`group relative inline-block max-w-full rounded-lg overflow-hidden border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 ${
           tone === "user" ? "border-blue-400/30" : "border-line/50"
         }`}
         aria-label={`Open ${attachment.name} preview`}

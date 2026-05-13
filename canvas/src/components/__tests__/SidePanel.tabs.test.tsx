@@ -29,7 +29,9 @@ vi.mock("../Tooltip", () => ({
 vi.mock("@/components/Toaster", () => ({ showToast: vi.fn() }));
 
 // ── Mock canvas store ────────────────────────────────────────────────────────
-const mockSetPanelTab = vi.fn();
+// Use vi.hoisted() so mock refs are available in the vi.mock factory
+// and in test bodies without triggering vitest's top-level variable rule.
+const { mockSetPanelTab } = vi.hoisted(() => ({ mockSetPanelTab: vi.fn() }));
 
 const mockStoreState = {
   selectedNodeId: "ws-1",

@@ -76,8 +76,10 @@ export function ScheduleTab({ workspaceId }: Props) {
     try {
       const data = await api.get<Schedule[]>(`/workspaces/${workspaceId}/schedules`);
       setSchedules(data);
-    } catch {
+      setError("");
+    } catch (e: unknown) {
       setSchedules([]);
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
@@ -198,6 +200,13 @@ export function ScheduleTab({ workspaceId }: Props) {
         </button>
       </div>
 
+      {/* Error banner — shown whether form is open or closed */}
+      {error && !showForm && (
+        <div className="px-3 py-1.5 text-[10px] text-bad bg-red-900/20 border-b border-red-800/30">
+          {error}
+        </div>
+      )}
+
       {/* Create/Edit Form */}
       {showForm && (
         <div className="p-3 border-b border-line/50 bg-surface-sunken/50 space-y-2">
@@ -276,7 +285,7 @@ export function ScheduleTab({ workspaceId }: Props) {
               // LIGHTER variant, so this hovered lighter on white text
               // and dropped contrast below AA. Same trap fixed in
               // OnboardingWizard, ConfirmDialog, ApprovalBanner.
-              className="text-[11px] px-3 py-1 bg-accent text-white rounded hover:bg-accent-strong disabled:opacity-40 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
+              className="text-[11px] px-3 py-1 bg-accent text-white rounded hover:bg-accent-strong disabled:opacity-40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
             >
               {editId ? "Update" : "Create"}
             </button>
@@ -285,7 +294,7 @@ export function ScheduleTab({ workspaceId }: Props) {
               onClick={resetForm}
               // Was hover:bg-surface-card on top of bg-surface-card —
               // silent no-op hover. Lift to surface-elevated.
-              className="text-[11px] px-3 py-1 bg-surface-card text-ink-mid rounded hover:bg-surface-elevated hover:text-ink transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
+              className="text-[11px] px-3 py-1 bg-surface-card text-ink-mid rounded hover:bg-surface-elevated hover:text-ink transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
             >
               Cancel
             </button>

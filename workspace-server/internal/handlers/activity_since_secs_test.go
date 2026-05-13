@@ -18,9 +18,6 @@ import (
 // make_interval(secs => $N)` clause, cap at 30 days, reject invalid input
 // with 400.
 
-const activityCols = `id, workspace_id, activity_type, source_id, target_id, method, ` +
-	`summary, request_body, response_body, tool_trace, duration_ms, status, error_detail, created_at`
-
 func newActivityRows() *sqlmock.Rows {
 	cols := []string{
 		"id", "workspace_id", "activity_type", "source_id", "target_id", "method",

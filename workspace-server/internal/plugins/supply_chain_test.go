@@ -31,7 +31,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -104,8 +103,8 @@ func writeManifestJSON(t *testing.T, dir, digest string) {
 func writeStagedPlugin(t *testing.T, dir string) {
 	t.Helper()
 	files := map[string]string{
-		"plugin.yaml": "name: test-plugin\nversion: 1.0.0\ndescription: supply chain test\n",
-		"rules/guidelines.md": "# Plugin Guidelines\nFollow the rules.\n",
+		"plugin.yaml":            "name: test-plugin\nversion: 1.0.0\ndescription: supply chain test\n",
+		"rules/guidelines.md":    "# Plugin Guidelines\nFollow the rules.\n",
 		"skills/helper/SKILL.md": "---\nid: helper\nname: Helper\ndescription: does stuff\n---\n",
 	}
 	for relPath, content := range files {
@@ -116,19 +115,6 @@ func writeStagedPlugin(t *testing.T, dir string) {
 		if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
 			t.Fatalf("writeStagedPlugin: write %s: %v", relPath, err)
 		}
-	}
-}
-
-// stubGitSuccess returns a GitRunner that creates the target directory and
-// returns nil (simulating a successful shallow clone). Does NOT write any
-// repo content — tests that need files should write them into dst separately.
-func stubGitSuccess() func(ctx context.Context, dir string, args ...string) error {
-	return func(ctx context.Context, dir string, args ...string) error {
-		if len(args) == 0 {
-			return fmt.Errorf("stubGitSuccess: no args")
-		}
-		target := args[len(args)-1]
-		return os.MkdirAll(target, 0o755)
 	}
 }
 

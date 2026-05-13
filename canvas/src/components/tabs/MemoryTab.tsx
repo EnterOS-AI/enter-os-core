@@ -205,14 +205,14 @@ export function MemoryTab({ workspaceId }: Props) {
             <button
               type="button"
               onClick={() => setShowAwareness((prev) => !prev)}
-              className="shrink-0 px-2 py-1 bg-surface-card hover:bg-surface-elevated text-[10px] rounded text-ink"
+              className="shrink-0 px-2 py-1 bg-surface-card hover:bg-surface-elevated text-[10px] rounded text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
             >
               {showAwareness ? "Collapse" : "Expand"}
             </button>
             <button
               type="button"
               onClick={openAwareness}
-              className="shrink-0 px-2 py-1 bg-surface-card hover:bg-surface-elevated text-[10px] rounded text-ink"
+              className="shrink-0 px-2 py-1 bg-surface-card hover:bg-surface-elevated text-[10px] rounded text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
             >
               Open
             </button>
@@ -245,7 +245,7 @@ export function MemoryTab({ workspaceId }: Props) {
             <button
               type="button"
               onClick={() => setShowAwareness(true)}
-              className="shrink-0 px-2 py-1 bg-accent hover:bg-accent-strong text-[10px] rounded text-white"
+              className="shrink-0 px-2 py-1 bg-accent hover:bg-accent-strong text-[10px] rounded text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
             >
               Expand
             </button>
@@ -280,21 +280,21 @@ export function MemoryTab({ workspaceId }: Props) {
             <button
               type="button"
               onClick={() => setShowAdvanced((prev) => !prev)}
-              className="px-2 py-1 bg-surface-card hover:bg-surface-elevated text-[10px] rounded text-ink-mid"
+              className="px-2 py-1 bg-surface-card hover:bg-surface-elevated text-[10px] rounded text-ink-mid focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
             >
               {showAdvanced ? "Hide Advanced" : "Advanced"}
             </button>
             <button
               type="button"
               onClick={loadMemory}
-              className="px-2 py-1 bg-surface-card hover:bg-surface-elevated text-[10px] rounded text-ink-mid"
+              className="px-2 py-1 bg-surface-card hover:bg-surface-elevated text-[10px] rounded text-ink-mid focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
             >
               Refresh
             </button>
             <button
               type="button"
               onClick={() => { setShowAdd(!showAdd); if (!showAdd) setShowAdvanced(true); }}
-              className="px-2 py-1 bg-accent hover:bg-accent-strong text-[10px] rounded text-white"
+              className="px-2 py-1 bg-accent hover:bg-accent-strong text-[10px] rounded text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
             >
               + Add
             </button>
@@ -330,7 +330,7 @@ export function MemoryTab({ workspaceId }: Props) {
               <button
                 type="button"
                 onClick={handleAdd}
-                className="px-3 py-1 bg-accent hover:bg-accent-strong text-xs rounded text-white"
+                className="px-3 py-1 bg-accent hover:bg-accent-strong text-xs rounded text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
               >
                 Save
               </button>
@@ -340,7 +340,7 @@ export function MemoryTab({ workspaceId }: Props) {
                   setShowAdd(false);
                   setError(null);
                 }}
-                className="px-3 py-1 bg-surface-card hover:bg-surface-elevated text-xs rounded text-ink-mid"
+                className="px-3 py-1 bg-surface-card hover:bg-surface-elevated text-xs rounded text-ink-mid focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
               >
                 Cancel
               </button>
@@ -358,7 +358,7 @@ export function MemoryTab({ workspaceId }: Props) {
                   <button
                     type="button"
                     onClick={() => setExpanded(expanded === entry.key ? null : entry.key)}
-                    className="w-full flex items-center justify-between px-3 py-2 text-left"
+                    className="w-full flex items-center justify-between px-3 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
                     aria-expanded={expanded === entry.key}
                   >
                     <span className="text-xs font-mono text-accent">{entry.key}</span>
@@ -401,14 +401,14 @@ export function MemoryTab({ workspaceId }: Props) {
                             <button
                               type="button"
                               onClick={() => handleEditSave(entry)}
-                              className="px-3 py-1 bg-accent hover:bg-accent-strong text-xs rounded text-white"
+                              className="px-3 py-1 bg-accent hover:bg-accent-strong text-xs rounded text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
                             >
                               Save
                             </button>
                             <button
                               type="button"
                               onClick={cancelEdit}
-                              className="px-3 py-1 bg-surface-card hover:bg-surface-elevated text-xs rounded text-ink-mid"
+                              className="px-3 py-1 bg-surface-card hover:bg-surface-elevated text-xs rounded text-ink-mid focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
                             >
                               Cancel
                             </button>
@@ -428,7 +428,7 @@ export function MemoryTab({ workspaceId }: Props) {
                             <button
                               type="button"
                               onClick={() => beginEdit(entry)}
-                              className="text-[10px] text-ink-mid hover:bg-surface-elevated rounded px-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                              className="text-[10px] text-ink-mid hover:bg-surface-elevated rounded px-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
                             >
                               Edit
                             </button>
@@ -436,7 +436,7 @@ export function MemoryTab({ workspaceId }: Props) {
                           <button
                             type="button"
                             onClick={() => handleDelete(entry.key)}
-                            className="text-[10px] text-bad hover:bg-red-950/40 rounded px-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/60"
+                            className="text-[10px] text-bad hover:bg-red-950/40 rounded px-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-1"
                           >
                             Delete
                           </button>
@@ -459,7 +459,7 @@ export function MemoryTab({ workspaceId }: Props) {
             <button
               type="button"
               onClick={() => setShowAdvanced(true)}
-              className="shrink-0 px-2 py-1 bg-accent hover:bg-accent-strong text-[10px] rounded text-white"
+              className="shrink-0 px-2 py-1 bg-accent hover:bg-accent-strong text-[10px] rounded text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
             >
               Show
             </button>

@@ -280,7 +280,7 @@ export function Toolbar() {
         }}
         aria-label="Open audit trail for selected workspace"
         title="Audit — view ledger for the selected workspace"
-        className="flex items-center justify-center w-7 h-7 bg-surface-card hover:bg-surface-card/70 border border-line rounded-lg transition-colors text-ink-mid hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        className="flex items-center justify-center w-7 h-7 bg-surface-card hover:bg-surface-card/70 border border-line rounded-lg transition-colors text-ink-mid hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
       >
         {/* Scroll / ledger icon */}
         <svg
@@ -314,7 +314,7 @@ export function Toolbar() {
       <div ref={helpRef} className="relative">
         <button
           type="button"
-          onClick={() => setHelpOpen((open) => !open)}
+          onClick={() => setHelpOpen(true)}
           className="flex items-center justify-center w-7 h-7 bg-surface-card hover:bg-surface-card/70 border border-line rounded-lg transition-colors text-ink-mid hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           aria-expanded={helpOpen}
           aria-label="Open shortcuts and tips"
@@ -405,24 +405,30 @@ function StatusPill({ color, count, label }: { color: string; count: number; lab
 function WsStatusPill({ status }: { status: "connected" | "connecting" | "disconnected" }) {
   if (status === "connected") {
     return (
-      <div className="flex items-center gap-1.5" title="Real-time updates: connected" aria-label="Real-time updates: connected">
+      <div className="flex items-center gap-1.5" title="Real-time updates: connected">
+        {/* Decorative dot — not meaningful content for screen readers */}
         <div className={`w-1.5 h-1.5 rounded-full ${statusDotClass("online")}`} aria-hidden="true" />
-        <span className="text-[10px] text-ink-mid" aria-hidden="true">Live</span>
+        {/* Status text exposed to screen readers (aria-hidden removed) */}
+        <span className="text-[10px] text-ink-mid">Live</span>
       </div>
     );
   }
   if (status === "connecting") {
     return (
-      <div className="flex items-center gap-1.5" title="Real-time updates: reconnecting…" aria-label="Real-time updates: reconnecting">
+      <div className="flex items-center gap-1.5" title="Real-time updates: reconnecting…">
+        {/* Decorative dot — not meaningful content for screen readers */}
         <div className="w-1.5 h-1.5 rounded-full bg-amber-400 motion-safe:animate-pulse" aria-hidden="true" />
-        <span className="text-[10px] text-warm" aria-hidden="true">Reconnecting</span>
+        {/* Status text exposed to screen readers (aria-hidden removed) */}
+        <span className="text-[10px] text-warm">Reconnecting</span>
       </div>
     );
   }
   return (
-    <div className="flex items-center gap-1.5" title="Real-time updates: disconnected" aria-label="Real-time updates: disconnected">
+    <div className="flex items-center gap-1.5" title="Real-time updates: disconnected">
+      {/* Decorative dot — not meaningful content for screen readers */}
       <div className={`w-1.5 h-1.5 rounded-full ${statusDotClass("failed")}`} aria-hidden="true" />
-      <span className="text-[10px] text-bad" aria-hidden="true">Offline</span>
+      {/* Status text exposed to screen readers (aria-hidden removed) */}
+      <span className="text-[10px] text-bad">Offline</span>
     </div>
   );
 }

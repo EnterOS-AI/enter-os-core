@@ -2,7 +2,7 @@
 
 > **Status:** VERIFIED — Cross-referenced against molecule-core/canvas/src/ (2026-05-09)
 > **Author:** Core-FE (draft), Core-UIUX (verification)
-> **Updated:** 2026-05-10 with architecture structure + known issues + new test coverage (PR #205)
+> **Updated:** 2026-05-10 evening with comprehensive focus-visible audit (PR #306)
 
 ## Canvas Stack (Verified)
 
@@ -94,7 +94,7 @@ PR: `fix/ink-soft-wcag-contrast`.
 - Skip link → `#canvas-main` ✅
 - `aria-label` on ReactFlow container ✅
 - Focus trap in modals via Radix ✅
-- Focus ring: `focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950`
+- Focus ring: `focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1` (brand color; WCAG 2.4.7 — visible for keyboard only, not mouse/touch)
 
 ### Accessibility Tree ✅
 - Canvas is in accessibility tree (React Flow DOM nodes)
@@ -125,8 +125,10 @@ PR: `fix/ink-soft-wcag-contrast`.
 | MEDIUM | Keyboard-accessible node drag | WorkspaceNode.tsx, useDragHandlers.ts | ✅ Done (PR #182) |
 | LOW | Keyboard-accessible edge anchors | A2AEdge.tsx, WorkspaceNode.tsx | ✅ Done (PR #190) |
 | LOW | Keyboard-accessible node resize | useKeyboardShortcuts.ts, WorkspaceNode.tsx | ✅ Done (PR #192) |
+| HIGH | Comprehensive focus-visible audit (WCAG 2.4.7) | 40+ TSX/CSS files | ✅ Done (PR #306) |
 
 ---
 
 *Verified 2026-05-09 by Core-UIUX against molecule-core/canvas/src/*
 *Updated 2026-05-10: keyboard shortcut dialog (PR #175) + keyboard node drag (PR #182) + keyboard edge anchors (PR #190) + keyboard node resize (PR #192) + screen reader announcements (PR #172) + text-ink-soft WCAG AA fix + Next.js 15.5.15 + component test coverage (PR #205: Tooltip, Legend, TermsGate, ApprovalBanner)*
+*Updated 2026-05-10 evening: comprehensive focus-visible audit — 40+ files upgraded from weak `/60`/`/40` opacity rings to full `focus-visible:ring-accent`; React Flow Controls + Minimap CSS rules added; docs corrected to `accent` (was `blue-500`); roving tabindex on SearchDialog listbox (PR #306)*

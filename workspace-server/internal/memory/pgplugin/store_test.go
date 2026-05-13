@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -300,5 +301,34 @@ func TestStore_PatchNamespace_NotFound_SqlNoRows(t *testing.T) {
 	_, err := store.PatchNamespace(context.Background(), "workspace:abc", contract.NamespacePatch{ExpiresAt: &exp})
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestStore_PatchNamespace_DualFields verifies that when both ExpiresAt and
+// Metadata are set, the positional indexes are correct ($2 for expires_at,
+// $3 for metadata).  Prior to ad7acd30 this was broken: the idx++ after the
+// metadata branch was removed as a golangci-lint false-positive, causing
+// metadata to be written as $2 (same slot as expires_at) and expires_at to
+// be omitted from args entirely.
+func TestStore_PatchNamespace_DualFields(t *testing.T) {
+	db, mock := setupMockDB(t)
+	store := NewStore(db)
+	exp := time.Now().Add(time.Hour).UTC()
+	// QueryMatcherRegexp (default): expectQuery is a regex. We verify the
+	// query uses $2 and $3 for the dual-field case by checking the full
+	// query pattern. regexp.QuoteMeta handles the $ escaping correctly.
+	mock.ExpectQuery(regexp.QuoteMeta("UPDATE memory_namespaces SET expires_at = $2, metadata = $3 WHERE name = $1")).
+		WithArgs("workspace:abc", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "kind", "expires_at", "metadata", "created_at"}).
+			AddRow("workspace:abc", "workspace", exp, []byte(`{}`), time.Now()))
+	got, err := store.PatchNamespace(context.Background(), "workspace:abc", contract.NamespacePatch{
+		ExpiresAt: &exp,
+		Metadata:  map[string]interface{}{"key": "value"},
+	})
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if got.Name != "workspace:abc" {
+		t.Errorf("got.Name = %q, want workspace:abc", got.Name)
 	}
 }
