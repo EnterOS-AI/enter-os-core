@@ -46,10 +46,7 @@ func makeTestOpts(t *testing.T) *LocalBuildOptions {
 		dockerTag: func(ctx context.Context, src, dst string) error {
 			return nil
 		},
-		// Stub the shell-dep pre-flight so tests run without docker/git on PATH.
-		checkShellDeps: func() error {
-			return nil
-		},
+
 	}
 }
 
