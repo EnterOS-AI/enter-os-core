@@ -46,6 +46,7 @@ env:
   GITHUB_SERVER_URL: https://git.moleculesai.app
 
 jobs:
+  # bp-exempt: post-merge image publication side effect; CI / all-required gates source changes.
   build-and-push:
     name: Build & push canvas image
     # REVERTED (infra/revert-docker-runner-label): `runs-on: ubuntu-latest` restored.

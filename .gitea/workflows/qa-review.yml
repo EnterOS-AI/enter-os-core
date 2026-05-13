@@ -93,6 +93,7 @@ permissions:
   pull-requests: read
 
 jobs:
+  # bp-exempt: PR review bot signal; required merge state is enforced by CI / all-required.
   approved:
     # Gate the job:
     #   - On pull_request_target events: always run.

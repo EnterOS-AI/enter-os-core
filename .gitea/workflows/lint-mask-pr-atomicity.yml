@@ -84,6 +84,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # bp-exempt: meta-lint advisory during mask burn-down; CI / all-required gates merges.
   scan:
     name: lint-mask-pr-atomicity
     runs-on: ubuntu-latest

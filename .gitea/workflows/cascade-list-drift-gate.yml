@@ -43,6 +43,7 @@ permissions:
   contents: read
 
 jobs:
+  # bp-exempt: drift visibility gate; CI / all-required remains the required aggregate.
   check:
     runs-on: ubuntu-latest
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking
