@@ -101,6 +101,20 @@ describe("Esc — deselect / close context menu", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     expect(mockStoreState.selectNode).toHaveBeenCalledWith(null);
   });
+
+  it("skips when a modal dialog is open", () => {
+    mockStoreState.contextMenu = null;
+    mockStoreState.selectedNodeId = "n1";
+    renderWithProvider();
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    document.body.appendChild(dialog);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(mockStoreState.clearSelection).not.toHaveBeenCalled();
+    expect(mockStoreState.selectNode).not.toHaveBeenCalled();
+    document.body.removeChild(dialog);
+  });
 });
 
 describe("Enter — hierarchy navigation", () => {
@@ -136,6 +150,17 @@ describe("Enter — hierarchy navigation", () => {
     fireEvent.keyDown(window, { key: "Enter" });
     expect(mockStoreState.selectNode).not.toHaveBeenCalled();
   });
+
+  it("skips when a modal dialog is open", () => {
+    renderWithProvider();
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    document.body.appendChild(dialog);
+    fireEvent.keyDown(window, { key: "Enter" });
+    expect(mockStoreState.selectNode).not.toHaveBeenCalled();
+    document.body.removeChild(dialog);
+  });
 });
 
 describe("Cmd+]/[ — z-order bump", () => {
@@ -159,6 +184,17 @@ describe("Cmd+]/[ — z-order bump", () => {
     renderWithProvider();
     fireEvent.keyDown(window, { key: "]", ctrlKey: true });
     expect(mockStoreState.bumpZOrder).toHaveBeenCalledWith("n1", 1);
+  });
+
+  it("skips when a modal dialog is open", () => {
+    renderWithProvider();
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    document.body.appendChild(dialog);
+    fireEvent.keyDown(window, { key: "]", metaKey: true });
+    expect(mockStoreState.bumpZOrder).not.toHaveBeenCalled();
+    document.body.removeChild(dialog);
   });
 });
 
@@ -211,6 +247,17 @@ describe("Z — zoom-to-team", () => {
     fireEvent.keyDown(input, { key: "z" });
     expect(dispatchedEvents).toHaveLength(0);
     document.body.removeChild(input);
+  });
+
+  it("skips when a modal dialog is open", () => {
+    renderWithProvider();
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    document.body.appendChild(dialog);
+    fireEvent.keyDown(window, { key: "z" });
+    expect(dispatchedEvents).toHaveLength(0);
+    document.body.removeChild(dialog);
   });
 });
 

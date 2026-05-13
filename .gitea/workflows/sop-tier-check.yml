@@ -64,7 +64,8 @@ jobs:
   tier-check:
     runs-on: ubuntu-latest
     # BURN-IN: continue-on-error prevents AND-composition from blocking
-    # PRs during the 7-day window. Remove after 2026-05-17 (internal#189).
+    # PRs during the 7-day window. Remove after 2026-05-17 (mc#664).
+    # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     permissions:
       contents: read
@@ -89,6 +90,7 @@ jobs:
         # runners). The sop-tier-check script has its own fallback as a
         # third line of defense. continue-on-error: true ensures this step
         # failing does not block the job.
+        # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
         continue-on-error: true
         run: |
           # apt-get is the primary method — Ubuntu package mirrors are reliably
@@ -109,6 +111,7 @@ jobs:
         # continue-on-error: true at step level — job-level is ignored by Gitea
         # Actions (quirk #10, internal runbooks). Belt-and-suspenders with
         # SOP_FAIL_OPEN=1 + || true below.
+        # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
         continue-on-error: true
         env:
           GITEA_TOKEN: ${{ secrets.SOP_TIER_CHECK_TOKEN || secrets.GITHUB_TOKEN }}

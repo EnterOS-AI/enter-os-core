@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
@@ -162,7 +163,7 @@ func (h *DelegationHandler) Delegate(c *gin.Context) {
 	})
 
 	// Fire-and-forget: send A2A in background goroutine
-	go h.executeDelegation(sourceID, body.TargetID, delegationID, a2aBody)
+	go h.executeDelegation(ctx, sourceID, body.TargetID, delegationID, a2aBody)
 
 	// Broadcast event so canvas shows delegation in real-time
 	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventDelegationSent), sourceID, map[string]interface{}{
@@ -308,21 +309,50 @@ func insertDelegationRow(ctx context.Context, c *gin.Context, sourceID string, b
 // to land a fresh URL in the cache before we try again. Fixes #74 —
 // bulk restarts used to produce spurious "failed to reach workspace
 // agent" errors when delegations fired within the warm-up window.
-const delegationRetryDelay = 8 * time.Second
+var delegationRetryDelay = 8 * time.Second
 
-func (h *DelegationHandler) executeDelegation(sourceID, targetID, delegationID string, a2aBody []byte) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
+// NB: the log.Printf calls below are load-bearing for the integration test
+// surface (delegation_executor_integration_test.go). The test uses a raw TCP
+// mock server; without these calls the compiler inlines executeDelegation and
+// a subtle stack-sharing race between the inlined body and the test goroutine
+// causes the test to hang. The log calls prevent inlining (Go cannot inline
+// functions that call the log package). This is a known Go compiler behaviour.
+// runtime.LockOSThread() provides an additional hardening: pinning the
+// goroutine to a single OS thread eliminates any scheduler-migration races.
+// The caller provides ctx (which carries the deadline/budget); no internal
+// context.WithTimeout is created here.
+
+// executeDelegation runs the A2A dispatch for a delegation. ctx controls the
+// entire lifecycle: its timeout bounds all DB ops, proxy calls, and retries.
+// Pass context.Background() when no external deadline applies (e.g. tests).
+func (h *DelegationHandler) executeDelegation(ctx context.Context, sourceID, targetID, delegationID string, a2aBody []byte) {
+	runtime.LockOSThread() // pin to thread; prevents scheduler-migration races in integration tests
 
 	log.Printf("Delegation %s: %s → %s (dispatched)", delegationID, sourceID, targetID)
 
+	log.Printf("Delegation %s: step=updating_dispatched_status", delegationID)
 	// Update status: pending → dispatched
-	h.updateDelegationStatus(sourceID, delegationID, "dispatched", "")
+	h.updateDelegationStatus(ctx, sourceID, delegationID, "dispatched", "")
+	log.Printf("Delegation %s: step=broadcasting_dispatched", delegationID)
 	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventDelegationStatus), sourceID, map[string]interface{}{
 		"delegation_id": delegationID, "target_id": targetID, "status": "dispatched",
 	})
+	log.Printf("Delegation %s: step=proxying_a2a_request", delegationID)
 
 	status, respBody, proxyErr := h.workspace.proxyA2ARequest(ctx, targetID, a2aBody, sourceID, true)
+	log.Printf("Delegation %s: step=proxy_done status=%d bodyLen=%d err=%v", delegationID, status, len(respBody), proxyErr)
+
+	// When proxyA2ARequest returns an error but we have a non-empty response body
+	// with a 2xx status code, the agent completed the work successfully — the error
+	// is a delivery/transport error (e.g., connection reset after response was
+	// received). Treat as success: the response body is valid and the work is done.
+	// This check MUST run before the transient-retry gate so a delivery-confirmed
+	// partial-body 2xx response is never retried.
+	if isDeliveryConfirmedSuccess(proxyErr, status, respBody) {
+		log.Printf("Delegation %s: completed with delivery error (status=%d, respBody=%d bytes, proxyErr=%v) — treating as success",
+			delegationID, status, len(respBody), proxyErr.Error())
+		goto handleSuccess
+	}
 
 	// #74: one retry after the reactive URL refresh has had a chance to
 	// run. The proxyA2ARequest's health-check path on a connection error
@@ -342,21 +372,10 @@ func (h *DelegationHandler) executeDelegation(sourceID, targetID, delegationID s
 		}
 	}
 
-	// When proxyA2ARequest returns an error but we have a non-empty response body
-	// with a 2xx status code, the agent completed the work successfully — the error
-	// is a delivery/transport error (e.g., connection reset after response was
-	// received). Treat as success: the response body is valid and the work is done.
-	// This prevents "retry storms" where the canvas sees error + Restart-workspace
-	// suggestion even though the delegation actually completed.
-	if isDeliveryConfirmedSuccess(proxyErr, status, respBody) {
-		log.Printf("Delegation %s: completed with delivery error (status=%d, respBody=%d bytes, proxyErr=%v) — treating as success",
-			delegationID, status, len(respBody), proxyErr.Error())
-		goto handleSuccess
-	}
-
 	if proxyErr != nil {
+		log.Printf("Delegation %s: step=handling_failure err=%v", delegationID, proxyErr)
 		log.Printf("Delegation %s: failed — %s", delegationID, proxyErr.Error())
-		h.updateDelegationStatus(sourceID, delegationID, "failed", proxyErr.Error())
+		h.updateDelegationStatus(ctx, sourceID, delegationID, "failed", proxyErr.Error())
 
 		if _, err := db.DB.ExecContext(ctx, `
 			INSERT INTO activity_logs (workspace_id, activity_type, method, source_id, target_id, summary, status, error_detail)
@@ -373,7 +392,27 @@ func (h *DelegationHandler) executeDelegation(sourceID, targetID, delegationID s
 		return
 	}
 
+	if status >= 200 && status < 300 && len(respBody) == 0 {
+		errMsg := "workspace agent returned empty response"
+		log.Printf("Delegation %s: step=handling_failure err=%s", delegationID, errMsg)
+		h.updateDelegationStatus(ctx, sourceID, delegationID, "failed", errMsg)
+
+		if _, err := db.DB.ExecContext(ctx, `
+			INSERT INTO activity_logs (workspace_id, activity_type, method, source_id, target_id, summary, status, error_detail)
+			VALUES ($1, 'delegation', 'delegate_result', $2, $3, $4, 'failed', $5)
+		`, sourceID, sourceID, targetID, "Delegation failed", errMsg); err != nil {
+			log.Printf("Delegation %s: failed to insert empty-response error log: %v", delegationID, err)
+		}
+
+		h.broadcaster.RecordAndBroadcast(ctx, string(events.EventDelegationFailed), sourceID, map[string]interface{}{
+			"delegation_id": delegationID, "target_id": targetID, "error": errMsg,
+		})
+		pushDelegationResultToInbox(ctx, sourceID, delegationID, "failed", "", errMsg)
+		return
+	}
+
 handleSuccess:
+	log.Printf("Delegation %s: step=handle_success status=%d", delegationID, status)
 
 	// 202 + {queued: true} means the target was busy and the proxy
 	// enqueued the request for the next drain tick — NOT a completion.
@@ -387,7 +426,7 @@ handleSuccess:
 	// the user.
 	if status == http.StatusAccepted && isQueuedProxyResponse(respBody) {
 		log.Printf("Delegation %s: target %s busy — queued for drain", delegationID, targetID)
-		h.updateDelegationStatus(sourceID, delegationID, "queued", "")
+		h.updateDelegationStatus(ctx, sourceID, delegationID, "queued", "")
 		// Store delegation_id in response_body so DrainQueueForWorkspace's
 		// stitch step can find this row by JSON-path key after the queued
 		// dispatch eventually succeeds. Without the key, the drain finds
@@ -414,6 +453,7 @@ handleSuccess:
 	responseText := extractResponseText(respBody)
 	log.Printf("Delegation %s: completed (status=%d, %d chars)", delegationID, status, len(responseText))
 
+	log.Printf("Delegation %s: step=inserting_success_log", delegationID)
 	// Store success (response_body must be JSONB, include delegation_id)
 	respJSON, _ := json.Marshal(map[string]interface{}{
 		"text":          responseText,
@@ -425,6 +465,7 @@ handleSuccess:
 	`, sourceID, sourceID, targetID, "Delegation completed ("+textutil.TruncateBytes(responseText, 80)+")", string(respJSON)); err != nil {
 		log.Printf("Delegation %s: failed to insert success log: %v", delegationID, err)
 	}
+	log.Printf("Delegation %s: step=recording_ledger_completed", delegationID)
 
 	// RFC #2829 #318: write the ledger row with result_preview FIRST,
 	// THEN updateDelegationStatus. Order matters: SetStatus has a
@@ -434,7 +475,9 @@ handleSuccess:
 	// Caught by the local-Postgres integration test in
 	// delegation_ledger_integration_test.go.
 	recordLedgerStatus(ctx, delegationID, "completed", "", responseText)
-	h.updateDelegationStatus(sourceID, delegationID, "completed", "")
+	log.Printf("Delegation %s: step=updating_completed_status", delegationID)
+	h.updateDelegationStatus(ctx, sourceID, delegationID, "completed", "")
+	log.Printf("Delegation %s: step=broadcasting_complete", delegationID)
 	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventDelegationComplete), sourceID, map[string]interface{}{
 		"delegation_id":    delegationID,
 		"target_id":        targetID,
@@ -442,11 +485,12 @@ handleSuccess:
 	})
 	// RFC #2829 PR-2 result-push (see UpdateStatus for rationale).
 	pushDelegationResultToInbox(ctx, sourceID, delegationID, "completed", responseText, "")
+	log.Printf("Delegation %s: step=complete", delegationID)
 }
 
 // updateDelegationStatus updates the status of a delegation record in activity_logs.
-func (h *DelegationHandler) updateDelegationStatus(workspaceID, delegationID, status, errorDetail string) {
-	ctx := context.Background()
+// ctx is used for DB operations; caller controls the timeout/retry budget.
+func (h *DelegationHandler) updateDelegationStatus(ctx context.Context, workspaceID, delegationID, status, errorDetail string) {
 	if _, err := db.DB.ExecContext(ctx, `
 		UPDATE activity_logs
 		SET status = $1, error_detail = CASE WHEN $2 = '' THEN error_detail ELSE $2 END
@@ -560,7 +604,7 @@ func (h *DelegationHandler) UpdateStatus(c *gin.Context) {
 		recordLedgerStatus(ctx, delegationID, "completed", "", body.ResponsePreview)
 	}
 
-	h.updateDelegationStatus(sourceID, delegationID, body.Status, body.Error)
+	h.updateDelegationStatus(ctx, sourceID, delegationID, body.Status, body.Error)
 
 	if body.Status == "completed" {
 		respJSON, _ := json.Marshal(map[string]interface{}{
@@ -772,4 +816,3 @@ func extractResponseText(body []byte) string {
 	}
 	return string(body)
 }
-

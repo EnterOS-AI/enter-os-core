@@ -195,9 +195,9 @@ for t in d.get("result", []):
 
 # --- Summarize + safety gate ----------------------------------------------
 
-DELETE_COUNT=$(echo "$DECISIONS" | python3 -c "import json,sys; print(sum(1 for l in sys.stdin if json.loads(l)['action']=='delete'))")
+DELETE_COUNT=$(printf '%s' "$DECISIONS" | python3 -c "import json,sys; print(sum(1 for l in sys.stdin if json.loads(l)['action']=='delete'))")
 KEEP_COUNT=$((TOTAL_TUNNELS - DELETE_COUNT))
-TENANT_TUNNELS=$(echo "$DECISIONS" | python3 -c "
+TENANT_TUNNELS=$(printf '%s' "$DECISIONS" | python3 -c "
 import json, sys
 n = sum(1 for l in sys.stdin if json.loads(l)['reason'] != 'not-a-tenant-tunnel')
 print(n)
@@ -212,7 +212,7 @@ log "  would keep:             $KEEP_COUNT"
 log ""
 
 # Per-reason breakdown of deletes
-echo "$DECISIONS" | python3 -c "
+printf '%s' "$DECISIONS" | python3 -c "
 import json,sys,collections
 c = collections.Counter()
 for l in sys.stdin:
@@ -242,7 +242,7 @@ if [ "$DRY_RUN" = "1" ]; then
   log "Dry run complete. Pass --execute to actually delete $DELETE_COUNT tunnels."
   log ""
   log "First 20 tunnels that would be deleted:"
-  echo "$DECISIONS" | python3 -c "
+  printf '%s' "$DECISIONS" | python3 -c "
 import json, sys
 shown = 0
 for l in sys.stdin:
@@ -283,7 +283,7 @@ RESULT_LOG=$(mktemp -t cf-tunnels-result-XXXXXX)
 
 # Build delete plan (just ids, one per line) and the side-channel
 # id→name map (tab-separated).
-echo "$DECISIONS" | python3 -c '
+printf '%s' "$DECISIONS" | python3 -c '
 import json, os, sys
 plan_path = sys.argv[1]
 map_path = sys.argv[2]
