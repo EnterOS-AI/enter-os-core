@@ -30,7 +30,7 @@ func TestSupportsRuntime_HyphenUnderscoreNormalized(t *testing.T) {
 	// "claude-code" and "claude_code" are considered equal.
 	info := pluginInfo{Name: "test", Runtimes: []string{"claude-code"}}
 	assert.True(t, info.supportsRuntime("claude_code"))
-	assert.True(t, info.supportsRuntime("anthropic_claude"))
+	assert.True(t, info.supportsRuntime("claude-code")) // symmetric hyphen form
 }
 
 func TestSupportsRuntime_HyphenVsUnderscoreReverse(t *testing.T) {

@@ -248,7 +248,7 @@ func TestReadUsageMap_MissingUsage(t *testing.T) {
 	m := map[string]json.RawMessage{
 		"other": json.RawMessage(`{}`),
 	}
-	in, out, ok := readUsageMap(m)
+	_, _, ok := readUsageMap(m)
 	if ok {
 		t.Errorf("readUsageMap returned ok=true for missing usage, want false")
 	}
@@ -297,7 +297,7 @@ func TestReadUsageMap_MalformedUsageJSON(t *testing.T) {
 	m := map[string]json.RawMessage{
 		"usage": json.RawMessage(`not valid json`),
 	}
-	in, out, ok := readUsageMap(m)
+	_, _, ok := readUsageMap(m)
 	if ok {
 		t.Errorf("readUsageMap returned ok=true for malformed usage JSON, want false")
 	}
