@@ -157,6 +157,16 @@ func main() {
 		}
 	}
 
+	// Issue #831 bootstrap: if global_secrets has ADMIN_TOKEN=placeholder,
+	// replace it with the real token from the environment. This fixes
+	// workspaces provisioned before the correct value was seeded.
+	// Only runs for SaaS tenants (cpProv != nil) where containers inherit
+	// from global_secrets. Self-hosted deployments don't read ADMIN_TOKEN
+	// from global_secrets for container env — the fix doesn't apply.
+	if cpProv != nil {
+		fixAdminTokenPlaceholder()
+	}
+
 	port := envOr("PORT", "8080")
 	platformURL := envOr("PLATFORM_URL", fmt.Sprintf("http://host.docker.internal:%s", port))
 	configsDir := envOr("CONFIGS_DIR", findConfigsDir())
@@ -482,4 +492,68 @@ func findMigrationsDir() string {
 	}
 	log.Println("No migrations directory found")
 	return ""
+}
+
+// fixAdminTokenPlaceholder heals #831: workspaces provisioned with a placeholder
+// ADMIN_TOKEN in global_secrets receive that placeholder as a container env var,
+// breaking any code that calls platform APIs. This runs once at startup (SaaS only)
+// and replaces the placeholder with the real token from the host environment.
+//
+// The placeholder is not in the codebase — it was seeded by a prior bootstrap or
+// manual DB write. It should never be set by the platform itself. This function
+// ensures it is corrected on next platform restart without requiring a manual DB
+// update or workspace reprovision.
+func fixAdminTokenPlaceholder() {
+	realToken := os.Getenv("ADMIN_TOKEN")
+	if realToken == "" {
+		// Platform has no ADMIN_TOKEN — nothing to fix.
+		return
+	}
+
+	// Read the current stored value. We only upsert when the placeholder is
+	// present so we don't repeatedly write rows that are already correct.
+	var storedValue []byte
+	err := db.DB.QueryRow(`SELECT encrypted_value FROM global_secrets WHERE key = $1`, "ADMIN_TOKEN").Scan(&storedValue)
+	if err != nil {
+		// No row — nothing to fix. The control plane injects ADMIN_TOKEN via
+		// Secrets Manager bootstrap; the global_secrets path is a legacy seed.
+		return
+	}
+
+	// Decrypt to check the value. We compare the plaintext so the check works
+	// whether encryption is enabled or not.
+	storedPlaintext, decErr := crypto.DecryptVersioned(storedValue, crypto.CurrentEncryptionVersion())
+	if decErr != nil {
+		log.Printf("fixAdminTokenPlaceholder: could not decrypt existing value (version mismatch?): %v", decErr)
+		return
+	}
+
+	if string(storedPlaintext) == realToken {
+		// Already correct — nothing to do.
+		return
+	}
+
+	if string(storedPlaintext) == "placeholder-will-ask-for-real" {
+		log.Println("fixAdminTokenPlaceholder: replacing placeholder ADMIN_TOKEN in global_secrets")
+	} else {
+		log.Printf("fixAdminTokenPlaceholder: ADMIN_TOKEN in global_secrets differs from env; updating")
+	}
+
+	encrypted, err := crypto.Encrypt([]byte(realToken))
+	if err != nil {
+		log.Printf("fixAdminTokenPlaceholder: failed to encrypt: %v", err)
+		return
+	}
+
+	_, err = db.DB.Exec(`
+		INSERT INTO global_secrets (key, encrypted_value, encryption_version)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (key) DO UPDATE
+			SET encrypted_value = $2, encryption_version = $3, updated_at = now()
+	`, "ADMIN_TOKEN", encrypted, crypto.CurrentEncryptionVersion())
+	if err != nil {
+		log.Printf("fixAdminTokenPlaceholder: failed to upsert: %v", err)
+		return
+	}
+	log.Println("fixAdminTokenPlaceholder: done")
 }
