@@ -52,6 +52,7 @@ from executor_helpers import (
     collect_outbound_files,
     extract_attached_files,
     read_delegation_results,
+    sanitize_agent_error,
 )
 from builtin_tools.telemetry import (
     A2A_TASK_ID,
@@ -547,7 +548,7 @@ class LangGraphA2AExecutor(AgentExecutor):
                 # receive the error and stop polling.
                 await updater.failed(
                     message=new_text_message(
-                        f"Agent error: {e}", task_id=task_id, context_id=context_id
+                        sanitize_agent_error(exc=e), task_id=task_id, context_id=context_id
                     )
                 )
             finally:
