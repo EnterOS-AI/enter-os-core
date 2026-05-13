@@ -191,3 +191,170 @@ func TestTarHostDirWithPrefix_PrefixNormalization(t *testing.T) {
 		t.Errorf("trailing-slash on prefix changed archive shape; tarHostDirWithPrefix should be slash-insensitive")
 	}
 }
+
+// ─── tarWalk (direct) ─────────────────────────────────────────────────────────
+
+// TestTarWalk_EmptyDirectory: an empty dir produces exactly one tar entry
+// (the dir itself, with a trailing slash).
+func TestTarWalk_EmptyDirectory(t *testing.T) {
+	hostDir := t.TempDir()
+	var buf bytes.Buffer
+	tw := newTarWriter(&buf)
+	if err := tarWalk(hostDir, "prefix", tw); err != nil {
+		t.Fatalf("tarWalk: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	entries := readTarNames(&buf)
+	if len(entries) != 1 {
+		t.Errorf("empty dir: got %d entries; want 1", len(entries))
+	}
+	if entries[0] != "prefix/" {
+		t.Errorf("empty dir sole entry: got %q; want prefix/", entries[0])
+	}
+}
+
+// TestTarWalk_NestedDirs: deeply nested directories produce all intermediate
+// dir entries plus leaf entries. This exercises the recursive walk.
+func TestTarWalk_NestedDirs(t *testing.T) {
+	hostDir := t.TempDir()
+	deep := filepath.Join(hostDir, "a", "b", "c")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deep, "leaf.txt"), []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	tw := newTarWriter(&buf)
+	if err := tarWalk(hostDir, "configs/plugins/.staging", tw); err != nil {
+		t.Fatalf("tarWalk: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	entries := readTarNames(&buf)
+	// Must include: prefix/, prefix/a/, prefix/a/b/, prefix/a/b/c/, prefix/a/b/c/leaf.txt
+	expected := []string{
+		"configs/plugins/.staging/",
+		"configs/plugins/.staging/a/",
+		"configs/plugins/.staging/a/b/",
+		"configs/plugins/.staging/a/b/c/",
+		"configs/plugins/.staging/a/b/c/leaf.txt",
+	}
+	if len(entries) != len(expected) {
+		t.Errorf("nested dirs: got %d entries; want %d: %v", len(entries), len(expected), entries)
+	}
+	for _, e := range expected {
+		found := false
+		for _, g := range entries {
+			if g == e {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("missing entry: %q", e)
+		}
+	}
+}
+
+// TestTarWalk_DirEntryHasTrailingSlash: directory entries must end with '/'
+// per tar format; tar.Header.Typeflag '5' (dir) must produce "name/" not "name".
+func TestTarWalk_DirEntryHasTrailingSlash(t *testing.T) {
+	hostDir := t.TempDir()
+	sub := filepath.Join(hostDir, "subdir")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	tw := newTarWriter(&buf)
+	if err := tarWalk(hostDir, "p", tw); err != nil {
+		t.Fatalf("tarWalk: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	entries := readTarNames(&buf)
+	for _, e := range entries {
+		// Only "p/" (the root) and "p/subdir/" are dirs; files have no trailing slash.
+		if !strings.HasSuffix(e, ".txt") && !strings.HasSuffix(e, "/") {
+			t.Errorf("non-file entry %q missing trailing slash: should be a dir", e)
+		}
+	}
+}
+
+// TestTarWalk_FileContentsPreserved: regular file bytes survive tar round-trip
+// through tarWalk + tar.Reader.
+func TestTarWalk_FileContentsPreserved(t *testing.T) {
+	hostDir := t.TempDir()
+	contents := map[string]string{
+		"plugin.yaml":           "name: test\nversion: 1.0.0\n",
+		"skills/foo/SKILL.md": "# Foo\n",
+	}
+	for rel, body := range contents {
+		full := filepath.Join(hostDir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var buf bytes.Buffer
+	tw := newTarWriter(&buf)
+	if err := tarWalk(hostDir, "prefix", tw); err != nil {
+		t.Fatalf("tarWalk: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// Read back and verify contents.
+	extracted := map[string]string{}
+	tr := tar.NewReader(&buf)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("reader: %v", err)
+		}
+		if hdr.Typeflag == tar.TypeReg {
+			data, err := io.ReadAll(tr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rel := strings.TrimPrefix(hdr.Name, "prefix/")
+			extracted[rel] = string(data)
+		}
+	}
+	for rel, want := range contents {
+		if got := extracted[rel]; got != want {
+			t.Errorf("content[%s] = %q; want %q", rel, got, want)
+		}
+	}
+}
+
+// readTarNames extracts just the Name field from every entry in a tar buffer.
+func readTarNames(buf *bytes.Buffer) []string {
+	var names []string
+	tr := tar.NewReader(buf)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			break
+		}
+		names = append(names, hdr.Name)
+		// Advance past non-header bytes.
+		if hdr.Size > 0 {
+			io.Copy(io.Discard, tr)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
