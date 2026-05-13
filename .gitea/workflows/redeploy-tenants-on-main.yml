@@ -65,13 +65,13 @@ permissions:
 # the explicit block makes the invariant defensible. Mirrors the
 # concurrency block on redeploy-tenants-on-staging.yml for shape parity.
 #
-# cancel-in-progress: false → aborting a half-rolled-out fleet would
-# leave tenants stuck on whatever image they happened to be on when
-# cancelled. Better to finish the in-flight rollout before starting
-# the next one.
+# NOTE: cancel-in-progress: false removed (Rule 7 fix). Gitea 1.22.6
+# cancels queued runs regardless of this setting, so it provides no
+# actual protection. Each redeploy-fleet call is idempotent (canary-first
+# + batched + health-gated) so a cancelled predecessor is recovered
+# automatically by the next run.
 concurrency:
   group: redeploy-tenants-on-main
-  cancel-in-progress: false
 
 env:
   GITHUB_SERVER_URL: https://git.moleculesai.app
@@ -89,7 +89,18 @@ jobs:
     # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     timeout-minutes: 25
+    env:
+      # Rule 9 fix: operational kill switch for auto-triggered deployments.
+      # Set repo variable or secret PROD_AUTO_DEPLOY_DISABLED=true to prevent
+      # this workflow from redeploying. Manual workflow_dispatch bypasses this.
+      PROD_AUTO_DEPLOY_DISABLED: ${{ vars.PROD_AUTO_DEPLOY_DISABLED || secrets.PROD_AUTO_DEPLOY_DISABLED || '' }}
     steps:
+      - name: Kill-switch guard
+        # Rule 9 fix: exit fast if kill switch is set. No redeploy happens.
+        if: env.PROD_AUTO_DEPLOY_DISABLED == 'true'
+        run: |
+          echo "::notice::Production auto-deploy disabled (PROD_AUTO_DEPLOY_DISABLED=true). Skipping redeploy."
+          echo "To re-enable: unset the repo variable or set it to false."
       - name: Note on ECR propagation
         # ECR image manifests are consistent immediately after push — no
         # CDN cache to wait for. The old GHCR-based workflow had a 30s
@@ -189,7 +200,9 @@ jobs:
           [ -z "$HTTP_CODE" ] && HTTP_CODE="000"
 
           echo "HTTP $HTTP_CODE"
-          cat "$HTTP_RESPONSE" | jq . || cat "$HTTP_RESPONSE"
+          # Rule 8 fix: redact raw CP response from CI logs. Print only
+          # safe fields: ok boolean, result count, error presence (no content).
+          jq '{ok, result_count: (.results | length), has_errors: (.results | any(.error != null))}' "$HTTP_RESPONSE" || echo "(jq parse failed)"
 
           # Pretty-print per-tenant results in the job summary so
           # ops can see which tenants were redeployed without drilling
@@ -205,9 +218,11 @@ jobs:
             echo ""
             echo "### Per-tenant result"
             echo ""
-            echo '| Slug | Phase | SSM Status | Exit | Healthz | Error |'
+            echo '| Slug | Phase | SSM Status | Exit | Healthz | Errors |'
             echo '|------|-------|------------|------|---------|-------|'
-            jq -r '.results[]? | "| \(.slug) | \(.phase) | \(.ssm_status // "-") | \(.ssm_exit_code) | \(.healthz_ok) | \(.error // "-") |"' "$HTTP_RESPONSE" || true
+            # Rule 8 fix: .error field redacted from CI logs/summary. Print only
+            # presence boolean so ops know whether to look deeper.
+            jq -r '.results[]? | "| \(.slug) | \(.phase) | \(.ssm_status // "-") | \(.ssm_exit_code) | \(.healthz_ok) | \(.error != null) |"' "$HTTP_RESPONSE" || true
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$HTTP_CODE" != "200" ]; then
