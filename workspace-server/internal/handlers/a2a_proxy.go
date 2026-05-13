@@ -520,6 +520,21 @@ func (h *WorkspaceHandler) proxyA2ARequest(ctx context.Context, workspaceID stri
 		}
 	}
 
+	// 2xx with empty body: the agent completed the request but returned no content.
+	// An A2A agent must always return a JSON body; empty means the agent is
+	// broken or the connection closed before any body bytes were written.
+	// Return a proxyA2AError so executeDelegation routes this to failure rather
+	// than silently marking it as completed with a nil body.
+	// logA2ASuccess is intentionally NOT called here — delivery was not confirmed.
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 && len(respBody) == 0 {
+		log.Printf("ProxyA2A: agent %s returned %d with empty body — treating as failure",
+			workspaceID, resp.StatusCode)
+		return resp.StatusCode, respBody, &proxyA2AError{
+			Status:   resp.StatusCode,
+			Response: gin.H{"error": "agent returned empty response body"},
+		}
+	}
+
 	if logActivity {
 		h.logA2ASuccess(ctx, workspaceID, callerID, body, respBody, a2aMethod, resp.StatusCode, durationMs)
 	}
