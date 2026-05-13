@@ -168,6 +168,7 @@ jobs:
 
       - name: Install Playwright browsers
         if: needs.detect-changes.outputs.canvas == 'true'
+        timeout-minutes: 10
         run: npx playwright install --with-deps chromium
 
       - name: Run staging canvas E2E
