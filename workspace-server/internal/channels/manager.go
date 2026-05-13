@@ -522,7 +522,7 @@ func (m *Manager) FetchWorkspaceChannelContext(ctx context.Context, workspaceID 
 		if len(text) > 200 {
 			text = text[:197] + "..."
 		}
-		sb.WriteString(fmt.Sprintf("- %s: %s\n", name, text))
+		fmt.Fprintf(&sb, "- %s: %s\n", name, text)
 	}
 	return sb.String()
 }

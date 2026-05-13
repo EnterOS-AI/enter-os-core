@@ -35,6 +35,12 @@ GITEA_HOST = os.environ.get("GITEA_HOST", "git.moleculesai.app")
 GITEA_TOKEN = os.environ.get("GITEA_TOKEN", os.environ.get("GITHUB_TOKEN", ""))
 API_BASE = f"https://{GITEA_HOST}/api/v1"
 
+# Timeout in seconds for all HTTP calls. Defence-in-depth: ensures a missing or
+# invalid SOP_TIER_CHECK_TOKEN causes a fast (~15 s) failure rather than an
+# indefinite hang. The real fix is provisioning the token; this caps worst-case
+# wall-clock on a broken/unreachable Gitea host.
+DEFAULT_TIMEOUT = 15
+
 
 def api_get(path: str) -> dict | list:
     url = f"{API_BASE}{path}"
@@ -46,7 +52,7 @@ def api_get(path: str) -> dict | list:
         },
     )
     try:
-        with urllib.request.urlopen(req) as r:
+        with urllib.request.urlopen(req, timeout=DEFAULT_TIMEOUT) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")
@@ -316,7 +322,7 @@ def signal_3_staleness(pr_number: int, repo: str) -> dict:
 
 # ── Signal 6: CI required-checks awareness ───────────────────────────────────
 
-def signal_6_ci(pr_number: int, repo: str, branch: str = "main") -> dict:
+def signal_6_ci(pr_number: int, repo: str, branch: str | None = None, pr_data: dict | None = None) -> dict:
     """
     Query combined CI status for PR head commit.
     Find required status checks on target branch.
@@ -324,8 +330,12 @@ def signal_6_ci(pr_number: int, repo: str, branch: str = "main") -> dict:
     """
     owner, name = repo.split("/", 1)
 
-    pr = api_get(f"/repos/{owner}/{name}/pulls/{pr_number}")
-    head_sha = pr["head"]["sha"]
+    # Re-use PR data if already fetched by caller; otherwise fetch once.
+    if pr_data is None:
+        pr_data = api_get(f"/repos/{owner}/{name}/pulls/{pr_number}")
+    head_sha = pr_data["head"]["sha"]
+    # Fall back to PR's actual base branch when no explicit branch is given
+    branch = branch or pr_data.get("base", {}).get("ref", "main")
 
     # Combined status of PR head
     combined = api_get(f"/repos/{owner}/{name}/commits/{head_sha}/status")
@@ -334,9 +344,12 @@ def signal_6_ci(pr_number: int, repo: str, branch: str = "main") -> dict:
     # Individual check statuses
     # Gitea Actions uses "status" (pending/success/failure) not "state" for
     # individual check entries. "state" is null for pending runs.
+    # Exclude our own prior status to prevent self-referential failure loops.
     check_statuses = {}
     for s in combined.get("statuses") or []:
-        check_statuses[s["context"]] = s.get("status", "pending")
+        ctx = s["context"]
+        if "gate-check" not in ctx.lower():
+            check_statuses[ctx] = s.get("status", "pending")
 
     # Try to get branch protection for required checks
     required_checks = []
@@ -358,9 +371,16 @@ def signal_6_ci(pr_number: int, repo: str, branch: str = "main") -> dict:
         else:
             passing_required.append(f"{ctx} (pending)")
 
+    # NOTE: do NOT use ci_state (combined_state) as a fallback verdict driver.
+    # The combined_state is computed over ALL statuses including this
+    # gate-check's own prior result. Using it as a fallback creates a
+    # self-referential loop: gate-check posts failure → combined_state
+    # becomes failure → script re-blocks → posts failure again.
+    # The check_statuses dict already excludes gate-check (Bug-1 fix from
+    # PR #547). Use failing_required as the sole CI gate; if no required
+    # checks are defined on the branch, return CLEAR rather than re-using
+    # the combined_state which includes our own status.
     if failing_required:
-        verdict = "CI_FAIL"
-    elif ci_state == "failure":
         verdict = "CI_FAIL"
     elif ci_state == "pending":
         verdict = "CI_PENDING"
@@ -459,21 +479,21 @@ def format_comment(repo: str, pr_number: int, verdict: str, gates: list[dict], b
     lines.append(f"_gate-check-v3 · repo={repo} · pr={pr_number}_")
     return "\n".join(lines)
 
-    lines.append("")
-    lines.append(f"_gate-check-v3 · repo={repo} · pr={pr_number}_")
-
-    return "\n".join(lines)
-
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def run(repo: str, pr_number: int, post_comment: bool = False) -> dict:
     try:
+        # Fetch PR once to get base ref for signal_6_ci
+        owner, name = repo.split("/", 1)
+        pr = api_get(f"/repos/{owner}/{name}/pulls/{pr_number}")
+        base_ref = pr.get("base", {}).get("ref", "main")
+
         gates = [
             signal_1_comment_scan(pr_number, repo),
             signal_2_reviews(pr_number, repo),
             signal_3_staleness(pr_number, repo),
-            signal_6_ci(pr_number, repo),
+            signal_6_ci(pr_number, repo, branch=base_ref, pr_data=pr),
         ]
         verdict, blockers = compute_verdict(gates)
 
@@ -501,18 +521,24 @@ def run(repo: str, pr_number: int, post_comment: bool = False) -> dict:
             # Check if a gate-check comment already exists to avoid spamming
             existing = api_list(f"/repos/{owner}/{name}/issues/{pr_number}/comments")
             our_comments = [c for c in existing if "[gate-check-v3]" in (c.get("body") or "")]
-            if our_comments:
-                # Update latest
-                comment_id = our_comments[-1]["id"]
-                url = f"{API_BASE}/repos/{owner}/{name}/issues/comments/{comment_id}"
-                req = urllib.request.Request(url, data=json.dumps({"body": comment_body}).encode(), headers=headers, method="PATCH")
-                with urllib.request.urlopen(req) as r:
-                    r.read()
-            else:
-                url = f"{API_BASE}/repos/{owner}/{name}/issues/{pr_number}/comments"
-                req = urllib.request.Request(url, data=json.dumps({"body": comment_body}).encode(), headers=headers, method="POST")
-                with urllib.request.urlopen(req) as r:
-                    r.read()
+            try:
+                if our_comments:
+                    # Update latest
+                    comment_id = our_comments[-1]["id"]
+                    url = f"{API_BASE}/repos/{owner}/{name}/issues/comments/{comment_id}"
+                    req = urllib.request.Request(url, data=json.dumps({"body": comment_body}).encode(), headers=headers, method="PATCH")
+                    with urllib.request.urlopen(req, timeout=DEFAULT_TIMEOUT) as r:
+                        r.read()
+                else:
+                    url = f"{API_BASE}/repos/{owner}/{name}/issues/{pr_number}/comments"
+                    req = urllib.request.Request(url, data=json.dumps({"body": comment_body}).encode(), headers=headers, method="POST")
+                    with urllib.request.urlopen(req, timeout=DEFAULT_TIMEOUT) as r:
+                        r.read()
+            except urllib.error.HTTPError as e:
+                if e.code == 403:
+                    print(f"WARN: --post-comment 403 (token scope) — verdict={verdict}; skipping comment-post", file=sys.stderr)
+                else:
+                    raise
 
         return result
 

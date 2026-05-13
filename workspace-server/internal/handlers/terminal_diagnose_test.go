@@ -245,3 +245,50 @@ func TestDiagnoseRemote_StopsAtSSHProbe(t *testing.T) {
 	}
 }
 
+// TestUnwrapGoError pins the unwrapGoError helper that extracts subprocess
+// stderr from the Go-wrapped error string produced by sendSSHPublicKey.
+// Regression gate for mc#687: the E2E smoke now reads detail (not error),
+// so detail MUST contain the actionable AWS permission signal.
+func TestUnwrapGoError(t *testing.T) {
+	cases := []struct {
+		name   string
+		input  string
+		want   string
+	}{
+		{
+			name:  "AWS permission denied",
+			input: "send-ssh-public-key: exec: exit status 1 (AccessDeniedException: User: arn:aws:iam::123456789012:role/TestRole is not authorized to perform: ec2-instance-connect:OpenTunnel)",
+			want:  "AccessDeniedException: User: arn:aws:iam::123456789012:role/TestRole is not authorized to perform: ec2-instance-connect:OpenTunnel",
+		},
+		{
+			name:  "generic exec error no output",
+			input: "send-ssh-public-key: exec: exit status 1",
+			want:  "",
+		},
+		{
+			name:  "empty string",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "short string below threshold",
+			input: "err",
+			want:  "",
+		},
+		{
+			name:  "no parentheses",
+			input: "send-ssh-public-key: something went wrong",
+			want:  "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := unwrapGoError(tc.input)
+			if got != tc.want {
+				t.Errorf("unwrapGoError(%q): got %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+

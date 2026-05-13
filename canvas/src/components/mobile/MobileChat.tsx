@@ -54,9 +54,14 @@ export function MobileChat({
   // user sees their prior thread on entry. The store is updated by the
   // socket → ChatTab flows the desktop runs; on mobile we read from the
   // same buffer to keep state coherent across viewports.
-  const storedMessages = useCanvasStore((s) => s.agentMessages[agentId] ?? []);
+  // NOTE: do NOT use `?? []` in the selector — Zustand uses Object.is
+  // for selector equality. A fallback `?? []` creates a new [] reference on
+  // every store update when agentMessages[agentId] is undefined, causing an
+  // infinite re-render loop (React error #185 / Maximum update depth
+  // exceeded). The undefined case is handled by the initializer below.
+  const storedMessages = useCanvasStore((s) => s.agentMessages[agentId]);
   const [messages, setMessages] = useState<ChatMessage[]>(() =>
-    storedMessages.map((m) => ({
+    (storedMessages ?? []).map((m) => ({
       id: m.id,
       role: "agent",
       text: m.content,

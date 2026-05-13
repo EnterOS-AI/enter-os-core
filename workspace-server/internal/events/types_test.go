@@ -108,7 +108,7 @@ func TestEventType_AllUppercaseSnakeCase(t *testing.T) {
 			t.Errorf("EventType %q has consecutive underscores — disallowed", s)
 		}
 		for _, r := range s {
-			if !((r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
+			if (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' {
 				t.Errorf("EventType %q contains disallowed char %q", s, r)
 				break
 			}

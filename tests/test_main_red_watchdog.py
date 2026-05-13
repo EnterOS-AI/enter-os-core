@@ -190,6 +190,78 @@ def test_is_red_no_statuses(wd_module):
 
 
 # --------------------------------------------------------------------------
+# Per-entry vendor-truth key (rev4) — see status-reaper rev4 sibling
+#
+# Gitea 1.22.6 returns per-entry items in combined.statuses[] with key
+# `status`, not `state`. Pre-rev4 code only read `state` → failed[]
+# was always empty → render_body always emitted the fallback "no
+# per-context entries were in a red state". These tests use the
+# canonical Gitea shape to lock the fix in.
+# --------------------------------------------------------------------------
+def test_is_red_vendor_truth_status_key_under_pending(wd_module):
+    """Real Gitea 1.22.6 shape: per-entry uses `status`. A single failed
+    context counts as red even when combined is `pending`. Pre-rev4
+    this returned `(False, [])` because `s.get("state")` was None."""
+    red, failed = wd_module.is_red({
+        "state": "pending",
+        "statuses": [
+            {"context": "ci/lint", "status": "success"},
+            {"context": "ci/test", "status": "failure"},
+            {"context": "ci/build", "status": "pending"},
+        ],
+    })
+    assert red is True
+    assert [s["context"] for s in failed] == ["ci/test"]
+
+
+def test_is_red_status_takes_precedence_over_state(wd_module):
+    """If both keys present (defensive), `status` (vendor truth) wins."""
+    red, failed = wd_module.is_red({
+        "state": "pending",
+        "statuses": [
+            # `status=failure` is truth even though `state=success` is
+            # stale. Locking in the precedence prevents a hypothetical
+            # future Gitea release that emits both from re-introducing
+            # the bug under a different shape.
+            {"context": "ci/test", "status": "failure", "state": "success"},
+        ],
+    })
+    assert red is True
+    assert len(failed) == 1
+
+
+def test_is_red_state_only_fallback_still_works(wd_module):
+    """Backward-compat: a legacy fixture or future Gitea variant that
+    only emits `state` still trips the red detection via the fallback
+    chain. Keeps pre-rev4 fixtures green during the rev4 rollout."""
+    red, failed = wd_module.is_red({
+        "state": "pending",
+        "statuses": [
+            {"context": "ci/test", "state": "failure"},  # legacy shape
+        ],
+    })
+    assert red is True
+    assert len(failed) == 1
+
+
+def test_render_body_uses_status_key_for_per_entry_state(wd_module):
+    """render_body must surface the per-entry `status` value in the
+    issue body. Pre-rev4 it read `state` (always None on real Gitea) →
+    every issue body said `(no state)`, defeating the diagnostic."""
+    failed = [
+        {"context": "ci/test", "status": "failure",
+         "target_url": "https://example.test/run/1",
+         "description": "broke"},
+    ]
+    body = wd_module.render_body("deadbeefcafe1234", failed, {})
+    assert "`failure`" in body, (
+        "render_body did not surface per-entry status — likely still "
+        "reading `state` key only (rev1-3 bug)."
+    )
+    assert "(no state)" not in body
+
+
+# --------------------------------------------------------------------------
 # Happy path — main is green, no issue created
 # --------------------------------------------------------------------------
 def test_happy_path_no_issue_when_green(wd_module, monkeypatch):

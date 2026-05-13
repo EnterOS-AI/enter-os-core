@@ -52,6 +52,7 @@ jobs:
   detect-changes:
     runs-on: ubuntu-latest
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     outputs:
       wheel: ${{ steps.decide.outputs.wheel }}
@@ -96,6 +97,7 @@ jobs:
     name: PR-built wheel + import smoke
     runs-on: ubuntu-latest
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     steps:
       - name: No-op pass (paths filter excluded this commit)

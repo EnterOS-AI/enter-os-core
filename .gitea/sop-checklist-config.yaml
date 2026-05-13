@@ -1,0 +1,109 @@
+# SOP-Checklist gate — per-item required reviewer teams.
+#
+# RFC#351 v1 starter set. Each item lists:
+#   slug              — canonical kebab-case form used in /sop-ack <slug>
+#   pr_section_marker — substring matched in the PR body to detect that
+#                       the author filled in this item (case-insensitive)
+#   required_teams    — list of Gitea team names; an ack from ANY one of
+#                       these teams (logical OR) satisfies the item.
+#                       Membership is probed at gate-time via
+#                       GET /api/v1/teams/{id}/members/{login}.
+#                       Team-id resolution happens at script start via
+#                       GET /api/v1/orgs/{org}/teams (cheap, one call).
+#   numeric_alias     — 1..7; lets reviewers type `/sop-ack 3` as a
+#                       shortcut for `/sop-ack staging-smoke`.
+#
+# WHY THESE TEAM MAPPINGS:
+#   The RFC table referenced persona-role names like `core-qa`,
+#   `core-be`, `core-devops` — these are individual Gitea user logins,
+#   not teams. The Gitea team-membership API is /teams/{id}/members/{u},
+#   so we need actual teams. Orchestrator preflight 2026-05-12 verified
+#   only these teams exist on molecule-ai: ceo(5), engineers(2),
+#   managers(6), qa(20), security(21), Owners(1), and bot teams. We
+#   map the RFC roles to the closest existing team and surface the
+#   mapping explicitly so it's reviewable.
+#
+# HOW TO EDIT:
+#   - Tightening: replace `engineers` with a smaller team after creating
+#     it (e.g. a new `senior-engineers` team if needed).
+#   - Loosening: add another team to required_teams (OR semantics).
+#   - Add an item: append to items list and document the slug below.
+#
+# AUTHOR SELF-ACK IS FORBIDDEN regardless of which team contains them
+# — the gate script enforces commenter != PR author before checking
+# team membership.
+
+version: 1
+
+# Tier-aware failure mode (RFC#351 open question 2):
+#   For tier:high — hard-fail (status `failure`, blocks merge via BP).
+#   For tier:medium — hard-fail (same as high; medium is non-trivial).
+#   For tier:low — soft-fail (status `pending` with `acked: N/M` in the
+#                  description). BP can choose to require the context
+#                  or not for low-tier PRs.
+# If no tier label is present, default to medium (hard-fail) — every PR
+# should have a tier label per sop-tier-check, and absence indicates
+# a missing-tier defect we should surface, not silently lower the bar.
+tier_failure_mode:
+  "tier:high": hard
+  "tier:medium": hard
+  "tier:low": soft
+default_mode: hard  # used when no tier:* label is present
+
+items:
+  - slug: comprehensive-testing
+    numeric_alias: 1
+    pr_section_marker: "Comprehensive testing performed"
+    required_teams: [qa, engineers]
+    description: >-
+      What was tested, how, edge cases covered. Ack from any qa-team
+      member (or engineers fallback while qa is small).
+
+  - slug: local-postgres-e2e
+    numeric_alias: 2
+    pr_section_marker: "Local-postgres E2E run"
+    required_teams: [engineers]
+    description: >-
+      Link to local CI artifact, or "N/A: pure-frontend change". Ack
+      from any engineer who can verify the local DB test actually ran.
+
+  - slug: staging-smoke
+    numeric_alias: 3
+    pr_section_marker: "Staging-smoke verified or pending"
+    required_teams: [engineers]
+    description: >-
+      Link to canary run, or "scheduled post-merge". Ack from any
+      engineer (core-devops/infra-sre are members of engineers team).
+
+  - slug: root-cause
+    numeric_alias: 4
+    pr_section_marker: "Root-cause not symptom"
+    required_teams: [managers, ceo]
+    description: >-
+      One-sentence root-cause statement. Ack from managers tier
+      (team-leads) or ceo. Senior judgment required to attest
+      root-cause-versus-symptom.
+
+  - slug: five-axis-review
+    numeric_alias: 5
+    pr_section_marker: "Five-Axis review walked"
+    required_teams: [engineers]
+    description: >-
+      Correctness / readability / architecture / security / performance.
+      Ack from any non-author engineer.
+
+  - slug: no-backwards-compat
+    numeric_alias: 6
+    pr_section_marker: "No backwards-compat shim / dead code added"
+    required_teams: [managers, ceo]
+    description: >-
+      Yes/no + justification if no. Senior ack required because
+      backward-compat shims are how dead-code accretes.
+
+  - slug: memory-consulted
+    numeric_alias: 7
+    pr_section_marker: "Memory/saved-feedback consulted"
+    required_teams: [engineers]
+    description: >-
+      List of feedback memories applicable to this change. Ack from
+      any engineer who has the same memory access.

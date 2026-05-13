@@ -292,8 +292,8 @@ func filterPeersByQuery(peers []map[string]interface{}, q string) []map[string]i
 	needle := strings.ToLower(q)
 	out := make([]map[string]interface{}, 0, len(peers))
 	for _, p := range peers {
-		name := p["name"].(string)
-		role := p["role"].(string)
+		name, _ := p["name"].(string)  // nil → "" — safe on empty-role rows
+		role, _ := p["role"].(string)  // nil → "" — queryPeerMaps sets nil when DB role is empty
 		if strings.Contains(strings.ToLower(name), needle) ||
 			strings.Contains(strings.ToLower(role), needle) {
 			out = append(out, p)

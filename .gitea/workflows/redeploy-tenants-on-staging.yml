@@ -9,12 +9,13 @@ name: redeploy-tenants-on-staging
 #   - Workflow-level env.GITHUB_SERVER_URL pinned per
 #     feedback_act_runner_github_server_url.
 #   - `continue-on-error: true` on each job (RFC §1 contract).
-#   - **Gitea workflow_run trigger limitation**: Gitea 1.22.6's support
-#     for the `workflow_run` event is partial. If this never fires on a
-#     real publish-workspace-server-image completion, the follow-up
-#     triage PR should replace the trigger with a push-with-paths-filter
-#     on .gitea/workflows/publish-workspace-server-image.yml. Until
-#     then continue-on-error+dead-workflow doesn't break anything.
+#   - ~~**Gitea workflow_run trigger limitation**~~ FIXED: replaced with
+#     push+paths filter per this PR. Gitea 1.22.6 does not support
+#     `workflow_run` (task #81). The push trigger fires on every
+#     commit to publish-workspace-server-image.yml which is the
+#     same signal (only successful runs commit to main). Removed
+#     `workflow_run.conclusion==success` job if since push implies
+#     the workflow completed and committed.
 #
 
 # Auto-refresh staging tenant EC2s after every staging-branch merge.
@@ -50,10 +51,11 @@ name: redeploy-tenants-on-staging
 # of a known-good build.
 
 on:
-  workflow_run:
-    workflows: ['publish-workspace-server-image']
-    types: [completed]
-    branches: [main]
+  push:
+    branches: [staging]
+    paths:
+      - '.gitea/workflows/publish-workspace-server-image.yml'
+  workflow_dispatch:
 permissions:
   contents: read
   # No write scopes needed — the workflow hits an external CP endpoint,
@@ -72,14 +74,9 @@ env:
 
 jobs:
   redeploy:
-    # Skip the auto-trigger if publish-workspace-server-image didn't
-    # actually succeed. workflow_run fires on any completion state; we
-    # don't want to redeploy against a half-built image.
-    # NOTE (Gitea port): workflow_dispatch trigger dropped; only the
-    # workflow_run path remains.
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     timeout-minutes: 25
     steps:

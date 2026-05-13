@@ -109,7 +109,7 @@ func (p *flatPlugin) handleNamespace(w http.ResponseWriter, r *http.Request) {
 		p.mu.Unlock()
 		w.WriteHeader(204)
 	default:
-		http.Error(w, "method not allowed", 405)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 

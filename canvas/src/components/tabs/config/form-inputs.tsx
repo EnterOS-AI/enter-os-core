@@ -127,13 +127,21 @@ export function TagList({ label, values, onChange, placeholder }: { label: strin
 
 export function Section({ title, children, defaultOpen = true }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
+  // Stable id for aria-controls linkage
+  const id = `section-content-${title.toLowerCase().replace(/\s+/g, "-")}`;
   return (
     <div className="border border-line rounded mb-2">
-      <button type="button" onClick={() => setOpen(!open)} className="w-full flex items-center justify-between px-3 py-1.5 text-[10px] text-ink-mid hover:text-ink bg-surface-sunken/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        aria-controls={id}
+        className="w-full flex items-center justify-between px-3 py-1.5 text-[10px] text-ink-mid hover:text-ink bg-surface-sunken/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+      >
         <span className="font-medium uppercase tracking-wider">{title}</span>
-        <span>{open ? "▾" : "▸"}</span>
+        <span aria-hidden="true">{open ? "▾" : "▸"}</span>
       </button>
-      {open && <div className="p-3 space-y-3">{children}</div>}
+      {open && <div id={id} className="p-3 space-y-3">{children}</div>}
     </div>
   );
 }

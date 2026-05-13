@@ -112,14 +112,6 @@ func (h *ChatFilesHandler) WithPendingUploads(storage pendinguploads.Storage, br
 // network boundary before forwarding.
 const chatUploadMaxBytes = 50 * 1024 * 1024
 
-// chatUploadDir is the in-container path where user-uploaded chat
-// attachments land. Kept here for documentation parity with the
-// workspace-side handler — the platform no longer writes files
-// directly, but the URI scheme returned in responses still uses this
-// path, so any consumer parsing those URIs has the constant to
-// reference.
-const chatUploadDir = "/workspace/.molecule/chat-uploads"
-
 // resolveWorkspaceForwardCreds resolves the workspace's URL +
 // platform_inbound_secret for an /internal/* forward, applying
 // lazy-heal on a missing inbound secret (RFC #2312 backfill — the
@@ -459,7 +451,6 @@ func (h *ChatFilesHandler) streamWorkspaceResponse(
 		log.Printf("chat_files %s: stream response back failed for %s: %v", op, workspaceID, err)
 	}
 }
-
 
 // lookupUploadDeliveryMode returns the workspace's delivery_mode
 // for the chat upload branch. Returns ("", false) and writes the

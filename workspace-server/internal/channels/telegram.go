@@ -134,9 +134,9 @@ var botCommands = []tgbotapi.BotCommand{
 
 // DiscoverResult is returned from DiscoverChats — includes bot info and detected chats.
 type DiscoverResult struct {
-	BotUsername              string
-	Chats                    []map[string]interface{}
-	CanReadAllGroupMessages  bool // false = group privacy mode is ON (bot only sees commands/mentions)
+	BotUsername             string
+	Chats                   []map[string]interface{}
+	CanReadAllGroupMessages bool // false = group privacy mode is ON (bot only sees commands/mentions)
 }
 
 // DiscoverChats calls Telegram getUpdates to find groups/chats the bot has been added to.
@@ -230,7 +230,6 @@ func (t *TelegramAdapter) DiscoverChats(ctx context.Context, botToken string) (*
 
 		addChat(msg.Chat)
 	}
-
 
 	return &DiscoverResult{
 		BotUsername:             bot.Self.UserName,
@@ -346,7 +345,7 @@ func (t *TelegramAdapter) SendMessage(ctx context.Context, config map[string]int
 				case 403:
 					return fmt.Errorf("forbidden: bot was blocked or kicked from chat %s", chatID)
 				case 429:
-					retryAfter := time.Duration(apiErr.ResponseParameters.RetryAfter) * time.Second
+					retryAfter := time.Duration(apiErr.RetryAfter) * time.Second
 					log.Printf("Channels: Telegram rate-limited, retry after %s", retryAfter)
 					time.Sleep(retryAfter)
 					if _, retryErr := bot.Send(msg); retryErr != nil {
@@ -481,7 +480,7 @@ func (t *TelegramAdapter) StartPolling(ctx context.Context, config map[string]in
 			var apiErr *tgbotapi.Error
 			if errors.As(err, &apiErr) {
 				if apiErr.Code == 429 {
-					retryAfter := time.Duration(apiErr.ResponseParameters.RetryAfter) * time.Second
+					retryAfter := time.Duration(apiErr.RetryAfter) * time.Second
 					log.Printf("Channels: Telegram poll rate-limited, sleeping %s", retryAfter)
 					select {
 					case <-ctx.Done():

@@ -40,6 +40,16 @@ from a2a.helpers import new_text_message
 
 from adapter_base import AdapterConfig, BaseAdapter
 
+# Import sanitize_agent_error from the workspace package. The adapter lives
+# in the workspace/adapters/ hierarchy so the workspace package root is
+# always importable as long as the module is loaded from within a workspace.
+# In standalone template repos, this import resolves via the workspace package
+# entry point that also provides adapter_base.
+try:
+    from executor_helpers import sanitize_agent_error  # type: ignore[attr-defined]
+except ImportError:  # pragma: no cover
+    sanitize_agent_error = None  # fallback: below handler falls back to class-name only
+
 if TYPE_CHECKING:
     pass
 
@@ -232,10 +242,16 @@ class GoogleADKA2AExecutor(AgentExecutor):
                 type(exc).__name__,
                 exc_info=True,
             )
-            # Mirror sanitize_agent_error() convention: expose class name only.
-            await event_queue.enqueue_event(
-                new_text_message(f"Agent error: {type(exc).__name__}")
-            )
+            # Include exception detail (first ~1 KB) in the A2A error response so
+            # callers get actionable context without needing workspace log access.
+            # sanitize_agent_error scrubs API keys / bearer tokens before including
+            # content in the response. Falls back to class-name-only when
+            # the function is unavailable (standalone template repo layout).
+            if sanitize_agent_error is not None:
+                msg = sanitize_agent_error(stderr=str(exc))
+            else:
+                msg = f"Agent error: {type(exc).__name__}"
+            await event_queue.enqueue_event(new_text_message(msg))
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         """Cancel a running task — emits canceled state per A2A protocol."""

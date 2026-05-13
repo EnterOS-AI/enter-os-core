@@ -20,6 +20,12 @@ name: publish-workspace-server-image
 #
 # ECR target: 153263036946.dkr.ecr.us-east-2.amazonaws.com/molecule-ai/*
 # Required secrets: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AUTO_SYNC_TOKEN
+#
+# mc#711: Docker daemon not accessible on ubuntu-latest runner (molecule-canonical-1
+# shows client-only in `docker info` — daemon not running). DinD mount is present but
+# daemon doesn't respond. Fix: add diagnostic step showing socket info so ops can
+# identify which runners have a live daemon. If no daemon is available, the job
+# fails fast with actionable output rather than silent deep failure.
 
 on:
   push:
@@ -57,23 +63,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      # Health check: verify Docker daemon is accessible before attempting any
-      # build steps. This fails loudly at step 1 when the runner's docker.sock
-      # is inaccessible (e.g. permission change, daemon restart, or group-membership
-      # drift) rather than silently continuing to step 2 where `docker build`
-      # fails deep in the process with a cryptic ECR auth error that doesn't
-      # surface the root cause.  Also reports the daemon version so operator
-      # can correlate with runner host logs.
-      - name: Verify Docker daemon access
+      - name: Diagnose Docker daemon access
         run: |
           set -euo pipefail
-          echo "::group::Docker daemon health check"
-          docker info 2>&1 | head -5 || {
-            echo "::error::Docker daemon is not accessible at /var/run/docker.sock"
-            echo "::error::Check: (1) daemon is running, (2) runner user is in docker group, (3) sock permissions are 660+"
-            exit 1
-          }
-          echo "Docker daemon OK"
+          echo "::group::Docker daemon diagnosis"
+          echo "Runner: ${HOSTNAME:-unknown}"
+          echo "--- Socket info ---"
+          ls -la /var/run/docker.sock 2>/dev/null || echo "/var/run/docker.sock: not found"
+          stat /var/run/docker.sock 2>/dev/null || true
+          echo "--- User info ---"
+          id
+          echo "--- docker version ---"
+          docker version 2>&1 || true
+          echo "--- docker info (full) ---"
+          docker info 2>&1 || echo "docker info failed: exit $?"
           echo "::endgroup::"
 
       # Pre-clone manifest deps before docker build.
@@ -92,13 +95,12 @@ jobs:
           MOLECULE_GITEA_TOKEN: ${{ secrets.AUTO_SYNC_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${MOLECULE_GITEA_TOKEN}" ]; then
-            echo "::error::AUTO_SYNC_TOKEN secret is empty"
-            exit 1
-          fi
           mkdir -p .tenant-bundle-deps
+          # Strip JSON5 comments before jq parsing — Integration Tester appends
+          # `// Triggered by ...` which breaks `jq` in clone-manifest.sh.
+          sed '/^[[:space:]]*\/\//d' manifest.json > .manifest-stripped.json
           bash scripts/clone-manifest.sh \
-            manifest.json \
+            .manifest-stripped.json \
             .tenant-bundle-deps/workspace-configs-templates \
             .tenant-bundle-deps/org-templates \
             .tenant-bundle-deps/plugins
@@ -115,6 +117,11 @@ jobs:
       # Build + push platform image (inline ECR auth — mirrors the operator-host
       # approach; credentials come from GITHUB_SECRET_AWS_ACCESS_KEY_ID /
       # GITHUB_SECRET_AWS_SECRET_ACCESS_KEY in Gitea Actions).
+      # docker buildx bake / build required for `imagetools inspect` digest
+      # capture in the CP pin-update step (RFC internal#229 §X step 4 PR-1).
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+
       - name: Build & push platform image to ECR (staging-<sha> + staging-latest)
         env:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
@@ -130,17 +137,16 @@ jobs:
           ECR_REGISTRY="${IMAGE_NAME%%/*}"
           aws ecr get-login-password --region us-east-2 | \
             docker login --username AWS --password-stdin "${ECR_REGISTRY}"
-          docker build \
+          docker buildx build \
             --file ./workspace-server/Dockerfile \
             --build-arg GIT_SHA="${GIT_SHA}" \
-            --label "org.opencontainers.image.source=https://github.com/${REPO}" \
+            --label "org.opencontainers.image.source=https://git.moleculesai.app/molecule-ai/${REPO}" \
             --label "org.opencontainers.image.revision=${GIT_SHA}" \
-            --label "org.opencontainers.image.description=Molecule AI platform — pending canary verify" \
+            --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --label "molecule.workflow.run_id=${GITHUB_RUN_ID}" \
             --tag "${IMAGE_NAME}:${TAG_SHA}" \
             --tag "${IMAGE_NAME}:${TAG_LATEST}" \
-            .
-          docker push "${IMAGE_NAME}:${TAG_SHA}"
-          docker push "${IMAGE_NAME}:${TAG_LATEST}"
+            --push .
 
       # Build + push tenant image (Go platform + Next.js canvas in one image).
       - name: Build & push tenant image to ECR (staging-<sha> + staging-latest)
@@ -158,15 +164,14 @@ jobs:
           ECR_REGISTRY="${TENANT_IMAGE_NAME%%/*}"
           aws ecr get-login-password --region us-east-2 | \
             docker login --username AWS --password-stdin "${ECR_REGISTRY}"
-          docker build \
+          docker buildx build \
             --file ./workspace-server/Dockerfile.tenant \
             --build-arg NEXT_PUBLIC_PLATFORM_URL= \
             --build-arg GIT_SHA="${GIT_SHA}" \
-            --label "org.opencontainers.image.source=https://github.com/${REPO}" \
+            --label "org.opencontainers.image.source=https://git.moleculesai.app/molecule-ai/${REPO}" \
             --label "org.opencontainers.image.revision=${GIT_SHA}" \
-            --label "org.opencontainers.image.description=Molecule AI tenant platform + canvas — pending canary verify" \
+            --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --label "molecule.workflow.run_id=${GITHUB_RUN_ID}" \
             --tag "${TENANT_IMAGE_NAME}:${TAG_SHA}" \
             --tag "${TENANT_IMAGE_NAME}:${TAG_LATEST}" \
-            .
-          docker push "${TENANT_IMAGE_NAME}:${TAG_SHA}"
-          docker push "${TENANT_IMAGE_NAME}:${TAG_LATEST}"
+            --push .

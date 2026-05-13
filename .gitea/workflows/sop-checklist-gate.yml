@@ -1,0 +1,121 @@
+# sop-checklist-gate — peer-ack merge gate for SOP-checklist items.
+#
+# RFC#351 Step 2 of 6 (implementation MVP).
+#
+# === DESIGN ===
+#
+# Goal: each PR must answer 7 SOP-checklist questions in its body,
+# and each item must have at least one /sop-ack <slug> comment from
+# a non-author peer in the required team. BP requires the
+# `sop-checklist / all-items-acked (pull_request)` status to merge.
+#
+# Triggers:
+#   - `pull_request_target`: opened, edited, synchronize, reopened
+#       → fires when PR opens, body is edited (refire — RFC#351 §4),
+#         or new code is pushed (head.sha changes → stale status would
+#         be auto-discarded by BP via dismiss_stale_reviews, but the
+#         status itself is per-SHA so we re-post on the new head).
+#   - `issue_comment`: created, edited, deleted
+#       → fires on any new comment so /sop-ack / /sop-revoke take
+#         effect immediately (Gitea 1.22.6 doesn't refire on
+#         pull_request_review per feedback_pull_request_review_no_refire,
+#         so issue_comment is the canonical refire channel).
+#
+# Trust boundary (mirrors RFC#324 §A4 + sop-tier-check security note):
+#   `pull_request_target` (not `pull_request`) — workflow def is loaded
+#   from BASE branch, so a PR cannot rewrite this workflow to exfiltrate
+#   the token. The `actions/checkout` step pins `ref: base.sha` so the
+#   script ALSO comes from BASE. PR-HEAD code is never executed in the
+#   runner.
+#
+# Token scope:
+#   - read:repository, read:organization for PR + comments + team probes
+#   - write:repository for POST /statuses/{sha}
+#   - The token owner MUST be a member of every team referenced by the
+#     config's required_teams (else /teams/{id}/members/{login} returns
+#     403 — see review-check.sh same-gotcha doc). For the MVP we use
+#     the dev-lead token (a member of engineers, managers, qa, security)
+#     via a repo secret `SOP_CHECKLIST_GATE_TOKEN`. Provisioning of that
+#     secret is a follow-up authorization step (separate from this PR).
+#
+# Failure mode: tier-aware (RFC#351 open question 2):
+#   - tier:high   → state=failure (hard-fail; BP blocks merge)
+#   - tier:medium → state=failure (hard-fail; same)
+#   - tier:low    → state=pending (soft-fail; BP can choose to require
+#                    this context or skip for low-tier PRs)
+#   - missing/no-tier → state=failure (default-mode: hard — never lower
+#                    the bar per feedback_fix_root_not_symptom)
+#
+# Slash-command contract (RFC#351 v1 + §A1.1-style notes from RFC#324):
+#
+#   /sop-ack <slug-or-numeric-alias> [optional note]
+#       — register a peer-ack for one checklist item.
+#       — slug accepts kebab-case, snake_case, or natural-spaces
+#         (all normalize to canonical kebab-case).
+#       — numeric 1..7 maps via config.items[*].numeric_alias.
+#       — most-recent (user, slug) directive wins.
+#
+#   /sop-revoke <slug-or-numeric-alias> [reason]
+#       — invalidate the commenter's own prior /sop-ack for this slug.
+#       — does NOT affect other peers' acks on the same slug.
+#       — most-recent (user, slug) directive wins, so a later /sop-ack
+#         re-restores the ack.
+#
+# The eval is read-only + idempotent (read PR + comments + team
+# membership, compute, post status). Re-running on any event is safe —
+# the new status overwrites the previous one for the same context.
+
+name: sop-checklist-gate
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
+  issue_comment:
+    types: [created, edited, deleted]
+
+permissions:
+  contents: read
+  pull-requests: read
+  # NOTE: `statuses: write` is the GitHub-Actions name for POST /statuses.
+  # Gitea 1.22.6 may not gate on this permission key (it just checks the
+  # token), but listing it explicitly documents intent for the next
+  # platform-version upgrade.
+  statuses: write
+
+jobs:
+  gate:
+    # Run on pull_request_target events always. On issue_comment events,
+    # only when the comment is on a PR (issue_comment fires for issues
+    # too) and the body contains one of the slash-commands.
+    if: |
+      github.event_name == 'pull_request_target' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request != null &&
+       (contains(github.event.comment.body, '/sop-ack') ||
+        contains(github.event.comment.body, '/sop-revoke')))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out BASE ref (trust boundary — never PR-head)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # For pull_request_target, the default branch is the trust
+          # anchor. For issue_comment the PR base may differ from the
+          # default branch (PR targeting `staging`), so we use the
+          # default-branch ref explicitly — same approach as
+          # qa-review.yml so the script source is always trusted.
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Run sop-checklist-gate
+        env:
+          GITEA_TOKEN: ${{ secrets.SOP_CHECKLIST_GATE_TOKEN || secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          python3 .gitea/scripts/sop-checklist-gate.py \
+            --owner "$OWNER" \
+            --repo "$REPO_NAME" \
+            --pr "$PR_NUMBER" \
+            --config .gitea/sop-checklist-config.yaml \
+            --gitea-host git.moleculesai.app

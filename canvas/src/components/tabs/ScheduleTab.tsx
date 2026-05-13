@@ -76,8 +76,10 @@ export function ScheduleTab({ workspaceId }: Props) {
     try {
       const data = await api.get<Schedule[]>(`/workspaces/${workspaceId}/schedules`);
       setSchedules(data);
-    } catch {
+      setError("");
+    } catch (e: unknown) {
       setSchedules([]);
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
@@ -197,6 +199,13 @@ export function ScheduleTab({ workspaceId }: Props) {
           + Add Schedule
         </button>
       </div>
+
+      {/* Error banner — shown whether form is open or closed */}
+      {error && !showForm && (
+        <div className="px-3 py-1.5 text-[10px] text-bad bg-red-900/20 border-b border-red-800/30">
+          {error}
+        </div>
+      )}
 
       {/* Create/Edit Form */}
       {showForm && (

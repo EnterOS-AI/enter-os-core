@@ -434,7 +434,8 @@ func (h *MCPHandler) dispatchRPC(ctx context.Context, workspaceID string, req mc
 		}
 
 	default:
-		base.Error = &mcpRPCError{Code: -32601, Message: "method not found: " + req.Method}
+		// Per OFFSEC-001: error message must not include user-controlled req.Method.
+		base.Error = &mcpRPCError{Code: -32601, Message: "method not found"}
 	}
 
 	return base

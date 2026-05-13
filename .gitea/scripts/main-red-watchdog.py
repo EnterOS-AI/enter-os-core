@@ -222,9 +222,20 @@ def is_red(status: dict) -> tuple[bool, list[dict]]:
     combined = status.get("state")
     statuses = status.get("statuses") or []
     red_states = {"failure", "error"}
+    # Schema asymmetry: top-level combined uses `state`, but per-entry
+    # items in `statuses[]` use `status` in Gitea 1.22.6. Prefer
+    # `status`; fall back to `state` defensively. Verified empirically
+    # 2026-05-12 03:42Z. Pre-rev4 code only read `state` from per-entry
+    # items → failed[] always empty → render_body always showed the
+    # "no per-context entries were in a red state" fallback even when
+    # the combined-state correctly flagged red. See
+    # `feedback_smoke_test_vendor_truth_not_shape_match`.
+    def _entry_state(s: dict) -> str:
+        return s.get("status") or s.get("state") or ""
+
     failed = [
         s for s in statuses
-        if isinstance(s, dict) and s.get("state") in red_states
+        if isinstance(s, dict) and _entry_state(s) in red_states
     ]
     return (combined in red_states or bool(failed), failed)
 
@@ -313,7 +324,9 @@ def render_body(sha: str, failed: list[dict], debug: dict) -> str:
     else:
         for s in failed:
             ctx = s.get("context", "(no context)")
-            state = s.get("state", "(no state)")
+            # Per-entry key is `status` in Gitea 1.22.6, not `state`
+            # (see _entry_state in is_red). Fallback for forward-compat.
+            state = s.get("status") or s.get("state") or "(no state)"
             url = s.get("target_url") or ""
             desc = (s.get("description") or "").strip()
             entry = f"- **{ctx}** — `{state}`"
@@ -546,7 +559,11 @@ def run_once(*, dry_run: bool = False) -> int:
         "combined_state": status.get("state"),
         "failed_contexts": [s.get("context") for s in failed],
         "all_contexts": [
-            {"context": s.get("context"), "state": s.get("state")}
+            # Per-entry key is `status` in Gitea 1.22.6, not `state`.
+            # Pre-rev4 debug output reported `state: None` for every
+            # context, making run logs useless for triage.
+            {"context": s.get("context"),
+             "state": s.get("status") or s.get("state")}
             for s in (status.get("statuses") or [])
             if isinstance(s, dict)
         ],

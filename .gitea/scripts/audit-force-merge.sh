@@ -49,6 +49,11 @@ if [ "$MERGED" != "true" ]; then
   exit 0
 fi
 
+# NOTE: no || true — with set -euo pipefail, jq parse failures (e.g. field
+# missing from API response) propagate as hard errors. Use jq's // operator
+# for graceful defaults instead of bash || true guards. This was re-added by
+# 8c343e3a ("fix(gitea): add || true guards to jq pipelines") — reverted
+# here because the guards mask silent failures that hide malformed API responses.
 MERGE_SHA=$(echo "$PR" | jq -r '.merge_commit_sha // empty')
 MERGED_BY=$(echo "$PR" | jq -r '.merged_by.login // "unknown"')
 TITLE=$(echo "$PR" | jq -r '.title // ""')
@@ -97,6 +102,9 @@ fi
 
 # 5. Emit structured audit event.
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# jq -R (raw input) converts each line to a JSON string; jq -s wraps into array.
+# If FAILED_CHECKS is unexpectedly empty (shouldn't happen — we exit above),
+# this produces []. No || true needed.
 FAILED_JSON=$(printf '%s\n' "${FAILED_CHECKS[@]}" | jq -R . | jq -s .)
 
 # Print as a single-line JSON so Vector's parse_json transform can pick

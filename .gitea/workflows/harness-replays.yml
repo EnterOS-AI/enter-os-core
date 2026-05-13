@@ -63,6 +63,7 @@ jobs:
   detect-changes:
     runs-on: ubuntu-latest
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     outputs:
       run: ${{ steps.decide.outputs.run }}
@@ -74,6 +75,16 @@ jobs:
           # GitHub event variables, so no local history is needed.
           fetch-depth: 1
       - id: decide
+        env:
+          # Pass via env block — env values bypass shell quoting so single
+          # quotes in merge-commit messages (e.g. "Merge pull request 'fix: ...'
+          # from branch into main") cannot break the bash parser. The prior
+          # `echo '${{ toJSON(...) }}'` form broke on every main-push because
+          # every main commit is a merge commit with single quotes in the
+          # message body — the embedded `'` ended the single-quoted shell string
+          # mid-JSON, and a subsequent `(` (e.g. in `(#523)`) was parsed as a
+          # subshell, causing "syntax error near unexpected token `('".
+          COMMITS_JSON: ${{ toJSON(github.event.commits) }}
         run: |
           set -euo pipefail
 
@@ -98,7 +109,7 @@ jobs:
             # Gitea Compare API rejects SHA-to-branch comparisons (BaseNotExist),
             # so we use the commits array instead. This array contains all commits
             # in the push, each with their added/removed/modified file lists.
-            echo '${{ toJSON(github.event.commits) }}' \
+            printf '%s' "$COMMITS_JSON" \
               | bash .gitea/scripts/push-commits-diff-files.py \
               > .push-diff-files.txt 2>/dev/null || true
             DIFF_FILES=$(cat .push-diff-files.txt 2>/dev/null || true)
@@ -144,6 +155,7 @@ jobs:
     name: Harness Replays
     runs-on: ubuntu-latest
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     timeout-minutes: 30
     steps:
@@ -210,12 +222,14 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${MOLECULE_GITEA_TOKEN}" ]; then
-            echo "::error::AUTO_SYNC_TOKEN secret is empty — register the devops-engineer persona PAT in repo Actions secrets"
-            exit 1
+            echo "::warning::AUTO_SYNC_TOKEN not set — using anonymous clone (repos are public per manifest.json OSS contract)"
           fi
           mkdir -p .tenant-bundle-deps
+          # Strip JSON5 comments before jq parsing — Integration Tester appends
+          # `// Triggered by ...` which breaks `jq` in clone-manifest.sh.
+          sed '/^[[:space:]]*\/\//d' manifest.json > .manifest-stripped.json
           bash scripts/clone-manifest.sh \
-            manifest.json \
+            .manifest-stripped.json \
             .tenant-bundle-deps/workspace-configs-templates \
             .tenant-bundle-deps/org-templates \
             .tenant-bundle-deps/plugins

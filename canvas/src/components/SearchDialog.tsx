@@ -91,16 +91,19 @@ export function SearchDialog() {
   if (!open) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-[70] flex items-start justify-center pt-[20vh] bg-black/50 backdrop-blur-sm"
-      onClick={() => setOpen(false)}
-    >
+    <div className="fixed inset-0 z-[70] flex items-start justify-center pt-[20vh]">
+      {/* Backdrop — interactive dismiss area; aria-hidden so screen readers ignore it */}
+      <div
+        className="absolute inset-0 bg-black/50 backdrop-blur-sm cursor-pointer"
+        onClick={() => setOpen(false)}
+        aria-hidden="true"
+      />
+      {/* Dialog */}
       <div
         role="dialog"
         aria-modal="true"
         aria-label="Search workspaces"
-        className="w-[420px] bg-surface/95 backdrop-blur-xl border border-line/60 rounded-2xl shadow-2xl shadow-black/50 overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
+        className="relative z-[71] w-[420px] bg-surface/95 backdrop-blur-xl border border-line/60 rounded-2xl shadow-2xl shadow-black/50 overflow-hidden"
       >
         {/* Search input */}
         <div className="flex items-center gap-3 px-4 py-3 border-b border-line/40">

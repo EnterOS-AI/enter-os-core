@@ -47,13 +47,13 @@ const defaultProvisionConcurrency = 3
 //
 //   - unset / empty / non-numeric → defaultProvisionConcurrency (3)
 //   - "0"                          → unlimited (a very large cap;
-//                                    practically no semaphore — used on
-//                                    SaaS where AWS RunInstances is the
-//                                    rate-limiter, not us)
+//     practically no semaphore — used on
+//     SaaS where AWS RunInstances is the
+//     rate-limiter, not us)
 //   - any positive integer N       → N
 //   - negative integer             → defaultProvisionConcurrency (3),
-//                                    log warning so operator notices
-//                                    the misconfiguration
+//     log warning so operator notices
+//     the misconfiguration
 //
 // The "0 = unlimited" mapping was a deliberate choice: an env var of "0"
 // is the natural shorthand for "no cap" without forcing operators to
@@ -101,18 +101,6 @@ const (
 	parentSidePadding    = 16.0
 	childGridColumnCount = 2
 )
-
-// childSlot computes the child-relative position for the N-th sibling in
-// a parent's 2-column grid. Matches defaultChildSlot in
-// canvas-topology.ts exactly — change them together. Leaf-sized slots
-// only; for variable-size siblings use childSlotInGrid below.
-func childSlot(index int) (x, y float64) {
-	col := index % childGridColumnCount
-	row := index / childGridColumnCount
-	x = parentSidePadding + float64(col)*(childDefaultWidth+childGutter)
-	y = parentHeaderPadding + float64(row)*(childDefaultHeight+childGutter)
-	return
-}
 
 type nodeSize struct {
 	width, height float64
@@ -342,10 +330,10 @@ func (e *EnvRequirement) UnmarshalJSON(data []byte) error {
 
 // OrgTemplate is the YAML structure for an org hierarchy.
 type OrgTemplate struct {
-	Name           string              `yaml:"name" json:"name"`
-	Description    string              `yaml:"description" json:"description"`
-	Defaults       OrgDefaults         `yaml:"defaults" json:"defaults"`
-	Workspaces     []OrgWorkspace      `yaml:"workspaces" json:"workspaces"`
+	Name        string         `yaml:"name" json:"name"`
+	Description string         `yaml:"description" json:"description"`
+	Defaults    OrgDefaults    `yaml:"defaults" json:"defaults"`
+	Workspaces  []OrgWorkspace `yaml:"workspaces" json:"workspaces"`
 	// GlobalMemories is a list of org-wide memories seeded as GLOBAL scope
 	// on the first root workspace (PM) during org import. Issue #1050.
 	GlobalMemories []models.MemorySeed `yaml:"global_memories" json:"global_memories"`
@@ -381,9 +369,9 @@ type OrgDefaults struct {
 	// declare them — causing live configs to boot without idle_prompts
 	// even when org.yaml had them. Phase 1 scalability work adds both
 	// inline + file-ref forms.
-	IdlePrompt           string `yaml:"idle_prompt" json:"idle_prompt"`
-	IdlePromptFile       string `yaml:"idle_prompt_file" json:"idle_prompt_file"`
-	IdleIntervalSeconds  int    `yaml:"idle_interval_seconds" json:"idle_interval_seconds"`
+	IdlePrompt          string `yaml:"idle_prompt" json:"idle_prompt"`
+	IdlePromptFile      string `yaml:"idle_prompt_file" json:"idle_prompt_file"`
+	IdleIntervalSeconds int    `yaml:"idle_interval_seconds" json:"idle_interval_seconds"`
 	// CategoryRouting maps issue/audit category → list of target roles.
 	// Per-workspace blocks UNION + override per-key with these defaults.
 	// Rendered into each workspace's config.yaml so agent prompts can read it
@@ -470,12 +458,12 @@ type OrgWorkspace struct {
 	// time. If empty, defaults.initial_memories are used. Issue #1050.
 	InitialMemories []models.MemorySeed `yaml:"initial_memories" json:"initial_memories"`
 	// MaxConcurrentTasks: see models.CreateWorkspacePayload.
-	MaxConcurrentTasks int                 `yaml:"max_concurrent_tasks" json:"max_concurrent_tasks"`
-	Schedules          []OrgSchedule       `yaml:"schedules" json:"schedules"`
-	Channels           []OrgChannel        `yaml:"channels" json:"channels"`
-	External        bool                `yaml:"external" json:"external"`
-	URL             string              `yaml:"url" json:"url"`
-	Canvas          struct {
+	MaxConcurrentTasks int           `yaml:"max_concurrent_tasks" json:"max_concurrent_tasks"`
+	Schedules          []OrgSchedule `yaml:"schedules" json:"schedules"`
+	Channels           []OrgChannel  `yaml:"channels" json:"channels"`
+	External           bool          `yaml:"external" json:"external"`
+	URL                string        `yaml:"url" json:"url"`
+	Canvas             struct {
 		X float64 `yaml:"x" json:"x"`
 		Y float64 `yaml:"y" json:"y"`
 	} `yaml:"canvas" json:"canvas"`
@@ -696,6 +684,31 @@ func (h *OrgHandler) Import(c *gin.Context) {
 				"suggestion":   "set these as global secrets (POST /settings/secrets) before importing",
 			})
 			return
+		}
+
+		// Per-workspace RequiredEnv preflight: checks that every RequiredEnv
+		// declared at the workspace level is covered by either (a) a global
+		// secret key (already validated above) or (b) a key present in the
+		// workspace's on-disk .env files (org root .env + per-workspace
+		// <files_dir>/.env). If neither covers the key the workspace is
+		// imported NOT CONFIGURED, which silently breaks the workspace at
+		// start time — the container boots without the required credential
+		// and every LLM call 401s or fails silently.  Issue #232.
+		// orgBaseDir is empty when importing via body.Template (inline YAML);
+		// in that case we cannot check .env files, so we skip this check
+		// and fall back to the global-only gate above (which correctly
+		// rejects any strict requirement not covered by global_secrets).
+		if orgBaseDir != "" {
+			wsMissing := collectPerWorkspaceUnsatisfied(tmpl.Workspaces, orgBaseDir, configured)
+			if len(wsMissing) > 0 {
+				c.JSON(http.StatusPreconditionFailed, gin.H{
+					"error":                 "missing per-workspace required environment variables",
+					"missing_workspace_env": wsMissing,
+					"template":              tmpl.Name,
+					"suggestion":            "add these keys to the workspace's .env file or set them as global secrets before importing",
+				})
+				return
+			}
 		}
 	}
 
@@ -927,4 +940,3 @@ func errString(err error) string {
 	}
 	return err.Error()
 }
-
