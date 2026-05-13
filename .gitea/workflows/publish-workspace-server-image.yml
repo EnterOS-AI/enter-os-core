@@ -65,20 +65,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Diagnose Docker daemon access
+      # Health check: verify Docker daemon is accessible before attempting any
+      # build steps. This fails loudly at step 1 when the runner's docker.sock
+      # is inaccessible rather than silently continuing where `docker build`
+      # fails deep in the process with a cryptic ECR auth error.
+      - name: Verify Docker daemon access
         run: |
           set -euo pipefail
-          echo "::group::Docker daemon diagnosis"
+          echo "::group::Docker daemon health check"
           echo "Runner: ${HOSTNAME:-unknown}"
-          echo "--- Socket info ---"
-          ls -la /var/run/docker.sock 2>/dev/null || echo "/var/run/docker.sock: not found"
-          stat /var/run/docker.sock 2>/dev/null || true
-          echo "--- User info ---"
-          id
-          echo "--- docker version ---"
-          docker version 2>&1 || true
-          echo "--- docker info (full) ---"
-          docker info 2>&1 || echo "docker info failed: exit $?"
+          docker info 2>&1 | head -5 || {
+            echo "::error::Docker daemon is not accessible at /var/run/docker.sock"
+            echo "::error::Runner: ${HOSTNAME:-unknown}"
+            echo "::error::Check: (1) daemon is running, (2) runner user is in docker group, (3) sock permissions are 660+"
+            exit 1
+          }
+          echo "Docker daemon OK"
           echo "::endgroup::"
 
       # Pre-clone manifest deps before docker build.
