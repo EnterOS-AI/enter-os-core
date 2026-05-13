@@ -158,6 +158,151 @@ func TestNilIfEmpty_Contract(t *testing.T) {
 	}
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// parseUsageFromA2AResponse
+// ──────────────────────────────────────────────────────────────────────────────
+
+func TestParseUsageFromA2AResponse_EmptyAndMalformed(t *testing.T) {
+	cases := []struct {
+		name string
+		body []byte
+	}{
+		{"nil", nil},
+		{"empty", []byte{}},
+		{"non-JSON", []byte("not json")},
+		{"empty object", []byte("{}")},
+		{"null result", []byte(`{"result": null}`)},
+		{"string result", []byte(`{"result": "hello"}`)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in, out := parseUsageFromA2AResponse(tc.body)
+			if in != 0 || out != 0 {
+				t.Errorf("parseUsageFromA2AResponse = (%d, %d), want (0, 0)", in, out)
+			}
+		})
+	}
+}
+
+func TestParseUsageFromA2AResponse_ResultUsageShape(t *testing.T) {
+	body := []byte(`{
+		"result": {
+			"usage": {"input_tokens": 1500, "output_tokens": 320}
+		}
+	}`)
+	in, out := parseUsageFromA2AResponse(body)
+	if in != 1500 || out != 320 {
+		t.Errorf("parseUsageFromA2AResponse = (%d, %d), want (1500, 320)", in, out)
+	}
+}
+
+func TestParseUsageFromA2AResponse_TopLevelUsage(t *testing.T) {
+	body := []byte(`{
+		"usage": {"input_tokens": 100, "output_tokens": 50}
+	}`)
+	in, out := parseUsageFromA2AResponse(body)
+	if in != 100 || out != 50 {
+		t.Errorf("parseUsageFromA2AResponse = (%d, %d), want (100, 50)", in, out)
+	}
+}
+
+func TestParseUsageFromA2AResponse_BothPresentPrefersResult(t *testing.T) {
+	// When both result.usage and top-level usage exist, result.usage wins.
+	body := []byte(`{
+		"result": {"usage": {"input_tokens": 500, "output_tokens": 200}},
+		"usage": {"input_tokens": 50, "output_tokens": 20}
+	}`)
+	in, out := parseUsageFromA2AResponse(body)
+	if in != 500 || out != 200 {
+		t.Errorf("parseUsageFromA2AResponse = (%d, %d), want (500, 200) from result.usage", in, out)
+	}
+}
+
+func TestParseUsageFromA2AResponse_ZeroUsage(t *testing.T) {
+	// Zero values are treated as absent (readUsageMap returns ok=false).
+	body := []byte(`{"result": {"usage": {"input_tokens": 0, "output_tokens": 0}}}`)
+	in, out := parseUsageFromA2AResponse(body)
+	if in != 0 || out != 0 {
+		t.Errorf("parseUsageFromA2AResponse = (%d, %d), want (0, 0)", in, out)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// readUsageMap
+// ──────────────────────────────────────────────────────────────────────────────
+
+func TestReadUsageMap_HappyPath(t *testing.T) {
+	m := map[string]json.RawMessage{
+		"usage": json.RawMessage(`{"input_tokens": 100, "output_tokens": 50}`),
+	}
+	in, out, ok := readUsageMap(m)
+	if !ok {
+		t.Fatal("readUsageMap returned ok=false, want true")
+	}
+	if in != 100 || out != 50 {
+		t.Errorf("readUsageMap = (%d, %d, %v), want (100, 50, true)", in, out, ok)
+	}
+}
+
+func TestReadUsageMap_MissingUsage(t *testing.T) {
+	m := map[string]json.RawMessage{
+		"other": json.RawMessage(`{}`),
+	}
+	in, out, ok := readUsageMap(m)
+	if ok {
+		t.Errorf("readUsageMap returned ok=true for missing usage, want false")
+	}
+}
+
+func TestReadUsageMap_ZeroValues(t *testing.T) {
+	m := map[string]json.RawMessage{
+		"usage": json.RawMessage(`{"input_tokens": 0, "output_tokens": 0}`),
+	}
+	in, out, ok := readUsageMap(m)
+	if ok {
+		t.Errorf("readUsageMap returned ok=true for zero usage, want false")
+	}
+	if in != 0 || out != 0 {
+		t.Errorf("readUsageMap = (%d, %d, %v), want (0, 0, false)", in, out, ok)
+	}
+}
+
+func TestReadUsageMap_OnlyInputTokens(t *testing.T) {
+	m := map[string]json.RawMessage{
+		"usage": json.RawMessage(`{"input_tokens": 200, "output_tokens": 0}`),
+	}
+	in, out, ok := readUsageMap(m)
+	if !ok {
+		t.Fatal("readUsageMap returned ok=false, want true")
+	}
+	if in != 200 || out != 0 {
+		t.Errorf("readUsageMap = (%d, %d, %v), want (200, 0, true)", in, out, ok)
+	}
+}
+
+func TestReadUsageMap_OnlyOutputTokens(t *testing.T) {
+	m := map[string]json.RawMessage{
+		"usage": json.RawMessage(`{"input_tokens": 0, "output_tokens": 150}`),
+	}
+	in, out, ok := readUsageMap(m)
+	if !ok {
+		t.Fatal("readUsageMap returned ok=false, want true")
+	}
+	if in != 0 || out != 150 {
+		t.Errorf("readUsageMap = (%d, %d, %v), want (0, 150, true)", in, out, ok)
+	}
+}
+
+func TestReadUsageMap_MalformedUsageJSON(t *testing.T) {
+	m := map[string]json.RawMessage{
+		"usage": json.RawMessage(`not valid json`),
+	}
+	in, out, ok := readUsageMap(m)
+	if ok {
+		t.Errorf("readUsageMap returned ok=true for malformed usage JSON, want false")
+	}
+}
+
 // Suppress unused import warning — setupTestDB references db.DB but this file
 // only tests pure functions, so db is only needed transitively through helpers.
 var _ = db.DB
