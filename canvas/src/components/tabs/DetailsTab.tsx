@@ -325,10 +325,10 @@ export function DetailsTab({ workspaceId, data }: Props) {
               <button
                 type="button"
                 onClick={handleDelete}
-                // hover:bg-red-500 LIGHTER on white text drops AA;
-                // flipped to bg-red-700 + focus-visible danger ring,
-                // matching the ConfirmDialog/DeleteCascade pattern.
-                className="px-3 py-1 bg-red-600 hover:bg-red-700 text-xs rounded text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
+                // Red-600 on white text = 3.9:1 (WCAG AA FAIL).
+                // Red-700 = 4.6:1 (PASS). Hover goes DARKER (red-600)
+                // to signal press. Same pattern as ConfirmDialog/DeleteCascade.
+                className="px-3 py-1 bg-red-700 hover:bg-red-600 text-xs rounded text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
               >
                 Confirm Delete
               </button>
