@@ -559,6 +559,48 @@ func TestWorkspaceCreate_ExternalURL_SSRFSafe(t *testing.T) {
 	}
 }
 
+// TestWorkspaceCreate_KimiRuntime_PreservesLabel asserts that a workspace
+// created with runtime="kimi" takes the BYO-compute path (awaiting_agent,
+// no Docker provisioning) and preserves the "kimi" label in the DB instead
+// of coercing to "external". Regression guard for SOP runtime addition.
+func TestWorkspaceCreate_KimiRuntime_PreservesLabel(t *testing.T) {
+	t.Setenv("MOLECULE_DEPLOY_MODE", "self-hosted")
+	t.Setenv("MOLECULE_ORG_ID", "")
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO workspaces").
+		WithArgs(sqlmock.AnyArg(), "Kimi Agent", nil, 3, "kimi", sqlmock.AnyArg(), (*string)(nil), nil, "none", (*int64)(nil), models.DefaultMaxConcurrentTasks, "push").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	// Pre-register flow: awaiting_agent + runtime preserved as "kimi"
+	mock.ExpectExec("UPDATE workspaces SET status").
+		WithArgs(models.StatusAwaitingAgent, "kimi", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// Token issuance (workspace_auth_tokens, not workspace_tokens)
+	mock.ExpectExec("INSERT INTO workspace_auth_tokens").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	body := `{"name":"Kimi Agent","runtime":"kimi","tier":3,"canvas":{"x":100,"y":100}}`
+	c.Request = httptest.NewRequest("POST", "/workspaces", bytes.NewBufferString(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.Create(c)
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("expected status 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
 // TestWorkspaceCreate_ExternalURL_SSRFMetadataBlocked asserts that an external
 // workspace created with a cloud-metadata URL is rejected with 400 before any
 // DB write. 169.254.0.0/16 is always blocked regardless of mode (SaaS or

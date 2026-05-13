@@ -361,7 +361,7 @@ func (h *DelegationHandler) executeDelegation(ctx context.Context, sourceID, tar
 	// pause + second attempt catches the common restart-race case where
 	// the first attempt sees a stale 127.0.0.1:<ephemeral> URL from a
 	// container that was just recreated.
-	if proxyErr != nil && isTransientProxyError(proxyErr) {
+	if proxyErr != nil && isTransientProxyError(proxyErr) && len(respBody) == 0 {
 		log.Printf("Delegation %s: first attempt failed (%s) — retrying in %s after reactive URL refresh",
 			delegationID, proxyErr.Error(), delegationRetryDelay)
 		select {
