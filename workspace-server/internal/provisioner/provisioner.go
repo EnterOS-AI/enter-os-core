@@ -627,6 +627,12 @@ func buildContainerEnv(cfg WorkspaceConfig) []string {
 	for k, v := range cfg.EnvVars {
 		env = append(env, fmt.Sprintf("%s=%s", k, v))
 	}
+	// Inject ADMIN_TOKEN from the platform server's environment so workspace
+	// containers can call /admin/liveness and other admin-gated endpoints
+	// (core#831). cp_provisioner.go handles this separately for SaaS tenants.
+	if adminToken := os.Getenv("ADMIN_TOKEN"); adminToken != "" {
+		env = append(env, fmt.Sprintf("ADMIN_TOKEN=%s", adminToken))
+	}
 	return env
 }
 
