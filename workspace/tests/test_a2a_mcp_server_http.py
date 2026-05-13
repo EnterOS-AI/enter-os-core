@@ -406,6 +406,110 @@ class TestHTTPAppRoutes:
 
 
 # ---------------------------------------------------------------------------
+# handle_tool_call — remaining tool branches
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio()
+async def test_handle_http_mcp_tools_call_send_message_to_user_with_mixed_attachments():
+    """attachments with non-string elements are filtered; the list branch is exercised."""
+    from a2a_mcp_server import _handle_http_mcp
+
+    with patch("a2a_mcp_server.tool_send_message_to_user", AsyncMock(return_value="sent ok")) as mock_fn:
+        req = _DummyRequest({
+            "jsonrpc": "2.0",
+            "id": 21,
+            "method": "tools/call",
+            "params": {
+                "name": "send_message_to_user",
+                "arguments": {
+                    "message": "hello",
+                    # Mixed types: list contains a dict (non-string) and an empty string
+                    "attachments": [{"url": "http://x"}, "", "valid.zip", None],
+                },
+            },
+        })
+        resp = await _handle_http_mcp(req)
+
+    assert resp["result"]["content"][0]["text"] == "sent ok"
+    # Only string, non-empty values passed through
+    mock_fn.assert_called_once()
+    _, kwargs = mock_fn.call_args
+    assert kwargs["attachments"] == ["valid.zip"]
+
+
+@pytest.mark.asyncio()
+async def test_handle_http_mcp_tools_call_wait_for_message():
+    """wait_for_message is dispatched and returns the wrapped result."""
+    from a2a_mcp_server import _handle_http_mcp
+
+    with patch("a2a_mcp_server.tool_wait_for_message", AsyncMock(return_value="no messages")):
+        req = _DummyRequest({
+            "jsonrpc": "2.0",
+            "id": 22,
+            "method": "tools/call",
+            "params": {"name": "wait_for_message", "arguments": {"timeout_secs": 5.0}},
+        })
+        resp = await _handle_http_mcp(req)
+
+    assert resp["result"]["content"][0]["text"] == "no messages"
+
+
+@pytest.mark.asyncio()
+async def test_handle_http_mcp_tools_call_inbox_peek():
+    """inbox_peek is dispatched with the limit argument."""
+    from a2a_mcp_server import _handle_http_mcp
+
+    with patch("a2a_mcp_server.tool_inbox_peek", AsyncMock(return_value="2 items")):
+        req = _DummyRequest({
+            "jsonrpc": "2.0",
+            "id": 23,
+            "method": "tools/call",
+            "params": {"name": "inbox_peek", "arguments": {"limit": 5}},
+        })
+        resp = await _handle_http_mcp(req)
+
+    assert resp["result"]["content"][0]["text"] == "2 items"
+
+
+@pytest.mark.asyncio()
+async def test_handle_http_mcp_tools_call_inbox_pop():
+    """inbox_pop is dispatched with the activity_id argument."""
+    from a2a_mcp_server import _handle_http_mcp
+
+    with patch("a2a_mcp_server.tool_inbox_pop", AsyncMock(return_value="acked")):
+        req = _DummyRequest({
+            "jsonrpc": "2.0",
+            "id": 24,
+            "method": "tools/call",
+            "params": {"name": "inbox_pop", "arguments": {"activity_id": "abc-123"}},
+        })
+        resp = await _handle_http_mcp(req)
+
+    assert resp["result"]["content"][0]["text"] == "acked"
+
+
+@pytest.mark.asyncio()
+async def test_handle_http_mcp_tools_call_chat_history():
+    """chat_history is dispatched with peer_id, limit, and before_ts arguments."""
+    from a2a_mcp_server import _handle_http_mcp
+
+    with patch("a2a_mcp_server.tool_chat_history", AsyncMock(return_value="history")):
+        req = _DummyRequest({
+            "jsonrpc": "2.0",
+            "id": 25,
+            "method": "tools/call",
+            "params": {
+                "name": "chat_history",
+                "arguments": {"peer_id": "ws-peer-1", "limit": 10, "before_ts": ""},
+            },
+        })
+        resp = await _handle_http_mcp(req)
+
+    assert resp["result"]["content"][0]["text"] == "history"
+
+
+# ---------------------------------------------------------------------------
 # cli_main argparse — unit tests
 # ---------------------------------------------------------------------------
 
