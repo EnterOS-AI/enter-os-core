@@ -46,10 +46,12 @@ env:
   GITHUB_SERVER_URL: https://git.moleculesai.app
 
 jobs:
+  # bp-exempt: regression canary for runtime#61; not a merge gate — informational only until promoted to required.
+  # mc#774: continue-on-error mask — new workflow, flip to false once it's green on ≥3 consecutive main runs.
   mcp-stdio-regular-file:
     name: MCP stdio with regular-file stdout
     runs-on: ubuntu-latest
-    continue-on-error: true
+    continue-on-error: true  # mc#774
     timeout-minutes: 5
     env:
       WORKSPACE_ID: "00000000-0000-0000-0000-000000000001"
@@ -63,7 +65,7 @@ jobs:
           python-version: '3.11'
           cache: pip
           cache-dependency-path: workspace/requirements.txt
-      - run: pip install -r requirements.txt pytest pytest-asyncio
+      - run: pip install -r requirements.txt pytest pytest-asyncio pytest-cov
 
       - name: Reproduce runtime#61 — stdout as regular file
         run: |
