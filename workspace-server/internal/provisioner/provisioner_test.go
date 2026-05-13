@@ -155,14 +155,14 @@ func TestApplyTierConfig_Tier2_Standard(t *testing.T) {
 
 	// Memory limit: 512 MiB
 	expectedMemory := int64(512 * 1024 * 1024)
-	if hc.Resources.Memory != expectedMemory {
-		t.Errorf("T2: expected Memory=%d (512m), got %d", expectedMemory, hc.Resources.Memory)
+	if hc.Memory != expectedMemory {
+		t.Errorf("T2: expected Memory=%d (512m), got %d", expectedMemory, hc.Memory)
 	}
 
 	// CPU limit: 1.0 CPU (1e9 NanoCPUs)
 	expectedCPU := int64(1_000_000_000)
-	if hc.Resources.NanoCPUs != expectedCPU {
-		t.Errorf("T2: expected NanoCPUs=%d (1.0 CPU), got %d", expectedCPU, hc.Resources.NanoCPUs)
+	if hc.NanoCPUs != expectedCPU {
+		t.Errorf("T2: expected NanoCPUs=%d (1.0 CPU), got %d", expectedCPU, hc.NanoCPUs)
 	}
 
 	// Must NOT be privileged
@@ -270,13 +270,13 @@ func TestApplyTierConfig_UnknownTier_DefaultsToT2(t *testing.T) {
 
 	// Unknown tiers should get T2 resource limits as a safe default
 	expectedMemory := int64(512 * 1024 * 1024)
-	if hc.Resources.Memory != expectedMemory {
-		t.Errorf("Unknown tier: expected Memory=%d (512m), got %d", expectedMemory, hc.Resources.Memory)
+	if hc.Memory != expectedMemory {
+		t.Errorf("Unknown tier: expected Memory=%d (512m), got %d", expectedMemory, hc.Memory)
 	}
 
 	expectedCPU := int64(1_000_000_000)
-	if hc.Resources.NanoCPUs != expectedCPU {
-		t.Errorf("Unknown tier: expected NanoCPUs=%d (1.0 CPU), got %d", expectedCPU, hc.Resources.NanoCPUs)
+	if hc.NanoCPUs != expectedCPU {
+		t.Errorf("Unknown tier: expected NanoCPUs=%d (1.0 CPU), got %d", expectedCPU, hc.NanoCPUs)
 	}
 
 	// Must NOT be privileged
@@ -298,8 +298,8 @@ func TestApplyTierConfig_ZeroTier_DefaultsToT2(t *testing.T) {
 
 	// Zero tier (default int value) should also get T2 resource limits
 	expectedMemory := int64(512 * 1024 * 1024)
-	if hc.Resources.Memory != expectedMemory {
-		t.Errorf("Tier 0: expected Memory=%d, got %d", expectedMemory, hc.Resources.Memory)
+	if hc.Memory != expectedMemory {
+		t.Errorf("Tier 0: expected Memory=%d, got %d", expectedMemory, hc.Memory)
 	}
 	if hc.Privileged {
 		t.Error("Tier 0: must not be privileged")
@@ -944,12 +944,12 @@ func TestApplyTierConfig_T3_UsesEnvOverride(t *testing.T) {
 	ApplyTierConfig(hc, cfg, "ws-abc123-configs:/configs", "ws-abc123")
 
 	wantMem := int64(8192) * 1024 * 1024
-	if hc.Resources.Memory != wantMem {
-		t.Errorf("T3 memory override: got %d, want %d", hc.Resources.Memory, wantMem)
+	if hc.Memory != wantMem {
+		t.Errorf("T3 memory override: got %d, want %d", hc.Memory, wantMem)
 	}
 	wantCPU := int64(4_000_000_000)
-	if hc.Resources.NanoCPUs != wantCPU {
-		t.Errorf("T3 CPU override: got %d NanoCPUs, want %d", hc.Resources.NanoCPUs, wantCPU)
+	if hc.NanoCPUs != wantCPU {
+		t.Errorf("T3 CPU override: got %d NanoCPUs, want %d", hc.NanoCPUs, wantCPU)
 	}
 	if !hc.Privileged || hc.PidMode != "host" {
 		t.Errorf("T3 override should preserve privileged/pid-host flags, got Privileged=%v PidMode=%q",
@@ -968,11 +968,11 @@ func TestApplyTierConfig_T3_DefaultCap(t *testing.T) {
 	ApplyTierConfig(hc, cfg, "ws-abc123-configs:/configs", "ws-abc123")
 
 	wantMem := int64(defaultTier3MemoryMB) * 1024 * 1024
-	if hc.Resources.Memory != wantMem {
-		t.Errorf("T3 default memory: got %d, want %d", hc.Resources.Memory, wantMem)
+	if hc.Memory != wantMem {
+		t.Errorf("T3 default memory: got %d, want %d", hc.Memory, wantMem)
 	}
 	wantCPU := int64(defaultTier3CPUShares) * 1_000_000_000 / 1024
-	if hc.Resources.NanoCPUs != wantCPU {
-		t.Errorf("T3 default NanoCPUs: got %d, want %d", hc.Resources.NanoCPUs, wantCPU)
+	if hc.NanoCPUs != wantCPU {
+		t.Errorf("T3 default NanoCPUs: got %d, want %d", hc.NanoCPUs, wantCPU)
 	}
 }

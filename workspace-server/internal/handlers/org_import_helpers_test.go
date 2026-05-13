@@ -196,7 +196,7 @@ func TestSanitizeEnvMembers_MaxLength(t *testing.T) {
 	}
 	// 129 chars: invalid (exceeds {0,127} suffix in regex)
 	tooLong := "A" + strings.Repeat("B", 128)
-	got, ok = sanitizeEnvMembers([]string{tooLong}, "test")
+	_, ok = sanitizeEnvMembers([]string{tooLong}, "test")
 	if ok {
 		t.Error("129 char invalid: ok should be false")
 	}
@@ -230,7 +230,7 @@ func TestFlattenAndSortRequirements_Empty(t *testing.T) {
 func TestFlattenAndSortRequirements_SingleFirst(t *testing.T) {
 	// Singles come before groups; within singles, alphabetical
 	reqs := map[string]EnvRequirement{
-		envRequirementKey([]string{"ZETA"}): {Name: "ZETA"},
+		envRequirementKey([]string{"ZETA"}):  {Name: "ZETA"},
 		envRequirementKey([]string{"ALPHA"}): {Name: "ALPHA"},
 	}
 	got := flattenAndSortRequirements(reqs)
@@ -247,7 +247,7 @@ func TestFlattenAndSortRequirements_SingleFirst(t *testing.T) {
 
 func TestFlattenAndSortRequirements_GroupsAfterSingles(t *testing.T) {
 	reqs := map[string]EnvRequirement{
-		envRequirementKey([]string{"X"}): {Name: "X"}, // single
+		envRequirementKey([]string{"X"}):      {Name: "X"},                 // single
 		envRequirementKey([]string{"A", "B"}): {AnyOf: []string{"A", "B"}}, // group
 	}
 	got := flattenAndSortRequirements(reqs)
@@ -429,8 +429,8 @@ func TestCollectOrgEnv_WorkspaceLevel(t *testing.T) {
 	tmpl := &OrgTemplate{
 		Workspaces: []OrgWorkspace{
 			{
-				Name:         "Dev",
-				RequiredEnv:  []EnvRequirement{{Name: "DEV_KEY"}},
+				Name:           "Dev",
+				RequiredEnv:    []EnvRequirement{{Name: "DEV_KEY"}},
 				RecommendedEnv: []EnvRequirement{{Name: "DEV_TOOL"}},
 			},
 		},
@@ -456,12 +456,12 @@ func TestCollectOrgEnv_DeepNesting(t *testing.T) {
 		RequiredEnv: []EnvRequirement{{Name: "ORG_LEVEL"}},
 		Workspaces: []OrgWorkspace{
 			{
-				Name:         "Root",
-				RequiredEnv:  []EnvRequirement{{Name: "ROOT_LEVEL"}},
+				Name:        "Root",
+				RequiredEnv: []EnvRequirement{{Name: "ROOT_LEVEL"}},
 				Children: []OrgWorkspace{
 					{
-						Name:         "Child",
-						RequiredEnv:  []EnvRequirement{{Name: "CHILD_LEVEL"}},
+						Name:        "Child",
+						RequiredEnv: []EnvRequirement{{Name: "CHILD_LEVEL"}},
 						Children: []OrgWorkspace{
 							{Name: "GrandChild", RecommendedEnv: []EnvRequirement{{Name: "GRANDCHILD_TOOL"}}},
 						},
@@ -536,4 +536,3 @@ func TestCollectOrgEnv_MixedCasePreservesSort(t *testing.T) {
 		t.Errorf("A,B group should come first: got %+v", req[2])
 	}
 }
-

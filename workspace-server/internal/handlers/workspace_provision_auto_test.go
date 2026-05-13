@@ -156,10 +156,7 @@ func TestProvisionWorkspaceAuto_RoutesToCPWhenSet(t *testing.T) {
 
 	// Wait for the goroutine to land in cpProv.Start (or give up).
 	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if len(rec.startedSnapshot()) > 0 {
-			break
-		}
+	for len(rec.startedSnapshot()) == 0 {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for cpProv.Start; recorded=%v", rec.startedSnapshot())
 		}
@@ -626,10 +623,7 @@ func TestRestartWorkspaceAuto_RoutesToCPWhenSet(t *testing.T) {
 	// the tracking stub, so we expect at least one Stop and (eventually)
 	// at least one Start.
 	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if len(rec.stoppedSnapshot()) > 0 && len(rec.startedSnapshot()) > 0 {
-			break
-		}
+	for len(rec.stoppedSnapshot()) == 0 || len(rec.startedSnapshot()) == 0 {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for cpProv.Stop + cpProv.Start; stopped=%v started=%v",
 				rec.stoppedSnapshot(), rec.startedSnapshot())
@@ -907,7 +901,7 @@ func stripGoComments(src []byte) []byte {
 		// Block comment
 		if i+1 < len(src) && src[i] == '/' && src[i+1] == '*' {
 			i += 2
-			for i+1 < len(src) && !(src[i] == '*' && src[i+1] == '/') {
+			for i+1 < len(src) && (src[i] != '*' || src[i+1] != '/') {
 				i++
 			}
 			i++ // skip closing /

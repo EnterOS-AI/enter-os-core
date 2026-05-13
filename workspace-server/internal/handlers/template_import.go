@@ -88,7 +88,7 @@ func generateDefaultConfig(name string, files map[string]string, tier int) strin
 		tier = 3
 	}
 	cfg.WriteString("version: 1.0.0\n")
-	cfg.WriteString(fmt.Sprintf("tier: %d\n", tier))
+	fmt.Fprintf(&cfg, "tier: %d\n", tier)
 	cfg.WriteString("model: anthropic:claude-haiku-4-5-20251001\n")
 	cfg.WriteString("\nprompt_files:\n")
 	if len(promptFiles) > 0 {

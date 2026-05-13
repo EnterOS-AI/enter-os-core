@@ -474,12 +474,7 @@ func (h *ActivityHandler) Notify(c *gin.Context) {
 	// Lark) hook in here too.
 	attachments := make([]AgentMessageAttachment, 0, len(body.Attachments))
 	for _, a := range body.Attachments {
-		attachments = append(attachments, AgentMessageAttachment{
-			URI:      a.URI,
-			Name:     a.Name,
-			MimeType: a.MimeType,
-			Size:     a.Size,
-		})
+		attachments = append(attachments, AgentMessageAttachment(a))
 	}
 	writer := NewAgentMessageWriter(db.DB, h.broadcaster)
 	if err := writer.Send(c.Request.Context(), workspaceID, body.Message, attachments); err != nil {

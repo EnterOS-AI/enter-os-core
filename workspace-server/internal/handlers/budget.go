@@ -71,13 +71,6 @@ func (h *BudgetHandler) GetBudget(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-// patchBudgetRequest is the expected JSON body for PATCH /workspaces/:id/budget.
-// budget_limit=null removes the ceiling; a positive integer sets it (USD cents).
-type patchBudgetRequest struct {
-	// BudgetLimit pointer so JSON null → nil, absent → parse error (required field).
-	BudgetLimit *int64 `json:"budget_limit"`
-}
-
 // PatchBudget handles PATCH /workspaces/:id/budget.
 // Accepts {"budget_limit": <int64>} to set a new ceiling, or
 // {"budget_limit": null} to remove an existing ceiling.

@@ -61,7 +61,6 @@ func resolveRestartTemplate(configsDir, wsName, dbRuntime string, body restartTe
 		candidatePath, resolveErr := resolveInsideRoot(configsDir, template)
 		if resolveErr != nil {
 			log.Printf("Restart: invalid template %q: %v — proceeding without it", template, resolveErr)
-			template = ""
 		} else if _, err := os.Stat(candidatePath); err == nil {
 			return candidatePath, template
 		} else {
