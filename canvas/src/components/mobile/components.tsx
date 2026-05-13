@@ -17,6 +17,7 @@ import {
   usePalette,
 } from "./palette";
 import { Icons, StatusDot, TierChip } from "./primitives";
+import { isExternalLikeRuntime } from "@/lib/externalRuntimes";
 
 // Derived view-model the mobile screens consume. Built once per render
 // from the store's Node<WorkspaceNodeData>.
@@ -37,7 +38,7 @@ export interface MobileAgent {
 export function toMobileAgent(node: Node<WorkspaceNodeData>): MobileAgent {
   const cap = summarizeWorkspaceCapabilities(node.data);
   const runtime = cap.runtime ?? "unknown";
-  const remote = runtime === "external";
+  const remote = isExternalLikeRuntime(runtime);
   return {
     id: node.id,
     name: node.data.name || node.id,

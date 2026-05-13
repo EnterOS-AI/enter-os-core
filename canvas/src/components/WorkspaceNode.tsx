@@ -9,6 +9,7 @@ import { Tooltip } from "@/components/Tooltip";
 import { STATUS_CONFIG, TIER_CONFIG } from "@/lib/design-tokens";
 import { useOrgDeployState } from "@/components/canvas/useOrgDeployState";
 import { OrgCancelButton } from "@/components/canvas/OrgCancelButton";
+import { isExternalLikeRuntime } from "@/lib/externalRuntimes";
 
 /** Descendant count for the "N sub" badge — children are first-class nodes
  *  rendered as full cards inside this one via React Flow's native parentId,
@@ -248,7 +249,7 @@ export function WorkspaceNode({ id, data }: NodeProps<Node<WorkspaceNodeData>>) 
           if (!runtime) return null;
           return (
             <div className="mb-1 flex items-center gap-1">
-              {runtime === "external" ? (
+              {isExternalLikeRuntime(runtime) ? (
                 <span
                   className="text-[7px] font-mono px-1.5 py-0.5 rounded-md text-white bg-violet-600 border border-violet-700"
                   title="Phase 30 remote agent — runs outside this platform's Docker network. Lifecycle managed via heartbeat-based polling, not Docker exec."

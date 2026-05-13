@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -954,5 +956,318 @@ func TestInsertDelegationOutcome_ZeroValueIsUnknown(t *testing.T) {
 	}
 	if insertOutcomeUnknown == insertOK {
 		t.Errorf("insertOutcomeUnknown must not collide with insertOK")
+	}
+}
+
+// ==================== executeDelegation — delivery-confirmed proxy error regression tests ====================
+//
+// These test the fix for issue #159: when proxyA2ARequest returns an error but we have a
+// non-empty response body with a 2xx status code, executeDelegation must treat it as success.
+// The error is a delivery/transport error (e.g., connection reset after response was received).
+// Previously, executeDelegation marked these as "failed" even though the work was done,
+// causing retry storms and "error" rendering in canvas despite the response being available.
+//
+// Test strategy: spin up a mock A2A agent server, set up the source/target DB rows, call
+// executeDelegation directly, and verify the activity_logs status and delegation status.
+
+const testDelegationID = "del-159-test"
+const testSourceID = "ws-source-159"
+const testTargetID = "ws-target-159"
+
+// expectExecuteDelegationBase sets up sqlmock expectations for the DB queries that
+// executeDelegation always makes, regardless of outcome.
+func expectExecuteDelegationBase(mock sqlmock.Sqlmock) {
+	// updateDelegationStatus: dispatched
+	// Uses prefix match — sqlmock regexes match the full query string.
+	mock.ExpectExec("UPDATE activity_logs SET status").
+		WithArgs("dispatched", "", testSourceID, testDelegationID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// CanCommunicate: getWorkspaceRef(source) + getWorkspaceRef(target).
+	// Both are root-level workspaces (parent_id=NULL) → root-level siblings → allowed.
+	mock.ExpectQuery("SELECT id, parent_id FROM workspaces WHERE id = ").
+		WithArgs(testSourceID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "parent_id"}).AddRow(testSourceID, nil))
+	mock.ExpectQuery("SELECT id, parent_id FROM workspaces WHERE id = ").
+		WithArgs(testTargetID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "parent_id"}).AddRow(testTargetID, nil))
+
+	// resolveAgentURL: test callers always set the URL in Redis (mr.Set ws:{id}:url),
+	// so resolveAgentURL gets a cache hit and never falls back to DB.
+}
+
+// expectExecuteDelegationSuccess sets up expectations for a completed delegation.
+// Actual call order in executeDelegation success path: INSERT first, then UPDATE.
+// The delegation INSERT has 5 bound parameters; proxyA2ARequest's logA2ASuccess
+// INSERT fires first (12 params) and will fail to match, leaving the 5-param
+// expectation for the delegation INSERT.
+func expectExecuteDelegationSuccess(mock sqlmock.Sqlmock, respBody string) {
+	// INSERT activity_logs for delegation completion ('completed' is a SQL literal, not a param)
+	mock.ExpectExec("INSERT INTO activity_logs").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// updateDelegationStatus: completed
+	mock.ExpectExec("UPDATE activity_logs SET status").
+		WithArgs("completed", "", testSourceID, testDelegationID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+}
+
+// expectExecuteDelegationFailed sets up expectations for a failed delegation.
+// Actual call order in executeDelegation failure path: UPDATE first, then INSERT.
+func expectExecuteDelegationFailed(mock sqlmock.Sqlmock) {
+	// updateDelegationStatus: failed (fires before the INSERT in the failure path)
+	mock.ExpectExec("UPDATE activity_logs SET status").
+		WithArgs("failed", sqlmock.AnyArg(), testSourceID, testDelegationID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// INSERT activity_logs for delegation failure ('failed' is a SQL literal, not a param)
+	mock.ExpectExec("INSERT INTO activity_logs").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+}
+
+// TestExecuteDelegation_DeliveryConfirmedProxyError_TreatsAsSuccess is the primary regression
+// test for issue #159. The scenario:
+//   - Attempt 1: server sends 200 OK headers + partial body, then closes connection.
+//     proxyA2ARequest: body read gets io.EOF (partial body read), returns (200, <partial>, BadGateway).
+//     isTransientProxyError(BadGateway) = TRUE → retry.
+//   - Attempt 2: server does the same thing (closes after partial body).
+//     proxyA2ARequest: same (200, <partial>, BadGateway).
+//     isTransientProxyError(BadGateway) = TRUE → retry AGAIN (but outer context will fire soon,
+//     or we get one more attempt). For the test we let it run.
+//     POST-FIX: the executeDelegation new condition sees status=200, body=<partial>, err!=nil
+//     and routes to handleSuccess immediately.
+//
+// The key pre/post-fix difference: pre-fix, executeDelegation received status=0 (hardcoded)
+// even when the server sent 200, so the condition always failed. Post-fix, status=200 is
+// preserved through the error return path (proxyA2ARequest now returns resp.StatusCode, respBody).
+// In this test the retry ultimately succeeds (server eventually sends full body), but
+// the critical assertion is that a 2xx partial-body delivery-confirmed response is never
+// classified as "failed" — it always routes to success.
+func TestExecuteDelegation_DeliveryConfirmedProxyError_TreatsAsSuccess(t *testing.T) {
+	mock := setupTestDB(t)
+	mr := setupTestRedis(t)
+	allowLoopbackForTest(t)
+
+	broadcaster := newTestBroadcaster()
+	wh := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+	dh := NewDelegationHandler(wh, broadcaster)
+
+	// Server that sends a 200 response with declared Content-Length but closes
+	// the connection before sending all bytes. Go's http.Client sees io.EOF on
+	// the body read. proxyA2ARequest captures the partial body + status=200 and
+	// returns (200, <partial>, error). executeDelegation's new condition sees
+	// status=200 + body > 0 + error != nil → routes to handleSuccess.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		defer wg.Done()
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		// Consume the HTTP request
+		buf := make([]byte, 2048)
+		conn.Read(buf)
+		// Send 200 OK with Content-Length: 100 but only 74 bytes of body
+		// (less than declared length → io.LimitReader returns io.EOF after reading all 74)
+		resp := "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n"
+		resp += `{"result":{"parts":[{"text":"work completed successfully"}]}}` // 74 bytes
+		conn.Write([]byte(resp))
+		// Close immediately — client gets io.EOF on body read
+	}()
+
+	agentURL := "http://" + ln.Addr().String()
+	mr.Set(fmt.Sprintf("ws:%s:url", testTargetID), agentURL)
+	allowLoopbackForTest(t)
+
+	expectExecuteDelegationBase(mock)
+	expectExecuteDelegationSuccess(mock, `{"result":{"parts":[{"text":"work completed successfully"}]}}`)
+
+	// Execute synchronously (not as a goroutine) so we can check DB state immediately.
+	// The handler fires it as goroutine; we call it directly for deterministic testing.
+	a2aBody, _ := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      "1",
+		"method":  "message/send",
+		"params": map[string]interface{}{
+			"message": map[string]interface{}{
+				"role":  "user",
+				"parts": []map[string]string{{"type": "text", "text": "do work"}},
+			},
+		},
+	})
+	dh.executeDelegation(testSourceID, testTargetID, testDelegationID, a2aBody)
+
+	time.Sleep(100 * time.Millisecond) // let DB writes settle
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// TestExecuteDelegation_ProxyErrorNon2xx_RemainsFailed verifies that the pre-fix failure
+// path is unchanged when proxyA2ARequest returns a delivery-confirmed error with a non-2xx
+// status code (e.g., 500 Internal Server Error with partial body read before connection drop).
+// The new condition requires status >= 200 && status < 300, so non-2xx always routes to failure.
+func TestExecuteDelegation_ProxyErrorNon2xx_RemainsFailed(t *testing.T) {
+	mock := setupTestDB(t)
+	mr := setupTestRedis(t)
+	allowLoopbackForTest(t)
+
+	broadcaster := newTestBroadcaster()
+	wh := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+	dh := NewDelegationHandler(wh, broadcaster)
+
+	// Server returns 500 with declared Content-Length but closes connection early.
+	// proxyA2ARequest: reads 500 headers, partial body, then connection drop → body read error.
+	// Returns (500, <partial_body>, BadGateway).
+	// New condition: status=500 is NOT >= 200 && < 300 → routes to failure.
+	// isTransientProxyError(500) = false → no retry.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		defer wg.Done()
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 2048)
+		conn.Read(buf)
+		// 500 with Content-Length: 100 but only ~60 bytes of body
+		resp := "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n"
+		resp += `{"error":"agent crashed"}` // ~24 bytes, less than declared
+		conn.Write([]byte(resp))
+		// Close immediately — client gets io.EOF on body read
+	}()
+
+	agentURL := "http://" + ln.Addr().String()
+	mr.Set(fmt.Sprintf("ws:%s:url", testTargetID), agentURL)
+	allowLoopbackForTest(t)
+
+	expectExecuteDelegationBase(mock)
+	expectExecuteDelegationFailed(mock)
+
+	a2aBody, _ := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0", "id": "1", "method": "message/send",
+		"params": map[string]interface{}{
+			"message": map[string]interface{}{
+				"role":  "user",
+				"parts": []map[string]string{{"type": "text", "text": "do work"}},
+			},
+		},
+	})
+	dh.executeDelegation(testSourceID, testTargetID, testDelegationID, a2aBody)
+
+	time.Sleep(100 * time.Millisecond)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// TestExecuteDelegation_ProxyErrorEmptyBody_RemainsFailed verifies that the pre-fix failure
+// path is unchanged when proxyA2ARequest returns an error with a 2xx status but empty body.
+// The new condition requires len(respBody) > 0, so empty body routes to failure.
+func TestExecuteDelegation_ProxyErrorEmptyBody_RemainsFailed(t *testing.T) {
+	mock := setupTestDB(t)
+	mr := setupTestRedis(t)
+	allowLoopbackForTest(t)
+
+	broadcaster := newTestBroadcaster()
+	wh := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+	dh := NewDelegationHandler(wh, broadcaster)
+
+	// Server returns 502 Bad Gateway — proxyA2ARequest returns 502, body="" (empty), error != nil.
+	// New condition: proxyErr != nil && len(respBody) > 0 && status >= 200 && status < 300
+	// → len(respBody) == 0 → condition FALSE → falls through to failure.
+	// isTransientProxyError(502) is TRUE → retry → same result → failure.
+	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		// No body — connection closes normally
+	}))
+	defer agentServer.Close()
+
+	mr.Set(fmt.Sprintf("ws:%s:url", testTargetID), agentServer.URL)
+	allowLoopbackForTest(t)
+
+	// executeDelegationBase: UPDATE dispatched + CanCommunicate SELECTs
+	expectExecuteDelegationBase(mock)
+	// The retry (isTransientProxyError && len(respBody)==0) fires after delegationRetryDelay,
+	// re-uses the Redis-cached URL — no extra DB calls before the failure path.
+	// Failure: UPDATE failed + INSERT (failed status is a SQL literal, 5 bound params)
+	expectExecuteDelegationFailed(mock)
+
+	a2aBody, _ := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0", "id": "1", "method": "message/send",
+		"params": map[string]interface{}{
+			"message": map[string]interface{}{
+				"role":  "user",
+				"parts": []map[string]string{{"type": "text", "text": "do work"}},
+			},
+		},
+	})
+	dh.executeDelegation(testSourceID, testTargetID, testDelegationID, a2aBody)
+
+	time.Sleep(100 * time.Millisecond)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// TestExecuteDelegation_CleanProxyResponse_Unchanged verifies that a clean proxy response
+// (no error, 200 with body) is unaffected by the new condition. This is the baseline:
+// proxyErr == nil so the new condition never fires.
+func TestExecuteDelegation_CleanProxyResponse_Unchanged(t *testing.T) {
+	mock := setupTestDB(t)
+	mr := setupTestRedis(t)
+	allowLoopbackForTest(t)
+
+	broadcaster := newTestBroadcaster()
+	wh := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+	dh := NewDelegationHandler(wh, broadcaster)
+
+	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"result":{"parts":[{"text":"all good"}]}}`))
+	}))
+	defer agentServer.Close()
+
+	mr.Set(fmt.Sprintf("ws:%s:url", testTargetID), agentServer.URL)
+	allowLoopbackForTest(t)
+
+	expectExecuteDelegationBase(mock)
+	expectExecuteDelegationSuccess(mock, `{"result":{"parts":[{"text":"all good"}]}}`)
+
+	a2aBody, _ := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0", "id": "1", "method": "message/send",
+		"params": map[string]interface{}{
+			"message": map[string]interface{}{
+				"role":  "user",
+				"parts": []map[string]string{{"type": "text", "text": "do work"}},
+			},
+		},
+	})
+	dh.executeDelegation(testSourceID, testTargetID, testDelegationID, a2aBody)
+
+	time.Sleep(100 * time.Millisecond)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
 	}
 }
