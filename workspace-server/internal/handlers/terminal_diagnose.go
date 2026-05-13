@@ -43,6 +43,27 @@ func (s *syncBuf) String() string {
 	return s.b.String()
 }
 
+// unwrapGoError extracts subprocess stderr from a Go-wrapped error that
+// includes combined output. e.g. from sendSSHPublicKey's
+// fmt.Errorf("send-ssh-public-key: %w (%s)", err, combinedOut), this
+// returns the " (%s)" portion — the actionable subprocess signal like
+// "AccessDeniedException: ... is not authorized to perform:
+// ec2-instance-connect:OpenTunnel". Returns "" when the output is
+// identical to the error string (no stderr captured).
+func unwrapGoError(errMsg string) string {
+	// Extract content between the last '(' and trailing ')'. The
+	// sendSSHPublicKey wrapper uses fmt.Errorf("...: %w (%s)", err, combinedOut)
+	// so the subprocess stderr is always the last parenthesised segment,
+	// e.g. "send-ssh-public-key: exit status 1 (AccessDeniedException: ...)"
+	// — note the closing ')' is at the very end with no trailing space.
+	open := strings.LastIndex(errMsg, "(")
+	if open < 0 {
+		return ""
+	}
+	inner := errMsg[open+1:]
+	return strings.TrimSuffix(inner, ")")
+}
+
 // HandleDiagnose handles GET /workspaces/:id/terminal/diagnose. It runs the
 // same per-step pipeline as HandleConnect (ssh-keygen → EIC send-key → tunnel
 // → ssh) but non-interactively, captures the first failing step and its
@@ -214,12 +235,18 @@ func (h *TerminalHandler) diagnoseRemote(ctx context.Context, workspaceID, insta
 	}
 
 	// Step 2: send-ssh-public-key (AWS Instance Connect)
+	// mc#687: populate Detail so the E2E smoke sees the AWS permission error
+	// verbatim. The subprocess stderr (e.g. "AccessDeniedException: ... is not
+	// authorized to perform: ec2-instance-connect:OpenTunnel") is captured by
+	// sendSSHPublicKey's CombinedOutput() and embedded in the Go error string.
 	t0 = time.Now()
 	if err := sendSSHPublicKey(ctx, region, instanceID, osUser, strings.TrimSpace(string(pubKey))); err != nil {
+		errMsg := err.Error()
 		return stop("send-ssh-public-key", diagnoseStep{
 			Name:       "send-ssh-public-key",
 			DurationMs: time.Since(t0).Milliseconds(),
-			Error:      err.Error(),
+			Error:      errMsg,
+			Detail:     unwrapGoError(errMsg),
 		})
 	}
 	res.Steps = append(res.Steps, diagnoseStep{Name: "send-ssh-public-key", OK: true, DurationMs: time.Since(t0).Milliseconds()})
