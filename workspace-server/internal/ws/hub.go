@@ -127,7 +127,9 @@ func (h *Hub) Close() {
 		count := len(h.clients)
 		for client := range h.clients {
 			close(client.Send)
-			client.Conn.Close()
+			if client.Conn != nil {
+				client.Conn.Close()
+			}
 			delete(h.clients, client)
 		}
 		log.Printf("WebSocket hub closed (%d clients disconnected)", count)
