@@ -60,6 +60,7 @@
 # Optional:
 #   REVIEW_CHECK_DEBUG=1 — per-API-call diagnostic lines
 #   REVIEW_CHECK_STRICT=1 — also require review.commit_id == pr.head.sha
+#   DEFAULT_BRANCH=main — branch this gate protects; non-default-base PRs no-op
 
 set -euo pipefail
 
@@ -91,7 +92,7 @@ API="https://${GITEA_HOST}/api/v1"
 # secret token value in the process table for any process to read via
 # /proc/<pid>/cmdline or ps -ef). The curl config file is read by curl
 # itself and never appears in the argv of the curl subprocess.
-CURL_AUTH_FILE=$(mktemp -p /tmp curl-auth.XXXXXX)
+CURL_AUTH_FILE=$(mktemp "${TMPDIR:-/tmp}/curl-auth.XXXXXX")
 chmod 600 "$CURL_AUTH_FILE"
 printf 'header = "Authorization: token %s"\n' "$GITEA_TOKEN" > "$CURL_AUTH_FILE"
 
@@ -124,11 +125,17 @@ if [ "$HTTP_CODE" != "200" ]; then
 fi
 PR_AUTHOR=$(jq -r '.user.login // ""' "$PR_JSON")
 PR_HEAD_SHA=$(jq -r '.head.sha // ""' "$PR_JSON")
+PR_BASE_REF=$(jq -r '.base.ref // ""' "$PR_JSON")
 PR_STATE=$(jq -r '.state // ""' "$PR_JSON")
-debug "pr_author=${PR_AUTHOR} pr_head=${PR_HEAD_SHA:0:7} pr_state=${PR_STATE}"
+DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
+debug "pr_author=${PR_AUTHOR} pr_head=${PR_HEAD_SHA:0:7} pr_base=${PR_BASE_REF} pr_state=${PR_STATE}"
 
 if [ "$PR_STATE" != "open" ]; then
   echo "::notice::PR ${PR_NUMBER} is ${PR_STATE} — exiting 0 (closed PRs do not gate)"
+  exit 0
+fi
+if [ "$PR_BASE_REF" != "$DEFAULT_BRANCH" ]; then
+  echo "::notice::PR ${PR_NUMBER} targets ${PR_BASE_REF:-<unknown>} not ${DEFAULT_BRANCH} — ${TEAM}-review gate not applicable"
   exit 0
 fi
 if [ -z "$PR_AUTHOR" ] || [ -z "$PR_HEAD_SHA" ]; then
