@@ -182,13 +182,16 @@ describe("uploadChatFiles", () => {
   // Suppress console.error from AbortSignal.timeout in node environment
   // where native AbortController may not be fully stubbed.
   let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+  let fetchMock: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     consoleErrorSpy = vi.spyOn(console, "error").mockReturnValue();
+    fetchMock = vi.spyOn(globalThis, "fetch");
   });
 
   afterEach(() => {
     consoleErrorSpy.mockRestore();
+    fetchMock?.mockRestore();
   });
 
   it("returns an empty array when given no files", async () => {
@@ -202,35 +205,38 @@ describe("uploadChatFiles", () => {
       { name: "report.pdf", uri: "workspace:/workspace/report.pdf", size: 1024, mimeType: "application/pdf" },
       { name: "data.csv", uri: "workspace:/workspace/data.csv", size: 512, mimeType: "text/csv" },
     ];
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+    fetchMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ files: mockFiles }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       })
     );
 
-    const file = new File(["content"], "report.pdf", { type: "application/pdf" });
-    const result = await uploadChatFiles(wsId, [file]);
+    // Pass two files so the test validates the complete response round-trip
+    // (the mock returns two ChatAttachment objects).
+    const file1 = new File(["content1"], "report.pdf", { type: "application/pdf" });
+    const file2 = new File(["content2"], "data.csv", { type: "text/csv" });
+    const result = await uploadChatFiles(wsId, [file1, file2]);
 
     expect(result).toHaveLength(2);
     expect(result[0].name).toBe("report.pdf");
+    expect(result[1].name).toBe("data.csv");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, opts] = fetchMock.mock.calls[0]!;
     expect(url).toContain(`/workspaces/${wsId}/chat/uploads`);
+    // FormData stores files in order; each appended field is independent.
     const formFile = (opts.body as FormData).get("files") as File;
     expect(formFile.name).toBe("report.pdf");
     expect(formFile.type).toBe("application/pdf");
-    fetchMock.mockRestore();
   });
 
   it("throws Error with status text on non-ok response", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+    fetchMock.mockResolvedValueOnce(
       new Response("Internal Server Error", { status: 500 })
     );
 
     const file = new File(["content"], "fail.pdf", { type: "application/pdf" });
     await expect(uploadChatFiles(wsId, [file])).rejects.toThrow("upload failed: 500 Internal Server Error");
-    fetchMock.mockRestore();
   });
 });
 
