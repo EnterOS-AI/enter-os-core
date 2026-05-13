@@ -156,8 +156,9 @@ jobs:
           tags: |
             ${{ env.IMAGE_NAME }}:latest
             ${{ env.IMAGE_NAME }}:sha-${{ steps.tags.outputs.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Gitea artifact-cache reachability is best-effort on the operator
+          # runner network. Do not let cache export fail an image that already
+          # built and pushed successfully.
           labels: |
             org.opencontainers.image.source=https://git.moleculesai.app/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
