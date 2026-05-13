@@ -275,7 +275,7 @@ func (h *TemplatesHandler) ListFiles(c *gin.Context) {
 			return
 		}
 		// Translate to the handler's wire shape (the field names match
-		// 1:1, but Go can't implicit-convert named struct types).
+		// 1:1, so we can use a direct type conversion).
 		out := make([]fileEntry, 0, len(entries))
 		for _, e := range entries {
 			out = append(out, fileEntry(e))

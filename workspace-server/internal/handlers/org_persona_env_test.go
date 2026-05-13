@@ -152,6 +152,7 @@ func TestIsSafeRoleName_Acceptance(t *testing.T) {
 			t.Errorf("isSafeRoleName(%q) = false; want true", s)
 		}
 	}
+	// trailing-hyphen IS allowed; only include actually-bad names:
 	bad := []string{
 		"", ".", "..", "with/slash", "/abs", "dot.in.middle",
 		"with space", "back\\slash", "with$dollar", "with?question",

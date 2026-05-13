@@ -145,9 +145,7 @@ func (h *WorkspaceHandler) Update(c *gin.Context) {
 
 	// Auth is fully enforced at the router layer (WorkspaceAuth middleware, #680).
 	// WorkspaceAuth validates that the caller holds a valid bearer token for this
-	// specific workspace — no additional auth gate is needed here. The
-	// sensitiveUpdateFields map above documents the risk classification for
-	// auditors but is no longer used as a runtime gate.
+	// specific workspace — no additional auth gate is needed here.
 
 	// #120: guard — return 404 for nonexistent workspace IDs instead of
 	// silently applying zero-row UPDATEs and returning 200.
