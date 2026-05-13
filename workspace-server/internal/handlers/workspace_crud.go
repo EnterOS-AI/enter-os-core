@@ -140,6 +140,14 @@ func (h *WorkspaceHandler) Update(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if wsDir, ok := body["workspace_dir"]; ok && wsDir != nil {
+		if dirStr, isStr := wsDir.(string); isStr && dirStr != "" {
+			if err := validateWorkspaceDir(dirStr); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid workspace directory"})
+				return
+			}
+		}
+	}
 
 	ctx := c.Request.Context()
 
