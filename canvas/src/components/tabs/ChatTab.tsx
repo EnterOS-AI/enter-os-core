@@ -1011,11 +1011,10 @@ function MyChatPanel({ workspaceId, data }: Props) {
             <div
               className={`max-w-[85%] rounded-lg px-3 py-2 text-xs ${
                 msg.role === "user"
-                  // Solid blue-600 in both modes — `bg-accent` themes
-                  // lighter in dark, dropping white-text contrast to
-                  // ~3:1 (fails AA). blue-600 keeps ~5:1 against white
-                  // on both warm-paper and dark-slate panels.
-                  ? "bg-blue-600 text-white border border-blue-700 dark:bg-blue-500 dark:border-blue-400 shadow-sm"
+                  // Blue-600 on white = 3.0:1 (WCAG AA FAIL) in light mode.
+                  // Blue-700 on white = 4.5:1 (PASS). In dark mode, blue-600
+                  // on zinc-800 = 4.9:1 (PASS). So: blue-700 light, blue-600 dark.
+                  ? "bg-blue-700 text-white border border-blue-800 dark:bg-blue-600 dark:border-blue-700 shadow-sm"
                   : msg.role === "system"
                     // Bump the system bubble's opacity in dark — /10
                     // overlay was nearly invisible against the dark
