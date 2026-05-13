@@ -85,7 +85,7 @@ jobs:
   staging-smoke:
     runs-on: ubuntu-latest
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
-    # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     outputs:
       sha: ${{ steps.compute.outputs.sha }}
@@ -206,7 +206,7 @@ jobs:
     if: ${{ needs.staging-smoke.result == 'success' && needs.staging-smoke.outputs.smoke_ran == 'true' }}
     runs-on: ubuntu-latest
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
-    # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     env:
       SHA: ${{ needs.staging-smoke.outputs.sha }}

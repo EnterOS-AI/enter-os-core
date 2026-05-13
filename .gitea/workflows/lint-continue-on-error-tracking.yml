@@ -1,6 +1,6 @@
 name: lint-continue-on-error-tracking
 
-# Tier 2e hard-gate lint (per mc#664) — every
+# Tier 2e hard-gate lint (per mc#774) — every
 # `continue-on-error: true` in `.gitea/workflows/*.yml` must carry a
 # `# mc#NNNN` or `# internal#NNNN` tracker comment within 2 lines,
 # the referenced issue must be OPEN, and ≤14 days old.
@@ -8,7 +8,7 @@ name: lint-continue-on-error-tracking
 # Why this exists
 # ---------------
 # `continue-on-error: true` on `platform-build` had been hiding
-# mc#664-class regressions for ~3 weeks before #656 surfaced them on
+# mc#774-class regressions for ~3 weeks before #656 surfaced them on
 # 2026-05-12. A 14-day cap on tracker age forces a review cycle and
 # surfaces mask-drift within at most 14 days of the original defect.
 # Each `continue-on-error: true` gets a paper trail — close or renew.
@@ -45,12 +45,12 @@ name: lint-continue-on-error-tracking
 # close-and-flip, or document the deliberate keep-mask in a fresh
 # 14-day-renewable tracker. After main is clean for 3 days,
 # follow-up PR flips this workflow's continue-on-error to false.
-# Tracking: mc#664.
+# Tracking: mc#774.
 #
 # Cross-links
 # -----------
-# - mc#664 (the RFC that specs this lint)
-# - mc#664 (the empirical masked-3-weeks case)
+# - mc#774 (the RFC that specs this lint)
+# - mc#774 (the empirical masked-3-weeks case)
 # - feedback_chained_defects_in_never_tested_workflows
 # - feedback_behavior_based_ast_gates
 # - feedback_strict_root_only_after_class_a
@@ -96,9 +96,9 @@ jobs:
     # Phase 3 (RFC #219 §1): surface masked defects without blocking
     # PRs. Pre-existing continue-on-error: true directives on main
     # all violate this lint at first — intentional. Flip to false
-    # follow-up after main is clean for 3 days. mc#664.
-    # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
-    continue-on-error: true  # mc#664 Phase 3 mask — 14d forced-renewal cadence
+    # follow-up after main is clean for 3 days. mc#774.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true  # mc#774 Phase 3 mask — 14d forced-renewal cadence
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0

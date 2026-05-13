@@ -4,7 +4,7 @@ name: Lint pre-flip continue-on-error
 # on any job in `.gitea/workflows/*.yml` WITHOUT proof that the affected
 # job's recent runs on the target branch (PR base) are actually green.
 #
-# Empirical class: PR #656 / mc#664. PR #656 (RFC internal#219 Phase 4)
+# Empirical class: PR #656 / mc#774. PR #656 (RFC internal#219 Phase 4)
 # flipped 5 platform-build-class jobs `continue-on-error: true → false`
 # on the basis of a "verified green on main via combined-status check".
 # But that "green" was the LIE the prior `continue-on-error: true`
@@ -13,7 +13,7 @@ name: Lint pre-flip continue-on-error
 # job-level status. The precondition the PR claimed to verify was
 # structurally fooled by the bug being flipped.
 #
-# mc#664 captured the surfaced defects (2 mutually-masked regressions):
+# mc#774 captured the surfaced defects (2 mutually-masked regressions):
 #   - Class 1: sqlmock helper drift since 2f36bb9a (24 days old)
 #   - Class 2: OFFSEC-001 contract collision since 7d1a189f (1 day old)
 #
@@ -55,7 +55,7 @@ name: Lint pre-flip continue-on-error
 #   - YAML parse error in one of the workflow files: warn-only,
 #     don't block — the YAML lint workflows catch this separately.
 #
-# Cross-links: PR#656, mc#664, PR#665 (interim re-mask),
+# Cross-links: PR#656, mc#774, PR#665 (interim re-mask),
 # Quirk #10 (internal#342 + dup #287), hongming-pc2 charter
 # §SOP-N rule (e), feedback_strict_root_only_after_class_a,
 # feedback_no_shared_persona_token_use.
@@ -99,8 +99,8 @@ jobs:
     timeout-minutes: 8
     # Phase 3 (RFC internal#219 §1): surface broken flips without blocking
     # the PR yet. Follow-up flips this to `false` once the workflow itself
-    # has clean recent runs on main. mc#664 interim — remove when CoE→false.
-    continue-on-error: true  # mc#664
+    # has clean recent runs on main. mc#774 interim — remove when CoE→false.
+    continue-on-error: true  # mc#774
     steps:
       - name: Check out PR head (full history for base-SHA access)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2

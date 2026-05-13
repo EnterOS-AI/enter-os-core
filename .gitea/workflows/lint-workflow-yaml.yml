@@ -55,7 +55,7 @@ jobs:
     # Phase 3 (RFC #219 §1): surface broken shapes without blocking PRs.
     # Follow-up PR flips this off after the 4 existing-on-main rule-2
     # (workflow_run) violations are migrated to a supported trigger.
-    # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2

@@ -126,7 +126,7 @@ jobs:
     name: Platform (Go)
     needs: changes
     runs-on: ubuntu-latest
-    # mc#664 (interim): re-mask platform-build pending fix-forward. Phase 4
+    # mc#774 (interim): re-mask platform-build pending fix-forward. Phase 4
     # (#656) flipped this to continue-on-error: false based on a Phase-3-masked
     # "green on main 2026-05-12" — the prior continue-on-error: true had
     # been hiding failing tests in workspace-server/internal/handlers/.
@@ -145,11 +145,11 @@ jobs:
     # Time-boxed Option A (90 min) did not fit the cross-cutting scope.
     # This is a sequenced revert→fix→reflip per
     # feedback_strict_root_only_after_class_a emergency clause — NOT
-    # a permanent re-mask. Re-flip blocked on mc#664 fix-forward landing.
+    # a permanent re-mask. Re-flip blocked on mc#774 fix-forward landing.
     # Other 4 #656 flips (changes, canvas-build, shellcheck, python-lint)
     # retain continue-on-error: false; only platform-build regresses.
-    # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
-    continue-on-error: true  # mc#664 fix-forward in flight; re-flip when mc#664 lands (PR #669 → rebase after #709)
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true  # mc#774 fix-forward in flight; re-flip when mc#774 lands (PR #669 → rebase after #709)
     defaults:
       run:
         working-directory: workspace-server
@@ -187,7 +187,7 @@ jobs:
           echo "::group::pendinguploads exit=$pu_exit (last 100 lines)"
           tail -100 /tmp/test-pu.log
           echo "::endgroup::"
-        # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+        # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
         continue-on-error: true
       - if: needs.changes.outputs.platform == 'true'
         name: Run tests with race detection and coverage
@@ -374,7 +374,7 @@ jobs:
   canvas-deploy-reminder:
     name: Canvas Deploy Reminder
     runs-on: ubuntu-latest
-    # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     needs: [changes, canvas-build]
     # Only fires on direct pushes to main (i.e. after staging→main promotion).
@@ -539,7 +539,7 @@ jobs:
     # `.gitea/scripts/ci-required-drift.py::ci_job_names`).
     #
     # Phase 3 (RFC #219 §1) safety: underlying build jobs carry
-    # continue-on-error: true so their failures are masked to null (2026-05-12: re-enabled mc#664 interim)
+    # continue-on-error: true so their failures are masked to null (2026-05-12: re-enabled mc#774 interim)
     # (Gitea suppresses status reporting for CoE jobs). This sentinel
     # runs with continue-on-error: false so it always reports its
     # result to the API — without this, the required-status entry
@@ -572,7 +572,7 @@ jobs:
           import json, sys
           ns = json.load(sys.stdin)
           # Phase 3 masked: jobs with continue-on-error: true may report "failure"
-          # Remove when mc#664 handler test failures are resolved.
+          # Remove when mc#774 handler test failures are resolved.
           PHASE3_MASKED = {"platform-build"}
           # Exclude null (Phase 3 suppressed / in-flight) from the bad list.
           bad = [(k, v.get("result")) for k, v in ns.items()

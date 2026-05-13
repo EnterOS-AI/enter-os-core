@@ -46,7 +46,7 @@ env:
 jobs:
   gate-check:
     runs-on: ubuntu-latest
-    # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true  # Never block on our own detector failing
     steps:
       - name: Check out BASE ref (never PR-head under pull_request_target)

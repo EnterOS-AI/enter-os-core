@@ -63,7 +63,7 @@ jobs:
   detect-changes:
     runs-on: ubuntu-latest
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
-    # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     outputs:
       run: ${{ steps.decide.outputs.run }}
@@ -155,7 +155,7 @@ jobs:
     name: Harness Replays
     runs-on: ubuntu-latest
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
-    # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     timeout-minutes: 30
     steps:
