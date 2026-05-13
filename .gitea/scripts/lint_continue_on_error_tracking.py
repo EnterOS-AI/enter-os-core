@@ -98,11 +98,13 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Tracker comment regex.
 # Matches: `# mc#1234`, `# internal#42`, `# mc#1234 - description`
+# Also matches trackers embedded mid-sentence: `# see mc#1234 for details`
 # Does NOT match: `# mc1234` (missing inner #), `mc#1234` (no leading
-# `#` comment marker), `# MC#1234` (case-sensitive — `mc` and `internal`
-# are conventional lower-case repo slugs).
+# comment `#`), `# MC#1234` (case-sensitive). The search is line-wide,
+# not just at the comment-marker prefix — fixes false-negative when
+# the tracker appears mid-sentence (e.g. `internal#350` after prose).
 TRACKER_RE = re.compile(
-    r"#\s*(?P<slug>mc|internal)#(?P<num>\d+)\b"
+    r"(?P<slug>mc|internal)#(?P<num>\d+)\b"
 )
 
 # Truthy continue-on-error values we treat as "true". PyYAML decodes

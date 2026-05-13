@@ -417,11 +417,32 @@ func TestMCPHandler_CommitMemory_LocalScope_Success(t *testing.T) {
 	}
 }
 
-// TestMCPHandler_CommitMemory_GlobalScope_Blocked verifies that C3 is enforced:
-// GLOBAL scope is not permitted on the MCP bridge.
-func TestMCPHandler_CommitMemory_GlobalScope_Blocked(t *testing.T) {
+// TestMCPHandler_CommitMemory_GlobalScope_Blocked_ScrubsInternalError verifies
+// two contracts at once on the GLOBAL-scope-blocked path:
+//
+//  1. C3 invariant (commit_memory with scope=GLOBAL aborts on the MCP bridge
+//     before touching the DB), AND
+//  2. OFFSEC-001 / #259 scrub contract (commit 7d1a189f): the JSON-RPC error
+//     returned to the client is a CONSTANT — code=-32000, message="tool call
+//     failed" — with the production-internal err.Error() text logged
+//     server-side, never reflected back to the caller.
+//
+// Prior to this rename the test asserted that the client-visible message
+// CONTAINED the substring "GLOBAL", which was the human-readable internal
+// error from toolCommitMemory. mc#664 Class 2 flipped that assertion the
+// right way around: now the test FAILS if the scrub regresses (i.e. if the
+// internal string is ever reflected back to the wire), and PASSES iff the
+// scrubbed constant reaches the client.
+//
+// Coupling note: the constant string "tool call failed" and the code -32000
+// are the same values asserted by
+// TestMCPHandler_dispatchRPC_UnknownTool_ReturnsConstantMessage — both are
+// the OFFSEC-001 contract for the dispatch-failure branch in mcp.go (the
+// third err.Error() leak that 7d1a189f scrubbed). If those constants ever
+// change, both tests must move together.
+func TestMCPHandler_CommitMemory_GlobalScope_Blocked_ScrubsInternalError(t *testing.T) {
 	h, mock := newMCPHandler(t)
-	// No DB expectations — handler must abort before touching the DB.
+	// No DB expectations — handler must abort before touching the DB (C3).
 
 	w := mcpPost(t, h, "ws-1", map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -436,14 +457,53 @@ func TestMCPHandler_CommitMemory_GlobalScope_Blocked(t *testing.T) {
 		},
 	})
 
+	// JSON-RPC envelope returns 200 with the error in the body — only
+	// malformed-JSON-at-the-envelope-layer returns 400 (see Call() in mcp.go).
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (JSON-RPC error in body), got %d: %s", w.Code, w.Body.String())
+	}
+
 	var resp mcpResponse
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+
+	// (1) C3: an error must be reported.
 	if resp.Error == nil {
-		t.Error("expected JSON-RPC error for GLOBAL scope, got nil")
+		t.Fatal("expected JSON-RPC error for GLOBAL scope, got nil")
 	}
-	if resp.Error != nil && !bytes.Contains([]byte(resp.Error.Message), []byte("GLOBAL")) {
-		t.Errorf("error message should mention GLOBAL, got: %s", resp.Error.Message)
+
+	// (2) OFFSEC-001 positive assertions — exact equality on the scrubbed
+	// constants so any change (re-leak of err.Error(), code mutation) trips
+	// the test. Substring-match would not catch a partial re-leak.
+	if resp.Error.Code != -32000 {
+		t.Errorf("error code should be -32000 (Server error / dispatch-failure), got: %d", resp.Error.Code)
 	}
+	if resp.Error.Message != "tool call failed" {
+		t.Errorf("error message should be the OFFSEC-001 constant %q, got: %q", "tool call failed", resp.Error.Message)
+	}
+
+	// (3) OFFSEC-001 negative assertions — the internal err.Error() text
+	// from toolCommitMemory ("GLOBAL scope is not permitted via the MCP
+	// bridge — use LOCAL or TEAM") must NOT appear in the client-visible
+	// message. Each token below is a distinct substring of that internal
+	// string; if ANY leaks through, the scrub in mcp.go dispatchRPC has
+	// regressed and this assertion fires the canary.
+	leakedTokens := []string{
+		"GLOBAL",    // scope name
+		"scope",     // policy lexicon
+		"permitted", // policy verb
+		"bridge",    // internal architecture term
+		"LOCAL",     // alternative scope name
+		"TEAM",      // alternative scope name
+	}
+	for _, tok := range leakedTokens {
+		if bytes.Contains([]byte(resp.Error.Message), []byte(tok)) {
+			t.Errorf("OFFSEC-001 scrub regression: client-visible error.message leaks internal token %q (got: %q)", tok, resp.Error.Message)
+		}
+	}
+
+	// (4) C3 invariant preserved: handler must short-circuit before any DB call.
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unexpected DB calls on GLOBAL scope block: %v", err)
 	}

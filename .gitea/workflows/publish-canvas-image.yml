@@ -62,6 +62,7 @@ jobs:
     # See issue #576 + infra-lead pulse ~00:30Z.
     runs-on: ubuntu-latest
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     steps:
       - name: Checkout

@@ -226,6 +226,25 @@ func TestLedgerSetStatus_SameStatusReplay_NoUpdate(t *testing.T) {
 	}
 }
 
+func TestLedgerSetStatus_SameStatusReplay_FillsMissingDetail(t *testing.T) {
+	mock := setupTestDB(t)
+	l := NewDelegationLedger(nil)
+
+	mock.ExpectQuery(`SELECT status FROM delegations WHERE delegation_id = \$1`).
+		WithArgs("d-1").
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("failed"))
+	mock.ExpectExec(`UPDATE delegations\s+SET error_detail = COALESCE\(error_detail, NULLIF\(\$2, ''\)\),\s+result_preview = COALESCE\(result_preview, NULLIF\(\$3, ''\)\),\s+updated_at = CASE`).
+		WithArgs("d-1", "agent returned empty response", "").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if err := l.SetStatus(context.Background(), "d-1", "failed", "agent returned empty response", ""); err != nil {
+		t.Errorf("same-status detail fill should succeed, got err: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet: %v", err)
+	}
+}
+
 func TestLedgerSetStatus_MissingRowIsNoOp(t *testing.T) {
 	// A SetStatus call that arrives before Insert (lost INSERT, race, etc.)
 	// must NOT error — it's a transient inconsistency the next agent retry

@@ -53,6 +53,7 @@ jobs:
         # runners with internet access to package mirrors). Falls back to GitHub
         # binary download. GitHub releases may be blocked on some runner networks
         # (infra#241 follow-up).
+        # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
         continue-on-error: true
         run: |
           if apt-get update -qq && apt-get install -y -qq jq; then

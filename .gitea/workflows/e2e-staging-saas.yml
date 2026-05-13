@@ -88,17 +88,20 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 1
+        # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
         continue-on-error: true
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.11"
+        # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
         continue-on-error: true
 
       - name: YAML validation (best-effort)
         run: |
           echo "e2e-staging-saas.yml — PR validation: workflow YAML is valid."
           echo "E2E step runs only when provisioning-critical files change."
+        # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
         continue-on-error: true
 
   # Actual E2E: runs on trunk pushes (main + staging). NOT the PR-fire-only
@@ -109,6 +112,7 @@ jobs:
     # Only runs on trunk pushes. PR paths get pr-validate instead.
     if: github.event.pull_request.base.ref == ''
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#664: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     timeout-minutes: 45
     permissions:
