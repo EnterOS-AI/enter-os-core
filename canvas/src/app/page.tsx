@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Canvas } from "@/components/Canvas";
 import { Legend } from "@/components/Legend";
 import { CommunicationOverlay } from "@/components/CommunicationOverlay";
+import { SearchDialog } from "@/components/SearchDialog";
 import { MobileApp } from "@/components/mobile/MobileApp";
 import { Spinner } from "@/components/Spinner";
 import { connectSocket, disconnectSocket } from "@/store/socket";
@@ -118,6 +119,7 @@ export default function Home() {
       <Canvas />
       <Legend />
       <CommunicationOverlay />
+      <SearchDialog />
       {hydrationError && (
         <div
           role="alert"
