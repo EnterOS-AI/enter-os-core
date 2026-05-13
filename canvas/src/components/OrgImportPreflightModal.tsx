@@ -308,7 +308,7 @@ export function OrgImportPreflightModal({
               type="button"
               onClick={onProceed}
               disabled={!canProceed}
-              className="px-4 py-1.5 text-[11px] font-semibold rounded bg-accent hover:bg-accent-strong text-white disabled:bg-surface-card disabled:text-white-soft disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+              className="px-4 py-1.5 text-[11px] font-semibold rounded bg-accent hover:bg-accent-strong text-white disabled:bg-surface-card disabled:text-ink-soft disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
             >
               Import
             </button>

@@ -16,6 +16,8 @@ interface PendingApproval {
 
 export function ApprovalBanner() {
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
+  // Guards double-click / double-keypress during in-flight POST.
+  const [pendingApprovalId, setPendingApprovalId] = useState<string | null>(null);
 
   // Single endpoint — no N+1 per-workspace polling
   const pollApprovals = useCallback(async () => {
@@ -35,6 +37,8 @@ export function ApprovalBanner() {
   }, [pollApprovals]);
 
   const handleDecide = async (approval: PendingApproval, decision: "approved" | "denied") => {
+    if (pendingApprovalId !== null) return; // guard double-submit
+    setPendingApprovalId(approval.id);
     try {
       await api.post(`/workspaces/${approval.workspace_id}/approvals/${approval.id}/decide`, {
         decision,
@@ -44,6 +48,8 @@ export function ApprovalBanner() {
       setApprovals((prev) => prev.filter((a) => a.id !== approval.id));
     } catch {
       showToast("Failed to submit decision", "error");
+    } finally {
+      setPendingApprovalId(null);
     }
   };
 
@@ -72,22 +78,25 @@ export function ApprovalBanner() {
               <div className="flex gap-2 mt-3">
                 <button
                   type="button"
+                  disabled={pendingApprovalId !== null}
                   onClick={() => handleDecide(approval, "approved")}
-                  // Hover DARKER not lighter — emerald-500 on white text
-                  // drops contrast vs emerald-700.
-                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-xs rounded-lg text-white font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-amber-950 focus-visible:ring-emerald-400/70"
+                  aria-disabled={pendingApprovalId !== null}
+                  // Hover goes DARKER — emerald-600 on white text is 3.3:1 (WCAG AA FAIL).
+                  // emerald-700 is 4.6:1 (WCAG AA PASS). Hover darkens to emerald-600.
+                  className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed text-xs rounded-lg text-white font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-amber-950 focus-visible:ring-emerald-400/70"
                 >
-                  Approve
+                  {pendingApprovalId === approval.id ? "…" : "Approve"}
                 </button>
                 <button
                   type="button"
+                  disabled={pendingApprovalId !== null}
                   onClick={() => handleDecide(approval, "denied")}
-                  // Was a no-op hover (`bg-surface-card hover:bg-surface-card`).
-                  // Lift to surface-elevated on hover so the button visibly
-                  // responds before a destructive deny.
-                  className="px-3 py-1.5 bg-surface-card hover:bg-surface-elevated hover:text-ink text-xs rounded-lg text-ink-mid transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-amber-950 focus-visible:ring-amber-400/70"
+                  aria-disabled={pendingApprovalId !== null}
+                  // `text-ink` (not text-ink-mid) for WCAG AA contrast on bg-surface-card.
+                  // text-ink-mid on zinc-800 fails AA at ~3:1; text-ink passes at ~7:1.
+                  className="px-3 py-1.5 bg-surface-card hover:bg-surface-elevated hover:text-ink text-ink disabled:opacity-40 disabled:cursor-not-allowed text-xs rounded-lg font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-amber-950 focus-visible:ring-amber-400/70"
                 >
-                  Deny
+                  {pendingApprovalId === approval.id ? "…" : "Deny"}
                 </button>
               </div>
             </div>

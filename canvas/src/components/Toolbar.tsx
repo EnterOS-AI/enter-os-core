@@ -314,7 +314,7 @@ export function Toolbar() {
       <div ref={helpRef} className="relative">
         <button
           type="button"
-          onClick={() => setHelpOpen((open) => !open)}
+          onClick={() => setHelpOpen(true)}
           className="flex items-center justify-center w-7 h-7 bg-surface-card hover:bg-surface-card/70 border border-line rounded-lg transition-colors text-ink-mid hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           aria-expanded={helpOpen}
           aria-label="Open shortcuts and tips"

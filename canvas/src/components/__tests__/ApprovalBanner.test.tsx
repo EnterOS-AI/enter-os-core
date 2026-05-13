@@ -238,6 +238,98 @@ describe("ApprovalBanner — decisions", () => {
   });
 });
 
+describe("ApprovalBanner — disabled state while submitting", () => {
+  // Deferred so we can control when the mock POST resolves.
+  let resolvePost: (value: unknown) => void;
+  let postPromise: Promise<unknown>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockApiGet.mockReset().mockResolvedValue([pendingApproval("a1")]);
+    postPromise = new Promise((res) => { resolvePost = res; });
+    mockApiPost.mockReset().mockImplementation(() => postPromise as Promise<unknown>);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  it("disables both buttons while POST is in flight", async () => {
+    render(<ApprovalBanner />);
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    const approveBtn = screen.getAllByRole("button", { name: /approve/i })[0];
+    const denyBtn = screen.getAllByRole("button", { name: /deny/i })[0];
+
+    fireEvent.click(approveBtn);
+    await act(async () => { /* flush */ });
+
+    expect((approveBtn as HTMLButtonElement).disabled).toBe(true);
+    expect((denyBtn as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("re-enables buttons after POST resolves", async () => {
+    render(<ApprovalBanner />);
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    const approveBtn = screen.getAllByRole("button", { name: /approve/i })[0];
+    const denyBtn = screen.getAllByRole("button", { name: /deny/i })[0];
+
+    fireEvent.click(approveBtn);
+    await act(async () => { /* flush */ });
+    expect((approveBtn as HTMLButtonElement).disabled).toBe(true);
+    expect((denyBtn as HTMLButtonElement).disabled).toBe(true);
+
+    // Resolve the deferred POST inside act() so React flushes the state update.
+    await act(async () => {
+      resolvePost!({});
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("re-enables buttons after POST fails", async () => {
+    mockApiPost.mockImplementation(() => Promise.reject(new Error("Network error")));
+    render(<ApprovalBanner />);
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    const approveBtn = screen.getAllByRole("button", { name: /approve/i })[0];
+
+    fireEvent.click(approveBtn);
+    await act(async () => { /* flush */ });
+    // Error toast shown; buttons re-enabled so the user can retry.
+    expect((approveBtn as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("shows ellipsis text on the clicked button while submitting", async () => {
+    render(<ApprovalBanner />);
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    fireEvent.click(screen.getAllByRole("button", { name: /approve/i })[0]);
+    await act(async () => { /* flush */ });
+    // The clicked button now shows "…" instead of "Approve"
+    expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
+    expect(screen.getAllByRole("button", { name: /^…$/ }).length).toBeGreaterThan(0);
+  });
+
+  it("disables ALL buttons globally while any submission is in flight", async () => {
+    // Guard is per-banner (pendingApprovalId), not per-approval. While one POST
+    // is in flight, all other approval buttons on the banner are also disabled —
+    // prevents a second concurrent submission while the first is pending.
+    mockApiGet.mockReset().mockResolvedValue([
+      pendingApproval("a1"),
+      pendingApproval("a2", "ws-2"),
+    ]);
+    render(<ApprovalBanner />);
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    const card1Approve = screen.getAllByRole("button", { name: /approve/i })[0];
+    const card2Approve = screen.getAllByRole("button", { name: /approve/i })[1];
+    fireEvent.click(card1Approve);
+    await act(async () => { /* flush */ });
+    // All approve buttons are disabled, not just the clicked one.
+    expect((card1Approve as HTMLButtonElement).disabled).toBe(true);
+    expect((card2Approve as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
 describe("ApprovalBanner — handles empty list from server", () => {
   beforeEach(() => {
     vi.useFakeTimers();

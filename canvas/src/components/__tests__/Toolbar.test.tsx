@@ -255,6 +255,32 @@ describe("Toolbar — Help popover", () => {
     fireEvent.click(closeBtn);
     expect(screen.queryByRole("dialog")).toBeNull();
   });
+
+  it("closes when pointer is pressed outside the help popover", () => {
+    render(<Toolbar />);
+    const helpBtn = screen.getByRole("button", { name: /open shortcuts and tips/i });
+    fireEvent.click(helpBtn);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    // Simulate pointerdown outside the help popover (not on the help button)
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("opens on click even after a previous pointer-outside close", () => {
+    // Regression: clicking outside closed the popover AND toggled the button
+    // state, so the next click on the button would close it again.
+    // The fix makes the button always open (never toggle) so re-opening works.
+    render(<Toolbar />);
+    const helpBtn = screen.getByRole("button", { name: /open shortcuts and tips/i });
+    fireEvent.click(helpBtn);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    // Click outside (pointerdown on body, not on help button)
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // Click the help button again — must re-open, not double-close
+    fireEvent.click(helpBtn);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
 });
 
 describe("Toolbar — A2A edges toggle", () => {

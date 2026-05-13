@@ -117,7 +117,7 @@ function PlanCard({
       <ul className="mt-6 flex-1 space-y-2 text-sm text-ink-mid">
         {plan.features.map((f) => (
           <li key={f} className="flex items-start">
-            <span className="mr-2 text-accent" aria-hidden>
+            <span className="mr-2 text-accent" aria-hidden="true">
               ✓
             </span>
             {f}
