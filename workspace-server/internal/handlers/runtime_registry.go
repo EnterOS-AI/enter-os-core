@@ -78,6 +78,8 @@ var fallbackRuntimes = map[string]struct{}{
 	"openclaw":    {},
 	"codex":       {},
 	"external":    {},
+	"kimi":        {},
+	"kimi-cli":    {},
 	// mock — virtual workspace with hardcoded canned A2A replies.
 	// No container, no EC2, no template repo. See mock_runtime.go
 	// for the full rationale (200-workspace funding-demo org).
@@ -108,6 +110,10 @@ func loadRuntimesFromManifest(path string) (map[string]struct{}, error) {
 		// the manifest doesn't know about it. Injected here so we
 		// don't need a special-case in every caller.
 		"external": {},
+		// kimi and kimi-cli are BYO-compute meta-runtimes (same shape
+		// as external). No template repo; injected like external.
+		"kimi":     {},
+		"kimi-cli": {},
 		// mock is ALWAYS available for the same reason as external:
 		// virtual workspace, no template repo, never spawns a
 		// container. See mock_runtime.go.
@@ -126,6 +132,28 @@ func loadRuntimesFromManifest(path string) (map[string]struct{}, error) {
 		out[name] = struct{}{}
 	}
 	return out, nil
+}
+
+// isExternalLikeRuntime returns true for runtimes that are BYO-compute
+// (operator-managed, no platform-owned container or EC2). These runtimes
+// share behavior around delivery_mode defaulting, plugin install, restart,
+// and discovery.
+func isExternalLikeRuntime(runtime string) bool {
+	switch runtime {
+	case "external", "kimi", "kimi-cli":
+		return true
+	}
+	return false
+}
+
+// normalizeExternalRuntime returns the given runtime label if non-empty,
+// otherwise falls back to "external". Used when persisting BYO-compute
+// workspaces so we don't store an empty runtime string.
+func normalizeExternalRuntime(runtime string) string {
+	if runtime == "" {
+		return "external"
+	}
+	return runtime
 }
 
 // initKnownRuntimes is called from the package init chain (see

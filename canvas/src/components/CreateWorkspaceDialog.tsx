@@ -80,6 +80,7 @@ export function CreateWorkspaceButton() {
   // isExternal is true the template / model / hermes-provider fields are
   // hidden (they're meaningless for BYO-compute agents).
   const [isExternal, setIsExternal] = useState(false);
+  const [externalRuntime, setExternalRuntime] = useState("external");
   const [externalConnection, setExternalConnection] =
     useState<ExternalConnectionInfo | null>(null);
 
@@ -223,6 +224,7 @@ export function CreateWorkspaceButton() {
     setBudgetLimit("");
     setError(null);
     setHermesProvider("anthropic");
+    setExternalRuntime("external");
     setHermesApiKey("");
     setHermesModel("");
     api
@@ -282,7 +284,7 @@ export function CreateWorkspaceButton() {
         // Runtime=external flips the backend into awaiting-agent mode:
         // no container provisioning, token minted, connection payload
         // returned in the response for the modal below.
-        ...(isExternal ? { runtime: "external" } : {}),
+        ...(isExternal ? { runtime: externalRuntime } : {}),
         ...(!isExternal && isHermes && provider
           ? {
               secrets: { [provider.envVar]: hermesApiKey.trim() },
@@ -381,6 +383,23 @@ export function CreateWorkspaceButton() {
                 </div>
               </div>
             </label>
+
+            {isExternal && (
+              <div>
+                <label className="text-[11px] text-ink-mid block mb-1">
+                  External Runtime
+                </label>
+                <select
+                  value={externalRuntime}
+                  onChange={(e) => setExternalRuntime(e.target.value)}
+                  className="w-full bg-surface-card/60 border border-line/50 rounded-lg px-3 py-2 text-sm text-ink focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/20 transition-colors"
+                >
+                  <option value="external">Generic External</option>
+                  <option value="kimi">Kimi CLI</option>
+                  <option value="kimi-cli">Kimi CLI (alt)</option>
+                </select>
+              </div>
+            )}
 
             {!isExternal && (
               <InputField

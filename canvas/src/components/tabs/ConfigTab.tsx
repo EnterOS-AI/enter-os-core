@@ -13,6 +13,7 @@ import {
   findProviderForModel,
   type SelectorValue,
 } from "../ProviderModelSelector";
+import { isExternalLikeRuntime } from "@/lib/externalRuntimes";
 
 interface Props {
   workspaceId: string;
@@ -175,7 +176,7 @@ function deriveProvidersFromModels(models: ModelSpec[]): string[] {
 // exactly the point of the platform adaptor. The deep `~/.hermes/
 // config.yaml` on the container is a separate runtime-internal file,
 // not this one.
-const RUNTIMES_WITH_OWN_CONFIG = new Set<string>(["external"]);
+const RUNTIMES_WITH_OWN_CONFIG = new Set<string>(["external", "kimi", "kimi-cli"]);
 
 const FALLBACK_RUNTIME_OPTIONS: RuntimeOption[] = [
   { value: "", label: "LangGraph (default)", models: [], providers: [] },
@@ -1003,7 +1004,7 @@ export function ConfigTab({ workspaceId }: Props) {
             : "This runtime manages its own config outside the platform template."}
         </div>
       )}
-      {!error && config.runtime === "external" && (
+      {!error && isExternalLikeRuntime(config.runtime) && (
         <ExternalConnectionSection workspaceId={workspaceId} />
       )}
       {success && (

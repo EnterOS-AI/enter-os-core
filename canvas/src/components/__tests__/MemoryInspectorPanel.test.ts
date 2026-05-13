@@ -7,7 +7,7 @@
  * itself (MemoryInspectorPanel) requires full API + store mocking and
  * is exercised by the existing MemoryTab.test.tsx.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { isPluginUnavailableError, formatTTL } from "../MemoryInspectorPanel";
 
 // formatRelativeTime is not exported — tested via the component in MemoryTab.test.tsx
@@ -47,6 +47,9 @@ describe("isPluginUnavailableError", () => {
 });
 
 describe("formatTTL", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
   it("returns '' for null", () => {
     expect(formatTTL(null)).toBe("");
   });

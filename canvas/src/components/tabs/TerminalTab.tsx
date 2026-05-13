@@ -13,6 +13,7 @@ interface Props {
 }
 
 import { deriveWsBaseUrl } from "@/lib/ws-url";
+import { isExternalLikeRuntime } from "@/lib/externalRuntimes";
 
 const WS_URL = deriveWsBaseUrl();
 
@@ -87,8 +88,6 @@ function NotAvailablePanel({ runtime }: { runtime: string }) {
 /** Runtimes that don't expose a TTY. Keep narrow — only add a runtime
  *  here when its provisioner genuinely has no shell endpoint, otherwise
  *  the user loses access to a real debugging surface. */
-const RUNTIMES_WITHOUT_TERMINAL = new Set(["external"]);
-
 export function TerminalTab({ workspaceId, data }: Props) {
   // Early-return for runtimes that have no shell. Skips the entire
   // xterm + WebSocket dance below — without this, mounting the tab
@@ -96,7 +95,7 @@ export function TerminalTab({ workspaceId, data }: Props) {
   // workspace-server (no /ws/terminal/<id> route registered for it),
   // and shows "Connection failed" with a Reconnect button — confusing
   // because the workspace IS healthy, just doesn't have a TTY.
-  if (data && RUNTIMES_WITHOUT_TERMINAL.has(data.runtime)) {
+  if (data && isExternalLikeRuntime(data.runtime)) {
     return <NotAvailablePanel runtime={data.runtime} />;
   }
 
