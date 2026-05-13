@@ -102,12 +102,14 @@ jobs:
           set -euo pipefail
           echo "::group::Docker daemon health check"
           echo "Runner: ${HOSTNAME:-unknown}"
-          docker info 2>&1 | head -5 || {
+          docker_info="$(docker info 2>&1)" || {
             echo "::error::Docker daemon is not accessible at /var/run/docker.sock"
             echo "::error::Runner: ${HOSTNAME:-unknown}"
+            printf '%s\n' "${docker_info}"
             echo "::error::Check: (1) daemon running, (2) runner user in docker group, (3) sock perms 660+"
             exit 1
           }
+          printf '%s\n' "${docker_info}" | sed -n '1,5p'
           echo "Docker daemon OK"
           echo "::endgroup::"
 
@@ -154,8 +156,9 @@ jobs:
           tags: |
             ${{ env.IMAGE_NAME }}:latest
             ${{ env.IMAGE_NAME }}:sha-${{ steps.tags.outputs.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Gitea artifact-cache reachability is best-effort on the operator
+          # runner network. Do not let cache export fail an image that already
+          # built and pushed successfully.
           labels: |
             org.opencontainers.image.source=https://git.moleculesai.app/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
