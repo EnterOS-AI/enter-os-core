@@ -35,22 +35,27 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o /memory-plugin ./cmd/memory-plugin-postgres
 
 FROM alpine:3.20@sha256:c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e
-# docker-cli is required by internal/provisioner/localbuild.go which
-# shells out via exec.Command("docker", "image", "inspect"/"build"/"tag", ...)
-# whenever Resolve().Mode == RegistryModeLocal — which is the permanent
-# mode post-2026-05-06 (Molecule-AI GitHub org suspended → GHCR
-# unreachable → MOLECULE_IMAGE_REGISTRY unset → registry_mode.go falls
-# through to RegistryModeLocal). Without docker-cli here the platform
-# fails every workspace re-provision with `local-build: image inspect
-# for molecule-local/workspace-template-<runtime>:<sha> failed
-# (exec: "docker": executable file not found in $PATH)` and the
-# workspace stays status=failed. The Docker SOCKET is already mounted
-# (entrypoint.sh adds the platform user to the docker group) — only
-# the CLI binary was missing. Caught after sdk-lead + CP-QA went down
-# this way during the MiniMax-switch attempt + after-Class-A audit.
-# Related: Task #194 / Issue #63 (local-build path added);
-# `feedback_workspace_image_ghcr_dead`.
-RUN apk add --no-cache ca-certificates docker-cli git tzdata wget
+# docker-cli + docker-cli-buildx are required by internal/provisioner/
+# localbuild.go which shells out via exec.Command("docker", "image",
+# "inspect"/"build"/"tag", ...) whenever Resolve().Mode ==
+# RegistryModeLocal — which is the permanent mode post-2026-05-06
+# (Molecule-AI GitHub org suspended → GHCR unreachable →
+# MOLECULE_IMAGE_REGISTRY unset → registry_mode.go falls through to
+# RegistryModeLocal). The CLI binary alone is not enough: modern
+# Docker (26.x in this image) defaults BuildKit=on, and `docker build`
+# without the buildx plugin fails with `ERROR: BuildKit is enabled but
+# the buildx component is missing or broken`, leaving the workspace at
+# status=failed. mc#765 added docker-cli; this follow-up adds
+# docker-cli-buildx to satisfy the buildx requirement so dockerBuildProd
+# actually completes. The Docker SOCKET is already mounted (entrypoint.sh
+# adds the platform user to the docker group). Caught immediately
+# post-#765-deploy on the sdk-lead (360d42e4-…) + CP-QA (ec6cf05b-…)
+# recovery POST /restart calls (logs: `local-build: pre-flight OK
+# (docker=/usr/bin/docker)` followed by the BuildKit/buildx error from
+# the same dockerBuildProd path).
+# Related: mc#765 (parent fix), Task #194 / Issue #63 (local-build path
+# added); `feedback_workspace_image_ghcr_dead`.
+RUN apk add --no-cache ca-certificates docker-cli docker-cli-buildx git tzdata wget
 COPY --from=builder /platform /platform
 COPY --from=builder /memory-plugin /memory-plugin
 COPY workspace-server/migrations /migrations
