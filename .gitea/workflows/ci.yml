@@ -535,11 +535,13 @@ jobs:
     #     hourly if this list diverges from status_check_contexts or from
     #     audit-force-merge.yml's REQUIRED_CHECKS env (RFC §4 + §6).
     #
-    # Excluded from `needs:`: `canvas-deploy-reminder` — gated by
-    # `if: ... github.event_name == 'push' && github.ref == 'refs/heads/main'`,
-    # so on PR events it's legitimately `skipped`. The drift detector
-    # explicitly excludes `github.event_name`-gated jobs from F1 (see
-    # `.gitea/scripts/ci-required-drift.py::ci_job_names`).
+    # mc#923 fix: canvas-deploy-reminder added to needs: above.
+    # The job's `if:` gate (push-to-main only) means it is legitimately
+    # skipped on PRs — the drift detector's F1 should exclude it (it uses
+    # ci_job_names() which skips github.event_name-gated jobs), but
+    # to be safe and consistent with main, include it in needs:. The
+    # all-required sentinel will see it as 'skipped' on PRs and handle
+    # that per its Phase-3 exclusion logic.
     #
     # Phase 3 (RFC #219 §1) safety: underlying build jobs carry
     # continue-on-error: true so their failures are masked to null (2026-05-12: re-enabled mc#774 interim)
@@ -557,6 +559,7 @@ jobs:
       - changes
       - platform-build
       - canvas-build
+      - canvas-deploy-reminder
       - shellcheck
       - python-lint
     if: always()
