@@ -45,13 +45,19 @@ func TestResolveInsideRoot_DotDotTraversal(t *testing.T) {
 }
 
 func TestResolveInsideRoot_DotDotWithIntermediate(t *testing.T) {
-	// a/b/../../c should escape if a/b is not under root
-	got, err := resolveInsideRoot("/safe/root", "a/b/../../c")
-	if err == nil {
-		t.Fatalf("dotdot with intermediate: expected error, got %q", got)
+	// a/b/../../c normalises to "c" — a valid descendant inside any root.
+	// Must use t.TempDir() for a real filesystem path so filepath.Abs resolves.
+	root := t.TempDir()
+	got, err := resolveInsideRoot(root, "a/b/../../c")
+	if err != nil {
+		t.Fatalf("a/b/../../c should resolve within root: %v", err)
 	}
-	if err.Error() != "path escapes root" {
-		t.Errorf("dotdot with intermediate: got %q, want %q", err.Error(), "path escapes root")
+	// Verify result is inside root and ends with "c"
+	if !strings.HasPrefix(got, root+string(filepath.Separator)) {
+		t.Errorf("result should be inside root %q, got %q", root, got)
+	}
+	if got[len(got)-1:] != "c" {
+		t.Errorf("resolved path should end in 'c', got %q", got)
 	}
 }
 
