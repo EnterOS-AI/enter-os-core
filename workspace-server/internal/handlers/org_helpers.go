@@ -79,8 +79,17 @@ func hasUnresolvedVarRef(original, expanded string) bool {
 
 // expandWithEnv expands ${VAR} and $VAR references in s using the env map.
 // Falls back to the platform process env if a var isn't in the map.
+// Shell variables must start with a letter or '_' per POSIX; invalid identifiers
+// are returned literally so that "$100" and "$5" stay as-is.
 func expandWithEnv(s string, env map[string]string) string {
 	return os.Expand(s, func(key string) string {
+		if len(key) == 0 {
+			return "$"
+		}
+		c := key[0]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_') {
+			return "$" + key // not a valid shell identifier — return literal
+		}
 		if v, ok := env[key]; ok {
 			return v
 		}
