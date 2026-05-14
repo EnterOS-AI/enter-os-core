@@ -75,7 +75,7 @@ func TestStartSeedsConfigsBeforeContainerStart(t *testing.T) {
 	if copyTemplate < 0 || writeFiles < 0 || start < 0 {
 		t.Fatalf("expected Start to copy template, write config files, and start container")
 	}
-	if !(copyTemplate < start && writeFiles < start) {
+	if copyTemplate >= start || writeFiles >= start {
 		t.Fatalf("config seeding must happen before ContainerStart: copyTemplate=%d writeFiles=%d start=%d", copyTemplate, writeFiles, start)
 	}
 }
