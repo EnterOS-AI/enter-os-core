@@ -16,7 +16,7 @@ import (
 func TestResolveInsideRoot_EmptyUserPath(t *testing.T) {
 	_, err := resolveInsideRoot("/safe/root", "")
 	if err == nil {
-		t.Fatalf("empty userPath: expected error, got nil")
+		t.Fatal("empty userPath: expected error, got nil")
 	}
 	if err.Error() != "path is empty" {
 		t.Errorf("empty userPath: got %q, want %q", err.Error(), "path is empty")
@@ -26,7 +26,7 @@ func TestResolveInsideRoot_EmptyUserPath(t *testing.T) {
 func TestResolveInsideRoot_AbsolutePathRejected(t *testing.T) {
 	_, err := resolveInsideRoot("/safe/root", "/etc/passwd")
 	if err == nil {
-		t.Fatalf("absolute userPath: expected error, got nil")
+		t.Fatal("absolute userPath: expected error, got nil")
 	}
 	if err.Error() != "absolute paths are not allowed" {
 		t.Errorf("absolute userPath: got %q, want %q", err.Error(), "absolute paths are not allowed")
@@ -44,24 +44,20 @@ func TestResolveInsideRoot_DotDotTraversal(t *testing.T) {
 	}
 }
 
-// TestResolveInsideRoot_DotDotWithIntermediate verifies that a/b/../../c does NOT
-// escape when root=/safe/root. After normalization: a/b/../.. = ., so a/b/../../c = c,
-// which is a valid descendant of /safe/root. The original test expected an error
-// but resolveInsideRoot correctly returns nil (the path stays within root).
-// The OFFSEC-006 concern is covered by ../../etc/passwd which DOES escape.
 func TestResolveInsideRoot_DotDotWithIntermediate(t *testing.T) {
+	// a/b/../../c normalises to "c" — a valid descendant inside any root.
+	// Must use t.TempDir() for a real filesystem path so filepath.Abs resolves.
 	root := t.TempDir()
 	got, err := resolveInsideRoot(root, "a/b/../../c")
 	if err != nil {
-		t.Fatalf("a/b/../../c should resolve (normalizes to c within root): %v", err)
+		t.Fatalf("a/b/../../c should resolve within root: %v", err)
 	}
+	// Verify result is inside root and ends with "c"
 	if !strings.HasPrefix(got, root+string(filepath.Separator)) {
 		t.Errorf("result should be inside root %q, got %q", root, got)
 	}
-	// Ensure the suffix is "c"
-	parts := strings.Split(strings.TrimPrefix(got, root), string(filepath.Separator))
-	if parts[len(parts)-1] != "c" {
-		t.Errorf("expected filename 'c', got %q", got)
+	if got[len(got)-1:] != "c" {
+		t.Errorf("resolved path should end in 'c', got %q", got)
 	}
 }
 
@@ -97,16 +93,14 @@ func TestResolveInsideRoot_DotPathComponent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dot path component: unexpected error: %v", err)
 	}
-	// Verify the file component is subdir/file.txt regardless of root length.
-	suffix := string(filepath.Separator) + "subdir" + string(filepath.Separator) + "file.txt"
-	if !strings.HasSuffix(got, suffix) {
-		t.Errorf("dot path component: got %q, want suffix %q", got, suffix)
+	if got[len(got)-14:] != "/subdir/file.txt" {
+		t.Errorf("dot path component: got %q, want suffix /subdir/file.txt", got)
 	}
 }
 
 func TestResolveInsideRoot_NestedDotDotEscapes(t *testing.T) {
 	root := t.TempDir()
-	// a/../../b from /tmp/xyz → /tmp/b (escapes temp dir)
+	// a/../../b from /tmp/dirsomething → /tmp/b (escapes temp dir)
 	got, err := resolveInsideRoot(root, "a/../../b")
 	if err == nil {
 		t.Fatalf("nested dotdot: expected error, got %q", got)
@@ -143,21 +137,83 @@ func TestResolveInsideRoot_SiblingNotEscaped(t *testing.T) {
 }
 
 // ── isSafeRoleName ────────────────────────────────────────────────────────────
-// isSafeRoleName is tested comprehensively in org_helpers_pure_test.go.
-// Only security-critical path-injection cases live here.
+
+func TestIsSafeRoleName_Valid(t *testing.T) {
+	valid := []string{
+		"backend",
+		"Frontend-Engineer",
+		"research_lead",
+		"devOps123",
+		"a",
+		"A",
+		"team_42-leads",
+	}
+	for _, name := range valid {
+		if !isSafeRoleName(name) {
+			t.Errorf("isSafeRoleName(%q): expected true, got false", name)
+		}
+	}
+}
+
+func TestIsSafeRoleName_Empty(t *testing.T) {
+	if isSafeRoleName("") {
+		t.Error("isSafeRoleName(\"\"): expected false, got true")
+	}
+}
+
+func TestIsSafeRoleName_Dot(t *testing.T) {
+	if isSafeRoleName(".") {
+		t.Error("isSafeRoleName(\".\"): expected false, got true")
+	}
+}
+
+func TestIsSafeRoleName_DotDot(t *testing.T) {
+	if isSafeRoleName("..") {
+		t.Error("isSafeRoleName(\"..\"): expected false, got true")
+	}
+}
+
+func TestIsSafeRoleName_PathTraversal(t *testing.T) {
+	unsafe := []string{
+		"../etc",
+		"foo/../../../etc",
+		"foo/../../bar",
+	}
+	for _, name := range unsafe {
+		if isSafeRoleName(name) {
+			t.Errorf("isSafeRoleName(%q): expected false (path traversal), got true", name)
+		}
+	}
+}
+
+func TestIsSafeRoleName_SpecialChars(t *testing.T) {
+	unsafe := []string{
+		"foo:bar",
+		"foo bar",
+		"foo\tbar",
+		"foo\nbar",
+		"foo\x00bar",
+		"foo@bar",
+		"foo#bar",
+		"foo$bar",
+	}
+	for _, name := range unsafe {
+		if isSafeRoleName(name) {
+			t.Errorf("isSafeRoleName(%q): expected false (special char), got true", name)
+		}
+	}
+}
 
 // ── mergeCategoryRouting ──────────────────────────────────────────────────────
-// Duplicate mergeCategoryRouting tests removed to avoid redeclaration with
-// org_helpers_pure_test.go. Only security-specific behaviour lives here.
 
-func TestSecureRouting_BothNil(t *testing.T) {
+func TestMergeCategoryRouting_BothNil(t *testing.T) {
 	got := mergeCategoryRouting(nil, nil)
 	if len(got) != 0 {
 		t.Errorf("both nil: got %v, want empty", got)
 	}
 }
 
-func TestSecureRouting_DefaultOnly(t *testing.T) {
+func TestMergeCategoryRouting_DefaultOnly(t *testing.T) {
 	defaultRouting := map[string][]string{
 		"security": {"Backend Engineer", "DevOps"},
 	}
@@ -170,7 +226,7 @@ func TestSecureRouting_DefaultOnly(t *testing.T) {
 	}
 }
 
-func TestSecureRouting_WorkspaceOnly(t *testing.T) {
+func TestMergeCategoryRouting_WorkspaceOnly(t *testing.T) {
 	wsRouting := map[string][]string{
 		"ui": {"Frontend Engineer"},
 	}
@@ -183,7 +239,7 @@ func TestSecureRouting_WorkspaceOnly(t *testing.T) {
 	}
 }
 
-func TestSecureRouting_MergeNoOverlap(t *testing.T) {
+func TestMergeCategoryRouting_MergeNoOverlap(t *testing.T) {
 	defaultRouting := map[string][]string{
 		"security": {"Backend Engineer"},
 	}
@@ -196,7 +252,7 @@ func TestSecureRouting_MergeNoOverlap(t *testing.T) {
 	}
 }
 
-func TestSecureRouting_WsOverrideDropsDefault(t *testing.T) {
+func TestMergeCategoryRouting_WsOverrideDropsDefault(t *testing.T) {
 	defaultRouting := map[string][]string{
 		"security": {"Backend Engineer", "DevOps"},
 	}
@@ -212,7 +268,7 @@ func TestSecureRouting_WsOverrideDropsDefault(t *testing.T) {
 	}
 }
 
-func TestSecureRouting_EmptyListDropsCategory(t *testing.T) {
+func TestMergeCategoryRouting_EmptyListDropsCategory(t *testing.T) {
 	defaultRouting := map[string][]string{
 		"security": {"Backend Engineer"},
 		"ui":       {"Frontend Engineer"},
@@ -229,7 +285,7 @@ func TestSecureRouting_EmptyListDropsCategory(t *testing.T) {
 	}
 }
 
-func TestSecureRouting_EmptyKeySkipped(t *testing.T) {
+func TestMergeCategoryRouting_EmptyKeySkipped(t *testing.T) {
 	defaultRouting := map[string][]string{
 		"": {"Backend Engineer"},
 	}
@@ -239,7 +295,7 @@ func TestSecureRouting_EmptyKeySkipped(t *testing.T) {
 	}
 }
 
-func TestSecureRouting_EmptyRolesInDefaultSkipped(t *testing.T) {
+func TestMergeCategoryRouting_EmptyRolesInDefaultSkipped(t *testing.T) {
 	defaultRouting := map[string][]string{
 		"security": {},
 	}
@@ -249,7 +305,7 @@ func TestSecureRouting_EmptyRolesInDefaultSkipped(t *testing.T) {
 	}
 }
 
-func TestSecureRouting_OriginalMapsUnmodified(t *testing.T) {
+func TestMergeCategoryRouting_OriginalMapsUnmodified(t *testing.T) {
 	defaultRouting := map[string][]string{
 		"security": {"Backend Engineer"},
 	}

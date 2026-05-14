@@ -15,6 +15,7 @@ import (
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/channels"
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 	"github.com/gin-gonic/gin"
 )
 
@@ -565,6 +566,20 @@ func TestChannelHandler_Discover_MissingToken(t *testing.T) {
 }
 
 func TestChannelHandler_Discover_UnsupportedType(t *testing.T) {
+	// Set up db.DB so PausePollersForToken (called inside Discover) doesn't panic.
+	mockDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	t.Cleanup(func() { mockDB.Close() })
+	prevDB := db.DB
+	db.DB = mockDB
+	t.Cleanup(func() { db.DB = prevDB })
+
+	mock.ExpectQuery(`SELECT id, channel_config FROM workspace_channels WHERE enabled = true AND workspace_id`).
+		WithArgs("ws-test").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "channel_config"}))
+
 	handler := NewChannelHandler(newTestChannelManager())
 
 	// #329: workspace_id required — include so we actually reach the
@@ -588,6 +603,20 @@ func TestChannelHandler_Discover_UnsupportedType(t *testing.T) {
 }
 
 func TestChannelHandler_Discover_InvalidBotToken(t *testing.T) {
+	// Set up db.DB so PausePollersForToken (called inside Discover) doesn't panic.
+	mockDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	t.Cleanup(func() { mockDB.Close() })
+	prevDB := db.DB
+	db.DB = mockDB
+	t.Cleanup(func() { db.DB = prevDB })
+
+	mock.ExpectQuery(`SELECT id, channel_config FROM workspace_channels WHERE enabled = true AND workspace_id`).
+		WithArgs("ws-test").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "channel_config"}))
+
 	handler := NewChannelHandler(newTestChannelManager())
 
 	body, _ := json.Marshal(map[string]interface{}{

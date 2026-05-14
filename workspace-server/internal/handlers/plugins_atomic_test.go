@@ -215,7 +215,6 @@ func TestTarWalk_EmptyDirectory(t *testing.T) {
 	}
 }
 
-// TestTarWalk_NestedDirs is in plugins_atomic_tar_test.go.
 // TestTarWalk_DirEntryHasTrailingSlash: directory entries must end with '/'
 // per tar format; tar.Header.Typeflag '5' (dir) must produce "name/" not "name".
 func TestTarWalk_DirEntryHasTrailingSlash(t *testing.T) {

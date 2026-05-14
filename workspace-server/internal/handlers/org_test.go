@@ -356,6 +356,13 @@ func TestExpandWithEnv_UnsetVar(t *testing.T) {
 	}
 }
 
+func TestHasUnresolvedVarRef_LiteralDollar(t *testing.T) {
+	// "$5" is a literal price, not a var ref — should NOT be flagged
+	if hasUnresolvedVarRef("price: $5", "price: $5") {
+		t.Error("literal $5 should not be flagged as unresolved")
+	}
+}
+
 func TestHasUnresolvedVarRef_DollarVarSyntax(t *testing.T) {
 	// $VAR syntax (no braces) — also a real ref
 	if !hasUnresolvedVarRef("$MISSING_VAR", "") {

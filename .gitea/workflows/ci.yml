@@ -146,6 +146,10 @@ jobs:
     # the diagnostic step with its own continue-on-error: true (line 203).
     # Flip confirmed by CI / Platform (Go) status = success on main HEAD 363905d3.
     continue-on-error: false
+    # Job-level ceiling. The go test step below runs with a per-step 10m timeout;
+    # this cap catches any step that leaks past that. Set well above 10m so
+    # the per-step timeout is the active constraint.
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: workspace-server
@@ -190,7 +194,11 @@ jobs:
         continue-on-error: true
       - if: needs.changes.outputs.platform == 'true'
         name: Run tests with race detection and coverage
-        run: go test -race -coverprofile=coverage.out ./...
+        # Explicit timeout: cold runner cache causes OOM kills at ~4m39s on the
+        # full ./... suite with race detection + coverage. A 10m per-step timeout
+        # lets the suite complete on cold cache (~5-7m) while failing cleanly
+        # instead of OOM-killing. The job-level timeout (15m) is a backstop.
+        run: go test -race -timeout 10m -coverprofile=coverage.out ./...
 
       - if: needs.changes.outputs.platform == 'true'
         name: Per-file coverage report
