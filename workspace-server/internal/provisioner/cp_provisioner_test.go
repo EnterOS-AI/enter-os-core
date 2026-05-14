@@ -842,3 +842,67 @@ func TestIsRunning_EmptyInstanceIDReturnsFalse(t *testing.T) {
 		t.Errorf("IsRunning with empty instance_id should return running=false, got true")
 	}
 }
+
+// TestCollectCPConfigFiles_SkipsSymlinks — WalkDir follows symlinks by default,
+// but collectCPConfigFiles must skip them so a symlink inside a template dir
+// pointing outside (e.g. ln -s /etc snapshot) cannot be traversed.
+// Verifies OFFSEC-010 defense-in-depth fix. (OFFSEC-010)
+func TestCollectCPConfigFiles_SkipsSymlinks(t *testing.T) {
+	tmpl := t.TempDir()
+	// Write a real file that should be included.
+	if err := os.WriteFile(filepath.Join(tmpl, "config.yaml"), []byte("name: real\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Create a subdir with a file that will be symlinked-outside.
+	sensitiveDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sensitiveDir, "secret.txt"), []byte("SENSITIVE\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Symlink inside template dir pointing to outside path.
+	symlinkPath := filepath.Join(tmpl, "snapshot")
+	if err := os.Symlink(sensitiveDir, symlinkPath); err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := collectCPConfigFiles(WorkspaceConfig{TemplatePath: tmpl})
+	if err != nil {
+		t.Fatalf("collectCPConfigFiles: %v", err)
+	}
+	if files == nil {
+		t.Fatal("files should not be nil")
+	}
+	// config.yaml must be present.
+	if _, ok := files["config.yaml"]; !ok {
+		t.Errorf("config.yaml missing from files")
+	}
+	// The symlinked path must NOT be included (even though WalkDir would
+	// traverse it, the d.Type()&os.ModeSymlink guard skips the entry).
+	for k := range files {
+		if strings.Contains(k, "snapshot") || strings.Contains(k, "secret") {
+			t.Errorf("symlink path %q should not be in files — OFFSEC-010 regression", k)
+		}
+	}
+}
+
+// TestCollectCPConfigFiles_RejectsRootSymlink — if cfg.TemplatePath itself is
+// a symlink, WalkDir would follow it to an arbitrary directory, bypassing the
+// cfg.TemplatePath boundary. The function must reject this case explicitly.
+// (OFFSEC-010)
+func TestCollectCPConfigFiles_RejectsRootSymlink(t *testing.T) {
+	real := t.TempDir()
+	if err := os.WriteFile(filepath.Join(real, "config.yaml"), []byte("name: real\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "template-link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := collectCPConfigFiles(WorkspaceConfig{TemplatePath: link})
+	if err == nil {
+		t.Error("collectCPConfigFiles with symlink TemplatePath should return error")
+	}
+	if err != nil && !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("expected symlink-related error, got: %v", err)
+	}
+}
