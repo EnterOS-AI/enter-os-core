@@ -1059,18 +1059,6 @@ func TestCollectOrgEnv_AnyOfWithInvalidMemberKeepsValidOnes(t *testing.T) {
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// walkOrgWorkspaceNames tests
-// ─────────────────────────────────────────────────────────────────────────────
-
-func TestWalkOrgWorkspaceNames_Empty(t *testing.T) {
-	var names []string
-	walkOrgWorkspaceNames(nil, &names)
-	if len(names) != 0 {
-		t.Errorf("empty tree: expected 0 names, got %d", len(names))
-	}
-}
-
 func TestResolveProvisionConcurrency_ValidPositive(t *testing.T) {
 	t.Setenv("MOLECULE_PROVISION_CONCURRENCY", "8")
 	got := resolveProvisionConcurrency()
