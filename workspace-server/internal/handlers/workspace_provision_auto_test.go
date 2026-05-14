@@ -144,6 +144,7 @@ func TestProvisionWorkspaceAuto_RoutesToCPWhenSet(t *testing.T) {
 	rec := &trackingCPProv{startErr: errors.New("simulated CP rejection")}
 	bcast := &concurrentSafeBroadcaster{}
 	h := NewWorkspaceHandler(bcast, nil, "http://localhost:8080", t.TempDir())
+	waitForHandlerAsyncBeforeDBCleanup(t, h)
 	h.SetCPProvisioner(rec)
 
 	wsID := "ws-routes-to-cp-0123456789abcdef"
@@ -595,6 +596,7 @@ func TestRestartWorkspaceAuto_RoutesToCPWhenSet(t *testing.T) {
 
 	// Mock DB so cpStopWithRetry can run without a real Postgres.
 	mock := setupTestDB(t)
+	waitForHandlerAsyncBeforeDBCleanup(t, h)
 	mock.MatchExpectationsInOrder(false)
 	// provisionWorkspaceCP runs in the goroutine and will hit secrets
 	// SELECTs + UPDATE workspace as failed (we make CP Start return
@@ -670,6 +672,7 @@ func TestRestartWorkspaceAuto_RoutesToDockerWhenOnlyDocker(t *testing.T) {
 
 	bcast := &concurrentSafeBroadcaster{}
 	h := NewWorkspaceHandler(bcast, nil, "http://localhost:8080", t.TempDir())
+	waitForHandlerAsyncBeforeDBCleanup(t, h)
 	stub := &stoppingLocalProv{}
 	h.provisioner = stub
 

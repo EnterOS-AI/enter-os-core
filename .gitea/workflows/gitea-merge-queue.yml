@@ -48,4 +48,9 @@ jobs:
           REQUIRED_CONTEXTS: >-
             CI / all-required (pull_request),
             sop-checklist / all-items-acked (pull_request)
+          # Push-side required contexts. Checking CI / all-required (push)
+          # explicitly instead of the combined state avoids false-pause when
+          # non-blocking jobs (continue-on-error: true) have failed — those
+          # failures pollute combined state but do not gate merges.
+          PUSH_REQUIRED_CONTEXTS: CI / all-required (push)
         run: python3 .gitea/scripts/gitea-merge-queue.py

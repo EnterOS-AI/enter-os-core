@@ -111,11 +111,11 @@ func (h *WorkspaceHandler) provisionWorkspaceAuto(workspaceID, templatePath stri
 		"sync":         false,
 	})
 	if h.cpProv != nil {
-		go h.provisionWorkspaceCP(workspaceID, templatePath, configFiles, payload)
+		h.goAsync(func() { h.provisionWorkspaceCP(workspaceID, templatePath, configFiles, payload) })
 		return true
 	}
 	if h.provisioner != nil {
-		go h.provisionWorkspace(workspaceID, templatePath, configFiles, payload)
+		h.goAsync(func() { h.provisionWorkspace(workspaceID, templatePath, configFiles, payload) })
 		return true
 	}
 	// No backend wired — mark failed so the workspace doesn't linger in
@@ -275,13 +275,13 @@ func (h *WorkspaceHandler) RestartWorkspaceAutoOpts(ctx context.Context, workspa
 	if h.cpProv != nil {
 		h.cpStopWithRetry(ctx, workspaceID, "RestartWorkspaceAuto")
 		// resetClaudeSession is Docker-only — CP has no session state to clear.
-		go h.provisionWorkspaceCP(workspaceID, templatePath, configFiles, payload)
+		h.goAsync(func() { h.provisionWorkspaceCP(workspaceID, templatePath, configFiles, payload) })
 		return true
 	}
 	if h.provisioner != nil {
 		// Docker.Stop has no retry — see docstring rationale.
 		h.provisioner.Stop(ctx, workspaceID)
-		go h.provisionWorkspaceOpts(workspaceID, templatePath, configFiles, payload, resetClaudeSession)
+		h.goAsync(func() { h.provisionWorkspaceOpts(workspaceID, templatePath, configFiles, payload, resetClaudeSession) })
 		return true
 	}
 	// No backend wired — same shape as provisionWorkspaceAuto's no-backend

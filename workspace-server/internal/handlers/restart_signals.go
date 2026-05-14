@@ -58,7 +58,7 @@ func (h *WorkspaceHandler) gracefulPreRestart(ctx context.Context, workspaceID s
 	// Non-blocking send — don't stall the restart cycle.
 	// Run in a detached goroutine so the caller (runRestartCycle) can
 	// proceed to stopForRestart without waiting.
-	go func() {
+	h.goAsync(func() {
 		signalCtx, cancel := context.WithTimeout(context.Background(), restartSignalTimeout)
 		defer cancel()
 
@@ -109,7 +109,7 @@ func (h *WorkspaceHandler) gracefulPreRestart(ctx context.Context, workspaceID s
 		} else {
 			log.Printf("A2AGracefulRestart: %s returned status %d — proceeding with stop", workspaceID, resp.StatusCode)
 		}
-	}()
+	})
 }
 
 // resolveAgentURLForRestartSignal returns the routable URL for the workspace

@@ -203,11 +203,16 @@ def ci_jobs_all(ci_doc: dict) -> set[str]:
 
 def ci_job_names(ci_doc: dict) -> set[str]:
     """Set of job keys in ci.yml MINUS the sentinel itself MINUS jobs
-    whose `if:` gates on `github.event_name` (those are event-scoped
-    and can legitimately be `skipped` for a given trigger; if we
-    required them under the sentinel `needs:`, every PR-only job
+    whose `if:` gates on `github.event_name` or `github.ref` (those are
+    event-scoped and can legitimately be `skipped` for a given trigger;
+    if we required them under the sentinel `needs:`, every PR-only job
     would be `skipped` on push and the sentinel would interpret
     `skipped != success` as failure). RFC §4 spec.
+
+    `github.ref` is the companion gate for jobs that run only on direct
+    pushes to specific branches (e.g. `github.ref == 'refs/heads/main'`).
+    These never execute in a PR context, so flagging them as missing
+    from `all-required.needs:` is a false positive (mc#958 / mc#959).
 
     Used for F1 (jobs missing from sentinel needs). NOT used for F1b
     (typos in needs) — see `ci_jobs_all` for that."""
@@ -221,7 +226,9 @@ def ci_job_names(ci_doc: dict) -> set[str]:
             continue
         if isinstance(v, dict):
             gate = v.get("if")
-            if isinstance(gate, str) and "github.event_name" in gate:
+            if isinstance(gate, str) and (
+                "github.event_name" in gate or "github.ref" in gate
+            ):
                 continue
         names.add(k)
     return names

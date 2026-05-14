@@ -65,9 +65,18 @@ export function ThemeToggle({ className = "" }: { className?: string }) {
       // Use direct-child query to scope strictly to this radiogroup's buttons
       // and avoid accidentally focusing unrelated [role=radio] elements
       // elsewhere in the DOM (e.g. React Flow canvas nodes).
+      // Guard: skip focus if the current target is no longer in the document
+      // (e.g. React StrictMode double-invokes handlers during re-render).
+      if (!e.currentTarget.isConnected) return;
       const radiogroup = e.currentTarget.closest("[role=radiogroup]") as HTMLElement | null;
-      const btns = radiogroup?.querySelectorAll<HTMLButtonElement>("> [role=radio]");
-      btns?.[next]?.focus();
+      if (!radiogroup) return;
+      // Use children[] instead of querySelectorAll("> [role=radio]") to avoid
+      // jsdom's child-combinator selector parsing issues in test environments.
+      const btns = Array.from(radiogroup.children).filter(
+        (el): el is HTMLButtonElement =>
+          el.tagName === "BUTTON" && el.getAttribute("role") === "radio"
+      );
+      if (next < btns.length) btns[next]?.focus();
     },
     []
   );

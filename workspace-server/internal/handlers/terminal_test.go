@@ -340,6 +340,11 @@ func TestSSHCommandCmd_BuildsArgv(t *testing.T) {
 // a workspace must still be able to access its own terminal. The CanCommunicate
 // fast-path returns true when callerID == targetID.
 func TestTerminalConnect_KI005_AllowsOwnTerminal(t *testing.T) {
+	mock := setupTestDB(t)
+	mock.ExpectQuery("SELECT COALESCE").
+		WithArgs("ws-alice").
+		WillReturnRows(sqlmock.NewRows([]string{"instance_id"}).AddRow(""))
+
 	// CanCommunicate fast-path: callerID == targetID → returns true without DB.
 	prev := canCommunicateCheck
 	canCommunicateCheck = func(callerID, targetID string) bool { return callerID == targetID }
@@ -367,6 +372,11 @@ func TestTerminalConnect_KI005_AllowsOwnTerminal(t *testing.T) {
 // skip the CanCommunicate check entirely and fall through to the Docker auth path.
 // We assert they get the nil-docker 503 instead of 403.
 func TestTerminalConnect_KI005_SkipsCheckWithoutHeader(t *testing.T) {
+	mock := setupTestDB(t)
+	mock.ExpectQuery("SELECT COALESCE").
+		WithArgs("ws-any").
+		WillReturnRows(sqlmock.NewRows([]string{"instance_id"}).AddRow(""))
+
 	h := NewTerminalHandler(nil) // nil docker → 503 if reached
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -439,6 +449,9 @@ func TestTerminalConnect_KI005_AllowsSiblingWorkspace(t *testing.T) {
 	mock.ExpectExec(`UPDATE workspace_auth_tokens SET last_used_at`).
 		WithArgs(sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT COALESCE").
+		WithArgs("ws-dev").
+		WillReturnRows(sqlmock.NewRows([]string{"instance_id"}).AddRow(""))
 
 	h := NewTerminalHandler(nil)
 	w := httptest.NewRecorder()
@@ -463,7 +476,10 @@ func TestTerminalConnect_KI005_AllowsSiblingWorkspace(t *testing.T) {
 // introduced in GH#1885: internal routing uses org tokens which are not in
 // workspace_auth_tokens, so ValidateToken would always fail for them.
 func TestKI005_OrgToken_SkipsValidateToken(t *testing.T) {
-	setupTestDB(t) // no ValidateToken ExpectQuery — none should fire
+	mock := setupTestDB(t) // no ValidateToken ExpectQuery — none should fire
+	mock.ExpectQuery("SELECT COALESCE").
+		WithArgs("ws-target").
+		WillReturnRows(sqlmock.NewRows([]string{"instance_id"}).AddRow(""))
 	prev := canCommunicateCheck
 	canCommunicateCheck = func(callerID, targetID string) bool {
 		// Simulate platform agent → target workspace (same org).
@@ -544,4 +560,3 @@ func TestSSHCommandCmd_ConnectTimeoutPresent(t *testing.T) {
 			args)
 	}
 }
-

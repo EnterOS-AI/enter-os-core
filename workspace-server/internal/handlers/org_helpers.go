@@ -15,6 +15,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
 // resolvePromptRef reads a prompt body from either an inline string or a
 // file ref relative to the workspace's files_dir. Inline always wins when
 // both are non-empty (caller-provided inline is more authoritative than a
@@ -131,6 +132,15 @@ func expandWithEnv(s string, env map[string]string) string {
 	return b.String()
 }
 
+
+func isEnvIdentStart(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+
+func isEnvIdentPart(c byte) bool {
+	return isEnvIdentStart(c) || (c >= '0' && c <= '9')
+}
+
 // expandEnvRef resolves a single variable reference extracted from s.
 //
 // Guards:
@@ -166,13 +176,6 @@ func expandEnvRef(key, ref, whole string, env map[string]string) string {
 	return ref
 }
 
-func isEnvIdentStart(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
-}
-
-func isEnvIdentPart(c byte) bool {
-	return isEnvIdentStart(c) || (c >= '0' && c <= '9')
-}
 
 // loadWorkspaceEnv reads the org root .env and the workspace-specific .env .env and the workspace-specific .env
 // (workspace overrides org root). Used by both secret injection and channel

@@ -54,6 +54,7 @@ func TestPreflight_ContainerRunning_ReturnsNil(t *testing.T) {
 	_ = setupTestDB(t)
 	stub := &preflightLocalProv{running: true, err: nil}
 	h := NewWorkspaceHandler(newTestBroadcaster(), nil, "http://localhost:8080", t.TempDir())
+	waitForHandlerAsyncBeforeDBCleanup(t, h)
 	h.provisioner = stub
 
 	if err := h.preflightContainerHealth(context.Background(), "ws-running-123"); err != nil {
@@ -186,8 +187,8 @@ func TestProxyA2A_Preflight_RoutesThroughProvisionerSSOT(t *testing.T) {
 	}
 
 	var (
-		callsIsRunning             bool
-		callsContainerInspectRaw   bool
+		callsIsRunning                  bool
+		callsContainerInspectRaw        bool
 		callsRunningContainerNameDirect bool
 	)
 	ast.Inspect(fn.Body, func(n ast.Node) bool {

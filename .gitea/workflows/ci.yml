@@ -146,6 +146,10 @@ jobs:
     # the diagnostic step with its own continue-on-error: true (line 203).
     # Flip confirmed by CI / Platform (Go) status = success on main HEAD 363905d3.
     continue-on-error: false
+    # Job-level ceiling. The go test step below runs with a per-step 10m timeout;
+    # this cap catches any step that leaks past that. Set well above 10m so
+    # the per-step timeout is the active constraint.
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: workspace-server
@@ -190,7 +194,11 @@ jobs:
         continue-on-error: true
       - if: needs.changes.outputs.platform == 'true'
         name: Run tests with race detection and coverage
-        run: go test -race -coverprofile=coverage.out ./...
+        # Explicit timeout: cold runner cache causes OOM kills at ~4m39s on the
+        # full ./... suite with race detection + coverage. A 10m per-step timeout
+        # lets the suite complete on cold cache (~5-7m) while failing cleanly
+        # instead of OOM-killing. The job-level timeout (15m) is a backstop.
+        run: go test -race -timeout 10m -coverprofile=coverage.out ./...
 
       - if: needs.changes.outputs.platform == 'true'
         name: Per-file coverage report
@@ -296,6 +304,7 @@ jobs:
     name: Canvas (Next.js)
     needs: changes
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # Phase 4 (RFC #219 §1): confirmed green on main 2026-05-12.
     continue-on-error: false
     defaults:
@@ -394,12 +403,13 @@ jobs:
   canvas-deploy-reminder:
     name: Canvas Deploy Reminder
     runs-on: ubuntu-latest
-    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
-    continue-on-error: true
+    # mc#774 root-fix: added job-level `if:` so ci-required-drift.py's
+    # ci_job_names() detects this as github.ref-gated and skips it from F1.
+    # The step-level exit 0 handles the "not main push" case; the job-level
+    # `if:` makes the gating explicit so the drift script sees it.
+    # continue-on-error removed (was mc#774 mask): step exits 0 when not applicable.
     needs: [changes, canvas-build]
-    # Keep the job itself always runnable. Gitea 1.22.6 leaves job-level
-    # event/ref `if:` gates as pending on PRs, which blocks the combined
-    # status even though this reminder is intentionally non-required.
+    if: ${{ github.ref == 'refs/heads/main' }}
     steps:
       - name: Write deploy reminder to step summary
         env:
@@ -562,11 +572,11 @@ jobs:
     #     hourly if this list diverges from status_check_contexts or from
     #     audit-force-merge.yml's REQUIRED_CHECKS env (RFC §4 + §6).
     #
-    # canvas-deploy-reminder is intentionally excluded from all-required.needs:
-    # it needs canvas-build, which is skipped on CI-only PRs (canvas=false).
-    # Including it in all-required.needs causes all-required to hang on
-    # every CI-only PR. Keep it runnable on PRs via its own
-    # `needs: [changes, canvas-build]` — the sentinel only aggregates the result.
+    # canvas-deploy-reminder IS now included in all-required.needs (mc#958 root-fix):
+    # added job-level `if: github.ref == 'refs/heads/main'` so ci-required-drift.py's
+    # ci_job_names() detects it as github.ref-gated and skips it from F1.
+    # The step-level `if: ... || REF_NAME != refs/heads/main` exits 0 when not main,
+    # so the job succeeds (not skipped) on non-main pushes — sentinel treats as green.
     #
     # Phase 3 (RFC #219 §1) safety: underlying build jobs carry
     # continue-on-error: true so their failures are masked to null (2026-05-12: re-enabled mc#774 interim)
@@ -586,6 +596,7 @@ jobs:
       - canvas-build
       - shellcheck
       - python-lint
+      - canvas-deploy-reminder
     if: ${{ always() }}
     steps:
       - name: Assert every required dependency succeeded

@@ -262,6 +262,7 @@ func TestProxyA2A_Upstream502_TriggersContainerDeadCheck(t *testing.T) {
 	allowLoopbackForTest(t)
 	broadcaster := newTestBroadcaster()
 	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+	waitForHandlerAsyncBeforeDBCleanup(t, handler)
 	cp := &fakeCPProv{running: false}
 	handler.SetCPProvisioner(cp)
 
@@ -324,6 +325,7 @@ func TestProxyA2A_Upstream502_AliveAgent_PropagatesAsIs(t *testing.T) {
 	allowLoopbackForTest(t)
 	broadcaster := newTestBroadcaster()
 	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+	waitForHandlerAsyncBeforeDBCleanup(t, handler)
 	cp := &fakeCPProv{running: true}
 	handler.SetCPProvisioner(cp)
 
@@ -513,6 +515,7 @@ func TestProxyA2A_AllowedSelf_SkipsAccessCheck(t *testing.T) {
 	allowLoopbackForTest(t)
 	broadcaster := newTestBroadcaster()
 	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+	waitForHandlerAsyncBeforeDBCleanup(t, handler)
 
 	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -661,18 +664,18 @@ func TestProxyA2A_CallerIDDerivedFromBearer(t *testing.T) {
 	//    (column order: workspace_id, activity_type, source_id, target_id, ...)
 	mock.ExpectExec("INSERT INTO activity_logs").
 		WithArgs(
-			"ws-target",                       // $1 workspace_id
-			"a2a_receive",                     // $2 activity_type
-			sqlmock.AnyArg(),                  // $3 source_id — *string("ws-caller"), checked below
-			sqlmock.AnyArg(),                  // $4 target_id
-			sqlmock.AnyArg(),                  // $5 method
-			sqlmock.AnyArg(),                  // $6 summary
-			sqlmock.AnyArg(),                  // $7 request_body
-			sqlmock.AnyArg(),                  // $8 response_body
-			sqlmock.AnyArg(),                  // $9 tool_trace
-			sqlmock.AnyArg(),                  // $10 duration_ms
-			sqlmock.AnyArg(),                  // $11 status
-			sqlmock.AnyArg(),                  // $12 error_detail
+			"ws-target",      // $1 workspace_id
+			"a2a_receive",    // $2 activity_type
+			sqlmock.AnyArg(), // $3 source_id — *string("ws-caller"), checked below
+			sqlmock.AnyArg(), // $4 target_id
+			sqlmock.AnyArg(), // $5 method
+			sqlmock.AnyArg(), // $6 summary
+			sqlmock.AnyArg(), // $7 request_body
+			sqlmock.AnyArg(), // $8 response_body
+			sqlmock.AnyArg(), // $9 tool_trace
+			sqlmock.AnyArg(), // $10 duration_ms
+			sqlmock.AnyArg(), // $11 status
+			sqlmock.AnyArg(), // $12 error_detail
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -1716,7 +1719,6 @@ func TestDispatchA2A_RejectsUnsafeURL(t *testing.T) {
 	}
 }
 
-
 // --- handleA2ADispatchError ---
 
 func TestHandleA2ADispatchError_ContextDeadline(t *testing.T) {
@@ -1803,6 +1805,7 @@ func TestMaybeMarkContainerDead_CPOnly_NotRunning(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)
 	handler := NewWorkspaceHandler(newTestBroadcaster(), nil, "http://localhost:8080", t.TempDir())
+	waitForHandlerAsyncBeforeDBCleanup(t, handler)
 	cp := &fakeCPProv{running: false}
 	handler.SetCPProvisioner(cp)
 
@@ -1955,6 +1958,7 @@ func TestLogA2AFailure_Smoke(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)
 	handler := NewWorkspaceHandler(newTestBroadcaster(), nil, "http://localhost:8080", t.TempDir())
+	waitForHandlerAsyncBeforeDBCleanup(t, handler)
 
 	// Sync workspace-name lookup (called in the caller goroutine).
 	mock.ExpectQuery(`SELECT name FROM workspaces WHERE id =`).
@@ -1973,6 +1977,7 @@ func TestLogA2AFailure_EmptyNameFallback(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)
 	handler := NewWorkspaceHandler(newTestBroadcaster(), nil, "http://localhost:8080", t.TempDir())
+	waitForHandlerAsyncBeforeDBCleanup(t, handler)
 
 	// Empty name from DB → summary uses the workspaceID as the name.
 	mock.ExpectQuery(`SELECT name FROM workspaces WHERE id =`).
@@ -1989,6 +1994,7 @@ func TestLogA2ASuccess_Smoke(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)
 	handler := NewWorkspaceHandler(newTestBroadcaster(), nil, "http://localhost:8080", t.TempDir())
+	waitForHandlerAsyncBeforeDBCleanup(t, handler)
 
 	mock.ExpectQuery(`SELECT name FROM workspaces WHERE id =`).
 		WithArgs("ws-ok").
@@ -2005,6 +2011,7 @@ func TestLogA2ASuccess_ErrorStatus(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)
 	handler := NewWorkspaceHandler(newTestBroadcaster(), nil, "http://localhost:8080", t.TempDir())
+	waitForHandlerAsyncBeforeDBCleanup(t, handler)
 
 	mock.ExpectQuery(`SELECT name FROM workspaces WHERE id =`).
 		WithArgs("ws-err").

@@ -271,6 +271,7 @@ func TestGracefulPreRestart_URLResolutionError(t *testing.T) {
 		WorkspaceHandler: newHandlerWithTestDeps(t),
 		errToReturn:      context.DeadlineExceeded,
 	}
+	waitForHandlerAsyncBeforeDBCleanup(t, hWrapper.WorkspaceHandler)
 
 	hWrapper.gracefulPreRestart(context.Background(), "ws-url-err-111")
 	time.Sleep(200 * time.Millisecond)

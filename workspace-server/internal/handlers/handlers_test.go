@@ -29,14 +29,20 @@ func init() {
 // setupTestDB creates a sqlmock DB and assigns it to the global db.DB.
 // It also disables the SSRF URL check so that httptest.NewServer loopback
 // URLs and fake hostnames (*.example) used in tests don't trigger rejections.
+//
+// IMPORTANT: db.DB is saved before assignment and restored via t.Cleanup so
+// that tests running after this one are not polluted by a closed mock.
+// This is the single root cause of the systemic CI/Platform (Go) failures on
+// main HEAD 8026f020 (mc#975).
 func setupTestDB(t *testing.T) sqlmock.Sqlmock {
 	t.Helper()
 	mockDB, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("failed to create sqlmock: %v", err)
 	}
+	prevDB := db.DB
 	db.DB = mockDB
-	t.Cleanup(func() { mockDB.Close() })
+	t.Cleanup(func() { db.DB = prevDB; mockDB.Close() })
 
 	// Disable SSRF checks for the duration of this test only. Restore
 	// the previous state via t.Cleanup so that TestIsSafeURL_* tests
@@ -54,6 +60,11 @@ func setupTestDB(t *testing.T) sqlmock.Sqlmock {
 	t.Cleanup(wsauth.ResetInboundSecretCacheForTesting)
 
 	return mock
+}
+
+func waitForHandlerAsyncBeforeDBCleanup(t *testing.T, h *WorkspaceHandler) {
+	t.Helper()
+	t.Cleanup(h.waitAsyncForTest)
 }
 
 // setupTestRedis creates a miniredis instance and assigns it to the global db.RDB.
@@ -355,6 +366,11 @@ func TestWorkspaceCreate(t *testing.T) {
 }
 
 func TestBuildProvisionerConfig_IncludesAwarenessSettings(t *testing.T) {
+	mock := setupTestDB(t)
+	mock.ExpectQuery(`SELECT digest FROM runtime_image_pins`).
+		WithArgs("claude-code").
+		WillReturnError(sql.ErrNoRows)
+
 	broadcaster := newTestBroadcaster()
 	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", "/tmp/configs")
 
@@ -366,7 +382,7 @@ func TestBuildProvisionerConfig_IncludesAwarenessSettings(t *testing.T) {
 		"ws-123",
 		"/tmp/configs/template",
 		map[string][]byte{"config.yaml": []byte("name: test")},
-		models.CreateWorkspacePayload{Tier: 2, Runtime: "claude-code"},
+		models.CreateWorkspacePayload{Tier: 2, Runtime: "claude-code", WorkspaceDir: "/tmp/workspace", WorkspaceAccess: "read_write"},
 		map[string]string{"OPENAI_API_KEY": "sk-test"},
 		"/tmp/plugins",
 		"workspace:ws-123",

@@ -50,18 +50,19 @@ func TestResolveInsideRoot_DotDotTraversal(t *testing.T) {
 // but resolveInsideRoot correctly returns nil (the path stays within root).
 // The OFFSEC-006 concern is covered by ../../etc/passwd which DOES escape.
 func TestResolveInsideRoot_DotDotWithIntermediate(t *testing.T) {
+	// a/b/../../c normalises to "c" — a valid descendant inside any root.
+	// Must use t.TempDir() for a real filesystem path so filepath.Abs resolves.
 	root := t.TempDir()
 	got, err := resolveInsideRoot(root, "a/b/../../c")
 	if err != nil {
-		t.Fatalf("a/b/../../c should resolve (normalizes to c within root): %v", err)
+		t.Fatalf("a/b/../../c should resolve within root: %v", err)
 	}
+	// Verify result is inside root and ends with "c"
 	if !strings.HasPrefix(got, root+string(filepath.Separator)) {
 		t.Errorf("result should be inside root %q, got %q", root, got)
 	}
-	// Ensure the suffix is "c"
-	parts := strings.Split(strings.TrimPrefix(got, root), string(filepath.Separator))
-	if parts[len(parts)-1] != "c" {
-		t.Errorf("expected filename 'c', got %q", got)
+	if got[len(got)-1:] != "c" {
+		t.Errorf("resolved path should end in 'c', got %q", got)
 	}
 }
 
@@ -143,8 +144,55 @@ func TestResolveInsideRoot_SiblingNotEscaped(t *testing.T) {
 }
 
 // ── isSafeRoleName ────────────────────────────────────────────────────────────
-// isSafeRoleName is tested comprehensively in org_helpers_pure_test.go.
-// Only security-critical path-injection cases live here.
+
+func TestIsSafeRoleName_Empty(t *testing.T) {
+	if isSafeRoleName("") {
+		t.Error("isSafeRoleName(\"\"): expected false, got true")
+	}
+}
+
+func TestIsSafeRoleName_Dot(t *testing.T) {
+	if isSafeRoleName(".") {
+		t.Error("isSafeRoleName(\".\"): expected false, got true")
+	}
+}
+
+func TestIsSafeRoleName_DotDot(t *testing.T) {
+	if isSafeRoleName("..") {
+		t.Error("isSafeRoleName(\"..\"): expected false, got true")
+	}
+}
+
+func TestIsSafeRoleName_PathTraversal(t *testing.T) {
+	unsafe := []string{
+		"../etc",
+		"foo/../../../etc",
+		"foo/../../bar",
+	}
+	for _, name := range unsafe {
+		if isSafeRoleName(name) {
+			t.Errorf("isSafeRoleName(%q): expected false (path traversal), got true", name)
+		}
+	}
+}
+
+func TestIsSafeRoleName_SpecialChars(t *testing.T) {
+	unsafe := []string{
+		"foo:bar",
+		"foo bar",
+		"foo\tbar",
+		"foo\nbar",
+		"foo\x00bar",
+		"foo@bar",
+		"foo#bar",
+		"foo$bar",
+	}
+	for _, name := range unsafe {
+		if isSafeRoleName(name) {
+			t.Errorf("isSafeRoleName(%q): expected false (special char), got true", name)
+		}
+	}
+}
 
 // ── mergeCategoryRouting ──────────────────────────────────────────────────────
 // Duplicate mergeCategoryRouting tests removed to avoid redeclaration with

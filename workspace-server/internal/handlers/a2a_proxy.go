@@ -97,28 +97,28 @@ const maxProxyResponseBody = 10 << 20
 //
 // Timeout model — three independent budgets, none of which gets in each other's way:
 //
-//   1. Client.Timeout — DELIBERATELY UNSET. Client.Timeout is a hard wall on
-//      the entire request including streamed body reads, and would pre-empt
-//      legitimate slow cold-start flows (Claude Code first-token over OAuth
-//      can take 30-60s on boot; long-running agent synthesis can stream
-//      tokens for minutes). Total-request budget is enforced per-request
-//      via context deadline (canvas = idle-only, agent-to-agent = 30 min ceiling).
+//  1. Client.Timeout — DELIBERATELY UNSET. Client.Timeout is a hard wall on
+//     the entire request including streamed body reads, and would pre-empt
+//     legitimate slow cold-start flows (Claude Code first-token over OAuth
+//     can take 30-60s on boot; long-running agent synthesis can stream
+//     tokens for minutes). Total-request budget is enforced per-request
+//     via context deadline (canvas = idle-only, agent-to-agent = 30 min ceiling).
 //
-//   2. Transport.DialContext — 10s connect timeout. When a workspace's EC2
-//      black-holes TCP connects (instance terminated mid-flight, security group
-//      flipped, NACL bug), the OS default is 75s on Linux / 21s on macOS — long
-//      enough that Cloudflare's ~100s edge timeout can fire first and surface
-//      a generic 502 page to canvas. 10s is well above realistic intra-region
-//      latencies and well below CF's edge timeout.
+//  2. Transport.DialContext — 10s connect timeout. When a workspace's EC2
+//     black-holes TCP connects (instance terminated mid-flight, security group
+//     flipped, NACL bug), the OS default is 75s on Linux / 21s on macOS — long
+//     enough that Cloudflare's ~100s edge timeout can fire first and surface
+//     a generic 502 page to canvas. 10s is well above realistic intra-region
+//     latencies and well below CF's edge timeout.
 //
-//   3. Transport.ResponseHeaderTimeout — 180s default. From request-body-end
-//      to response-headers-start. Configurable via
-//      A2A_PROXY_RESPONSE_HEADER_TIMEOUT (envx.Duration). Covers cold-start
-//      first-byte (30-60s OAuth flow above) with enough room for Opus agent
-//      turns (big context + internal delegate_task round-trips routinely exceed
-//      the old 60s ceiling). Body streaming after headers is governed by the
-//      per-request context deadline, NOT this timeout — so multi-minute agent
-//      responses still work fine.
+//  3. Transport.ResponseHeaderTimeout — 180s default. From request-body-end
+//     to response-headers-start. Configurable via
+//     A2A_PROXY_RESPONSE_HEADER_TIMEOUT (envx.Duration). Covers cold-start
+//     first-byte (30-60s OAuth flow above) with enough room for Opus agent
+//     turns (big context + internal delegate_task round-trips routinely exceed
+//     the old 60s ceiling). Body streaming after headers is governed by the
+//     per-request context deadline, NOT this timeout — so multi-minute agent
+//     responses still work fine.
 //
 // The point of (2) and (3) is to surface a *structured* 503 from
 // handleA2ADispatchError when the workspace agent is unreachable, so canvas
@@ -645,7 +645,7 @@ func (h *WorkspaceHandler) resolveAgentURL(ctx context.Context, workspaceID stri
 			// the caller can retry once the workspace is back online (~10s).
 			if status == "hibernated" {
 				log.Printf("ProxyA2A: waking hibernated workspace %s", workspaceID)
-				go h.RestartByID(workspaceID)
+				h.goAsync(func() { h.RestartByID(workspaceID) })
 				return "", &proxyA2AError{
 					Status:  http.StatusServiceUnavailable,
 					Headers: map[string]string{"Retry-After": "15"},

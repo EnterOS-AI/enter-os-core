@@ -26,14 +26,19 @@ import (
 // setupTestDBForQueueTests creates a sqlmock DB using QueryMatcherEqual (exact
 // string matching) so that ExpectQuery/ExpectExec patterns are compared verbatim.
 // Uses the same global db.DB as setupTestDB so the handler can use it.
+//
+// IMPORTANT: db.DB is saved before assignment and restored via t.Cleanup so
+// that tests running after this one are not polluted by a closed mock.
+// Same fix as setupTestDB (handlers_test.go); same root cause as mc#975.
 func setupTestDBForQueueTests(t *testing.T) sqlmock.Sqlmock {
 	t.Helper()
 	mockDB, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
 	if err != nil {
 		t.Fatalf("failed to create sqlmock: %v", err)
 	}
+	prevDB := db.DB
 	db.DB = mockDB
-	t.Cleanup(func() { mockDB.Close() })
+	t.Cleanup(func() { db.DB = prevDB; mockDB.Close() })
 	return mock
 }
 

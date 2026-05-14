@@ -69,6 +69,13 @@ name: E2E API Smoke Test
 # 2318) shows Postgres ready in 3s, Redis in 1s, Platform in 1s when
 # they DO come up. Timeouts are not the bottleneck; not bumped.
 #
+# Item #1046 (fixed 2026-05-14): Stale platform-server from cancelled runs
+#   lingers on :8080 after "Stop platform" step is skipped (workflow cancelled
+#   before reaching line 335). Added a pre-start "Kill stale platform-server"
+#   step (line 286) that scans /proc for zombie platform-server processes
+#   and kills them before the port probe or bind. Makes the ephemeral port
+#   probe + start sequence deterministic.
+#
 # Item explicitly NOT fixed here: failing test `Status back online`
 # fails because the platform's langgraph workspace template image
 # (ghcr.io/molecule-ai/workspace-template-langgraph:latest) returns
@@ -283,6 +290,35 @@ jobs:
           echo "PORT=${PLATFORM_PORT}" >> "$GITHUB_ENV"
           echo "BASE=http://127.0.0.1:${PLATFORM_PORT}" >> "$GITHUB_ENV"
           echo "Platform host port: ${PLATFORM_PORT}"
+      - name: Kill stale platform-server before start (issue #1046)
+        if: needs.detect-changes.outputs.api == 'true'
+        run: |
+          # Concurrent runs on the same host-network act_runner can leave a
+          # zombie platform-server from a cancelled/timeout run. Cancelled
+          # runs never reach the "Stop platform" step (line 335), so the
+          # old process lingers. Kill it before the ephemeral port probe
+          # or start so the port is definitively free.
+          #
+          # /proc scan — works on any Linux without pkill/lsof/ss.
+          # comm field is truncated to 15 chars: "platform-serve" matches
+          # "platform-server". Verify with cmdline to avoid false positives.
+          killed=0
+          for pid in $(grep -l "platform-serve" /proc/[0-9]*/comm 2>/dev/null); do
+            kpid="${pid%/comm}"
+            kpid="${kpid##*/}"
+            cmdline=$(cat "/proc/${kpid}/cmdline" 2>/dev/null | tr '\0' ' ')
+            if echo "$cmdline" | grep -q "platform-server"; then
+              echo "Killing stale platform-server pid ${kpid}: ${cmdline}"
+              kill "$kpid" 2>/dev/null || true
+              killed=$((killed + 1))
+            fi
+          done
+          if [ "$killed" -gt 0 ]; then
+            sleep 2
+            echo "Killed $killed stale process(es); port(s) released."
+          else
+            echo "No stale platform-server found."
+          fi
       - name: Start platform (background)
         if: needs.detect-changes.outputs.api == 'true'
         working-directory: workspace-server
@@ -346,3 +382,4 @@ jobs:
         run: |
           docker rm -f "$PG_CONTAINER" 2>/dev/null || true
           docker rm -f "$REDIS_CONTAINER" 2>/dev/null || true
+

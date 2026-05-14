@@ -24,8 +24,12 @@ vi.mock("@/lib/theme-provider", () => ({
   })),
 }));
 
+// Wrap cleanup in act() so any pending React state updates (e.g. from
+// keyDown handlers that call setTheme) flush before DOM unmount. Without
+// this, cleanup() can race against pending renders and cause INDEX_SIZE_ERR
+// when the handleKeyDown callback tries to query the DOM mid-teardown.
 afterEach(() => {
-  cleanup();
+  act(() => { cleanup(); });
   vi.clearAllMocks();
 });
 
@@ -146,7 +150,7 @@ describe("ThemeToggle — keyboard navigation (WCAG 2.1.1 / ARIA radiogroup)", (
     const radios = screen.getAllByRole("radio");
     // dark (index 2) is current; ArrowRight should wrap to light (index 0)
     act(() => { radios[2].focus(); });
-    fireEvent.keyDown(radios[2], { key: "ArrowRight" });
+    act(() => { fireEvent.keyDown(radios[2], { key: "ArrowRight" }); });
     expect(mockSetTheme).toHaveBeenCalledWith("light");
   });
 
@@ -160,7 +164,7 @@ describe("ThemeToggle — keyboard navigation (WCAG 2.1.1 / ARIA radiogroup)", (
     const radios = screen.getAllByRole("radio");
     // light (index 0) is current; ArrowLeft should go to dark (index 2)
     act(() => { radios[0].focus(); });
-    fireEvent.keyDown(radios[0], { key: "ArrowLeft" });
+    act(() => { fireEvent.keyDown(radios[0], { key: "ArrowLeft" }); });
     expect(mockSetTheme).toHaveBeenCalledWith("dark");
   });
 
@@ -174,7 +178,7 @@ describe("ThemeToggle — keyboard navigation (WCAG 2.1.1 / ARIA radiogroup)", (
     const radios = screen.getAllByRole("radio");
     // light (index 0) is current; ArrowDown should go to system (index 1)
     act(() => { radios[0].focus(); });
-    fireEvent.keyDown(radios[0], { key: "ArrowDown" });
+    act(() => { fireEvent.keyDown(radios[0], { key: "ArrowDown" }); });
     expect(mockSetTheme).toHaveBeenCalledWith("system");
   });
 
@@ -187,7 +191,7 @@ describe("ThemeToggle — keyboard navigation (WCAG 2.1.1 / ARIA radiogroup)", (
     render(<ThemeToggle />);
     const radios = screen.getAllByRole("radio");
     act(() => { radios[2].focus(); });
-    fireEvent.keyDown(radios[2], { key: "Home" });
+    act(() => { fireEvent.keyDown(radios[2], { key: "Home" }); });
     expect(mockSetTheme).toHaveBeenCalledWith("light");
   });
 
@@ -200,14 +204,14 @@ describe("ThemeToggle — keyboard navigation (WCAG 2.1.1 / ARIA radiogroup)", (
     render(<ThemeToggle />);
     const radios = screen.getAllByRole("radio");
     act(() => { radios[0].focus(); });
-    fireEvent.keyDown(radios[0], { key: "End" });
+    act(() => { fireEvent.keyDown(radios[0], { key: "End" }); });
     expect(mockSetTheme).toHaveBeenCalledWith("dark");
   });
 
   it("does nothing on unrelated keys", () => {
     render(<ThemeToggle />);
     const radios = screen.getAllByRole("radio");
-    fireEvent.keyDown(radios[0], { key: "Enter" });
+    act(() => { fireEvent.keyDown(radios[0], { key: "Enter" }); });
     expect(mockSetTheme).not.toHaveBeenCalled();
   });
 });

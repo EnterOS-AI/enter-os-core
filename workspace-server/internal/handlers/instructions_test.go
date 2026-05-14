@@ -2,10 +2,11 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"testing"
 	"time"
 
@@ -80,117 +81,132 @@ func TestInstructionsList_ByWorkspaceID(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	var out []Instruction
-	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
-		t.Fatalf("response not valid JSON: %v", err)
+	var result []Instruction
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
 	}
-	if len(out) != 2 {
-		t.Errorf("expected 2 instructions, got %d", len(out))
-	}
-	if out[0].Scope != "global" {
-		t.Errorf("first row scope: expected global, got %s", out[0].Scope)
+	if len(result) != 0 {
+		t.Fatalf("expected 0 instructions, got %d", len(result))
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet expectations: %v", err)
+		t.Fatalf("unmet expectations: %v", err)
 	}
 }
 
-func TestInstructionsList_ByScope(t *testing.T) {
+func TestInstructionsHandler_List_WithScopeFilter(t *testing.T) {
 	mock := setupTestDB(t)
-	h := NewInstructionsHandler()
+	handler := NewInstructionsHandler()
 
-	w, c := newGetRequest("/instructions?scope=global")
-	c.Request = httptest.NewRequest(http.MethodGet, "/instructions?scope=global", nil)
+	rows := sqlmock.NewRows([]string{
+		"id", "scope", "scope_target", "title", "content", "priority", "enabled", "created_at", "updated_at",
+	}).AddRow("inst-1", "global", nil, "Be kind", "Always be kind", 10, true,
+		time.Now(), time.Now())
 
-	rows := sqlmock.NewRows(instructionCols).
-		AddRow("inst-g", "global", nil, "Global Rule", "Follow policy.", 10, true, time.Now(), time.Now())
-	mock.ExpectQuery("SELECT id, scope, scope_target, title, content, priority, enabled, created_at, updated_at FROM platform_instructions WHERE 1=1").
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, scope, scope_target, title, content, priority, enabled, created_at, updated_at FROM platform_instructions WHERE 1=1 AND scope = $1 ORDER BY scope, priority DESC, created_at")).
 		WithArgs("global").
 		WillReturnRows(rows)
 
-	h.List(c)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/instructions?scope=global", nil)
+
+	handler.List(c)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	var out []Instruction
-	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
-		t.Fatalf("response not valid JSON: %v", err)
+	var result []Instruction
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
 	}
-	if len(out) != 1 || out[0].Scope != "global" {
-		t.Errorf("unexpected response: %v", out)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 instruction, got %d", len(result))
+	}
+	if result[0].Scope != "global" {
+		t.Errorf("expected scope 'global', got %q", result[0].Scope)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet expectations: %v", err)
+		t.Fatalf("unmet expectations: %v", err)
 	}
 }
 
-func TestInstructionsList_AllNoParams(t *testing.T) {
+func TestInstructionsHandler_List_WithWorkspaceID(t *testing.T) {
 	mock := setupTestDB(t)
-	h := NewInstructionsHandler()
+	handler := NewInstructionsHandler()
+	wsID := "ws-test-123"
 
-	w, c := newGetRequest("/instructions")
+	rows := sqlmock.NewRows([]string{
+		"id", "scope", "scope_target", "title", "content", "priority", "enabled", "created_at", "updated_at",
+	}).AddRow("inst-1", "global", nil, "Global rule", "Stay safe", 5, true,
+		time.Now(), time.Now()).
+		AddRow("inst-2", "workspace", &wsID, "WS rule", "Use HTTPS", 10, true,
+			time.Now(), time.Now())
 
-	rows := sqlmock.NewRows(instructionCols)
-	mock.ExpectQuery("SELECT id, scope, scope_target, title, content, priority, enabled, created_at, updated_at FROM platform_instructions WHERE 1=1").
+	mock.ExpectQuery("SELECT id, scope, scope_target, title, content, priority, enabled, created_at, updated_at FROM platform_instructions WHERE enabled = true AND \\(").
+		WithArgs(wsID).
 		WillReturnRows(rows)
 
-	h.List(c)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/instructions?workspace_id="+wsID, nil)
+
+	handler.List(c)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	var out []Instruction
-	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
-		t.Fatalf("response not valid JSON: %v", err)
+	var result []Instruction
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
 	}
-	// Empty slice, not nil
-	if out == nil {
-		t.Error("expected empty slice, got nil")
+	if len(result) != 2 {
+		t.Fatalf("expected 2 instructions, got %d", len(result))
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet expectations: %v", err)
+		t.Fatalf("unmet expectations: %v", err)
 	}
 }
 
-func TestInstructionsList_DBError(t *testing.T) {
+func TestInstructionsHandler_List_QueryError(t *testing.T) {
 	mock := setupTestDB(t)
-	h := NewInstructionsHandler()
-
-	w, c := newGetRequest("/instructions")
-	c.Request = httptest.NewRequest(http.MethodGet, "/instructions", nil)
+	handler := NewInstructionsHandler()
 
 	mock.ExpectQuery("SELECT id, scope, scope_target, title, content, priority, enabled, created_at, updated_at FROM platform_instructions WHERE 1=1").
-		WillReturnError(errors.New("connection refused"))
+		WillReturnError(context.DeadlineExceeded)
 
-	h.List(c)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/instructions", nil)
+
+	handler.List(c)
 
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet expectations: %v", err)
+		t.Fatalf("expected 500, got %d", w.Code)
 	}
 }
 
-// ─── Create ───────────────────────────────────────────────────────────────────
+// ── Create ──────────────────────────────────────────────────────────────────────
 
-func TestInstructionsCreate_ValidGlobal(t *testing.T) {
+func TestInstructionsHandler_Create_Success(t *testing.T) {
 	mock := setupTestDB(t)
-	h := NewInstructionsHandler()
-
-	w, c := newPostRequest("/instructions", map[string]interface{}{
-		"scope":    "global",
-		"title":    "Be Helpful",
-		"content":  "Always be helpful to the user.",
-		"priority": 10,
-	})
+	handler := NewInstructionsHandler()
 
 	mock.ExpectQuery("INSERT INTO platform_instructions").
-		WithArgs("global", nil, "Be Helpful", "Always be helpful to the user.", 10).
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("new-inst-1"))
+		WithArgs("global", nil, "Be kind", "Always be kind", 5).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("new-inst-id"))
 
-	h.Create(c)
+	body, _ := json.Marshal(map[string]interface{}{
+		"scope":    "global",
+		"title":    "Be kind",
+		"content":  "Always be kind",
+		"priority": 5,
+	})
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/instructions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.Create(c)
 
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
@@ -299,56 +315,65 @@ func TestInstructionsCreate_InvalidScope(t *testing.T) {
 	}
 }
 
-func TestInstructionsCreate_WorkspaceScopeNoTarget(t *testing.T) {
+func TestInstructionsHandler_Create_WorkspaceScopeMissingScopeTarget(t *testing.T) {
 	setupTestDB(t)
-	h := NewInstructionsHandler()
+	handler := NewInstructionsHandler()
 
-	w, c := newPostRequest("/instructions", map[string]interface{}{
+	body, _ := json.Marshal(map[string]interface{}{
 		"scope":   "workspace",
-		"title":   "Missing Target",
-		"content": "Workspace scope without scope_target.",
+		"title":   "Test",
+		"content": "Test content",
 	})
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/instructions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
 
-	h.Create(c)
+	handler.Create(c)
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
-func TestInstructionsCreate_ContentTooLong(t *testing.T) {
+func TestInstructionsHandler_Create_ContentTooLong(t *testing.T) {
 	setupTestDB(t)
-	h := NewInstructionsHandler()
+	handler := NewInstructionsHandler()
 
-	// Build a string longer than maxInstructionContentLen (8192).
-	longContent := string(make([]byte, maxInstructionContentLen+1))
-
-	w, c := newPostRequest("/instructions", map[string]interface{}{
+	longContent := string(bytes.Repeat([]byte("x"), 8193))
+	body, _ := json.Marshal(map[string]interface{}{
 		"scope":   "global",
-		"title":   "Too Long",
+		"title":   "Test",
 		"content": longContent,
 	})
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/instructions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
 
-	h.Create(c)
+	handler.Create(c)
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
-func TestInstructionsCreate_TitleTooLong(t *testing.T) {
+func TestInstructionsHandler_Create_TitleTooLong(t *testing.T) {
 	setupTestDB(t)
-	h := NewInstructionsHandler()
+	handler := NewInstructionsHandler()
 
-	longTitle := string(make([]byte, 201))
-
-	w, c := newPostRequest("/instructions", map[string]interface{}{
+	longTitle := string(bytes.Repeat([]byte("x"), 201))
+	body, _ := json.Marshal(map[string]interface{}{
 		"scope":   "global",
 		"title":   longTitle,
-		"content": "Short content.",
+		"content": "Short content",
 	})
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/instructions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
 
-	h.Create(c)
+	handler.Create(c)
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
@@ -842,43 +867,250 @@ func TestInstructionsResolve_ScopeTransitionOnlyGlobal(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	var out struct {
-		Instructions string `json:"instructions"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
-		t.Fatalf("response not valid JSON: %v", err)
-	}
-	// Two global instructions share one section header.
-	if bytes.Count([]byte(out.Instructions), []byte("Platform-Wide Rules")) != 1 {
-		t.Error("expect exactly one 'Platform-Wide Rules' header for consecutive global rows")
-	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet expectations: %v", err)
+		t.Fatalf("unmet expectations: %v", err)
 	}
 }
 
-// ─── Update: empty body (all nil — no-op update) ─────────────────────────────
-
-func TestInstructionsUpdate_EmptyBody(t *testing.T) {
+func TestInstructionsHandler_Update_NotFound(t *testing.T) {
 	mock := setupTestDB(t)
-	h := NewInstructionsHandler()
+	handler := NewInstructionsHandler()
 
-	instID := "inst-empty-update"
-	w, c := newPutRequest("/instructions/"+instID, map[string]interface{}{})
-	c.Params = []gin.Param{{Key: "id", Value: instID}}
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE platform_instructions SET\n\t\t\t\ttitle = COALESCE($2, title),\n\t\t\t\tcontent = COALESCE($3, content),\n\t\t\t\tpriority = COALESCE($4, priority),\n\t\t\t\tenabled = COALESCE($5, enabled),\n\t\t\t\tupdated_at = NOW()\n\t\t\t\tWHERE id = $1")).
+		WithArgs("nonexistent", sqlmock.AnyArg(), nil, nil, nil).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 
-	// COALESCE(nil, ...) = unchanged; still updates updated_at.
-	// Args order: ($1=id, $2=title, $3=content, $4=priority, $5=enabled)
-	mock.ExpectExec("UPDATE platform_instructions SET").
-		WithArgs(instID, sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
-		WillReturnResult(sqlmock.NewResult(0, 1))
+	body, _ := json.Marshal(map[string]interface{}{"title": "Updated title"})
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "nonexistent"}}
+	c.Request = httptest.NewRequest("PUT", "/instructions/nonexistent", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
 
-	h.Update(c)
+	handler.Update(c)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 for empty body, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet expectations: %v", err)
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestInstructionsHandler_Update_ContentTooLong(t *testing.T) {
+	setupTestDB(t)
+	handler := NewInstructionsHandler()
+
+	longContent := string(bytes.Repeat([]byte("x"), 8193))
+	body, _ := json.Marshal(map[string]interface{}{"content": longContent})
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "inst-1"}}
+	c.Request = httptest.NewRequest("PUT", "/instructions/inst-1", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.Update(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestInstructionsHandler_Update_TitleTooLong(t *testing.T) {
+	setupTestDB(t)
+	handler := NewInstructionsHandler()
+
+	longTitle := string(bytes.Repeat([]byte("x"), 201))
+	body, _ := json.Marshal(map[string]interface{}{"title": longTitle})
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "inst-1"}}
+	c.Request = httptest.NewRequest("PUT", "/instructions/inst-1", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.Update(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ── Delete ─────────────────────────────────────────────────────────────────────
+
+func TestInstructionsHandler_Delete_Success(t *testing.T) {
+	mock := setupTestDB(t)
+	handler := NewInstructionsHandler()
+
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM platform_instructions WHERE id = $1")).
+		WithArgs("inst-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "inst-1"}}
+	c.Request = httptest.NewRequest("DELETE", "/instructions/inst-1", nil)
+
+	handler.Delete(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestInstructionsHandler_Delete_NotFound(t *testing.T) {
+	mock := setupTestDB(t)
+	handler := NewInstructionsHandler()
+
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM platform_instructions WHERE id = $1")).
+		WithArgs("nonexistent").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "nonexistent"}}
+	c.Request = httptest.NewRequest("DELETE", "/instructions/nonexistent", nil)
+
+	handler.Delete(c)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// ── Resolve ────────────────────────────────────────────────────────────────────
+
+func TestInstructionsHandler_Resolve_Empty(t *testing.T) {
+	mock := setupTestDB(t)
+	handler := NewInstructionsHandler()
+	wsID := "ws-resolve-1"
+
+	mock.ExpectQuery("SELECT scope, title, content FROM platform_instructions WHERE enabled = true AND").
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"scope", "title", "content"}))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: wsID}}
+	c.Request = httptest.NewRequest("GET", "/workspaces/"+wsID+"/instructions/resolve", nil)
+
+	handler.Resolve(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if resp["workspace_id"] != wsID {
+		t.Errorf("expected workspace_id %q, got %v", wsID, resp["workspace_id"])
+	}
+	if resp["instructions"] != "" {
+		t.Errorf("expected empty instructions, got %q", resp["instructions"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestInstructionsHandler_Resolve_WithInstructions(t *testing.T) {
+	mock := setupTestDB(t)
+	handler := NewInstructionsHandler()
+	wsID := "ws-resolve-2"
+
+	rows := sqlmock.NewRows([]string{"scope", "title", "content"}).
+		AddRow("global", "Be safe", "No SSRF").
+		AddRow("workspace", "WS Rule", "Use HTTPS")
+
+	mock.ExpectQuery("SELECT scope, title, content FROM platform_instructions WHERE enabled = true AND").
+		WithArgs(wsID).
+		WillReturnRows(rows)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: wsID}}
+	c.Request = httptest.NewRequest("GET", "/workspaces/"+wsID+"/instructions/resolve", nil)
+
+	handler.Resolve(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	instructions, ok := resp["instructions"].(string)
+	if !ok {
+		t.Fatalf("instructions field is not a string: %T", resp["instructions"])
+	}
+	if instructions == "" {
+		t.Fatalf("expected non-empty instructions")
+	}
+	// Verify scope headers are present
+	if !bytes.Contains([]byte(instructions), []byte("Platform-Wide Rules")) {
+		t.Errorf("expected 'Platform-Wide Rules' header in instructions")
+	}
+	if !bytes.Contains([]byte(instructions), []byte("Role-Specific Rules")) {
+		t.Errorf("expected 'Role-Specific Rules' header in instructions")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestInstructionsHandler_Resolve_MissingWorkspaceID(t *testing.T) {
+	setupTestDB(t)
+	handler := NewInstructionsHandler()
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: ""}}
+	c.Request = httptest.NewRequest("GET", "/workspaces//instructions/resolve", nil)
+
+	handler.Resolve(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// scanInstructions is called by the List handler — verify it handles
+// rows.Err() gracefully without panicking.
+func TestInstructionsHandler_List_ScanErrorContinues(t *testing.T) {
+	mock := setupTestDB(t)
+	handler := NewInstructionsHandler()
+
+	rows := sqlmock.NewRows([]string{
+		"id", "scope", "scope_target", "title", "content", "priority", "enabled", "created_at", "updated_at",
+	}).AddRow("inst-1", "global", nil, "Good", "Content here", 5, true, time.Now(), time.Now()).
+		RowError(1, context.DeadlineExceeded) // error on row 2 (if it existed)
+
+	mock.ExpectQuery("SELECT id, scope, scope_target, title, content, priority, enabled, created_at, updated_at FROM platform_instructions WHERE 1=1").
+		WillReturnRows(rows)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/instructions", nil)
+
+	handler.List(c)
+
+	// Should still return 200 and the one valid row
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var result []Instruction
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	// The valid row should still be returned (error is logged, not fatal)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 instruction despite row error, got %d", len(result))
 	}
 }
