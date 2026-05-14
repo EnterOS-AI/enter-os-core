@@ -101,9 +101,10 @@ printf 'header = "Authorization: token %s"\n' "$GITEA_TOKEN" > "$CURL_AUTH_FILE"
 PR_JSON=$(mktemp)
 REVIEWS_JSON=$(mktemp)
 TEAM_PROBE_TMP=$(mktemp)
+NA_STATUSES_TMP=""  # declared here so cleanup() always has the var
 
 cleanup() {
-  rm -f "$CURL_AUTH_FILE" "$PR_JSON" "$REVIEWS_JSON" "$TEAM_PROBE_TMP"
+  rm -f "$CURL_AUTH_FILE" "$PR_JSON" "$REVIEWS_JSON" "$TEAM_PROBE_TMP" "${NA_STATUSES_TMP-}"
 }
 trap cleanup EXIT
 
@@ -142,6 +143,42 @@ if [ -z "$PR_AUTHOR" ] || [ -z "$PR_HEAD_SHA" ]; then
   echo "::error::PR ${PR_NUMBER} missing user.login or head.sha — webhook payload malformed"
   exit 1
 fi
+
+# --- RFC#324 §N/A follow-up: check N/A declarations status ---
+# sop-checklist-gate.py posts `sop-checklist / na-declarations (pull_request)`
+# status when a peer posts /sop-n/a <gate>. If our gate is declared N/A,
+# the requirement for a Gitea APPROVE review is waived.
+NA_STATUSES_TMP=$(mktemp)
+HTTP_CODE=$(curl -sS -o "$NA_STATUSES_TMP" -w '%{http_code}' \
+  -K "$CURL_AUTH_FILE" "${API}/repos/${OWNER}/${NAME}/statuses/${PR_HEAD_SHA}")
+debug "statuses/${PR_HEAD_SHA} → HTTP ${HTTP_CODE}"
+
+if [ "$HTTP_CODE" = "200" ]; then
+  # Gitea returns statuses as array; look for the na-declarations context.
+  # jq: find all statuses where context == "sop-checklist / na-declarations (pull_request)"
+  # and state == "success". Extract the description field.
+  NA_DESC=$(jq -r '
+    .[] |
+    select(.context == "sop-checklist / na-declarations (pull_request)") |
+    select(.state == "success") |
+    .description
+  ' "$NA_STATUSES_TMP" 2>/dev/null | head -1)
+
+  if [ -n "$NA_DESC" ] && [ "$NA_DESC" != "null" ]; then
+    debug "na-declarations status found: ${NA_DESC}"
+    # Check if our gate appears in the N/A description.
+    # The description format is "N/A: qa-review, security-review" or similar.
+    if echo "$NA_DESC" | grep -iq "\\b${TEAM}-review\\b"; then
+      echo "::notice::${TEAM}-review N/A — gate declared not-applicable via /sop-n/a: ${NA_DESC}"
+      echo "::notice::PR ${PR_NUMBER} passes ${TEAM}-review via N/A declaration"
+      rm -f "$NA_STATUSES_TMP"
+      exit 0
+    fi
+  fi
+else
+  debug "could not fetch statuses (HTTP ${HTTP_CODE}) — proceeding with normal eval"
+fi
+rm -f "$NA_STATUSES_TMP"
 
 # --- Fetch all reviews on the PR ---
 HTTP_CODE=$(curl -sS -o "$REVIEWS_JSON" -w '%{http_code}' \

@@ -109,8 +109,17 @@ def normalize_slug(raw: str, numeric_aliases: dict[int, str] | None = None) -> s
 # Optional trailing note after the slug for /sop-ack and required reason
 # for /sop-revoke (RFC#351 open question 4 — reason is captured but not
 # yet validated; future iteration may require a min-length).
+#
+# /sop-n/a <gate> [reason] — declares a gate as not-applicable.
+#   <gate> is a canonical gate name (qa-review, security-review).
+#   The declaring user must be in one of the gate's required_teams.
+#   Most-recent per-user declaration wins (revoke semantics mirror ack).
 _DIRECTIVE_RE = re.compile(
     r"^[ \t]*/(sop-ack|sop-revoke)[ \t]+([A-Za-z0-9_\- ]+?)(?:[ \t]+(.*))?[ \t]*$",
+    re.MULTILINE,
+)
+_NA_DIRECTIVE_RE = re.compile(
+    r"^[ \t]*/sop-n/?a[ \t]+([A-Za-z0-9_\-]+)(?:[ \t]+(.*))?[ \t]*$",
     re.MULTILINE,
 )
 
@@ -118,48 +127,40 @@ _DIRECTIVE_RE = re.compile(
 def parse_directives(
     comment_body: str,
     numeric_aliases: dict[int, str],
-) -> list[tuple[str, str, str]]:
-    """Extract /sop-ack and /sop-revoke directives from a comment body.
+) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str]]]:
+    """Extract /sop-ack, /sop-revoke, and /sop-n/a directives from a comment body.
 
-    Returns a list of (kind, canonical_slug, note) tuples where:
-      kind is "sop-ack" or "sop-revoke"
-      canonical_slug is the normalized form (or "" if unparseable)
-      note is the trailing free-text (may be "")
+    Returns a tuple of two lists:
+      0. list of (kind, canonical_slug, note) for sop-ack/sop-revoke
+      1. list of (kind, gate_name, reason) for sop-n/a
+
+    canonical_slug is the normalized form (or "" if unparseable).
+    note/reason is the trailing free-text (may be "").
     """
     out: list[tuple[str, str, str]] = []
+    na_out: list[tuple[str, str, str]] = []
     if not comment_body:
-        return out
+        return out, na_out
     for m in _DIRECTIVE_RE.finditer(comment_body):
         kind = m.group(1)
         raw_slug = (m.group(2) or "").strip()
-        # If the raw match included trailing words, the regex non-greedy
-        # captured only the first token; strip again for safety.
-        # We split on whitespace to keep the FIRST word as the slug, and
-        # everything after as the note.
         parts = raw_slug.split()
         if not parts:
             continue
         first = parts[0]
-        # If the slug-capture greedily matched multiple words (e.g.
-        # "comprehensive testing"), preserve normalize behavior: join
-        # the WHOLE first-word-token only; trailing words get appended to
-        # the note. The regex limits group(2) to [A-Za-z0-9_\- ] so we
-        # may have multi-word forms here — normalize handles them.
         if len(parts) > 1:
-            # User wrote "/sop-ack comprehensive testing extra-note"
-            # → treat "comprehensive testing" as the slug source if it
-            # normalizes to a known item; otherwise treat "comprehensive"
-            # as slug and "testing extra-note" as note. We defer the
-            # disambiguation to the caller via the returned canonical
-            # slug. For simplicity: try the WHOLE captured string first.
             canonical = normalize_slug(raw_slug, numeric_aliases)
         else:
             canonical = normalize_slug(first, numeric_aliases)
         note_from_group = (m.group(3) or "").strip()
-        # If we collapsed multi-word slug into kebab and there's a
-        # trailing-text group too, append it.
         out.append((kind, canonical, note_from_group))
-    return out
+
+    for m in _NA_DIRECTIVE_RE.finditer(comment_body):
+        gate = (m.group(1) or "").strip().lower()
+        reason = (m.group(2) or "").strip()
+        na_out.append(("sop-n/a", gate, reason))
+
+    return out, na_out
 
 
 # ---------------------------------------------------------------------------
@@ -230,9 +231,8 @@ def compute_ack_state(
        {
          "comprehensive-testing": {
            "ackers": ["bob"],         # non-author, team-verified
-           "rejected_ackers": {        # debugging info
+           "rejected": {
              "self_ack": ["alice"],
-             "unknown_slug": [],
              "not_in_team": ["eve"],
            }
          },
@@ -249,7 +249,8 @@ def compute_ack_state(
         user = (c.get("user") or {}).get("login", "")
         if not user:
             continue
-        for kind, slug, _note in parse_directives(body, numeric_aliases):
+        directives, _na_directives = parse_directives(body, numeric_aliases)
+        for kind, slug, _note in directives:
             if not slug:
                 unparseable_per_user[user] = unparseable_per_user.get(user, 0) + 1
                 continue
@@ -259,25 +260,19 @@ def compute_ack_state(
     # Filter out self-acks and unknown slugs.
     ackers_per_slug: dict[str, list[str]] = {s: [] for s in items_by_slug}
     rejected_self: dict[str, list[str]] = {s: [] for s in items_by_slug}
-    rejected_unknown: dict[str, list[str]] = {s: [] for s in items_by_slug}
     pending_team_check: dict[str, list[str]] = {s: [] for s in items_by_slug}
 
     for (user, slug), kind in latest_directive.items():
         if kind != "sop-ack":
             continue  # revokes leave the (user,slug) state as "no ack"
         if slug not in items_by_slug:
-            # Slug normalized to something not in our config — store
-            # under a synthetic key for diagnostic surfacing. Don't add
-            # to any item.
             continue
         if user == pr_author:
             rejected_self[slug].append(user)
             continue
         pending_team_check[slug].append(user)
 
-    # Step 3: team membership probe per slug (batched per slug to keep
-    # API call count down — same user may ack multiple items but the
-    # required_teams differ per item, so we MUST probe per (user, item)).
+    # Step 3: team membership probe per slug.
     rejected_not_in_team: dict[str, list[str]] = {s: [] for s in items_by_slug}
     for slug, candidates in pending_team_check.items():
         if not candidates:
@@ -286,7 +281,6 @@ def compute_ack_state(
         approved = team_membership_probe(slug, candidates)  # returns subset
         rejected_not_in_team[slug] = [u for u in candidates if u not in approved]
         ackers_per_slug[slug] = approved
-        # Stash required teams for description rendering.
         items_by_slug[slug]["_required_resolved"] = required
 
     return {
@@ -299,6 +293,113 @@ def compute_ack_state(
         }
         for slug in items_by_slug
     }
+
+
+def compute_na_state(
+    comments: list[dict[str, Any]],
+    pr_author: str,
+    na_gates: dict[str, dict[str, Any]],
+    numeric_aliases: dict[int, str],
+    team_membership_probe: "callable[[str, list[str]], list[str]]",
+    client: "GiteaClient",
+    org: str,
+) -> dict[str, dict[str, Any]]:
+    """Compute per-gate N/A declaration state.
+
+    Returns a dict keyed by gate name:
+       {
+         "qa-review": {
+           "declared":  ["alice"],      # non-author, team-verified, not revoked
+           "rejected": ["eve (not-in-team)", "bob (self-decl)"],
+           "reason":   "pure-infra change — no qa surface",
+         },
+         ...
+       }
+    A gate is N/A-satisfied when at least one declaration from a valid
+    team member exists and has not been revoked by the same user.
+    """
+    if not na_gates:
+        return {}
+
+    # Collapse directives per (commenter, gate) — most recent wins.
+    latest_na: dict[tuple[str, str], str] = {}   # (user, gate) → "sop-n/a"
+    latest_na_reason: dict[tuple[str, str], str] = {}  # (user, gate) → reason
+    for c in comments:
+        body = c.get("body", "") or ""
+        user = (c.get("user") or {}).get("login", "")
+        if not user:
+            continue
+        _directives, na_directives = parse_directives(body, numeric_aliases)
+        for _kind, gate, reason in na_directives:
+            if gate not in na_gates:
+                continue
+            latest_na[(user, gate)] = "sop-n/a"
+            latest_na_reason[(user, gate)] = reason
+
+    # Determine candidate declarers per gate.
+    na_state: dict[str, dict[str, Any]] = {
+        gate: {"declared": [], "rejected": [], "reason": ""}
+        for gate in na_gates
+    }
+    pending_per_gate: dict[str, list[str]] = {gate: [] for gate in na_gates}
+
+    for (user, gate), kind in latest_na.items():
+        if kind != "sop-n/a":
+            continue
+        if user == pr_author:
+            na_state[gate]["rejected"].append(f"{user} (self-decl)")
+            continue
+        pending_per_gate[gate].append(user)
+
+    # Probe team membership per gate using that gate's required_teams.
+    for gate, candidates in pending_per_gate.items():
+        if not candidates:
+            continue
+        required_teams = na_gates[gate].get("required_teams", [])
+        # Resolve team names → ids using the client's resolver.
+        team_ids: list[int] = []
+        for tn in required_teams:
+            tid = client.resolve_team_id(org, tn)
+            if tid is not None:
+                team_ids.append(tid)
+        if not team_ids:
+            na_state[gate]["rejected"].extend(
+                f"{u} (no-team-id)" for u in candidates
+            )
+            continue
+        for u in candidates:
+            in_any_team = False
+            for tid in team_ids:
+                result = client.is_team_member(tid, u)
+                if result is True:
+                    in_any_team = True
+                    break
+                if result is None:
+                    # 403 — token owner not in team. Fail-closed.
+                    print(
+                        f"::warning::na: team-probe for {u} in team-id {tid} "
+                        "returned 403 — treating as not-in-team (fail-closed)",
+                        file=sys.stderr,
+                    )
+            if in_any_team:
+                na_state[gate]["declared"].append(u)
+            else:
+                na_state[gate]["rejected"].append(f"{u} (not-in-team)")
+
+    # Build per-gate reason string from declared users.
+    for gate in na_gates:
+        decl = na_state[gate]["declared"]
+        if decl:
+            reasons: list[str] = []
+            for u in decl:
+                r = latest_na_reason.get((u, gate), "")
+                if r:
+                    reasons.append(f"{u}: {r}")
+                else:
+                    reasons.append(u)
+            na_state[gate]["reason"] = "; ".join(reasons)
+
+    return na_state
 
 
 # ---------------------------------------------------------------------------
@@ -698,6 +799,7 @@ def main(argv: list[str] | None = None) -> int:
     numeric_aliases = {
         int(it["numeric_alias"]): it["slug"] for it in items if it.get("numeric_alias")
     }
+    na_gates: dict[str, dict[str, Any]] = cfg.get("n/a_gates") or {}
 
     client = GiteaClient(args.gitea_host, token) if token else None
     if not client:
@@ -716,6 +818,8 @@ def main(argv: list[str] | None = None) -> int:
     if not author or not head_sha:
         print("::error::PR payload missing user.login or head.sha", file=sys.stderr)
         return 1
+
+    target_url = f"https://{args.gitea_host}/{args.owner}/{args.repo}/pulls/{args.pr}"
 
     comments = client.get_issue_comments(args.owner, args.repo, args.pr)
 
@@ -774,6 +878,47 @@ def main(argv: list[str] | None = None) -> int:
     ack_state = compute_ack_state(comments, author, items_by_slug, numeric_aliases, probe)
     body_state = {it["slug"]: section_marker_present(body, it["pr_section_marker"]) for it in items}
 
+    # --- N/A gate state (RFC#324 §N/A follow-up) ---
+    na_state: dict[str, dict[str, Any]] = {}
+    if na_gates:
+        na_state = compute_na_state(
+            comments, author, na_gates, numeric_aliases,
+            probe, client, args.owner,
+        )
+        # Post N/A declarations status (read by review-check.sh).
+        na_satisfied = [g for g, s in na_state.items() if s["declared"]]
+        na_missing   = [g for g, s in na_state.items() if not s["declared"]]
+        if na_satisfied:
+            na_desc = f"N/A: {', '.join(na_satisfied)}"
+            na_post_state = "success"
+        elif na_missing:
+            na_desc = f"awaiting /sop-n/a declaration for: {', '.join(na_missing)}"
+            na_post_state = "pending"
+        else:
+            # Configured but no declarations yet.
+            na_desc = "no /sop-n/a declarations yet"
+            na_post_state = "pending"
+        na_context = "sop-checklist / na-declarations (pull_request)"
+        print(f"::notice::na-declarations status: {na_post_state} — {na_desc}")
+        if not args.dry_run:
+            client.post_status(
+                args.owner, args.repo, head_sha,
+                state=na_post_state, context=na_context,
+                description=na_desc,
+                target_url=target_url,
+            )
+            print(f"::notice::na-declarations status posted: {na_context} → {na_post_state}")
+        # Log per-gate diagnostics.
+        for gate in na_gates:
+            s = na_state.get(gate, {})
+            if s.get("declared"):
+                print(f"::notice::  [PASS] gate={gate} — N/A declared by {','.join(s['declared'])}"
+                      + (f" ({s['reason']})" if s.get("reason") else ""))
+            else:
+                extra = f" — rejected: {', '.join(s.get('rejected', []))}" if s.get("rejected") else ""
+                print(f"::notice::  [WAIT] gate={gate} — no valid N/A declaration yet{extra}")
+
+
     state, description = render_status(items, ack_state, body_state)
     mode = get_tier_mode(pr, cfg)
     if mode == "soft":
@@ -808,7 +953,6 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if state in ("success", "pending") else 1
         return 0
 
-    target_url = f"https://{args.gitea_host}/{args.owner}/{args.repo}/pulls/{args.pr}"
     client.post_status(
         args.owner, args.repo, head_sha,
         state=state, context=args.status_context,
