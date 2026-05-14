@@ -47,6 +47,15 @@ REQUIRED_CONTEXTS_RAW = _env(
         "sop-checklist / all-items-acked (pull_request)"
     ),
 )
+# Required contexts for push (main/staging) runs. The push CI uses the same
+# aggregator names with " (push)" suffix. Checking these explicitly instead of
+# the combined state avoids false-pause when non-blocking jobs (e.g. Platform
+# Go with continue-on-error: true due to mc#774) have failed — their failures
+# pollute the combined state but do not block merges.
+PUSH_REQUIRED_CONTEXTS_RAW = _env(
+    "PUSH_REQUIRED_CONTEXTS",
+    default="CI / all-required (push)",
+)
 
 OWNER, NAME = (REPO.split("/", 1) + [""])[:2] if REPO else ("", "")
 API = f"https://{GITEA_HOST}/api/v1" if GITEA_HOST else ""
@@ -118,16 +127,24 @@ def required_contexts(raw: str) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+def push_required_contexts() -> list[str]:
+    """Required contexts for push (branch) CI runs. See PUSH_REQUIRED_CONTEXTS_RAW."""
+    return required_contexts(PUSH_REQUIRED_CONTEXTS_RAW)
+
+
 def status_state(status: dict) -> str:
     return str(status.get("status") or status.get("state") or "").lower()
 
 
 def latest_statuses_by_context(statuses: list[dict]) -> dict[str, dict]:
+    # Gitea /statuses endpoint returns entries in ascending id order (oldest
+    # first). We need the LAST occurrence of each context, so iterate in
+    # reverse to prefer newer entries.
     latest: dict[str, dict] = {}
-    for status in statuses:
+    for status in reversed(statuses):
         context = status.get("context")
-        if isinstance(context, str) and context not in latest:
-            latest[context] = status
+        if isinstance(context, str):
+            latest[context] = status  # overwrite: reverse order → newest wins
     return latest
 
 
@@ -193,9 +210,15 @@ def evaluate_merge_readiness(
     required_contexts: list[str],
     pr_has_current_base: bool,
 ) -> MergeDecision:
-    main_state = str(main_status.get("state") or "").lower()
-    if main_state != "success":
-        return MergeDecision(False, "pause", f"main status is {main_state or 'missing'}")
+    # Check push-required contexts explicitly instead of combined state.
+    # Combined state can be "failure" due to non-blocking jobs
+    # (continue-on-error: true) that don't actually gate merges.
+    # CI / all-required (push) is the authoritative gate — it respects
+    # continue-on-error and correctly aggregates all blocking failures.
+    main_latest = latest_statuses_by_context(main_status.get("statuses") or [])
+    main_ok, main_bad = required_contexts_green(main_latest, push_required_contexts())
+    if not main_ok:
+        return MergeDecision(False, "pause", "main required contexts not green: " + ", ".join(main_bad))
     if not pr_has_current_base:
         return MergeDecision(False, "update", "PR head does not contain current main")
 
@@ -220,10 +243,26 @@ def get_branch_head(branch: str) -> str:
 
 
 def get_combined_status(sha: str) -> dict:
-    _, body = api("GET", f"/repos/{OWNER}/{NAME}/commits/{sha}/status")
-    if not isinstance(body, dict):
+    """Combined status + all individual statuses for `sha`.
+
+    The /status endpoint caps the `statuses` array at 30 entries (Gitea
+    default page size), so we fetch the full list via /statuses with a
+    higher limit. The combined `state` still comes from /status.
+    """
+    _, combined = api("GET", f"/repos/{OWNER}/{NAME}/commits/{sha}/status")
+    if not isinstance(combined, dict):
         raise ApiError(f"status for {sha} response not object")
-    return body
+    # Fetch full statuses list; 200 covers >99% of real-world runs.
+    # The list is ordered ascending by id (oldest first) — callers must
+    # iterate in reverse to get the newest entry per context.
+    _, all_statuses = api(
+        "GET",
+        f"/repos/{OWNER}/{NAME}/commits/{sha}/statuses",
+        query={"limit": "200"},
+    )
+    if isinstance(all_statuses, list):
+        combined["statuses"] = all_statuses
+    return combined
 
 
 def list_queued_issues() -> list[dict]:
@@ -294,8 +333,12 @@ def process_once(*, dry_run: bool = False) -> int:
     contexts = required_contexts(REQUIRED_CONTEXTS_RAW)
     main_sha = get_branch_head(WATCH_BRANCH)
     main_status = get_combined_status(main_sha)
-    if str(main_status.get("state") or "").lower() != "success":
-        print(f"::notice::queue paused: {WATCH_BRANCH}@{main_sha[:8]} is not green")
+    # Check push-required contexts explicitly instead of combined state.
+    # See evaluate_merge_readiness for rationale.
+    main_latest = latest_statuses_by_context(main_status.get("statuses") or [])
+    main_ok, main_bad = required_contexts_green(main_latest, push_required_contexts())
+    if not main_ok:
+        print(f"::notice::queue paused: {WATCH_BRANCH}@{main_sha[:8]} required contexts not green: {', '.join(main_bad)}")
         return 0
 
     issue = choose_next_queued_issue(
