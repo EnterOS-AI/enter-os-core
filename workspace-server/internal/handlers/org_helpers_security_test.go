@@ -93,7 +93,7 @@ func TestResolveInsideRoot_DotPathComponent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dot path component: unexpected error: %v", err)
 	}
-	if got[len(got)-14:] != "/subdir/file.txt" {
+	if !strings.HasSuffix(got, "/subdir/file.txt") {
 		t.Errorf("dot path component: got %q, want suffix /subdir/file.txt", got)
 	}
 }

@@ -17,6 +17,9 @@ import (
 // when one exists, or the workspace's own ID when it is the org root.
 // Returns an empty string if the workspace is not found.
 func resolveOrgID(ctx context.Context, workspaceID string) (string, error) {
+	if db.DB == nil {
+		return "", nil // nil in unit tests
+	}
 	var parentID sql.NullString
 	err := db.DB.QueryRowContext(ctx,
 		`SELECT parent_id FROM workspaces WHERE id = $1`,

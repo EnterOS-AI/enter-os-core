@@ -258,7 +258,7 @@ func (h *WorkspaceHandler) buildProvisionerConfig(
 	// present) wins, matching the existing WorkspaceDir precedence.
 	workspacePath := payload.WorkspaceDir
 	workspaceAccess := payload.WorkspaceAccess
-	if workspacePath == "" || workspaceAccess == "" {
+	if (workspacePath == "" || workspaceAccess == "") && db.DB != nil {
 		var dbDir, dbAccess string
 		if err := db.DB.QueryRow(
 			`SELECT COALESCE(workspace_dir, ''), COALESCE(workspace_access, 'none') FROM workspaces WHERE id = $1`,
