@@ -1,7 +1,9 @@
 package provisioner
 
 import (
+	"archive/tar"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,6 +79,54 @@ func TestStartSeedsConfigsBeforeContainerStart(t *testing.T) {
 	}
 	if copyTemplate >= start || writeFiles >= start {
 		t.Fatalf("config seeding must happen before ContainerStart: copyTemplate=%d writeFiles=%d start=%d", copyTemplate, writeFiles, start)
+	}
+}
+
+func TestBuildTemplateTar_SkipsSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("name: safe\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outside, []byte("do-not-copy\n"), 0644); err != nil {
+		t.Fatalf("write outside target: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "linked-secret.txt")); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	buf, err := buildTemplateTar(dir)
+	if err != nil {
+		t.Fatalf("buildTemplateTar: %v", err)
+	}
+
+	names := map[string]string{}
+	tr := tar.NewReader(buf)
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read tar: %v", err)
+		}
+		body, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatalf("read body for %s: %v", hdr.Name, err)
+		}
+		names[hdr.Name] = string(body)
+	}
+
+	if got := names["config.yaml"]; got != "name: safe\n" {
+		t.Fatalf("config.yaml body = %q, want safe config", got)
+	}
+	if _, ok := names["linked-secret.txt"]; ok {
+		t.Fatalf("symlink entry was copied into template tar: %#v", names)
+	}
+	for name, body := range names {
+		if strings.Contains(body, "do-not-copy") {
+			t.Fatalf("symlink target leaked through %s: %q", name, body)
+		}
 	}
 }
 
