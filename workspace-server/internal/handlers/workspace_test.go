@@ -410,6 +410,44 @@ func TestWorkspaceCreate_DefaultsApplied(t *testing.T) {
 	}
 }
 
+func TestWorkspaceCreate_SaaSHardForcesTier4(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	broadcaster := newTestBroadcaster()
+	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
+	handler.SetCPProvisioner(&trackingCPProv{})
+
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO workspaces").
+		WithArgs(sqlmock.AnyArg(), "SaaS External Agent", nil, 4, "external", sqlmock.AnyArg(), (*string)(nil), nil, "none", (*int64)(nil), models.DefaultMaxConcurrentTasks, "push").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	mock.ExpectExec("INSERT INTO canvas_layouts").
+		WithArgs(sqlmock.AnyArg(), float64(0), float64(0)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO structure_events").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE workspaces SET url").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO structure_events").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	body := `{"name":"SaaS External Agent","runtime":"external","external":true,"url":"https://example.com/agent","tier":2}`
+	c.Request = httptest.NewRequest("POST", "/workspaces", bytes.NewBufferString(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.Create(c)
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("expected status 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
 // TestWorkspaceCreate_WithSecrets_Persists asserts that secrets in the create
 // payload are written to workspace_secrets inside the same transaction as the
 // workspace row, and that the handler returns 201.

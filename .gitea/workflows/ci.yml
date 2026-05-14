@@ -133,7 +133,6 @@ jobs:
   # the name match works on PRs that don't touch workspace-server/).
   platform-build:
     name: Platform (Go)
-    needs: changes
     runs-on: ubuntu-latest
     # mc#774 (closed 2026-05-14): Phase 4 flip of the platform-build job.
     # Phase 4 (#656) originally flipped this to continue-on-error: false based on
@@ -154,29 +153,29 @@ jobs:
       run:
         working-directory: workspace-server
     steps:
-      - if: needs.changes.outputs.platform != 'true'
+      - if: false
         working-directory: .
         run: echo "No platform/** changes — skipping real build steps; this job always runs to satisfy the required-check name on branch protection."
-      - if: needs.changes.outputs.platform == 'true'
+      - if: always()
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - if: needs.changes.outputs.platform == 'true'
+      - if: always()
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: 'stable'
-      - if: needs.changes.outputs.platform == 'true'
+      - if: always()
         run: go mod download
-      - if: needs.changes.outputs.platform == 'true'
+      - if: always()
         run: go build ./cmd/server
       # CLI (molecli) moved to standalone repo: git.moleculesai.app/molecule-ai/molecule-cli
-      - if: needs.changes.outputs.platform == 'true'
+      - if: always()
         run: go vet ./...
-      - if: needs.changes.outputs.platform == 'true'
+      - if: always()
         name: Install golangci-lint
         run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
-      - if: needs.changes.outputs.platform == 'true'
+      - if: always()
         name: Run golangci-lint
         run: $(go env GOPATH)/bin/golangci-lint run --timeout 3m ./...
-      - if: needs.changes.outputs.platform == 'true'
+      - if: always()
         name: Diagnostic — per-package verbose 60s
         run: |
           set +e
@@ -192,7 +191,7 @@ jobs:
           echo "::endgroup::"
         # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
         continue-on-error: true
-      - if: needs.changes.outputs.platform == 'true'
+      - if: always()
         name: Run tests with race detection and coverage
         # Explicit timeout: cold runner cache causes OOM kills at ~4m39s on the
         # full ./... suite with race detection + coverage. A 10m per-step timeout
@@ -200,7 +199,7 @@ jobs:
         # instead of OOM-killing. The job-level timeout (15m) is a backstop.
         run: go test -race -timeout 10m -coverprofile=coverage.out ./...
 
-      - if: needs.changes.outputs.platform == 'true'
+      - if: always()
         name: Per-file coverage report
         # Advisory — lists every source file with its coverage so reviewers
         # can see at-a-glance where gaps are. Sorted ascending so the worst
@@ -214,7 +213,7 @@ jobs:
                    END {for (f in s) printf "%6.1f%%  %s\n", s[f]/c[f], f}' \
             | sort -n
 
-      - if: needs.changes.outputs.platform == 'true'
+      - if: always()
         name: Check coverage thresholds
         # Enforces two gates from #1823 Layer 1:
         #   1. Total floor (25% — ratchet plan in COVERAGE_FLOOR.md).
@@ -302,7 +301,6 @@ jobs:
   # siblings — verified empirically on PR #2314).
   canvas-build:
     name: Canvas (Next.js)
-    needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Phase 4 (RFC #219 §1): confirmed green on main 2026-05-12.
@@ -311,20 +309,20 @@ jobs:
       run:
         working-directory: canvas
     steps:
-      - if: needs.changes.outputs.canvas != 'true'
+      - if: false
         working-directory: .
         run: echo "No canvas/** changes — skipping real build steps; this job always runs to satisfy the required-check name on branch protection."
-      - if: needs.changes.outputs.canvas == 'true'
+      - if: always()
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - if: needs.changes.outputs.canvas == 'true'
+      - if: always()
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: '22'
-      - if: needs.changes.outputs.canvas == 'true'
+      - if: always()
         run: rm -f package-lock.json && npm install
-      - if: needs.changes.outputs.canvas == 'true'
+      - if: always()
         run: npm run build
-      - if: needs.changes.outputs.canvas == 'true'
+      - if: always()
         name: Run tests with coverage
         # Coverage instrumentation is configured in canvas/vitest.config.ts
         # (provider: v8, reporters: text + html + json-summary). Step 2 of
@@ -333,7 +331,7 @@ jobs:
         # tracked in #1815) after the team sees what current coverage is.
         run: npx vitest run --coverage
       - name: Upload coverage summary as artifact
-        if: needs.changes.outputs.canvas == 'true' && always()
+        if: always()
         # Pinned to v3 for Gitea act_runner v0.6 compatibility — v4+ uses
         # the GHES 3.10+ artifact protocol that Gitea 1.22.x does NOT
         # implement, surfacing as `GHESNotSupportedError: @actions/artifact
@@ -350,16 +348,15 @@ jobs:
   # Shellcheck (E2E scripts) — required check, always runs.
   shellcheck:
     name: Shellcheck (E2E scripts)
-    needs: changes
     runs-on: ubuntu-latest
     # Phase 4 (RFC #219 §1): confirmed green on main 2026-05-12.
     continue-on-error: false
     steps:
-      - if: needs.changes.outputs.scripts != 'true'
+      - if: false
         run: echo "No tests/e2e/ or infra/scripts/ changes — skipping real shellcheck; this job always runs to satisfy the required-check name on branch protection."
-      - if: needs.changes.outputs.scripts == 'true'
+      - if: always()
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - if: needs.changes.outputs.scripts == 'true'
+      - if: always()
         name: Run shellcheck on tests/e2e/*.sh and infra/scripts/*.sh
         # shellcheck is pre-installed on ubuntu-latest runners (via apt).
         # infra/scripts/ is included because setup.sh + nuke.sh gate the
@@ -370,16 +367,16 @@ jobs:
           find tests/e2e infra/scripts -type f -name '*.sh' -print0 \
             | xargs -0 shellcheck --severity=warning
 
-      - if: needs.changes.outputs.scripts == 'true'
+      - if: always()
         name: Lint cleanup-trap hygiene (RFC #2873)
         run: bash tests/e2e/lint_cleanup_traps.sh
 
-      - if: needs.changes.outputs.scripts == 'true'
+      - if: always()
         name: Run E2E bash unit tests (no live infra)
         run: |
           bash tests/e2e/test_model_slug.sh
 
-      - if: needs.changes.outputs.scripts == 'true'
+      - if: always()
         name: Test ECR promote-tenant-image script (mock-driven, no live infra)
         # Covers scripts/promote-tenant-image.sh — the codified
         # :staging-latest → :latest ECR promote + tenant fleet redeploy
@@ -389,7 +386,7 @@ jobs:
         run: |
           bash scripts/test-promote-tenant-image.sh
 
-      - if: needs.changes.outputs.scripts == 'true'
+      - if: always()
         name: Shellcheck promote-tenant-image script
         # scripts/ is excluded from the bulk shellcheck pass above (legacy
         # SC3040/SC3043 cleanup pending). Run shellcheck explicitly on
@@ -403,18 +400,15 @@ jobs:
   canvas-deploy-reminder:
     name: Canvas Deploy Reminder
     runs-on: ubuntu-latest
-    # mc#774 root-fix: added job-level `if:` so ci-required-drift.py's
-    # ci_job_names() detects this as github.ref-gated and skips it from F1.
-    # The step-level exit 0 handles the "not main push" case; the job-level
-    # `if:` makes the gating explicit so the drift script sees it.
-    # continue-on-error removed (was mc#774 mask): step exits 0 when not applicable.
-    needs: [changes, canvas-build]
-    if: ${{ github.ref == 'refs/heads/main' }}
+    # This job must run on PRs because all-required needs it. The step exits
+    # 0 when it is not a main push, giving branch protection a green no-op
+    # instead of a skipped/missing required dependency.
+    needs: canvas-build
     steps:
       - name: Write deploy reminder to step summary
         env:
           COMMIT_SHA: ${{ github.sha }}
-          CANVAS_CHANGED: ${{ needs.changes.outputs.canvas }}
+          CANVAS_CHANGED: "true"
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref }}
           # github.server_url resolves via the workflow-level env override
@@ -459,7 +453,6 @@ jobs:
   # Python Lint & Test — required check, always runs.
   python-lint:
     name: Python Lint & Test
-    needs: changes
     runs-on: ubuntu-latest
     # Phase 4 (RFC #219 §1): confirmed green on main 2026-05-12.
     continue-on-error: false
@@ -469,25 +462,25 @@ jobs:
       run:
         working-directory: workspace
     steps:
-      - if: needs.changes.outputs.python != 'true'
+      - if: false
         working-directory: .
         run: echo "No workspace/** changes — skipping real lint+test; this job always runs to satisfy the required-check name on branch protection."
-      - if: needs.changes.outputs.python == 'true'
+      - if: always()
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - if: needs.changes.outputs.python == 'true'
+      - if: always()
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.11'
           cache: pip
           cache-dependency-path: workspace/requirements.txt
-      - if: needs.changes.outputs.python == 'true'
+      - if: always()
         run: pip install -r requirements.txt pytest pytest-asyncio pytest-cov sqlalchemy>=2.0.0
       # Coverage flags + fail-under floor moved into workspace/pytest.ini
       # (issue #1817) so local `pytest` and CI use identical config.
-      - if: needs.changes.outputs.python == 'true'
+      - if: always()
         run: python -m pytest --tb=short
 
-      - if: needs.changes.outputs.python == 'true'
+      - if: always()
         name: Per-file critical-path coverage (MCP / inbox / auth)
         # MCP-critical Python files have a per-file floor on top of the
         # 86% total floor in pytest.ini. See issue #2790 for full rationale.
@@ -552,86 +545,104 @@ jobs:
     # red silently merged through. See internal#286 for the three concrete
     # tonight-of-2026-05-11 incidents that prompted the emergency bump.
     #
-    # Three properties of this job each close a failure mode:
+    # This job deliberately has no `needs:`. Gitea 1.22/act_runner can mark a
+    # job-level `if: always()` + `needs:` sentinel as skipped before upstream
+    # jobs settle, leaving branch protection with a permanent pending
+    # `CI / all-required` context. Instead, this independent sentinel polls the
+    # required commit-status contexts for this SHA and fails if any fail, skip,
+    # or never emit.
     #
-    #  1. `if: always()` — runs even when an upstream fails. Without it the
-    #     sentinel is `skipped` and protection treats that as missing → merge
-    #     ungated.
+    # canvas-deploy-reminder is intentionally NOT included in all-required.needs.
+    # It is an informational main-push reminder, not a PR quality gate. Keeping
+    # it in this dependency list lets a skipped reminder skip the required
+    # sentinel before the `always()` guard can emit a branch-protection status.
     #
-    #  2. Assertion is `result == "success"` per dep, NOT `!= "failure"`.
-    #     A `skipped` upstream (job gated by `if:` evaluating false, matrix
-    #     entry that couldn't run) must NOT silently pass through.
-    #     `skipped`-as-green is exactly the failure mode this gate closes.
-    #
-    #  3. `needs:` is the canonical list of "what counts as required."
-    #     status_check_contexts will reference only `ci/all-required` (Step 5
-    #     follow-up — branch-protection PATCH is Owners-tier per
-    #     `feedback_never_admin_merge_bypass`, separate PR); a new job is
-    #     added simply by listing it in `needs:` here.
-    #     `.gitea/workflows/ci-required-drift.yml` files a [ci-drift] issue
-    #     hourly if this list diverges from status_check_contexts or from
-    #     audit-force-merge.yml's REQUIRED_CHECKS env (RFC §4 + §6).
-    #
-    # canvas-deploy-reminder IS now included in all-required.needs (mc#958 root-fix):
-    # added job-level `if: github.ref == 'refs/heads/main'` so ci-required-drift.py's
-    # ci_job_names() detects it as github.ref-gated and skips it from F1.
-    # The step-level `if: ... || REF_NAME != refs/heads/main` exits 0 when not main,
-    # so the job succeeds (not skipped) on non-main pushes — sentinel treats as green.
-    #
-    # Phase 3 (RFC #219 §1) safety: underlying build jobs carry
-    # continue-on-error: true so their failures are masked to null (2026-05-12: re-enabled mc#774 interim)
-    # (Gitea suppresses status reporting for CoE jobs). This sentinel
-    # runs with continue-on-error: false so it always reports its
-    # result to the API — without this, the required-status entry
-    # (CI / all-required (pull_request)) is never created, which
-    # blocks PR merges. When Phase 3 ends, flip underlying jobs to
-    # continue-on-error: false; this sentinel can then be flipped to
-    # continue-on-error: true if a Phase-4 regression requires it.
     continue-on-error: false
     runs-on: ubuntu-latest
-    timeout-minutes: 1
-    needs:
-      - changes
-      - platform-build
-      - canvas-build
-      - shellcheck
-      - python-lint
-      - canvas-deploy-reminder
-    if: ${{ always() }}
+    timeout-minutes: 45
     steps:
-      - name: Assert every required dependency succeeded
+      - name: Wait for required CI contexts
+        env:
+          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          API_ROOT: ${{ github.server_url }}/api/v1
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          # `needs.*.result` is one of: success | failure | cancelled | skipped | null.
-          # We assert success per dep (not != failure) — see RFC §2 reasoning above.
-          # Null results are skipped: they come from Phase 3 (continue-on-error: true
-          # suppresses status) or from jobs still in-flight. The sentinel succeeds
-          # rather than blocking PRs on Phase 3 noise.
-          results='${{ toJSON(needs) }}'
-          echo "$results"
-          echo "$results" | python3 -c '
-          import json, sys
-          ns = json.load(sys.stdin)
-          # Phase 3 masked: jobs with continue-on-error: true may report "failure"
-          # Remove when mc#774 handler test failures are resolved.
-          PHASE3_MASKED = {"platform-build"}
-          # Exclude null (Phase 3 suppressed / in-flight) from the bad list.
-          bad = [(k, v.get("result")) for k, v in ns.items()
-                 if v.get("result") not in ("success", None, "cancelled", "skipped") and k not in PHASE3_MASKED]
-          if bad:
-              print(f"FAIL: jobs not green:", file=sys.stderr)
-              for k, r in bad:
-                  print(f"  - {k}: {r}", file=sys.stderr)
-              sys.exit(1)
-          pending = [(k, v.get("result")) for k, v in ns.items()
-                     if v.get("result") is None]
-          cancelled = [(k, v.get("result")) for k, v in ns.items()
-                       if v.get("result") == "cancelled"]
-          if pending:
-              print(f"WARN: {len(pending)} job(s) still in-flight (result=null): " +
-                    ", ".join(k for k, _ in pending), file=sys.stderr)
-          if cancelled:
-              print(f"INFO: {len(cancelled)} job(s) masked by continue-on-error: " +
-                    ", ".join(k for k, _ in cancelled), file=sys.stderr)
-          print(f"OK: all {len(ns)} required jobs succeeded (or Phase-3 suppressed)")
-          '
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          token = os.environ["GITEA_TOKEN"]
+          api_root = os.environ["API_ROOT"].rstrip("/")
+          repo = os.environ["REPOSITORY"]
+          sha = os.environ["COMMIT_SHA"]
+          event = os.environ["EVENT_NAME"]
+          required = [
+              f"CI / Detect changes ({event})",
+              f"CI / Platform (Go) ({event})",
+              f"CI / Canvas (Next.js) ({event})",
+              f"CI / Shellcheck (E2E scripts) ({event})",
+              f"CI / Python Lint & Test ({event})",
+          ]
+          terminal_bad = {"failure", "error"}
+          deadline = time.time() + 40 * 60
+          last_summary = None
+
+          def fetch_statuses():
+              statuses = []
+              for page in range(1, 6):
+                  url = f"{api_root}/repos/{repo}/commits/{sha}/statuses?page={page}&limit=100"
+                  req = urllib.request.Request(url, headers={"Authorization": f"token {token}"})
+                  with urllib.request.urlopen(req, timeout=10) as resp:
+                      chunk = json.load(resp)
+                  if not chunk:
+                      break
+                  statuses.extend(chunk)
+              latest = {}
+              for item in statuses:
+                  ctx = item.get("context")
+                  if not ctx:
+                      continue
+                  prev = latest.get(ctx)
+                  if prev is None or (item.get("updated_at") or item.get("created_at") or "") >= (prev.get("updated_at") or prev.get("created_at") or ""):
+                      latest[ctx] = item
+              return latest
+
+          while True:
+              try:
+                  latest = fetch_statuses()
+              except (TimeoutError, OSError, urllib.error.URLError) as exc:
+                  if time.time() >= deadline:
+                      print(f"FAIL: status polling did not recover before deadline: {exc}", file=sys.stderr)
+                      sys.exit(1)
+                  print(f"WARN: status poll failed, retrying: {exc}", flush=True)
+                  time.sleep(15)
+                  continue
+              states = {ctx: (latest.get(ctx) or {}).get("status") or (latest.get(ctx) or {}).get("state") or "missing" for ctx in required}
+              summary = ", ".join(f"{ctx}={state}" for ctx, state in states.items())
+              if summary != last_summary:
+                  print(summary, flush=True)
+                  last_summary = summary
+              bad = {ctx: state for ctx, state in states.items() if state in terminal_bad}
+              if bad:
+                  print("FAIL: required CI context failed:", file=sys.stderr)
+                  for ctx, state in bad.items():
+                      desc = (latest.get(ctx) or {}).get("description") or ""
+                      print(f"  - {ctx}: {state} {desc}", file=sys.stderr)
+                  sys.exit(1)
+              if all(state == "success" for state in states.values()):
+                  print(f"OK: all {len(required)} required CI contexts succeeded")
+                  sys.exit(0)
+              if time.time() >= deadline:
+                  print("FAIL: timed out waiting for required CI contexts:", file=sys.stderr)
+                  for ctx, state in states.items():
+                      print(f"  - {ctx}: {state}", file=sys.stderr)
+                  sys.exit(1)
+              time.sleep(15)
+          PY

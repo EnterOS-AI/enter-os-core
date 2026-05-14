@@ -847,6 +847,58 @@ func TestListFiles_FallbackToHost_WithTemplate(t *testing.T) {
 	}
 }
 
+func TestListFiles_FallbackToHost_SkipsSymlinks(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+
+	tmpDir := t.TempDir()
+	tmplDir := filepath.Join(tmpDir, "test-agent")
+	if err := os.MkdirAll(tmplDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmplDir, "config.yaml"), []byte("name: Test Agent\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(secret, []byte("do-not-list"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(tmplDir, "leaked-secret")); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewTemplatesHandler(tmpDir, nil, nil)
+
+	mock.ExpectQuery(`SELECT name, COALESCE\(instance_id, ''\), COALESCE\(runtime, ''\) FROM workspaces WHERE id =`).
+		WithArgs("ws-tmpl").
+		WillReturnRows(sqlmock.NewRows([]string{"name", "instance_id", "runtime"}).AddRow("Test Agent", "", ""))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-tmpl"}}
+	c.Request = httptest.NewRequest("GET", "/workspaces/ws-tmpl/files", nil)
+
+	handler.ListFiles(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp []map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range resp {
+		if file["path"] == "leaked-secret" {
+			t.Fatalf("symlink should not be listed: %#v", resp)
+		}
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
 // ==================== GET /workspaces/:id/files/*path ====================
 
 func TestReadFile_PathTraversal(t *testing.T) {
@@ -1200,4 +1252,3 @@ func TestCWE78_DeleteFile_TraversalVariants(t *testing.T) {
 		})
 	}
 }
-

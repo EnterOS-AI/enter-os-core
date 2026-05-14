@@ -8,6 +8,7 @@ import {
   type PreflightResult,
   type Template,
 } from "@/lib/deploy-preflight";
+import { isSaaSTenant } from "@/lib/tenant";
 import { MissingKeysModal } from "@/components/MissingKeysModal";
 
 /**
@@ -105,7 +106,7 @@ export function useTemplateDeploy(
         const ws = await api.post<{ id: string }>("/workspaces", {
           name: template.name,
           template: template.id,
-          tier: template.tier,
+          tier: isSaaSTenant() ? 4 : template.tier,
           canvas: coords,
           ...(model ? { model } : {}),
         });

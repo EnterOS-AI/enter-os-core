@@ -186,11 +186,16 @@ func (h *TemplatesHandler) List(c *gin.Context) {
 			model = raw.RuntimeConfig.Model
 		}
 
+		tier := raw.Tier
+		if h.wh != nil && h.wh.IsSaaS() {
+			tier = h.wh.DefaultTier()
+		}
+
 		templates = append(templates, templateSummary{
 			ID:                      id,
 			Name:                    raw.Name,
 			Description:             raw.Description,
-			Tier:                    raw.Tier,
+			Tier:                    tier,
 			Runtime:                 raw.Runtime,
 			Model:                   model,
 			Models:                  raw.RuntimeConfig.Models,
@@ -338,6 +343,11 @@ func (h *TemplatesHandler) ListFiles(c *gin.Context) {
 	var files []fileEntry
 	filepath.Walk(walkRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil || path == walkRoot {
+			return nil
+		}
+		// Skip symlinks to prevent path traversal via malicious symlinks
+		// inside the workspace config directory (OFFSEC-010).
+		if info.Mode()&os.ModeSymlink != 0 {
 			return nil
 		}
 		rel, _ := filepath.Rel(walkRoot, path)

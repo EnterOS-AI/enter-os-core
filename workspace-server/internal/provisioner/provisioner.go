@@ -773,6 +773,15 @@ func ApplyTierConfig(hostCfg *container.HostConfig, cfg WorkspaceConfig, configM
 
 // CopyTemplateToContainer copies files from a host directory into /configs in the container.
 func (p *Provisioner) CopyTemplateToContainer(ctx context.Context, containerID, templatePath string) error {
+	buf, err := buildTemplateTar(templatePath)
+	if err != nil {
+		return err
+	}
+
+	return p.cli.CopyToContainer(ctx, containerID, "/configs", buf, container.CopyToContainerOptions{})
+}
+
+func buildTemplateTar(templatePath string) (*bytes.Buffer, error) {
 	// Resolve symlinks at the root before walking. filepath.Walk does
 	// NOT follow a symlink that IS the root — it Lstats the path, sees
 	// a symlink (non-directory), and emits exactly one entry without
@@ -794,6 +803,15 @@ func (p *Provisioner) CopyTemplateToContainer(ctx context.Context, containerID, 
 	err := filepath.Walk(templatePath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
+		}
+		// OFFSEC-010: skip symlinks to prevent path traversal via malicious
+		// template symlinks (e.g. template/.ssh → /root/.ssh). filepath.Walk
+		// follows symlinks by default, so without this guard a crafted symlink
+		// inside the template directory could escape to include arbitrary host
+		// files in the tar archive. We intentionally skip rather than error so
+		// a broken symlink in an org template is a silent no-op.
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
 		}
 		rel, err := filepath.Rel(templatePath, path)
 		if err != nil {
@@ -835,13 +853,13 @@ func (p *Provisioner) CopyTemplateToContainer(ctx context.Context, containerID, 
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("failed to create tar from %s: %w", templatePath, err)
+		return nil, fmt.Errorf("failed to create tar from %s: %w", templatePath, err)
 	}
 	if err := tw.Close(); err != nil {
-		return fmt.Errorf("failed to close tar writer: %w", err)
+		return nil, fmt.Errorf("failed to close tar writer: %w", err)
 	}
 
-	return p.cli.CopyToContainer(ctx, containerID, "/configs", &buf, container.CopyToContainerOptions{})
+	return &buf, nil
 }
 
 // WriteFilesToContainer writes in-memory files into /configs in the container.

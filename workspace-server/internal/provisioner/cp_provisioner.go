@@ -158,6 +158,7 @@ type cpProvisionRequest struct {
 	Tier        int               `json:"tier"`
 	PlatformURL string            `json:"platform_url"`
 	Env         map[string]string `json:"env"`
+	ConfigFiles map[string]string `json:"config_files,omitempty"`
 }
 
 type cpProvisionResponse struct {
@@ -181,6 +182,11 @@ func (p *CPProvisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string,
 		}
 		env["ADMIN_TOKEN"] = p.adminToken
 	}
+	configFiles, err := collectCPConfigFiles(cfg)
+	if err != nil {
+		return "", fmt.Errorf("cp provisioner: collect config files: %w", err)
+	}
+
 	req := cpProvisionRequest{
 		OrgID:       p.orgID,
 		WorkspaceID: cfg.WorkspaceID,
@@ -188,6 +194,7 @@ func (p *CPProvisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string,
 		Tier:        cfg.Tier,
 		PlatformURL: cfg.PlatformURL,
 		Env:         env,
+		ConfigFiles: configFiles,
 	}
 
 	body, err := json.Marshal(req)
@@ -314,6 +321,7 @@ func collectCPConfigFiles(cfg WorkspaceConfig) (map[string]string, error) {
 	}
 	return files, nil
 }
+
 // Stop terminates the workspace's EC2 instance via the control plane.
 //
 // Looks up the actual EC2 instance_id from the workspaces table before
@@ -468,7 +476,9 @@ func (p *CPProvisioner) IsRunning(ctx context.Context, workspaceID string) (bool
 		// Don't leak the body — upstream errors may echo headers.
 		return true, fmt.Errorf("cp provisioner: status: unexpected %d", resp.StatusCode)
 	}
-	var result struct{ State string `json:"state"` }
+	var result struct {
+		State string `json:"state"`
+	}
 	// Cap body read at 64 KiB for parity with Start — a misconfigured
 	// or compromised CP streaming a huge body could otherwise exhaust
 	// memory in this hot path (called reactively per-request from

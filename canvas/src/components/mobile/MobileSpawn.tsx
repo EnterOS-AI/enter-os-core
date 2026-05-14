@@ -12,6 +12,7 @@ import { useEffect, useState } from "react";
 
 import { api } from "@/lib/api";
 import { type Template } from "@/lib/deploy-preflight";
+import { isSaaSTenant } from "@/lib/tenant";
 
 import { tierCode } from "./palette";
 import { MOBILE_FONT_MONO, MOBILE_FONT_SANS, type MobilePalette, usePalette } from "./palette";
@@ -26,6 +27,7 @@ const TIER_LABEL: Record<"T1" | "T2" | "T3" | "T4", string> = {
 
 export function MobileSpawn({ dark, onClose }: { dark: boolean; onClose: () => void }) {
   const p = usePalette(dark);
+  const isSaaS = isSaaSTenant();
   const [templates, setTemplates] = useState<Template[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(true);
   const [tplId, setTplId] = useState<string | null>(null);
@@ -43,7 +45,7 @@ export function MobileSpawn({ dark, onClose }: { dark: boolean; onClose: () => v
         setTemplates(list);
         if (list.length > 0) {
           setTplId(list[0].id);
-          setTier(tierCode(list[0].tier));
+          setTier(isSaaS ? "T4" : tierCode(list[0].tier));
         }
       })
       .catch(() => {
@@ -55,7 +57,7 @@ export function MobileSpawn({ dark, onClose }: { dark: boolean; onClose: () => v
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isSaaS]);
 
   const handleSpawn = async () => {
     if (busy || !tplId) return;
@@ -67,7 +69,7 @@ export function MobileSpawn({ dark, onClose }: { dark: boolean; onClose: () => v
       await api.post<{ id: string }>("/workspaces", {
         name: (name.trim() || chosen.name),
         template: chosen.id,
-        tier: Number(tier.slice(1)),
+        tier: isSaaS ? 4 : Number(tier.slice(1)),
         canvas: {
           x: Math.random() * 400 + 100,
           y: Math.random() * 300 + 100,
@@ -203,7 +205,7 @@ export function MobileSpawn({ dark, onClose }: { dark: boolean; onClose: () => v
             >
               {templates.map((t) => {
                 const on = tplId === t.id;
-                const tCode = tierCode(t.tier);
+                const tCode = isSaaS ? "T4" : tierCode(t.tier);
                 return (
                   <button
                     key={t.id}
