@@ -1,167 +1,185 @@
 // @vitest-environment jsdom
 /**
- * Tests for AttachmentViews.tsx — PendingAttachmentPill + AttachmentChip.
+ * AttachmentViews — pure presentational components for chat attachments.
  *
- * 16 cases covering:
- * - PendingAttachmentPill: name, size, aria-label, onRemove, one-button guard
- * - AttachmentChip: name+glyph, size, no-size, title, onDownload, tone=user/agent, one-button guard
+ * Covers:
+ *   - PendingAttachmentPill renders file name, formatted size, × button
+ *   - PendingAttachmentPill × button has correct aria-label
+ *   - PendingAttachmentPill calls onRemove when × clicked
+ *   - PendingAttachmentPill renders exactly one button
+ *   - AttachmentChip renders attachment name and download glyph
+ *   - AttachmentChip renders size when provided
+ *   - AttachmentChip omits size span when size is undefined
+ *   - AttachmentChip calls onDownload(attachment) on click
+ *   - AttachmentChip title attribute for hover tooltip
+ *   - AttachmentChip tone=user applies blue accent classes
+ *   - AttachmentChip tone=agent applies surface classes
+ *   - AttachmentChip renders exactly one button
  *
- * Pattern: render the real component, inspect actual DOM output.
- * No mocking of the components themselves.
+ * NOTE: No @testing-library/jest-dom import — use textContent / className /
+ * getAttribute checks to avoid "expect is not defined" errors in this vitest
+ * configuration.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
 import React from "react";
 
-import {
-  PendingAttachmentPill,
-  AttachmentChip,
-} from "../AttachmentViews";
+import { AttachmentChip, PendingAttachmentPill } from "../AttachmentViews";
 import type { ChatAttachment } from "../types";
 
-afterEach(cleanup);
-
-// ─── Shared test fixtures ────────────────────────────────────────────────────
-
-const makeFile = (name: string, size: number): File =>
-  new File([new Uint8Array(size)], name, { type: "application/octet-stream" });
-
-const makeAttachment = (overrides: Partial<ChatAttachment> = {}): ChatAttachment => ({
-  name: "report.pdf",
-  uri: "workspace:/workspace/report.pdf",
-  mimeType: "application/pdf",
-  size: 42_000,
-  ...overrides,
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
 });
 
-// ─── PendingAttachmentPill ───────────────────────────────────────────────────
+// ─── Helpers ────────────────────────────────────────────────────────────────────
+
+/** Create a File with actual content so size > 0 in jsdom. */
+function makeFile(name: string, content: string): File {
+  return new File([content], name, { type: "application/octet-stream" });
+}
+
+function makeAttachment(name: string, size?: number): ChatAttachment {
+  return { name, uri: `workspace:/tmp/${name}`, size };
+}
+
+// ─── PendingAttachmentPill ─────────────────────────────────────────────────────
 
 describe("PendingAttachmentPill", () => {
-  describe("renders", () => {
-    it("displays the file name", () => {
-      const file = makeFile("notes.txt", 128);
-      render(<PendingAttachmentPill file={file} onRemove={vi.fn()} />);
-      expect(screen.getByText("notes.txt")).toBeTruthy();
-    });
+  it("renders the file name", () => {
+    const file = makeFile("report.pdf", "PDF content here");
+    const { container } = render(
+      <PendingAttachmentPill file={file} onRemove={vi.fn()} />,
+    );
+    expect(container.textContent).toContain("report.pdf");
+  });
 
-    it("displays formatted size in bytes", () => {
-      // File([], name) gives size 0; pass a Uint8Array to set actual byte size.
-      const file = new File([new Uint8Array(512)], "tiny.bin");
-      render(<PendingAttachmentPill file={file} onRemove={vi.fn()} />);
-      expect(screen.getByText("512 B")).toBeTruthy();
-    });
+  it("renders the formatted file size (KB)", () => {
+    // 50 KB = 50 * 1024 bytes
+    const content = "x".repeat(50 * 1024);
+    const file = makeFile("data.csv", content);
+    const { container } = render(
+      <PendingAttachmentPill file={file} onRemove={vi.fn()} />,
+    );
+    expect(container.textContent).toContain("50 KB");
+  });
 
-    it("displays formatted size in KB", () => {
-      const file = new File([new Uint8Array(5 * 1024)], "medium.zip");
-      render(<PendingAttachmentPill file={file} onRemove={vi.fn()} />);
-      expect(screen.getByText("5 KB")).toBeTruthy();
-    });
+  it("renders 0 B for empty file", () => {
+    const file = makeFile("empty.txt", "");
+    const { container } = render(
+      <PendingAttachmentPill file={file} onRemove={vi.fn()} />,
+    );
+    expect(container.textContent).toContain("0 B");
+  });
 
-    it("displays formatted size in MB", () => {
-      const file = new File([new Uint8Array(Math.floor(1.5 * 1024 * 1024))], "large.tar");
-      render(<PendingAttachmentPill file={file} onRemove={vi.fn()} />);
-      // formatSize uses toFixed(1) for MB → "1.5 MB"
-      expect(screen.getByText("1.5 MB")).toBeTruthy();
-    });
+  it("renders size in MB for files >= 1 MB", () => {
+    // 2.5 MB = 2.5 * 1024 * 1024 bytes
+    const content = "x".repeat(Math.round(2.5 * 1024 * 1024));
+    const file = makeFile("video.mp4", content);
+    const { container } = render(
+      <PendingAttachmentPill file={file} onRemove={vi.fn()} />,
+    );
+    expect(container.textContent).toContain("2.5 MB");
+  });
 
-    it('× button has aria-label "Remove <filename>"', () => {
-      const file = makeFile("memo.pdf", 1_000);
-      render(<PendingAttachmentPill file={file} onRemove={vi.fn()} />);
-      expect(screen.getByRole("button", { name: /remove memo\.pdf/i })).toBeTruthy();
-    });
+  it("× button has aria-label with file name", () => {
+    const file = makeFile("notes.txt", "some content");
+    render(<PendingAttachmentPill file={file} onRemove={vi.fn()} />);
+    const btn = screen.getByRole("button");
+    expect(btn.getAttribute("aria-label")).toBe("Remove notes.txt");
+  });
 
-    it("calls onRemove when × button is clicked", () => {
-      const onRemove = vi.fn();
-      const file = makeFile("photo.png", 999);
-      render(<PendingAttachmentPill file={file} onRemove={onRemove} />);
-      fireEvent.click(screen.getByRole("button", { name: /remove photo\.png/i }));
-      expect(onRemove).toHaveBeenCalledTimes(1);
-    });
+  it("calls onRemove when × button is clicked", () => {
+    const file = makeFile("doc.pdf", "pdf data");
+    const onRemove = vi.fn();
+    render(<PendingAttachmentPill file={file} onRemove={onRemove} />);
+    screen.getByRole("button").click();
+    expect(onRemove).toHaveBeenCalledTimes(1);
+  });
 
-    it("renders exactly one button (no stray click targets)", () => {
-      const file = makeFile("doc.docx", 20_000);
-      render(<PendingAttachmentPill file={file} onRemove={vi.fn()} />);
-      const buttons = screen.getAllByRole("button");
-      expect(buttons).toHaveLength(1);
-    });
+  it("renders exactly one button (the × remove button)", () => {
+    const file = makeFile("img.png", "image bytes");
+    const { container } = render(
+      <PendingAttachmentPill file={file} onRemove={vi.fn()} />,
+    );
+    expect(container.querySelectorAll("button")).toHaveLength(1);
   });
 });
 
-// ─── AttachmentChip ────────────────────────────────────────────────────────
+// ─── AttachmentChip ───────────────────────────────────────────────────────────
 
 describe("AttachmentChip", () => {
-  let onDownload: ReturnType<typeof vi.fn>;
-
-  beforeEach(() => {
-    onDownload = vi.fn();
+  it("renders the attachment name", () => {
+    const att = makeAttachment("chart.svg", 2048);
+    const { container } = render(
+      <AttachmentChip attachment={att} onDownload={vi.fn()} tone="user" />,
+    );
+    expect(container.textContent).toContain("chart.svg");
   });
 
-  describe("renders", () => {
-    it("displays the attachment name", () => {
-      const att = makeAttachment({ name: "analysis.csv" });
-      render(<AttachmentChip attachment={att} onDownload={onDownload} tone="agent" />);
-      expect(screen.getByText("analysis.csv")).toBeTruthy();
-    });
+  it("renders size when provided", () => {
+    const att = makeAttachment("dump.sql", 1024 * 150); // 150 KB
+    const { container } = render(
+      <AttachmentChip attachment={att} onDownload={vi.fn()} tone="user" />,
+    );
+    expect(container.textContent).toContain("150 KB");
+  });
 
-    it("displays the download glyph (SVG icon) inside the button", () => {
-      const att = makeAttachment();
-      render(<AttachmentChip attachment={att} onDownload={onDownload} tone="agent" />);
-      const button = screen.getByRole("button");
-      // DownloadGlyph is an <svg aria-hidden="true"> inside the button
-      const svg = button.querySelector("svg");
-      expect(svg).not.toBeNull();
-    });
+  it("omits size span when attachment.size is undefined", () => {
+    const att = makeAttachment("notes.md"); // no size
+    const { container } = render(
+      <AttachmentChip attachment={att} onDownload={vi.fn()} tone="user" />,
+    );
+    // The only <span> should be the truncated filename; no size <span>
+    const spans = Array.from(container.querySelectorAll("span"));
+    const sizeSpans = spans.filter(
+      (s) => s.className && s.className.includes("tabular-nums"),
+    );
+    expect(sizeSpans).toHaveLength(0);
+  });
 
-    it("displays size when provided", () => {
-      const att = makeAttachment({ size: 41_000 }); // ~40 KB
-      render(<AttachmentChip attachment={att} onDownload={onDownload} tone="agent" />);
-      // 41 000 / 1024 ≈ 40 → "40 KB"
-      expect(screen.getByText("40 KB")).toBeTruthy();
-    });
+  it("has title attribute with download hint", () => {
+    const att = makeAttachment("readme.txt", 64);
+    const { container } = render(
+      <AttachmentChip attachment={att} onDownload={vi.fn()} tone="agent" />,
+    );
+    const btn = container.querySelector("button");
+    expect(btn?.getAttribute("title")).toBe("Download readme.txt");
+  });
 
-    it("omits size span when size is undefined", () => {
-      const att = makeAttachment({ size: undefined });
-      render(<AttachmentChip attachment={att} onDownload={onDownload} tone="agent" />);
-      // "KB" should not appear; only the name + download glyph are visible
-      expect(screen.queryByText(/KB/i)).toBeNull();
-    });
+  it("calls onDownload with the attachment on click", () => {
+    const att = makeAttachment("export.csv", 8192);
+    const onDownload = vi.fn();
+    const { container } = render(
+      <AttachmentChip attachment={att} onDownload={onDownload} tone="agent" />,
+    );
+    container.querySelector("button")!.click();
+    expect(onDownload).toHaveBeenCalledWith(att);
+  });
 
-    it('has title attribute for hover tooltip', () => {
-      const att = makeAttachment({ name: "readme.md" });
-      render(<AttachmentChip attachment={att} onDownload={onDownload} tone="agent" />);
-      const button = screen.getByRole("button");
-      expect(button.getAttribute("title")).toBe("Download readme.md");
-    });
+  it("tone=user applies blue accent class", () => {
+    const att = makeAttachment("photo.jpg", 512);
+    const { container } = render(
+      <AttachmentChip attachment={att} onDownload={vi.fn()} tone="user" />,
+    );
+    const btn = container.querySelector("button")!;
+    expect(btn.className).toContain("blue-400");
+  });
 
-    it("calls onDownload with the attachment when clicked", () => {
-      const att = makeAttachment({ name: "data.json" });
-      render(<AttachmentChip attachment={att} onDownload={onDownload} tone="agent" />);
-      fireEvent.click(screen.getByRole("button"));
-      expect(onDownload).toHaveBeenCalledTimes(1);
-      expect(onDownload).toHaveBeenCalledWith(att);
-    });
+  it("tone=agent does not apply blue accent class", () => {
+    const att = makeAttachment("photo.jpg", 512);
+    const { container } = render(
+      <AttachmentChip attachment={att} onDownload={vi.fn()} tone="agent" />,
+    );
+    const btn = container.querySelector("button")!;
+    expect(btn.className).not.toContain("blue-400");
+  });
 
-    it("tone=user applies blue-400 accent class", () => {
-      const att = makeAttachment();
-      render(<AttachmentChip attachment={att} onDownload={onDownload} tone="user" />);
-      const button = screen.getByRole("button");
-      // The user tone includes blue-400/blue-100 accent classes.
-      // We check the rendered class string includes the accent class.
-      expect(button.className).toMatch(/blue-400/);
-    });
-
-    it("tone=agent omits blue-400 accent class", () => {
-      const att = makeAttachment();
-      render(<AttachmentChip attachment={att} onDownload={onDownload} tone="agent" />);
-      const button = screen.getByRole("button");
-      expect(button.className).not.toMatch(/blue-400/);
-    });
-
-    it("renders exactly one button (no duplicate download targets)", () => {
-      const att = makeAttachment({ name: "budget.xlsx", size: 80_000 });
-      render(<AttachmentChip attachment={att} onDownload={onDownload} tone="user" />);
-      const buttons = screen.getAllByRole("button");
-      expect(buttons).toHaveLength(1);
-    });
+  it("renders exactly one button", () => {
+    const att = makeAttachment("icon.svg", 128);
+    const { container } = render(
+      <AttachmentChip attachment={att} onDownload={vi.fn()} tone="user" />,
+    );
+    expect(container.querySelectorAll("button")).toHaveLength(1);
   });
 });

@@ -109,14 +109,16 @@ type LocalBuildOptions struct {
 	// http.DefaultClient with a 30s timeout.
 	HTTPClient *http.Client
 
-	// remoteHeadSha + dockerBuild + gitClone + checkShellDeps are seams for
-	// tests; if nil, the production implementations are used.
-	remoteHeadSha   func(ctx context.Context, opts *LocalBuildOptions, runtime string) (string, error)
-	gitClone        func(ctx context.Context, opts *LocalBuildOptions, runtime, dest string) error
-	dockerBuild     func(ctx context.Context, opts *LocalBuildOptions, contextDir, tag string) error
-	dockerHasTag    func(ctx context.Context, tag string) (bool, error)
-	dockerTag       func(ctx context.Context, src, dst string) error
-	checkShellDeps  func() error // nil = use checkShellDepsProd
+	// remoteHeadSha + dockerBuild + gitClone + checkTool are seams for tests;
+	// if nil, the production implementations are used.
+	remoteHeadSha func(ctx context.Context, opts *LocalBuildOptions, runtime string) (string, error)
+	gitClone      func(ctx context.Context, opts *LocalBuildOptions, runtime, dest string) error
+	dockerBuild   func(ctx context.Context, opts *LocalBuildOptions, contextDir, tag string) error
+	dockerHasTag  func(ctx context.Context, tag string) (bool, error)
+	dockerTag     func(ctx context.Context, src, dst string) error
+	// checkTool validates that the named binary is on PATH. nil = production
+	// LookPath check; tests override to skip or mock.
+	checkTool func(tool string) error
 }
 
 func newDefaultLocalBuildOptions() *LocalBuildOptions {
@@ -183,26 +185,43 @@ func EnsureLocalImage(ctx context.Context, runtime string) (string, error) {
 // production code.
 var ensureLocalImageHook = EnsureLocalImage
 
+// checkToolOnPath verifies tool is on PATH and returns an error with a
+// descriptive message if missing. Used for pre-flight validation before the
+// clone/build cold path.
+func checkToolOnPath(tool string) error {
+	path, err := exec.LookPath(tool)
+	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return fmt.Errorf("%q not found on PATH — local-build mode requires both docker and git; either install them, or set MOLECULE_IMAGE_REGISTRY so local-build is bypassed", tool)
+		}
+		return fmt.Errorf("LookPath(%q) failed: %w", tool, err)
+	}
+	log.Printf("local-build: pre-flight OK (%s=%s)", tool, path)
+	return nil
+}
+
 func ensureLocalImageWithOpts(ctx context.Context, runtime string, opts *LocalBuildOptions) (string, error) {
 	if !IsKnownRuntime(runtime) {
 		return "", fmt.Errorf("local-build: refusing to build unknown runtime %q (must be one of %v)", runtime, knownRuntimes)
 	}
 
-	// Fail-fast: local-build mode requires docker and git on PATH. The
-	// error from exec.Command is cryptic ("exec: \"docker\": executable
-	// file not found in $PATH"); a pre-flight check surfaces the same
-	// failure with an actionable message and a pointer to the fix.
-	checkFn := opts.checkShellDeps
-	if checkFn == nil {
-		checkFn = checkShellDepsProd
-	}
-	if err := checkFn(); err != nil {
-		return "", err
-	}
-
 	lock := runtimeBuildLock(runtime)
 	lock.Lock()
 	defer lock.Unlock()
+
+	// Pre-flight: both docker and git are required even on the cache-hit
+	// path (docker is used for image inspect + tag). Fail fast with a clear
+	// message rather than a cryptic "exec: docker: executable file not found".
+	checkFn := opts.checkTool
+	if checkFn == nil {
+		checkFn = checkToolOnPath
+	}
+	if err := checkFn("docker"); err != nil {
+		return "", fmt.Errorf("local-build: %w; set MOLECULE_IMAGE_REGISTRY to bypass local-build mode", err)
+	}
+	if err := checkFn("git"); err != nil {
+		return "", fmt.Errorf("local-build: %w; set MOLECULE_IMAGE_REGISTRY to bypass local-build mode", err)
+	}
 
 	// 1. HEAD lookup → cache key.
 	headFn := opts.remoteHeadSha
@@ -418,28 +437,6 @@ func giteaBranchAPIURL(repoPrefix, runtime, branch string) (string, error) {
 	return apiURL.String(), nil
 }
 
-// checkShellDepsProd verifies that both `docker` and `git` binaries are
-// reachable via PATH. This runs before any exec.Command call so a missing
-// binary surfaces as an actionable error rather than a cryptic exec-not-found
-// from deep inside the clone/build pipeline.
-func checkShellDepsProd() error {
-	missing := []string{}
-	for _, bin := range []string{"docker", "git"} {
-		if _, err := exec.LookPath(bin); err != nil {
-			missing = append(missing, bin)
-		}
-	}
-	if len(missing) == 0 {
-		return nil
-	}
-	return fmt.Errorf(
-		"local-build mode requires `docker` and `git` on PATH in the platform container; "+
-			"missing: %s. "+
-			"Fix: either install both, OR set MOLECULE_IMAGE_REGISTRY so local-build is bypassed",
-		strings.Join(missing, ", "),
-	)
-}
-
 // parseGiteaBranchHeadSha extracts commit.id from the Gitea
 // /branches/<name> response. We use a permissive substring scan so a
 // missing-key in the JSON gives a clear error rather than the
@@ -448,16 +445,16 @@ func parseGiteaBranchHeadSha(body []byte) (string, error) {
 	// Look for `"id":"<40-hex>"` inside the commit object.
 	idx := strings.Index(string(body), `"id":"`)
 	if idx < 0 {
-		return "", errors.New("Gitea branch response missing commit.id field")
+		return "", errors.New("gitea branch response missing commit.id field")
 	}
 	rest := string(body[idx+len(`"id":"`):])
 	end := strings.IndexByte(rest, '"')
 	if end < 0 {
-		return "", errors.New("Gitea branch response has malformed commit.id (no closing quote)")
+		return "", errors.New("gitea branch response has malformed commit.id (no closing quote)")
 	}
 	sha := rest[:end]
 	if len(sha) < 7 {
-		return "", fmt.Errorf("Gitea returned suspiciously short sha %q", sha)
+		return "", fmt.Errorf("gitea returned suspiciously short sha %q", sha)
 	}
 	return sha, nil
 }

@@ -32,6 +32,7 @@ THIS_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT_DIR="$(cd "$THIS_DIR/.." && pwd)"
 WORKFLOW_DIR="$(cd "$THIS_DIR/../../workflows" && pwd)"
 WORKFLOW="$WORKFLOW_DIR/sop-tier-refire.yml"
+DISPATCH_WORKFLOW="$WORKFLOW_DIR/review-refire-comments.yml"
 SCRIPT="$SCRIPT_DIR/sop-tier-refire.sh"
 
 PASS=0
@@ -87,6 +88,7 @@ assert_file_exists() {
 echo
 echo "== existence =="
 assert_file_exists "workflow file exists"  "$WORKFLOW"
+assert_file_exists "dispatcher workflow file exists" "$DISPATCH_WORKFLOW"
 assert_file_exists "script file exists"    "$SCRIPT"
 if [ "$FAIL" -gt 0 ]; then
   echo
@@ -104,29 +106,43 @@ echo "== T6/T7 workflow yaml =="
 PARSE_OUT=$(python3 -c 'import sys,yaml;yaml.safe_load(open(sys.argv[1]).read());print("ok")' "$WORKFLOW" 2>&1 || true)
 assert_eq "T7 workflow parses as YAML" "ok" "$PARSE_OUT"
 
-# Three required gates in the `if:` expression
+# The old per-workflow issue_comment listener caused queue storms because
+# Gitea queues jobs before evaluating job-level `if:`. The script remains,
+# but comment-triggered refires route through the single dispatcher.
 WORKFLOW_CONTENT=$(cat "$WORKFLOW")
-assert_contains "T6a workflow if: contains author_association gate" \
-  "github.event.comment.author_association" "$WORKFLOW_CONTENT"
-assert_contains "T6b workflow if: gates on MEMBER/OWNER/COLLABORATOR" \
-  '["MEMBER","OWNER","COLLABORATOR"]' "$WORKFLOW_CONTENT"
-assert_contains "T6c workflow if: contains slash-command trigger" \
-  "/refire-tier-check" "$WORKFLOW_CONTENT"
-assert_contains "T6d workflow if: gates on PR-not-issue" \
-  "github.event.issue.pull_request" "$WORKFLOW_CONTENT"
-assert_contains "T6e workflow listens on issue_comment" \
-  "issue_comment" "$WORKFLOW_CONTENT"
-assert_contains "T6f workflow requests statuses:write permission" \
-  "statuses: write" "$WORKFLOW_CONTENT"
-# Does NOT check out PR HEAD (security)
-if grep -q 'ref: \${{ github.event.pull_request.head' "$WORKFLOW"; then
-  echo "  FAIL  T6g workflow MUST NOT check out PR head (security)"
+if printf '%s' "$WORKFLOW_CONTENT" | grep -q '^  issue_comment:'; then
+  echo "  FAIL  T6a manual fallback workflow must not listen on issue_comment"
   FAIL=$((FAIL + 1))
-  FAILED_TESTS="${FAILED_TESTS} T6g"
+  FAILED_TESTS="${FAILED_TESTS} T6a"
 else
-  echo "  PASS  T6g workflow does not check out PR head"
+  echo "  PASS  T6a manual fallback workflow does not listen on issue_comment"
   PASS=$((PASS + 1))
 fi
+assert_contains "T6b workflow exposes workflow_dispatch" \
+  "workflow_dispatch" "$WORKFLOW_CONTENT"
+assert_contains "T6c workflow documents unsupported manual inputs" \
+  "workflow_dispatch inputs" "$WORKFLOW_CONTENT"
+# Does NOT check out PR HEAD (security)
+if grep -q 'ref: \${{ github.event.pull_request.head' "$WORKFLOW"; then
+  echo "  FAIL  T6d workflow MUST NOT check out PR head (security)"
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS="${FAILED_TESTS} T6d"
+else
+  echo "  PASS  T6d workflow does not check out PR head"
+  PASS=$((PASS + 1))
+fi
+
+DISPATCH_PARSE_OUT=$(python3 -c 'import sys,yaml;yaml.safe_load(open(sys.argv[1]).read());print("ok")' "$DISPATCH_WORKFLOW" 2>&1 || true)
+assert_eq "T6e dispatcher workflow parses as YAML" "ok" "$DISPATCH_PARSE_OUT"
+DISPATCH_CONTENT=$(cat "$DISPATCH_WORKFLOW")
+assert_contains "T6f dispatcher listens on issue_comment" \
+  "issue_comment" "$DISPATCH_CONTENT"
+assert_contains "T6g dispatcher handles /qa-recheck" \
+  "/qa-recheck" "$DISPATCH_CONTENT"
+assert_contains "T6h dispatcher handles /security-recheck" \
+  "/security-recheck" "$DISPATCH_CONTENT"
+assert_contains "T6i dispatcher handles /refire-tier-check" \
+  "/refire-tier-check" "$DISPATCH_CONTENT"
 
 # T1-T5 — script behavior against a local Gitea-fixture
 echo

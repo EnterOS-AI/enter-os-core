@@ -26,16 +26,15 @@ export function createMessage(
   content: string,
   attachments?: ChatAttachment[],
 ): ChatMessage {
-  const base = {
+  return Object.freeze({
     id: crypto.randomUUID(),
     role,
     content,
+    // Conditional spread avoids `attachments: undefined` appearing in
+    // Object.keys() when no attachments are provided.
+    ...(attachments?.length ? { attachments } : {}),
     timestamp: new Date().toISOString(),
-  };
-  if (attachments && attachments.length > 0) {
-    return Object.freeze({ ...base, attachments });
-  }
-  return Object.freeze(base);
+  });
 }
 
 // appendMessageDeduped adds a ChatMessage to `prev` unless the tail

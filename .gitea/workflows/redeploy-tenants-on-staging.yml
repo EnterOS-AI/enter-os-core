@@ -73,6 +73,7 @@ env:
   GITHUB_SERVER_URL: https://git.moleculesai.app
 
 jobs:
+  # bp-exempt: post-merge staging redeploy side effect; CI / all-required gates source changes.
   redeploy:
     runs-on: ubuntu-latest
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.

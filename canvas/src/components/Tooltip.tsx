@@ -45,12 +45,6 @@ export function Tooltip({ text, children }: Props) {
       if (triggerRef.current) {
         const rect = triggerRef.current.getBoundingClientRect();
         setPos({ x: rect.left, y: rect.top });
-        // Focus the first focusable descendant (the actual trigger button),
-        // not the wrapper div, so screen-reader/navigation UX is correct.
-        const firstFocusable = triggerRef.current.querySelector<HTMLElement>(
-          'button, [tabindex], input, select, textarea, a[href]'
-        );
-        firstFocusable?.focus();
       }
       setShow(true);
     }, 400);

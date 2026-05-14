@@ -53,14 +53,15 @@ func TestBundleImport_InvalidJSON(t *testing.T) {
 
 func TestBundleImport_ValidJSON(t *testing.T) {
 	mock := setupTestDB(t)
+	_ = setupTestRedis(t)
 	broadcaster := newTestBroadcaster()
 	h := NewBundleHandler(broadcaster, nil, "http://localhost:8080", t.TempDir(), nil)
 
-	// bundle.Import does: INSERT workspaces (creates record), UPDATE runtime (after
-	// parsing config.yaml), plus a RecordAndBroadcast (not a DB call).  SubWorkspaces
-	// recursion is a no-op for this test bundle.  No workspace_schedules or
-	// workspace_secrets INSERT in the current importer.
+	// bundle.Import does: INSERT workspaces, broadcast provisioning, then UPDATE runtime.
+	// bundle.Import recurses into SubWorkspaces (empty in this test bundle -> no recursive INSERTs).
 	mock.ExpectExec("INSERT INTO workspaces").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO structure_events").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE workspaces SET runtime").
 		WillReturnResult(sqlmock.NewResult(0, 1))

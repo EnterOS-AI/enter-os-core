@@ -49,46 +49,51 @@ function createDragOverEvent() {
 
 describe("BundleDropZone — render", () => {
   it("renders a hidden file input with correct accept and aria-label", () => {
-    render(<BundleDropZone />);
-    // Use id selector since both input and button share aria-label="Import bundle file"
+    const { container } = render(<BundleDropZone />);
     const input = document.getElementById("bundle-file-input") as HTMLInputElement;
     expect(input).toBeTruthy();
     expect(input.getAttribute("type")).toBe("file");
     expect(input.getAttribute("accept")).toBe(".bundle.json");
+    expect(input.getAttribute("id")).toBe("bundle-file-input");
   });
 
   it("renders the keyboard-accessible import button with aria-label", () => {
-    render(<BundleDropZone />);
-    const btn = screen.getByRole("button", { name: /import bundle/i });
-    expect(btn).toBeTruthy();
+    const { container } = render(<BundleDropZone />);
+    const btn = container.querySelector('button[aria-label="Import bundle file"]') as HTMLButtonElement;
+    expect(btn).not.toBeNull();
     expect(btn.getAttribute("aria-controls")).toBe("bundle-file-input");
   });
 });
 
 describe("BundleDropZone — drag state", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-
   afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
     vi.useRealTimers();
   });
 
   it("shows the drop overlay when a file is dragged over", async () => {
-    render(<BundleDropZone />);
+    vi.useFakeTimers();
+    const { container } = render(<BundleDropZone />);
+    // Overlay should not be visible initially
     expect(screen.queryByText("Drop Bundle to Import")).toBeNull();
+
+    // Simulate drag-over: stub dataTransfer.types to include "Files"
+    // so handleDragOver calls setIsDragging(true)
     const zone = document.body.querySelector('[class*="z-10"]') as HTMLElement;
     if (zone) {
       const dragOverEvent = createDragOverEvent();
       fireEvent.dragOver(zone, dragOverEvent);
     }
     await act(async () => { vi.runOnlyPendingTimers(); });
+    // After dragOver, overlay should be visible. The overlay has z-20 class.
     const overlay = screen.getByText("Drop Bundle to Import").closest('[class*="z-20"]');
     expect(overlay).not.toBeNull();
+    vi.useRealTimers();
   });
 
   it("hides the drop overlay when not dragging", () => {
-    render(<BundleDropZone />);
+    const { container } = render(<BundleDropZone />);
     // By default (no drag), the overlay should not be visible
     expect(screen.queryByText("Drop Bundle to Import")).toBeNull();
   });
@@ -96,9 +101,15 @@ describe("BundleDropZone — drag state", () => {
 
 describe("BundleDropZone — keyboard file input (WCAG 2.1.1)", () => {
   it("triggers the hidden file input when the import button is clicked", () => {
-    render(<BundleDropZone />);
-    const input = document.getElementById("bundle-file-input") as HTMLInputElement;    const clickSpy = vi.spyOn(input, "click");
-    fireEvent.click(screen.getByRole("button", { name: /import bundle/i }));
+    const { container } = render(<BundleDropZone />);
+    // Both the hidden file input and the button have aria-label="Import bundle file".
+    // Use the file input's id to select it uniquely.
+    const input = document.getElementById("bundle-file-input") as HTMLInputElement;
+    expect(input).toBeTruthy();
+    expect(input.getAttribute("type")).toBe("file");
+    const clickSpy = vi.spyOn(input, "click");
+    const btn = container.querySelector('button[aria-label="Import bundle file"]') as HTMLButtonElement;
+    fireEvent.click(btn);
     expect(clickSpy).toHaveBeenCalled();
   });
 
@@ -110,7 +121,7 @@ describe("BundleDropZone — keyboard file input (WCAG 2.1.1)", () => {
       status: "online",
     });
 
-    render(<BundleDropZone />);
+    const { container } = render(<BundleDropZone />);
     const input = document.getElementById("bundle-file-input") as HTMLInputElement;
 
     const file = makeBundle("My Bundle");
@@ -142,7 +153,7 @@ describe("BundleDropZone — import success", () => {
       status: "online",
     });
 
-    render(<BundleDropZone />);
+    const { container } = render(<BundleDropZone />);
     const input = document.getElementById("bundle-file-input") as HTMLInputElement;
 
     const file = makeBundle("Success Workspace");
@@ -154,14 +165,14 @@ describe("BundleDropZone — import success", () => {
       vi.advanceTimersByTime(500);
     });
 
-    // Success toast should be visible
-    expect(screen.getByText(/imported "my workspace" successfully/i)).toBeTruthy();
+    // Success toast should be visible — scope to container for DOM isolation
+    expect(container.textContent).toMatch(/imported "my workspace" successfully/i);
 
     // Toast auto-clears after 4000ms
     await act(async () => {
       vi.advanceTimersByTime(5000);
     });
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(container.querySelector('[role="status"]')).toBeNull();
     vi.useRealTimers();
   });
 
@@ -173,7 +184,7 @@ describe("BundleDropZone — import success", () => {
       status: "online",
     });
 
-    render(<BundleDropZone />);
+    const { container } = render(<BundleDropZone />);
     const input = document.getElementById("bundle-file-input") as HTMLInputElement;
 
     const file = makeBundle("Timed Workspace");
@@ -184,12 +195,12 @@ describe("BundleDropZone — import success", () => {
     await act(async () => {
       vi.advanceTimersByTime(500);
     });
-    expect(screen.queryByText(/timed workspace/i)).toBeTruthy();
+    expect(container.textContent).toMatch(/timed workspace/i);
 
     await act(async () => {
       vi.advanceTimersByTime(4500);
     });
-    expect(screen.queryByText(/timed workspace/i)).toBeNull();
+    expect(container.textContent).not.toMatch(/timed workspace/i);
     vi.useRealTimers();
   });
 });
@@ -199,7 +210,7 @@ describe("BundleDropZone — import error", () => {
     vi.useFakeTimers();
     vi.mocked(api.post).mockRejectedValueOnce(new Error("Import failed: 500 Internal Server Error"));
 
-    render(<BundleDropZone />);
+    const { container } = render(<BundleDropZone />);
     const input = document.getElementById("bundle-file-input") as HTMLInputElement;
 
     const file = makeBundle("Failed Workspace");
@@ -211,13 +222,13 @@ describe("BundleDropZone — import error", () => {
       vi.advanceTimersByTime(500);
     });
 
-    expect(screen.getByText(/import failed: 500 internal server error/i)).toBeTruthy();
+    expect(container.textContent).toMatch(/import failed: 500 internal server error/i);
     vi.useRealTimers();
   });
 
   it("shows error when file is not a .bundle.json", async () => {
     vi.useFakeTimers();
-    render(<BundleDropZone />);
+    const { container } = render(<BundleDropZone />);
     const input = document.getElementById("bundle-file-input") as HTMLInputElement;
 
     const file = new File(["{}"], "readme.txt", { type: "text/plain" });
@@ -229,12 +240,12 @@ describe("BundleDropZone — import error", () => {
       vi.advanceTimersByTime(500);
     });
 
-    expect(screen.getByText(/only .bundle.json files are accepted/i)).toBeTruthy();
+    expect(container.textContent).toMatch(/only .bundle.json files are accepted/i);
     // Error clears after 3000ms
     await act(async () => {
       vi.advanceTimersByTime(3500);
     });
-    expect(screen.queryByText(/only .bundle.json/i)).toBeNull();
+    expect(container.textContent).not.toMatch(/only .bundle.json/i);
     vi.useRealTimers();
   });
 
@@ -242,7 +253,7 @@ describe("BundleDropZone — import error", () => {
     vi.useFakeTimers();
     vi.mocked(api.post).mockRejectedValueOnce(new Error("Network error"));
 
-    render(<BundleDropZone />);
+    const { container } = render(<BundleDropZone />);
     const input = document.getElementById("bundle-file-input") as HTMLInputElement;
 
     const file = makeBundle("Error Workspace");
@@ -253,12 +264,12 @@ describe("BundleDropZone — import error", () => {
     await act(async () => {
       vi.advanceTimersByTime(500);
     });
-    expect(screen.queryByText(/network error/i)).toBeTruthy();
+    expect(container.textContent).toMatch(/network error/i);
 
     await act(async () => {
       vi.advanceTimersByTime(5000);
     });
-    expect(screen.queryByText(/network error/i)).toBeNull();
+    expect(container.textContent).not.toMatch(/network error/i);
     vi.useRealTimers();
   });
 });
@@ -270,7 +281,7 @@ describe("BundleDropZone — importing state", () => {
     const pending = new Promise((r) => { resolve = r; });
     vi.mocked(api.post).mockReturnValueOnce(pending as unknown as ReturnType<typeof api.post>);
 
-    render(<BundleDropZone />);
+    const { container } = render(<BundleDropZone />);
     const input = document.getElementById("bundle-file-input") as HTMLInputElement;
 
     const file = makeBundle("Pending Workspace");
@@ -283,8 +294,10 @@ describe("BundleDropZone — importing state", () => {
       vi.advanceTimersByTime(100);
     });
 
-    expect(screen.getByText("Importing bundle...")).toBeTruthy();
-    expect(screen.getByRole("status")).toBeTruthy();
+    // Scope to container for DOM isolation — other components may have
+    // role=status and text "Importing bundle..." in the shared jsdom env.
+    expect(container.textContent).toMatch(/importing bundle/i);
+    expect(container.querySelector('[role="status"]')).toBeTruthy();
 
     await act(async () => {
       vi.advanceTimersByTime(500);
@@ -302,8 +315,9 @@ describe("BundleDropZone — file input reset", () => {
       status: "online",
     });
 
-    render(<BundleDropZone />);
+    const { container } = render(<BundleDropZone />);
     const input = document.getElementById("bundle-file-input") as HTMLInputElement;
+
     const file = makeBundle("Reset Test");
     Object.defineProperty(input, "files", { value: [file], writable: false });
 

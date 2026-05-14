@@ -84,7 +84,7 @@ permissions:
 jobs:
   reap:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 8
     steps:
       - name: Check out repo at default-branch HEAD
         # BASE checkout per `feedback_pull_request_target_workflow_from_base`.
@@ -118,4 +118,7 @@ jobs:
           REPO: ${{ github.repository }}
           WATCH_BRANCH: ${{ github.event.repository.default_branch }}
           WORKFLOWS_DIR: .gitea/workflows
+          STATUS_REAPER_API_RETRIES: "4"
+          STATUS_REAPER_API_TIMEOUT_SEC: "20"
+          STATUS_REAPER_API_RETRY_SLEEP_SEC: "2"
         run: python3 .gitea/scripts/status-reaper.py

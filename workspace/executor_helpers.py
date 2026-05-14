@@ -620,9 +620,7 @@ def sanitize_agent_error(
         # a malicious or buggy peer injecting a huge error body, and
         # scrubs any API keys / bearer tokens that snuck into the message.
         detail = _sanitize_for_external(stderr[:_MAX_STDERR_PREVIEW])
-        if category:
-            return f"Agent error ({tag}): {detail}"
-        return f"Agent error: {detail}"
+        return f"Agent error ({tag}): {detail}"
     return f"Agent error ({tag}) — see workspace logs for details."
 
 

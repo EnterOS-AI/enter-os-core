@@ -162,7 +162,7 @@ func (h *WorkspaceHandler) handleA2ADispatchError(ctx context.Context, workspace
 func (h *WorkspaceHandler) maybeMarkContainerDead(ctx context.Context, workspaceID string) bool {
 	var wsRuntime string
 	db.DB.QueryRowContext(ctx, `SELECT COALESCE(runtime, 'langgraph') FROM workspaces WHERE id = $1`, workspaceID).Scan(&wsRuntime)
-	if wsRuntime == "external" {
+	if isExternalLikeRuntime(wsRuntime) {
 		return false
 	}
 	if !h.HasProvisioner() {
@@ -336,93 +336,6 @@ func (h *WorkspaceHandler) logA2ASuccess(ctx context.Context, workspaceID, calle
 	}
 }
 
-// logA2ADelegationResult records a delegation result into activity_logs
-// with method='delegate_result' and activity_type='delegation' so that
-// ListDelegations (and therefore the heartbeat delegation-polling path)
-// can surface it to the caller.
-//
-// This bridges the gap for proxy-path delegations: when a workspace
-// sends a delegate_task via POST /workspaces/:id/a2a, the proxy stores
-// the response here with the correct method so heartbeat polling finds it.
-// (The non-proxy path via executeDelegation already writes correctly via
-// its own INSERT at delegation.go:422.)
-//
-// Fire-and-forget: runs in a goroutine so it never adds latency to the
-// critical A2A response path. Errors are logged but non-fatal.
-func (h *WorkspaceHandler) logA2ADelegationResult(ctx context.Context, callerID, targetID string, reqBody, respBody []byte, statusCode int) {
-	// Extract delegation_id from the request body (JSON-RPC delegate_result).
-	var req struct {
-		Params struct {
-			Data struct {
-				DelegationID string `json:"delegation_id"`
-			} `json:"data"`
-		} `json:"params"`
-	}
-	if err := json.Unmarshal(reqBody, &req); err != nil {
-		log.Printf("logA2ADelegationResult: failed to parse req body: %v", err)
-		return
-	}
-	delegationID := req.Params.Data.DelegationID
-	if delegationID == "" {
-		log.Printf("logA2ADelegationResult: no delegation_id in request body")
-		return
-	}
-
-	// Extract text from the response body — the delegate_result response
-	// carries the agent's answer in result.data.text or result.text.
-	var responseText string
-	var respTop map[string]json.RawMessage
-	if json.Unmarshal(respBody, &respTop) == nil {
-		if result, ok := respTop["result"]; ok {
-			var resultObj map[string]json.RawMessage
-			if json.Unmarshal(result, &resultObj) == nil {
-				if textRaw, ok := resultObj["text"]; ok {
-					json.Unmarshal(textRaw, &responseText)
-				} else if dataRaw, ok := resultObj["data"]; ok {
-					var dataObj map[string]json.RawMessage
-					if json.Unmarshal(dataRaw, &dataObj) == nil {
-						if textRaw, ok := dataObj["text"]; ok {
-							json.Unmarshal(textRaw, &responseText)
-						}
-					}
-				}
-			}
-		}
-		if responseText == "" {
-			if textRaw, ok := respTop["text"]; ok {
-				json.Unmarshal(textRaw, &responseText)
-			}
-		}
-	}
-
-	status := "completed"
-	if statusCode >= 300 {
-		status = "failed"
-	}
-
-	summary := "Delegation completed"
-	if status == "failed" {
-		summary = "Delegation failed"
-	}
-
-	go func(parent context.Context) {
-		logCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), 30*time.Second)
-		defer cancel()
-		respJSON, _ := json.Marshal(map[string]interface{}{
-			"text":          responseText,
-			"delegation_id": delegationID,
-		})
-		if _, err := db.DB.ExecContext(logCtx, `
-			INSERT INTO activity_logs (
-				workspace_id, activity_type, method, source_id, target_id,
-				summary, request_body, response_body, status
-			) VALUES ($1, 'delegation', 'delegate_result', $2, $3, $4, $5::jsonb, $6::jsonb, $7)
-		`, callerID, callerID, targetID, summary, string(reqBody), string(respJSON), status); err != nil {
-			log.Printf("logA2ADelegationResult: INSERT failed for delegation %s: %v", delegationID, err)
-		}
-	}(ctx)
-}
-
 func nilIfEmpty(s string) *string {
 	if s == "" {
 		return nil
@@ -497,7 +410,7 @@ func extractToolTrace(respBody []byte) json.RawMessage {
 		return nil
 	}
 	trace, ok := meta["tool_trace"]
-	if !ok || string(trace) == "[]" {
+	if !ok || len(trace) == 0 || string(trace) == "null" || string(trace) == "[]" {
 		return nil
 	}
 	return trace

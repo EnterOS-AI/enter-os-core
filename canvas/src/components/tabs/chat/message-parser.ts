@@ -1,8 +1,5 @@
 export function extractAgentText(task: Record<string, unknown>): string {
   try {
-    // Check direct string first — some callers pass the raw response body.
-    if (typeof task === "string") return task;
-
     const directTexts = extractTextsFromParts(task.parts);
     if (directTexts) return directTexts;
 
@@ -19,14 +16,8 @@ export function extractAgentText(task: Record<string, unknown>): string {
       if (texts) return texts;
     }
 
-    // No text found in any source. Return "" so callers render a blank
-    // bubble rather than an error chip. This handles:
-    //   - parts: []            (empty array, no text parts)
-    //   - artifacts: []         (no artifacts at all)
-    //   - status: {}           (status present but no message)
-    //   - status.message=null (null guard)
-    //   - {}                   (entirely empty task)
-    return "";
+    if (typeof task === "string") return task;
+    return "(Could not extract response text)";
   } catch {
     return "(Failed to parse response)";
   }

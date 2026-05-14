@@ -116,9 +116,6 @@ func (h *ApprovalsHandler) ListAll(c *gin.Context) {
 			"created_at":     createdAt,
 		})
 	}
-	if err := rows.Err(); err != nil {
-		log.Printf("ListPendingApprovals scan error: %v", err)
-	}
 
 	c.JSON(http.StatusOK, approvals)
 }
@@ -157,9 +154,6 @@ func (h *ApprovalsHandler) List(c *gin.Context) {
 			"decided_at": decidedAt,
 			"created_at": createdAt,
 		})
-	}
-	if err := rows.Err(); err != nil {
-		log.Printf("ListApprovals scan error: %v", err)
 	}
 
 	c.JSON(http.StatusOK, approvals)

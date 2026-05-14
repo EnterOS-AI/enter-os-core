@@ -167,13 +167,25 @@ type cpProvisionResponse struct {
 
 // Start provisions a workspace by calling the control plane → EC2.
 func (p *CPProvisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string, error) {
+	// Inject ADMIN_TOKEN into the workspace container env so the agent can call
+	// /admin/liveness and other admin-gated platform endpoints (core#831).
+	// p.adminToken is read from os.Getenv("ADMIN_TOKEN") at provisioner creation;
+	// it is also used for CP→platform HTTP auth but those are separate concerns.
+	env := cfg.EnvVars
+	if p.adminToken != "" {
+		env = make(map[string]string, len(cfg.EnvVars)+1)
+		for k, v := range cfg.EnvVars {
+			env[k] = v
+		}
+		env["ADMIN_TOKEN"] = p.adminToken
+	}
 	req := cpProvisionRequest{
 		OrgID:       p.orgID,
 		WorkspaceID: cfg.WorkspaceID,
 		Runtime:     cfg.Runtime,
 		Tier:        cfg.Tier,
 		PlatformURL: cfg.PlatformURL,
-		Env:         cfg.EnvVars,
+		Env:         env,
 	}
 
 	body, err := json.Marshal(req)

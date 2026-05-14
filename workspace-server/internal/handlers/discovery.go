@@ -136,7 +136,7 @@ func discoverWorkspacePeer(ctx context.Context, c *gin.Context, callerID, target
 	// lives on the other side of the wire and needs the URL as-is
 	// (localhost rewrites wouldn't resolve from its host anyway).
 	// Phase 30.6.
-	if wsRuntime == "external" {
+	if isExternalLikeRuntime(wsRuntime) {
 		if handled := writeExternalWorkspaceURL(ctx, c, callerID, targetID, wsName); handled {
 			return
 		}
@@ -181,7 +181,7 @@ func writeExternalWorkspaceURL(ctx context.Context, c *gin.Context, callerID, ta
 	outURL := wsURL
 	var callerRuntime string
 	db.DB.QueryRowContext(ctx, `SELECT COALESCE(runtime,'langgraph') FROM workspaces WHERE id = $1`, callerID).Scan(&callerRuntime)
-	if callerRuntime != "external" {
+	if !isExternalLikeRuntime(callerRuntime) {
 		outURL = strings.Replace(outURL, "127.0.0.1", "host.docker.internal", 1)
 		outURL = strings.Replace(outURL, "localhost", "host.docker.internal", 1)
 	}
@@ -292,12 +292,8 @@ func filterPeersByQuery(peers []map[string]interface{}, q string) []map[string]i
 	needle := strings.ToLower(q)
 	out := make([]map[string]interface{}, 0, len(peers))
 	for _, p := range peers {
-		// Comma-ok idiom: nil map values return (nil, false), protecting
-		// against type-assertion panics when queryPeerMaps explicitly sets
-		// role=nil for empty-string roles (discovery.go:340). Also guards
-		// against nil name if the DB returns NULL.
-		name, _ := p["name"].(string)
-		role, _ := p["role"].(string)
+		name, _ := p["name"].(string)  // nil → "" — safe on empty-role rows
+		role, _ := p["role"].(string)  // nil → "" — queryPeerMaps sets nil when DB role is empty
 		if strings.Contains(strings.ToLower(name), needle) ||
 			strings.Contains(strings.ToLower(role), needle) {
 			out = append(out, p)
@@ -351,9 +347,6 @@ func queryPeerMaps(query string, args ...interface{}) ([]map[string]interface{},
 		}
 
 		result = append(result, peer)
-	}
-	if err := rows.Err(); err != nil {
-		log.Printf("queryPeerMaps scan error: %v", err)
 	}
 	return result, nil
 }

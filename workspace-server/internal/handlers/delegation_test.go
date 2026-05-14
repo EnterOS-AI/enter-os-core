@@ -486,11 +486,11 @@ func TestDelegationRecord_InsertsActivityLogRow(t *testing.T) {
 
 	mock.ExpectExec("INSERT INTO activity_logs").
 		WithArgs(
-			"550e8400-e29b-41d4-a716-446655440000",                // workspace_id
-			"550e8400-e29b-41d4-a716-446655440000",                // source_id
-			"550e8400-e29b-41d4-a716-446655440001",                // target_id
-			"Delegating to 550e8400-e29b-41d4-a716-446655440001",  // summary
-			sqlmock.AnyArg(),                                       // request_body (jsonb)
+			"550e8400-e29b-41d4-a716-446655440000",               // workspace_id
+			"550e8400-e29b-41d4-a716-446655440000",               // source_id
+			"550e8400-e29b-41d4-a716-446655440001",               // target_id
+			"Delegating to 550e8400-e29b-41d4-a716-446655440001", // summary
+			sqlmock.AnyArg(), // request_body (jsonb)
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	// RecordAndBroadcast INSERT for DELEGATION_SENT
@@ -985,64 +985,60 @@ func TestInsertDelegationOutcome_ZeroValueIsUnknown(t *testing.T) {
 // Test strategy: spin up a mock A2A agent server, set up the source/target DB rows, call
 // executeDelegation directly, and verify the activity_logs status and delegation status.
 
-const testDelegationID = "del-159-test"
-const testSourceID = "ws-source-159"
-const testTargetID = "ws-target-159"
+const testDeliveryDelegationID = "del-159-test"
+const testDeliverySourceID = "ws-source-159"
+const testDeliveryTargetID = "ws-target-159"
 
 // expectExecuteDelegationBase sets up sqlmock expectations for the DB queries that
 // executeDelegation always makes, regardless of outcome.
 func expectExecuteDelegationBase(mock sqlmock.Sqlmock) {
-	// CanCommunicate: getWorkspaceRef for caller and target
-	// Both nil parent → root-level siblings, CanCommunicate returns true.
-	mock.ExpectQuery(`SELECT id, parent_id FROM workspaces WHERE id = \$1`).
-		WithArgs(testSourceID).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "parent_id"}).AddRow(testSourceID, nil))
-	mock.ExpectQuery(`SELECT id, parent_id FROM workspaces WHERE id = \$1`).
-		WithArgs(testTargetID).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "parent_id"}).AddRow(testTargetID, nil))
-
 	// updateDelegationStatus: dispatched
+	// Uses prefix match — sqlmock regexes match the full query string.
 	mock.ExpectExec("UPDATE activity_logs SET status").
-		WithArgs("dispatched", "", testSourceID, testDelegationID).
+		WithArgs("dispatched", "", testDeliverySourceID, testDeliveryDelegationID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	// resolveAgentURL: reads ws:{id}:url from Redis, falls back to DB for target
-	mock.ExpectQuery("SELECT url, status FROM workspaces WHERE id = ").
-		WithArgs(testTargetID).
-		WillReturnRows(sqlmock.NewRows([]string{"url", "status"}).AddRow("", "online"))
+	// CanCommunicate: getWorkspaceRef(source) + getWorkspaceRef(target).
+	// Both are root-level workspaces (parent_id=NULL) → root-level siblings → allowed.
+	mock.ExpectQuery("SELECT id, parent_id FROM workspaces WHERE id = ").
+		WithArgs(testDeliverySourceID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "parent_id"}).AddRow(testDeliverySourceID, nil))
+	mock.ExpectQuery("SELECT id, parent_id FROM workspaces WHERE id = ").
+		WithArgs(testDeliveryTargetID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "parent_id"}).AddRow(testDeliveryTargetID, nil))
 
-	// ProxyA2A: delivery_mode and runtime lookups for target
-	mock.ExpectQuery(`SELECT delivery_mode FROM workspaces WHERE id = \$1`).
-		WithArgs(testTargetID).
-		WillReturnRows(sqlmock.NewRows([]string{"delivery_mode"}).AddRow("push"))
-	mock.ExpectQuery(`SELECT runtime FROM workspaces WHERE id = \$1`).
-		WithArgs(testTargetID).
-		WillReturnRows(sqlmock.NewRows([]string{"runtime"}).AddRow("langgraph"))
+	// resolveAgentURL: test callers always set the URL in Redis (mr.Set ws:{id}:url),
+	// so resolveAgentURL gets a cache hit and never falls back to DB.
 }
 
 // expectExecuteDelegationSuccess sets up expectations for a completed delegation.
+// Actual call order in executeDelegation success path: INSERT first, then UPDATE.
+// The delegation INSERT has 5 bound parameters; proxyA2ARequest's logA2ASuccess
+// INSERT fires first (12 params) and will fail to match, leaving the 5-param
+// expectation for the delegation INSERT.
 func expectExecuteDelegationSuccess(mock sqlmock.Sqlmock, respBody string) {
-	// INSERT activity_logs for delegation completion (response_body status = 'completed')
+	// INSERT activity_logs for delegation completion ('completed' is a SQL literal, not a param)
 	mock.ExpectExec("INSERT INTO activity_logs").
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), "completed").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// updateDelegationStatus: completed
 	mock.ExpectExec("UPDATE activity_logs SET status").
-		WithArgs("completed", "", testSourceID, testDelegationID).
+		WithArgs("completed", "", testDeliverySourceID, testDeliveryDelegationID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 }
 
 // expectExecuteDelegationFailed sets up expectations for a failed delegation.
+// Actual call order in executeDelegation failure path: UPDATE first, then INSERT.
 func expectExecuteDelegationFailed(mock sqlmock.Sqlmock) {
-	// INSERT activity_logs for delegation failure (response_body status = 'failed')
-	mock.ExpectExec("INSERT INTO activity_logs").
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), "failed").
+	// updateDelegationStatus: failed (fires before the INSERT in the failure path)
+	mock.ExpectExec("UPDATE activity_logs SET status").
+		WithArgs("failed", sqlmock.AnyArg(), testDeliverySourceID, testDeliveryDelegationID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	// updateDelegationStatus: failed
-	mock.ExpectExec("UPDATE activity_logs SET status").
-		WithArgs("failed", sqlmock.AnyArg(), testSourceID, testDelegationID).
+	// INSERT activity_logs for delegation failure ('failed' is a SQL literal, not a param)
+	mock.ExpectExec("INSERT INTO activity_logs").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 }
 
@@ -1065,10 +1061,6 @@ func expectExecuteDelegationFailed(mock sqlmock.Sqlmock) {
 // the critical assertion is that a 2xx partial-body delivery-confirmed response is never
 // classified as "failed" — it always routes to success.
 func TestExecuteDelegation_DeliveryConfirmedProxyError_TreatsAsSuccess(t *testing.T) {
-	// Skipped: pre-existing broken test. executeDelegation makes many DB queries
-	// (RecordAndBroadcast INSERT, budget check SELECT, etc.) not mocked here.
-	// Fix would require comprehensive mock overhaul of expectExecuteDelegationBase.
-	t.Skip("pre-existing: executeDelegation requires too many unmocked DB queries")
 	mock := setupTestDB(t)
 	mr := setupTestRedis(t)
 	allowLoopbackForTest(t)
@@ -1108,7 +1100,7 @@ func TestExecuteDelegation_DeliveryConfirmedProxyError_TreatsAsSuccess(t *testin
 	}()
 
 	agentURL := "http://" + ln.Addr().String()
-	mr.Set(fmt.Sprintf("ws:%s:url", testTargetID), agentURL)
+	mr.Set(fmt.Sprintf("ws:%s:url", testDeliveryTargetID), agentURL)
 	allowLoopbackForTest(t)
 
 	expectExecuteDelegationBase(mock)
@@ -1127,7 +1119,7 @@ func TestExecuteDelegation_DeliveryConfirmedProxyError_TreatsAsSuccess(t *testin
 			},
 		},
 	})
-	dh.executeDelegation(testSourceID, testTargetID, testDelegationID, a2aBody)
+	dh.executeDelegation(context.Background(), testDeliverySourceID, testDeliveryTargetID, testDeliveryDelegationID, a2aBody)
 
 	time.Sleep(100 * time.Millisecond) // let DB writes settle
 
@@ -1141,8 +1133,6 @@ func TestExecuteDelegation_DeliveryConfirmedProxyError_TreatsAsSuccess(t *testin
 // status code (e.g., 500 Internal Server Error with partial body read before connection drop).
 // The new condition requires status >= 200 && status < 300, so non-2xx always routes to failure.
 func TestExecuteDelegation_ProxyErrorNon2xx_RemainsFailed(t *testing.T) {
-	// Skipped: pre-existing broken test — same issue as TestExecuteDelegation_DeliveryConfirmed*.
-	t.Skip("pre-existing: executeDelegation requires too many unmocked DB queries")
 	mock := setupTestDB(t)
 	mr := setupTestRedis(t)
 	allowLoopbackForTest(t)
@@ -1180,7 +1170,7 @@ func TestExecuteDelegation_ProxyErrorNon2xx_RemainsFailed(t *testing.T) {
 	}()
 
 	agentURL := "http://" + ln.Addr().String()
-	mr.Set(fmt.Sprintf("ws:%s:url", testTargetID), agentURL)
+	mr.Set(fmt.Sprintf("ws:%s:url", testDeliveryTargetID), agentURL)
 	allowLoopbackForTest(t)
 
 	expectExecuteDelegationBase(mock)
@@ -1195,7 +1185,7 @@ func TestExecuteDelegation_ProxyErrorNon2xx_RemainsFailed(t *testing.T) {
 			},
 		},
 	})
-	dh.executeDelegation(testSourceID, testTargetID, testDelegationID, a2aBody)
+	dh.executeDelegation(context.Background(), testDeliverySourceID, testDeliveryTargetID, testDeliveryDelegationID, a2aBody)
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -1208,8 +1198,6 @@ func TestExecuteDelegation_ProxyErrorNon2xx_RemainsFailed(t *testing.T) {
 // path is unchanged when proxyA2ARequest returns an error with a 2xx status but empty body.
 // The new condition requires len(respBody) > 0, so empty body routes to failure.
 func TestExecuteDelegation_ProxyErrorEmptyBody_RemainsFailed(t *testing.T) {
-	// Skipped: pre-existing broken test — same issue as TestExecuteDelegation_DeliveryConfirmed*.
-	t.Skip("pre-existing: executeDelegation requires too many unmocked DB queries")
 	mock := setupTestDB(t)
 	mr := setupTestRedis(t)
 	allowLoopbackForTest(t)
@@ -1228,16 +1216,14 @@ func TestExecuteDelegation_ProxyErrorEmptyBody_RemainsFailed(t *testing.T) {
 	}))
 	defer agentServer.Close()
 
-	mr.Set(fmt.Sprintf("ws:%s:url", testTargetID), agentServer.URL)
+	mr.Set(fmt.Sprintf("ws:%s:url", testDeliveryTargetID), agentServer.URL)
 	allowLoopbackForTest(t)
 
-	// First attempt: updateDelegationStatus(dispatched) — from expectExecuteDelegationBase
+	// executeDelegationBase: UPDATE dispatched + CanCommunicate SELECTs
 	expectExecuteDelegationBase(mock)
-	// Second attempt (retry): updateDelegationStatus(dispatched) again
-	mock.ExpectExec("UPDATE activity_logs SET status").
-		WithArgs("dispatched", "", testSourceID, testDelegationID).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	// Failure: INSERT + UPDATE (failed)
+	// The retry (isTransientProxyError && len(respBody)==0) fires after delegationRetryDelay,
+	// re-uses the Redis-cached URL — no extra DB calls before the failure path.
+	// Failure: UPDATE failed + INSERT (failed status is a SQL literal, 5 bound params)
 	expectExecuteDelegationFailed(mock)
 
 	a2aBody, _ := json.Marshal(map[string]interface{}{
@@ -1249,7 +1235,7 @@ func TestExecuteDelegation_ProxyErrorEmptyBody_RemainsFailed(t *testing.T) {
 			},
 		},
 	})
-	dh.executeDelegation(testSourceID, testTargetID, testDelegationID, a2aBody)
+	dh.executeDelegation(context.Background(), testDeliverySourceID, testDeliveryTargetID, testDeliveryDelegationID, a2aBody)
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -1262,8 +1248,6 @@ func TestExecuteDelegation_ProxyErrorEmptyBody_RemainsFailed(t *testing.T) {
 // (no error, 200 with body) is unaffected by the new condition. This is the baseline:
 // proxyErr == nil so the new condition never fires.
 func TestExecuteDelegation_CleanProxyResponse_Unchanged(t *testing.T) {
-	// Skipped: pre-existing broken test — same issue as TestExecuteDelegation_DeliveryConfirmed*.
-	t.Skip("pre-existing: executeDelegation requires too many unmocked DB queries")
 	mock := setupTestDB(t)
 	mr := setupTestRedis(t)
 	allowLoopbackForTest(t)
@@ -1279,7 +1263,7 @@ func TestExecuteDelegation_CleanProxyResponse_Unchanged(t *testing.T) {
 	}))
 	defer agentServer.Close()
 
-	mr.Set(fmt.Sprintf("ws:%s:url", testTargetID), agentServer.URL)
+	mr.Set(fmt.Sprintf("ws:%s:url", testDeliveryTargetID), agentServer.URL)
 	allowLoopbackForTest(t)
 
 	expectExecuteDelegationBase(mock)
@@ -1294,7 +1278,7 @@ func TestExecuteDelegation_CleanProxyResponse_Unchanged(t *testing.T) {
 			},
 		},
 	})
-	dh.executeDelegation(testSourceID, testTargetID, testDelegationID, a2aBody)
+	dh.executeDelegation(context.Background(), testDeliverySourceID, testDeliveryTargetID, testDeliveryDelegationID, a2aBody)
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -1706,4 +1690,3 @@ func TestListDelegations_LedgerFailedIncludesErrorDetail(t *testing.T) {
 		t.Errorf("unmet sqlmock expectations: %v", err)
 	}
 }
-

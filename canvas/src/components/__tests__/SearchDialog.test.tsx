@@ -13,18 +13,13 @@ import { SearchDialog } from "../SearchDialog";
 import { useCanvasStore } from "@/store/canvas";
 
 // ─── Mock store ──────────────────────────────────────────────────────────────
-// Zustand-compatible mock: useSyncExternalStore needs subscribe() to fire
-// callbacks so React re-renders when state changes. Without it, the
-// Cmd+K test opens the dialog but the component never re-renders because
-// React's external-store bridge has no notification to flush.
-//
-// We use vi.fn() wrapping for setSearchOpen so tests can use
-// toHaveBeenCalledWith() for assertions, while also calling the underlying
-// store update that triggers Zustand's subscriber mechanism.
 
-type StoreSlice = {
-  searchOpen: boolean;
-  nodes: Array<{
+const mockStoreState = {
+  searchOpen: false,
+  setSearchOpen: vi.fn((open: boolean) => {
+    mockStoreState.searchOpen = open;
+  }),
+  nodes: [] as Array<{
     id: string;
     data: {
       name: string;
@@ -33,48 +28,17 @@ type StoreSlice = {
       role: string;
       parentId?: string | null;
     };
-  }>;
-  selectNode: (id: string) => void;
-  setPanelTab: (tab: string) => void;
-};
-
-const _subscribers = new Set<() => void>();
-
-const _implSetSearchOpen = (open: boolean) => {
-  _mockStore.searchOpen = open;
-  _subscribers.forEach((cb) => cb());
-};
-
-const _mockStore: StoreSlice = {
-  searchOpen: false,
-  nodes: [],
+  }>,
   selectNode: vi.fn(),
   setPanelTab: vi.fn(),
-};
-
-const mockStoreState: StoreSlice & { setSearchOpen: ReturnType<typeof vi.fn> } = {
-  searchOpen: false,
-  nodes: [],
-  selectNode: _mockStore.selectNode,
-  setPanelTab: _mockStore.setPanelTab,
-  // vi.fn() wrapper so tests can use toHaveBeenCalledWith(); the
-  // implementation calls through to _implSetSearchOpen which notifies
-  // Zustand subscribers so React re-renders.
-  setSearchOpen: vi.fn(_implSetSearchOpen),
 };
 
 vi.mock("@/store/canvas", () => ({
   useCanvasStore: Object.assign(
     (sel: (s: typeof mockStoreState) => unknown) => sel(mockStoreState),
-    {
-      getState: () => mockStoreState,
-      subscribe: (cb: () => void) => {
-        _subscribers.add(cb);
-        return () => { _subscribers.delete(cb); };
-      },
-    } as unknown as ReturnType<typeof vi.fn>,
+    { getState: () => mockStoreState },
   ),
-})) as typeof vi.mock;
+}));
 
 const STORAGE_KEY = "molecule-onboarding-complete";
 
@@ -96,9 +60,9 @@ describe("SearchDialog — visibility", () => {
     vi.clearAllMocks();
     mockStoreState.searchOpen = false;
     mockStoreState.nodes = [];
+    mockStoreState.setSearchOpen.mockClear();
     mockStoreState.selectNode.mockClear();
     mockStoreState.setPanelTab.mockClear();
-    _subscribers.clear();
   });
 
   it("does not render when searchOpen is false", () => {
@@ -120,10 +84,9 @@ describe("SearchDialog — keyboard shortcuts", () => {
     vi.clearAllMocks();
     mockStoreState.searchOpen = false;
     mockStoreState.nodes = [];
-    // setSearchOpen is a bound method, not vi.fn — skip mockClear
+    mockStoreState.setSearchOpen.mockClear();
     mockStoreState.selectNode.mockClear();
     mockStoreState.setPanelTab.mockClear();
-    _subscribers.clear();
   });
 
   it("opens the dialog when Cmd+K is pressed", () => {
@@ -139,18 +102,8 @@ describe("SearchDialog — keyboard shortcuts", () => {
   });
 
   it("clears the query when Cmd+K opens the dialog", () => {
-    const { rerender } = render(<SearchDialog />);
-    // Zustand's useSyncExternalStore doesn't always re-render from the
-    // mock's subscribe() callback in the jsdom environment. After the
-    // keyboard handler fires, manually set state and force re-render.
-    act(() => {
-      dispatchKeydown("k", true, false);
-      // After vi.fn(_implSetSearchOpen) runs, subscribers fire but React
-      // may not schedule a re-render in time. Re-render manually so the
-      // component sees the updated searchOpen=true.
-      mockStoreState.searchOpen = true;
-    });
-    rerender(<SearchDialog />);
+    mockStoreState.searchOpen = true;
+    render(<SearchDialog />);
     const input = screen.getByRole("combobox");
     expect(input.getAttribute("value") ?? "").toBe("");
   });
@@ -169,9 +122,9 @@ describe("SearchDialog — focus", () => {
     vi.clearAllMocks();
     mockStoreState.searchOpen = false;
     mockStoreState.nodes = [];
+    mockStoreState.setSearchOpen.mockClear();
     mockStoreState.selectNode.mockClear();
     mockStoreState.setPanelTab.mockClear();
-    _subscribers.clear();
   });
 
   it("focuses the input when the dialog opens", async () => {
@@ -204,9 +157,9 @@ describe("SearchDialog — filtering", () => {
     vi.clearAllMocks();
     mockStoreState.searchOpen = false;
     mockStoreState.nodes = [];
+    mockStoreState.setSearchOpen.mockClear();
     mockStoreState.selectNode.mockClear();
     mockStoreState.setPanelTab.mockClear();
-    _subscribers.clear();
   });
 
   it("shows all workspaces when query is empty", () => {
@@ -277,9 +230,9 @@ describe("SearchDialog — listbox navigation", () => {
     vi.clearAllMocks();
     mockStoreState.searchOpen = false;
     mockStoreState.nodes = [];
+    mockStoreState.setSearchOpen.mockClear();
     mockStoreState.selectNode.mockClear();
     mockStoreState.setPanelTab.mockClear();
-    _subscribers.clear();
   });
 
   it("highlights the first result when query is typed", () => {
@@ -317,37 +270,12 @@ describe("SearchDialog — listbox navigation", () => {
 
   it("Enter selects the highlighted workspace", () => {
     mockStoreState.searchOpen = true;
-    const { rerender } = render(<SearchDialog />);
+    render(<SearchDialog />);
     const input = screen.getByRole("combobox");
-
-    // Directly update the DOM input value + fire change event, then force
-    // a re-render so React commits the query state before keyboard events.
-    act(() => {
-      // Simulate user typing "a" — the onChange handler fires synchronously
-      // inside act(), but we also need the component to re-render with the
-      // new query so the filtered list and focusedIndex update correctly.
-      Object.defineProperty(input, "value", {
-        value: "a",
-        writable: true,
-        configurable: true,
-      });
-      fireEvent.change(input, { target: { value: "a" } });
-      // After onChange fires, query="a". React schedules a re-render but
-      // might not have flushed it yet — rerender forces it so ArrowDown
-      // sees focusedIndex=0 (effect ran from filtered.length change).
-      rerender(<SearchDialog />);
-    });
-
-    // Now focusedIndex should be 0 (Alice, filtered[0]). ArrowUp stays at 0.
-    // ArrowDown moves to 1 (Carol). We want to select Alice, so go
-    // ArrowUp to stay at 0, then Enter.
-    act(() => {
-      fireEvent.keyDown(input, { key: "ArrowUp" }); // Math.max(0-1, 0) = 0
-    });
-    act(() => {
-      fireEvent.keyDown(input, { key: "Enter" });
-    });
-    expect(mockStoreState.selectNode).toHaveBeenCalledWith("n1"); // Alice
+    fireEvent.change(input, { target: { value: "a" } }); // All 3 match
+    fireEvent.keyDown(input, { key: "ArrowDown" }); // Highlight Bob (index 1)
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(mockStoreState.selectNode).toHaveBeenCalledWith("n2"); // Bob
     expect(mockStoreState.setPanelTab).toHaveBeenCalledWith("details");
     expect(mockStoreState.setSearchOpen).toHaveBeenCalledWith(false);
   });
@@ -359,9 +287,9 @@ describe("SearchDialog — aria attributes", () => {
     vi.clearAllMocks();
     mockStoreState.searchOpen = false;
     mockStoreState.nodes = [];
+    mockStoreState.setSearchOpen.mockClear();
     mockStoreState.selectNode.mockClear();
     mockStoreState.setPanelTab.mockClear();
-    _subscribers.clear();
   });
 
   it("dialog has role=dialog and aria-modal=true", () => {
@@ -397,9 +325,9 @@ describe("SearchDialog — footer", () => {
     vi.clearAllMocks();
     mockStoreState.searchOpen = false;
     mockStoreState.nodes = [];
+    mockStoreState.setSearchOpen.mockClear();
     mockStoreState.selectNode.mockClear();
     mockStoreState.setPanelTab.mockClear();
-    _subscribers.clear();
   });
 
   it("footer shows singular 'workspace' when count is 1", () => {

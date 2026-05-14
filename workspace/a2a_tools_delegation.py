@@ -47,7 +47,11 @@ from a2a_client import (
     send_a2a_message,
 )
 from a2a_tools_rbac import auth_headers_for_heartbeat as _auth_headers_for_heartbeat
-from _sanitize_a2a import sanitize_a2a_result
+from _sanitize_a2a import (
+    _A2A_BOUNDARY_END,
+    _A2A_BOUNDARY_START,
+    sanitize_a2a_result,
+)  # noqa: E402
 
 
 # RFC #2829 PR-5 cutover constants. The poll cadence + timeout are
@@ -322,8 +326,12 @@ async def tool_delegate_task(
             f"You should either: (1) try a different peer, (2) handle this task yourself, "
             f"or (3) inform the user that {peer_name} is unavailable and provide your best answer."
         )
-    # OFFSEC-003: wrap peer result in trust boundary before returning to agent context
-    return sanitize_a2a_result(result)
+    # OFFSEC-003: escape boundary markers in peer text, then wrap in boundary
+    # markers so the agent can distinguish trusted (own output) from untrusted
+    # (peer-supplied) content.  Explicit wrapping here rather than inside
+    # sanitize_a2a_result preserves a clean separation of concerns.
+    escaped = sanitize_a2a_result(result)
+    return f"{_A2A_BOUNDARY_START}\n{escaped}\n{_A2A_BOUNDARY_END}"
 
 
 async def tool_delegate_task_async(
@@ -424,13 +432,15 @@ async def tool_check_task_status(
             # Return all recent delegations
             summary = []
             for d in delegations[:10]:
+                preview = d.get("response_preview", "")
+                if preview:
+                    preview = sanitize_a2a_result(preview)
                 summary.append({
                     "delegation_id": d.get("delegation_id", ""),
                     "target_id": d.get("target_id", ""),
                     "status": d.get("status", ""),
-                    # OFFSEC-003: sanitize peer-supplied fields before embedding in JSON
                     "summary": sanitize_a2a_result(d.get("summary", "")),
-                    "response_preview": sanitize_a2a_result(d.get("response_preview", "")),
+                    "response_preview": preview,
                 })
             return json.dumps({"delegations": summary, "count": len(delegations)})
     except Exception as e:

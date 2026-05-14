@@ -126,8 +126,8 @@ export function DeleteCascadeConfirmDialog({
 
           {/* Cascade warning */}
           <div className="rounded border border-red-900/40 bg-red-950/20 px-3 py-2.5 mb-4">
-            <p className="text-[12px] text-bad/80 leading-relaxed">
-              Deleting will cascade — <strong className="text-red-200">all child workspaces and their data will be permanently removed.</strong> This cannot be undone.
+            <p className="text-[12px] text-red-300 leading-relaxed">
+              Deleting will cascade — <strong className="text-red-100">all child workspaces and their data will be permanently removed.</strong> This cannot be undone.
             </p>
           </div>
 
@@ -164,13 +164,13 @@ export function DeleteCascadeConfirmDialog({
             type="button"
             onClick={onConfirm}
             disabled={!checked}
-            // Hover goes DARKER, not lighter — bg-red-500 on white text
-            // drops contrast below AA vs bg-red-700. Same trap fixed in
-            // ConfirmDialog and ApprovalBanner. focus-visible ring matches.
+            // Hover goes DARKER, not lighter — bg-red-600 on white text
+            // drops contrast below AA. Same trap fixed in ConfirmDialog.
+            // focus-visible ring matches the canvas chrome.
             className={`px-3.5 py-1.5 text-[13px] rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-sunken
               ${checked
-                ? "bg-red-600 hover:bg-red-700 text-white cursor-pointer"
-                : "bg-red-900/30 text-bad/40 cursor-not-allowed"
+                ? "bg-red-700 hover:bg-red-600 text-white cursor-pointer"
+                : "bg-red-900/30 text-red-400 cursor-not-allowed"
               }`}
           >
             Delete All

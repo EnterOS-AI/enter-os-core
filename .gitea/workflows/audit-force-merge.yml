@@ -52,10 +52,7 @@ jobs:
           # Declared here rather than fetched from /branch_protections
           # because that endpoint requires admin write — sop-tier-bot is
           # read-only by design (least-privilege).
-          #
-          # staging branch protection (§F3a/F3b, mc#798): only
-          # sop-checklist / all-items-acked is required.  Unlike main,
-          # staging does not require sop-tier-check or Secret scan.
           REQUIRED_CHECKS: |
+            CI / all-required (pull_request)
             sop-checklist / all-items-acked (pull_request)
         run: bash .gitea/scripts/audit-force-merge.sh

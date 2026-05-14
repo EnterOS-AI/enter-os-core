@@ -487,13 +487,16 @@ func (h *OrgHandler) createWorkspaceTree(ws OrgWorkspace, parentID *string, absX
 		// timeout (caught 2026-05-08 right after dev-only org/import).
 		loadPersonaEnvFile(ws.FilesDir, envVars)
 		if orgBaseDir != "" {
-			// Load org root and workspace-specific .env files. loadWorkspaceEnv
-			// applies resolveInsideRoot to ws.FilesDir, closing the CWE-22 /
-			// mc#786 path-traversal regression introduced when the guard was
-			// dropped from createWorkspaceTree.
-			workspaceEnv := loadWorkspaceEnv(orgBaseDir, ws.FilesDir)
-			for k, v := range workspaceEnv {
-				envVars[k] = v // workspace-specific overrides org root
+			// 1. Org root .env (shared defaults)
+			parseEnvFile(filepath.Join(orgBaseDir, ".env"), envVars)
+			// 2. Workspace-specific .env (overrides)
+			// SECURITY: ws.FilesDir is untrusted YAML input — guard against CWE-22
+			// traversal so a crafted filesDir like "../../../etc" cannot escape orgBaseDir.
+			if ws.FilesDir != "" {
+				if safeFilesDir, err := resolveInsideRoot(orgBaseDir, ws.FilesDir); err == nil {
+					parseEnvFile(filepath.Join(safeFilesDir, ".env"), envVars)
+				}
+				// Traversal rejection: silently skip — callers expect partial env on failure.
 			}
 		}
 		// Store as workspace secrets via DB (encrypted if key is set, raw otherwise)
@@ -937,6 +940,65 @@ func flattenAndSortRequirements(by map[string]EnvRequirement) []EnvRequirement {
 // query from wedging org imports. A hit gets logged so operators
 // can investigate.
 const globalSecretsPreflightLimit = 10000
+
+// PerWorkspaceUnsatisfied describes one per-workspace RequiredEnv that is
+// not covered by either a global secret or a key present in the
+// corresponding .env file.
+type PerWorkspaceUnsatisfied struct {
+	Workspace   string         `json:"workspace"`
+	FilesDir    string         `json:"files_dir,omitempty"`
+	Unsatisfied EnvRequirement `json:"unsatisfied_env"`
+}
+
+// collectPerWorkspaceUnsatisfied recursively walks workspaces and returns
+// per-workspace RequiredEnv entries that are not covered by (a) a global
+// secret key or (b) a key present in the workspace's .env file(s) (org root
+// .env + per-workspace <files_dir>/.env). This complements
+// collectOrgEnv + loadConfiguredGlobalSecretKeys, which together only
+// validate global-level RequiredEnv against global_secrets. The .env
+// lookup mirrors the runtime resolution in createWorkspaceTree so that
+// the preflight result matches what the container actually receives at
+// start time.
+func collectPerWorkspaceUnsatisfied(workspaces []OrgWorkspace, orgBaseDir string, globalSecrets map[string]struct{}) []PerWorkspaceUnsatisfied {
+	var out []PerWorkspaceUnsatisfied
+	var walk func([]OrgWorkspace)
+	walk = func(wsList []OrgWorkspace) {
+		for _, ws := range wsList {
+			// Build the set of keys available to this workspace from .env.
+			// This is the same three-source stack that createWorkspaceTree
+			// injects into the container:
+			//   1. Org root .env (parseEnvFile, no filesDir)
+			//   2. Workspace <files_dir>/.env (if filesDir is set)
+			//   3. Persona bootstrap env (MOLECULE_PERSONA_ROOT/<filesDir>/env)
+			// Items 1+2 are on-disk and testable; item 3 is host-only and
+			// skipped here (persona env does NOT satisfy required_env —
+			// it carries identity tokens, not workspace LLM keys).
+			envFromFiles := loadWorkspaceEnv(orgBaseDir, ws.FilesDir)
+			// Convert map[string]string (from .env files) to map[string]struct{}
+			// to match IsSatisfied's signature.
+			envSet := make(map[string]struct{}, len(envFromFiles))
+			for k := range envFromFiles {
+				envSet[k] = struct{}{}
+			}
+			for _, req := range ws.RequiredEnv {
+				if req.IsSatisfied(globalSecrets) {
+					continue // covered by a global secret
+				}
+				if req.IsSatisfied(envSet) {
+					continue // covered by a per-workspace .env file
+				}
+				out = append(out, PerWorkspaceUnsatisfied{
+					Workspace:   ws.Name,
+					FilesDir:    ws.FilesDir,
+					Unsatisfied: req,
+				})
+			}
+			walk(ws.Children)
+		}
+	}
+	walk(workspaces)
+	return out
+}
 
 func loadConfiguredGlobalSecretKeys(ctx context.Context) (map[string]struct{}, error) {
 	rows, err := db.DB.QueryContext(ctx,

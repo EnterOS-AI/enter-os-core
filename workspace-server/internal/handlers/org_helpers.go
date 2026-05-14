@@ -62,11 +62,6 @@ func resolvePromptRef(inline, fileRef, orgBaseDir, filesDir string) (string, err
 	return string(data), nil
 }
 
-// envVarRx matches ${VAR} and $VAR references where the name starts with
-// [a-zA-Z_] — intentionally excludes bare $ and $1-style digits so
-// "cost $100" stays intact.
-var envVarRx = regexp.MustCompile(`\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}|\$([a-zA-Z_][a-zA-Z0-9_]*)`)
-
 // envVarRefPattern matches actual ${VAR} or $VAR references (not literal $).
 // Used to detect unresolved placeholders without false positives like "$5".
 var envVarRefPattern = regexp.MustCompile(`\$\{?[A-Za-z_][A-Za-z0-9_]*\}?`)
@@ -85,40 +80,21 @@ func hasUnresolvedVarRef(original, expanded string) bool {
 // expandWithEnv expands ${VAR} and $VAR references in s using the env map.
 // Falls back to the platform process env if a var isn't in the map.
 func expandWithEnv(s string, env map[string]string) string {
-	result := s
-	for {
-		loc := envVarRx.FindStringIndex(result)
-		if loc == nil {
-			break
-		}
-		match := result[loc[0]:loc[1]]
-		var key string
-		if len(match) >= 2 && match[0] == '$' && match[1] == '{' {
-			// ${VAR} form
-			key = match[2 : len(match)-1]
-		} else {
-			// $VAR form
-			key = match[1:]
-		}
-		var replacement string
+	return os.Expand(s, func(key string) string {
 		if v, ok := env[key]; ok {
-			replacement = v
-		} else {
-			replacement = os.Getenv(key)
+			return v
 		}
-		result = result[:loc[0]] + replacement + result[loc[1]:]
-	}
-	return result
+		return os.Getenv(key)
+	})
 }
 
 // loadWorkspaceEnv reads the org root .env and the workspace-specific .env
 // (workspace overrides org root). Used by both secret injection and channel
 // config expansion.
 //
-// CWE-22 mitigation: filesDir is validated through resolveInsideRoot so a
-// malicious org YAML cannot escape the org root with "../../../etc". Both
-// call sites already guard ws.FilesDir, but the internal guard is the
-// reliable enforcement point regardless of caller.
+// SECURITY: filesDir is sourced from untrusted org YAML input (ws.FilesDir).
+// resolveInsideRoot guard prevents path traversal (CWE-22) where a malicious
+// filesDir like "../../../etc" could escape the org root.
 func loadWorkspaceEnv(orgBaseDir, filesDir string) map[string]string {
 	envVars := map[string]string{}
 	if orgBaseDir == "" {
@@ -126,10 +102,12 @@ func loadWorkspaceEnv(orgBaseDir, filesDir string) map[string]string {
 	}
 	parseEnvFile(filepath.Join(orgBaseDir, ".env"), envVars)
 	if filesDir != "" {
-		// resolveInsideRoot returns the joined absolute path — use it directly.
 		safeFilesDir, err := resolveInsideRoot(orgBaseDir, filesDir)
 		if err != nil {
-			return envVars // silently reject traversal attempts
+			// Reject traversal attempt silently — callers expect an empty map
+			// on any read failure.
+			log.Printf("loadWorkspaceEnv: rejecting filesDir %q: %v", filesDir, err)
+			return envVars
 		}
 		parseEnvFile(filepath.Join(safeFilesDir, ".env"), envVars)
 	}
@@ -350,12 +328,6 @@ func mergePlugins(defaultPlugins, wsPlugins []string) []string {
 // Follows Go's standard pattern for SSRF-class path sanitization; using
 // strings.HasPrefix on an absolute-path pair plus the separator guard rejects
 // sibling directories that share a prefix (e.g. "/foo" vs "/foobar").
-//
-// CWE-59 mitigation: filepath.Abs does NOT resolve symlinks, so a path like
-// "workspaces/dev/inner" where "inner" is a symlink to "/etc" would lexically
-// pass the prefix check. We call filepath.EvalSymlinks to canonicalize the
-// path and re-check that it is still inside root. This closes the symlink-
-// based traversal vector (CWE-59, follow-up to #369).
 func resolveInsideRoot(root, userPath string) (string, error) {
 	if userPath == "" {
 		return "", fmt.Errorf("path is empty")
@@ -372,18 +344,9 @@ func resolveInsideRoot(root, userPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("joined abs: %w", err)
 	}
-	// CWE-59: resolve symlinks before final prefix check.
-	// If the path contains a symlink pointing outside root, EvalSymlinks
-	// will canonicalize to the external path and fail the guard below.
-	resolved, err := filepath.EvalSymlinks(absJoined)
-	if err != nil {
-		// If EvalSymlinks fails (e.g. broken symlink), fail closed —
-		// broken symlinks should not be used as org files.
-		return "", fmt.Errorf("resolve symlink: %w", err)
-	}
 	// Allow exact-root match (rare but valid) and any descendant.
-	if resolved != absRoot && !strings.HasPrefix(resolved, absRoot+string(filepath.Separator)) {
+	if absJoined != absRoot && !strings.HasPrefix(absJoined, absRoot+string(filepath.Separator)) {
 		return "", fmt.Errorf("path escapes root")
 	}
-	return absJoined, nil // return the lexical path, not the resolved one
+	return absJoined, nil
 }

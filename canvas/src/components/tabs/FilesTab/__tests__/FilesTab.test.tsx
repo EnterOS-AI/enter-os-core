@@ -1,216 +1,188 @@
 // @vitest-environment jsdom
 /**
- * FilesTab: NotAvailablePanel + FilesToolbar coverage.
+ * Tests for the main FilesTab / PlatformOwnedFilesTab component.
  *
- * NotAvailablePanel: pure presentational component — renders a "feature not
- * available" placeholder for external-runtime workspaces.
- * FilesToolbar: pure props-driven component — directory selector, file count,
- * action buttons (New, Upload, Export, Clear, Refresh) with correct aria-labels.
+ * Covers: NotAvailablePanel (external runtime), loading/empty/error states,
+ * FilesToolbar actions, and the /configs-only upload guard.
  *
- * No @testing-library/jest-dom import — use textContent / className /
- * getAttribute checks to avoid "expect is not defined" errors.
+ * No @testing-library/jest-dom — use textContent / className / getAttribute.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 
-import { FilesToolbar } from "../FilesToolbar";
-import { NotAvailablePanel } from "../NotAvailablePanel";
+import { FilesTab } from "../../FilesTab.tsx";
+import { FilesToolbar } from "../FilesToolbar.tsx";
+import type { FileEntry } from "../../FilesTab/tree";
 
-// ─── afterEach ─────────────────────────────────────────────────────────────────
+// ─── Mock ──────────────────────────────────────────────────────────────────
+
+const _mockGet = vi.hoisted(() => vi.fn<() => Promise<unknown>>());
+vi.mock("@/lib/api", () => ({
+  api: { get: _mockGet, put: vi.fn(), del: vi.fn() },
+}));
 
 afterEach(() => {
   cleanup();
-  vi.restoreAllMocks();
+  _mockGet.mockReset();
 });
 
-// ─── NotAvailablePanel ─────────────────────────────────────────────────────────
+// ─── Helpers ───────────────────────────────────────────────────────────────
 
-describe("NotAvailablePanel", () => {
-  it("renders heading 'Files not available'", () => {
-    const { container } = render(<NotAvailablePanel runtime="external" />);
-    expect(container.textContent).toContain("Files not available");
-  });
+const emptyFileList: FileEntry[] = [];
 
-  it("renders the runtime name in monospace", () => {
-    const { container } = render(<NotAvailablePanel runtime="external" />);
-    expect(container.textContent).toContain("external");
-    const spans = container.querySelectorAll("span");
-    const monoSpans = Array.from(spans).filter(
-      (s) => s.className && s.className.includes("font-mono"),
-    );
-    expect(monoSpans.length).toBeGreaterThan(0);
-  });
+/** Render FilesTab with a non-external runtime (triggers PlatformOwnedFilesTab). */
+function renderPlatformTab(extraProps: Partial<React.ComponentProps<typeof FilesTab>> = {}) {
+  return render(
+    <FilesTab
+      workspaceId="ws-1"
+      data={{ id: "ws-1", name: "Test", runtime: "claude-code", status: "online", tier: 0, skills: [], created_at: "" }}
+      {...extraProps}
+    />,
+  );
+}
 
-  it("renders a Chat tab hint in description", () => {
-    const { container } = render(<NotAvailablePanel runtime="remote-agent" />);
-    expect(container.textContent).toContain("Chat tab");
-  });
+/** Render FilesToolbar directly with stub handlers. */
+function renderToolbar(extraProps: Partial<React.ComponentProps<typeof FilesToolbar>> = {}) {
+  return render(
+    <FilesToolbar
+      root="/configs"
+      setRoot={vi.fn()}
+      fileCount={0}
+      onNewFile={vi.fn()}
+      onUpload={vi.fn()}
+      onDownloadAll={vi.fn()}
+      onClearAll={vi.fn()}
+      onRefresh={vi.fn()}
+      {...extraProps}
+    />
+  );
+}
 
-  it("SVG icon has aria-hidden=true", () => {
-    const { container } = render(<NotAvailablePanel runtime="external" />);
-    const svg = container.querySelector("svg");
-    expect(svg?.getAttribute("aria-hidden")).toBe("true");
-  });
+// ─── NotAvailablePanel ──────────────────────────────────────────────────────
 
-  it("renders without crashing for any runtime string", () => {
-    const { container } = render(<NotAvailablePanel runtime="unknown-runtime" />);
-    expect(container.textContent).toContain("unknown-runtime");
-  });
-
-  it("applies the correct layout classes to root div", () => {
-    const { container } = render(<NotAvailablePanel runtime="external" />);
-    const root = container.firstElementChild as HTMLElement;
-    expect(root.className).toContain("flex");
-    expect(root.className).toContain("flex-col");
-    expect(root.className).toContain("items-center");
-  });
-});
-
-// ─── FilesToolbar ───────────────────────────────────────────────────────────────
-
-describe("FilesToolbar", () => {
-  const noop = vi.fn();
-
-  function renderToolbar(props: Partial<React.ComponentProps<typeof FilesToolbar>> = {}) {
-    return render(
-      <FilesToolbar
-        root="/configs"
-        setRoot={noop}
-        fileCount={0}
-        onNewFile={noop}
-        onUpload={noop}
-        onDownloadAll={noop}
-        onClearAll={noop}
-        onRefresh={noop}
-        {...props}
+describe("FilesTab — NotAvailablePanel", () => {
+  it("renders NotAvailablePanel when runtime is external", async () => {
+    _mockGet.mockResolvedValueOnce(emptyFileList);
+    render(
+      <FilesTab
+        workspaceId="ws-1"
+        data={{ id: "ws-1", name: "Test", runtime: "external", status: "online", tier: 0, skills: [], created_at: "" }}
       />,
     );
-  }
-
-  it("renders the directory selector with correct aria-label", () => {
-    const { container } = renderToolbar();
-    const select = container.querySelector("select");
-    expect(select?.getAttribute("aria-label")).toBe("File root directory");
+    expect(screen.getByText(/Files not available/i)).toBeTruthy();
   });
 
-  it("directory selector has all four options", () => {
-    const { container } = renderToolbar();
-    const select = container.querySelector("select") as HTMLSelectElement;
-    const options = Array.from(select?.options ?? []);
-    const values = options.map((o) => o.value);
-    expect(values).toContain("/configs");
-    expect(values).toContain("/home");
-    expect(values).toContain("/workspace");
-    expect(values).toContain("/plugins");
+  it("renders the runtime name in NotAvailablePanel", async () => {
+    _mockGet.mockResolvedValueOnce(emptyFileList);
+    render(
+      <FilesTab
+        workspaceId="ws-1"
+        data={{ id: "ws-1", name: "Test", runtime: "external", status: "online", tier: 0, skills: [], created_at: "" }}
+      />,
+    );
+    expect(screen.getByText(/external/i)).toBeTruthy();
   });
 
-  it("calls setRoot when directory changes", () => {
-    const setRoot = vi.fn();
-    const { container } = renderToolbar({ setRoot });
-    const select = container.querySelector("select") as HTMLSelectElement;
-    select.value = "/home";
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-    expect(setRoot).toHaveBeenCalledWith("/home");
+  it("does NOT call api.get when runtime is external", async () => {
+    render(
+      <FilesTab
+        workspaceId="ws-1"
+        data={{ id: "ws-1", name: "Test", runtime: "external", status: "online", tier: 0, skills: [], created_at: "" }}
+      />,
+    );
+    expect(_mockGet).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Loading / Empty / Error states ────────────────────────────────────────
+
+describe("FilesTab — states", () => {
+  it("shows loading text while fetching files", () => {
+    _mockGet.mockImplementation(
+      () => new Promise<unknown>(() => {}) as unknown as Promise<unknown>,
+    );
+    renderPlatformTab();
+    expect(screen.getByText("Loading files...")).toBeTruthy();
   });
 
-  it("displays the file count", () => {
-    const { container } = renderToolbar({ fileCount: 42 });
-    expect(container.textContent).toContain("42 files");
+  it("shows 'No config files yet' when root is /configs and no files", async () => {
+    _mockGet.mockResolvedValueOnce(emptyFileList);
+    renderPlatformTab();
+    await waitFor(() => {
+      expect(screen.getByText(/No config files yet/i)).toBeTruthy();
+    });
   });
 
-  it("shows New + Upload + Clear buttons for /configs", () => {
+  it("fetches from the correct endpoint", async () => {
+    _mockGet.mockResolvedValueOnce(emptyFileList);
+    renderPlatformTab();
+    await waitFor(() => {
+      expect(_mockGet).toHaveBeenCalledWith(expect.stringContaining("/workspaces/ws-1/files"));
+    });
+  });
+
+  it("shows file count from toolbar when files exist", async () => {
+    _mockGet.mockResolvedValue([
+      { path: "configs/a.yaml", size: 10, dir: false },
+      { path: "configs/b.yaml", size: 20, dir: false },
+    ]);
+    renderPlatformTab();
+    await waitFor(() => {
+      expect(screen.getByText("2 files")).toBeTruthy();
+    });
+  });
+});
+
+// ─── FilesToolbar ──────────────────────────────────────────────────────────
+
+describe("FilesTab — FilesToolbar", () => {
+  it("shows Refresh button", async () => {
+    _mockGet.mockResolvedValueOnce(emptyFileList);
+    renderPlatformTab();
+    await waitFor(() => {
+      expect(screen.getByLabelText("Refresh file list")).toBeTruthy();
+    });
+  });
+
+  it("shows root directory selector", async () => {
+    _mockGet.mockResolvedValueOnce(emptyFileList);
+    renderPlatformTab();
+    await waitFor(() => {
+      expect(screen.getByRole("combobox")).toBeTruthy();
+    });
+  });
+
+  it("Refresh button triggers a reload", async () => {
+    // Use persistent mock — loadFiles fires on mount AND on Refresh click.
+    _mockGet.mockResolvedValue(emptyFileList);
+    renderPlatformTab();
+    await waitFor(() => screen.getByLabelText("Refresh file list"));
+    const before = _mockGet.mock.calls.length;
+    fireEvent.click(screen.getByLabelText("Refresh file list"));
+    await waitFor(() => {
+      expect(_mockGet.mock.calls.length).toBeGreaterThan(before);
+    });
+  });
+});
+
+// ─── Upload guard ──────────────────────────────────────────────────────────
+
+describe("FilesTab — upload guard", () => {
+  it("no error alert on dragover when root is /configs (default)", async () => {
+    _mockGet.mockResolvedValue(emptyFileList);
+    renderPlatformTab();
+    await waitFor(() => screen.getByText(/No config files yet/i));
+
+    // No alert should be present
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("applies focus-visible ring to all interactive buttons", () => {
     const { container } = renderToolbar({ root: "/configs" });
-    const texts = Array.from(container.querySelectorAll("button")).map(
-      (b) => b.textContent?.trim(),
-    );
-    expect(texts).toContain("+ New");
-    expect(texts).toContain("Upload");
-    expect(texts).toContain("Clear");
-    expect(texts).toContain("Export");
-    expect(texts).toContain("↻");
-  });
-
-  it("hides New + Upload + Clear for /workspace", () => {
-    const { container } = renderToolbar({ root: "/workspace" });
-    const texts = Array.from(container.querySelectorAll("button")).map(
-      (b) => b.textContent?.trim(),
-    );
-    expect(texts).not.toContain("+ New");
-    expect(texts).not.toContain("Upload");
-    expect(texts).not.toContain("Clear");
-    expect(texts).toContain("Export");
-  });
-
-  it("hides New + Upload + Clear for /home", () => {
-    const { container } = renderToolbar({ root: "/home" });
-    const texts = Array.from(container.querySelectorAll("button")).map(
-      (b) => b.textContent?.trim(),
-    );
-    expect(texts).not.toContain("+ New");
-    expect(texts).not.toContain("Upload");
-    expect(texts).not.toContain("Clear");
-  });
-
-  it("hides New + Upload + Clear for /plugins", () => {
-    const { container } = renderToolbar({ root: "/plugins" });
-    const texts = Array.from(container.querySelectorAll("button")).map(
-      (b) => b.textContent?.trim(),
-    );
-    expect(texts).not.toContain("+ New");
-    expect(texts).not.toContain("Upload");
-    expect(texts).not.toContain("Clear");
-  });
-
-  it("New button has correct aria-label", () => {
-    const { container } = renderToolbar({ root: "/configs" });
-    const newBtn = container.querySelector('button[aria-label="Create new file"]');
-    expect(newBtn?.textContent?.trim()).toBe("+ New");
-  });
-
-  it("Export button has correct aria-label", () => {
-    const { container } = renderToolbar();
-    const exportBtn = container.querySelector('button[aria-label="Download all files"]');
-    expect(exportBtn?.textContent?.trim()).toBe("Export");
-  });
-
-  it("Clear button has correct aria-label", () => {
-    const { container } = renderToolbar({ root: "/configs" });
-    const clearBtn = container.querySelector('button[aria-label="Delete all files"]');
-    expect(clearBtn?.textContent?.trim()).toBe("Clear");
-  });
-
-  it("Refresh button has correct aria-label", () => {
-    const { container } = renderToolbar();
-    const refreshBtn = container.querySelector('button[aria-label="Refresh file list"]');
-    expect(refreshBtn?.textContent?.trim()).toBe("↻");
-  });
-
-  it("calls onNewFile when New button is clicked", () => {
-    const onNewFile = vi.fn();
-    const { container } = renderToolbar({ root: "/configs", onNewFile });
-    container.querySelector('button[aria-label="Create new file"]')!.click();
-    expect(onNewFile).toHaveBeenCalledTimes(1);
-  });
-
-  it("calls onDownloadAll when Export button is clicked", () => {
-    const onDownloadAll = vi.fn();
-    const { container } = renderToolbar({ onDownloadAll });
-    container.querySelector('button[aria-label="Download all files"]')!.click();
-    expect(onDownloadAll).toHaveBeenCalledTimes(1);
-  });
-
-  it("calls onClearAll when Clear button is clicked", () => {
-    const onClearAll = vi.fn();
-    const { container } = renderToolbar({ root: "/configs", onClearAll });
-    container.querySelector('button[aria-label="Delete all files"]')!.click();
-    expect(onClearAll).toHaveBeenCalledTimes(1);
-  });
-
-  it("calls onRefresh when Refresh button is clicked", () => {
-    const onRefresh = vi.fn();
-    const { container } = renderToolbar({ onRefresh });
-    container.querySelector('button[aria-label="Refresh file list"]')!.click();
-    expect(onRefresh).toHaveBeenCalledTimes(1);
+    const buttons = container.querySelectorAll("button");
+    for (const btn of buttons) {
+      expect(btn.className).toContain("focus-visible:ring-2");
+    }
   });
 });

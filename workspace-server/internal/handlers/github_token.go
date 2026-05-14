@@ -49,7 +49,6 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/pkg/provisionhook"
@@ -99,17 +98,7 @@ func (h *GitHubTokenHandler) GetInstallationToken(c *gin.Context) {
 		token, expiresAt, err := generateAppInstallationToken()
 		if err != nil {
 			log.Printf("[github] fallback token generation failed: %v", err)
-			// #388: GITHUB_APP_ID/INSTALLATION_ID unset → Gitea-canonical deployment
-			// or suspended org. Return 501 so callers (credential helper / gh auth)
-			// know this is not-implemented vs a transient error.
-			if strings.Contains(err.Error(), "required") {
-				c.JSON(http.StatusNotImplemented, gin.H{
-					"error": "GitHub integration not configured",
-					"scm":   "gitea",
-				})
-			} else {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "token refresh failed"})
-			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "token refresh failed"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"token": token, "expires_at": expiresAt})

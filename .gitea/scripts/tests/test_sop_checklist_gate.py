@@ -134,18 +134,22 @@ class TestParseDirectives(unittest.TestCase):
     def setUp(self):
         self.aliases = _numeric_aliases()
 
+    def parse_ack_revoke(self, body):
+        directives, na_directives = sop.parse_directives(body, self.aliases)
+        self.assertEqual(na_directives, [])
+        return directives
+
     def test_simple_ack(self):
-        d = sop.parse_directives("/sop-ack comprehensive-testing", self.aliases)
+        d = self.parse_ack_revoke("/sop-ack comprehensive-testing")
         self.assertEqual(d, [("sop-ack", "comprehensive-testing", "")])
 
     def test_simple_revoke(self):
-        d = sop.parse_directives("/sop-revoke staging-smoke", self.aliases)
+        d = self.parse_ack_revoke("/sop-revoke staging-smoke")
         self.assertEqual(d, [("sop-revoke", "staging-smoke", "")])
 
     def test_ack_with_note(self):
-        d = sop.parse_directives(
-            "/sop-ack comprehensive-testing LGTM the test covers all edge cases",
-            self.aliases,
+        d = self.parse_ack_revoke(
+            "/sop-ack comprehensive-testing LGTM the test covers all edge cases"
         )
         self.assertEqual(len(d), 1)
         self.assertEqual(d[0][0], "sop-ack")
@@ -153,13 +157,12 @@ class TestParseDirectives(unittest.TestCase):
         self.assertIn("LGTM", d[0][2])
 
     def test_numeric_shorthand(self):
-        d = sop.parse_directives("/sop-ack 1", self.aliases)
+        d = self.parse_ack_revoke("/sop-ack 1")
         self.assertEqual(d, [("sop-ack", "comprehensive-testing", "")])
 
     def test_revoke_with_reason(self):
-        d = sop.parse_directives(
-            "/sop-revoke comprehensive-testing realized the e2e was mocking the DB",
-            self.aliases,
+        d = self.parse_ack_revoke(
+            "/sop-revoke comprehensive-testing realized the e2e was mocking the DB"
         )
         self.assertEqual(d[0][0], "sop-revoke")
         self.assertEqual(d[0][1], "comprehensive-testing")
@@ -171,7 +174,7 @@ class TestParseDirectives(unittest.TestCase):
             "/sop-ack comprehensive-testing\n"
             "Will follow up on the doc nit separately."
         )
-        d = sop.parse_directives(body, self.aliases)
+        d = self.parse_ack_revoke(body)
         self.assertEqual(len(d), 1)
         self.assertEqual(d[0][1], "comprehensive-testing")
 
@@ -180,7 +183,7 @@ class TestParseDirectives(unittest.TestCase):
             "/sop-ack comprehensive-testing\n"
             "/sop-ack local-postgres-e2e\n"
         )
-        d = sop.parse_directives(body, self.aliases)
+        d = self.parse_ack_revoke(body)
         self.assertEqual(len(d), 2)
         slugs = {x[1] for x in d}
         self.assertEqual(slugs, {"comprehensive-testing", "local-postgres-e2e"})
@@ -189,21 +192,21 @@ class TestParseDirectives(unittest.TestCase):
         # A directive embedded mid-line is not honored (prevents review
         # comments like "to /sop-ack you need..." from acting as acks).
         body = "If you want to /sop-ack comprehensive-testing reply in this thread"
-        d = sop.parse_directives(body, self.aliases)
+        d = self.parse_ack_revoke(body)
         self.assertEqual(d, [])
 
     def test_leading_whitespace_allowed(self):
         body = "  /sop-ack comprehensive-testing"
-        d = sop.parse_directives(body, self.aliases)
+        d = self.parse_ack_revoke(body)
         self.assertEqual(len(d), 1)
 
     def test_empty_body(self):
-        self.assertEqual(sop.parse_directives("", self.aliases), [])
-        self.assertEqual(sop.parse_directives(None, self.aliases), [])
+        self.assertEqual(sop.parse_directives("", self.aliases), ([], []))
+        self.assertEqual(sop.parse_directives(None, self.aliases), ([], []))
 
     def test_normalization_applied(self):
         # /sop-ack Comprehensive_Testing → canonical comprehensive-testing
-        d = sop.parse_directives("/sop-ack Comprehensive_Testing", self.aliases)
+        d = self.parse_ack_revoke("/sop-ack Comprehensive_Testing")
         self.assertEqual(d[0][1], "comprehensive-testing")
 
 

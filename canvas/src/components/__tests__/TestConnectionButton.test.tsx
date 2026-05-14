@@ -14,7 +14,8 @@ import type { SecretGroup } from "@/types/secrets";
 import { validateSecret } from "@/lib/api/secrets";
 
 // ─── Mock validateSecret ──────────────────────────────────────────────────────
-
+// vi.mock is hoisted, so validateSecret (imported above) refers to the mocked
+// namespace value once vi.mock runs. Use vi.mocked() to access it in tests.
 vi.mock("@/lib/api/secrets", () => ({
   validateSecret: vi.fn(),
 }));
@@ -44,7 +45,7 @@ describe("TestConnectionButton — render", () => {
 
   it("enables button when secretValue is non-empty", () => {
     render(<TestConnectionButton provider={toGroup("anthropic")} secretValue="sk-test" />);
-    expect(screen.getByRole("button").getAttribute("disabled")).toBeFalsy();
+    expect(screen.getByRole("button").hasAttribute("disabled")).toBe(false);
   });
 });
 
@@ -67,8 +68,7 @@ describe("TestConnectionButton — state machine", () => {
     fireEvent.click(screen.getByRole("button"));
 
     // Button should show testing label and be disabled
-    const btn = screen.getByRole("button", { name: /testing/i });
-    expect(btn.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Testing…" }).hasAttribute("disabled")).toBe(true);
   });
 
   it("shows 'Connected ✓' on success", async () => {
@@ -110,8 +110,8 @@ describe("TestConnectionButton — state machine", () => {
     await act(async () => { /* flush */ });
 
     expect(screen.getByRole("alert")).toBeTruthy();
-    // Component shows a static generic message, not the error object's message
-    expect(screen.getByText(/connection timed out/i)).toBeTruthy();
+    // The error detail is hardcoded to "Connection timed out. Service may be down."
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toMatch(/timed out/i);
   });
 });
 

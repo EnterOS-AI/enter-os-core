@@ -63,9 +63,6 @@ func (h *SecretsHandler) List(c *gin.Context) {
 			"updated_at": updatedAt,
 		})
 	}
-	if err := rows.Err(); err != nil {
-		log.Printf("ListSecrets scan error: %v", err)
-	}
 
 	// 2. Global secrets not overridden at workspace level
 	globalRows, err := db.DB.QueryContext(ctx,
@@ -327,9 +324,6 @@ func (h *SecretsHandler) ListGlobal(c *gin.Context) {
 			"scope":      "global",
 		})
 	}
-	if err := rows.Err(); err != nil {
-		log.Printf("ListGlobalSecrets scan error: %v", err)
-	}
 	c.JSON(http.StatusOK, secrets)
 }
 
@@ -405,9 +399,6 @@ func (h *SecretsHandler) restartAllAffectedByGlobalKey(key string) {
 		if err := rows.Scan(&id); err == nil {
 			ids = append(ids, id)
 		}
-	}
-	if err := rows.Err(); err != nil {
-		log.Printf("notifyGlobalSecretChange scan error: %v", err)
 	}
 	if len(ids) == 0 {
 		return

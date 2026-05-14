@@ -60,6 +60,7 @@
 # Optional:
 #   REVIEW_CHECK_DEBUG=1 — per-API-call diagnostic lines
 #   REVIEW_CHECK_STRICT=1 — also require review.commit_id == pr.head.sha
+#   DEFAULT_BRANCH=main — branch this gate protects; non-default-base PRs no-op
 
 set -euo pipefail
 
@@ -91,7 +92,7 @@ API="https://${GITEA_HOST}/api/v1"
 # secret token value in the process table for any process to read via
 # /proc/<pid>/cmdline or ps -ef). The curl config file is read by curl
 # itself and never appears in the argv of the curl subprocess.
-CURL_AUTH_FILE=$(mktemp -p /tmp curl-auth.XXXXXX)
+CURL_AUTH_FILE=$(mktemp "${TMPDIR:-/tmp}/curl-auth.XXXXXX")
 chmod 600 "$CURL_AUTH_FILE"
 printf 'header = "Authorization: token %s"\n' "$GITEA_TOKEN" > "$CURL_AUTH_FILE"
 
@@ -100,9 +101,10 @@ printf 'header = "Authorization: token %s"\n' "$GITEA_TOKEN" > "$CURL_AUTH_FILE"
 PR_JSON=$(mktemp)
 REVIEWS_JSON=$(mktemp)
 TEAM_PROBE_TMP=$(mktemp)
+NA_STATUSES_TMP=""  # declared here so cleanup() always has the var
 
 cleanup() {
-  rm -f "$CURL_AUTH_FILE" "$PR_JSON" "$REVIEWS_JSON" "$TEAM_PROBE_TMP"
+  rm -f "$CURL_AUTH_FILE" "$PR_JSON" "$REVIEWS_JSON" "$TEAM_PROBE_TMP" "${NA_STATUSES_TMP-}"
 }
 trap cleanup EXIT
 
@@ -124,17 +126,59 @@ if [ "$HTTP_CODE" != "200" ]; then
 fi
 PR_AUTHOR=$(jq -r '.user.login // ""' "$PR_JSON")
 PR_HEAD_SHA=$(jq -r '.head.sha // ""' "$PR_JSON")
+PR_BASE_REF=$(jq -r '.base.ref // ""' "$PR_JSON")
 PR_STATE=$(jq -r '.state // ""' "$PR_JSON")
-debug "pr_author=${PR_AUTHOR} pr_head=${PR_HEAD_SHA:0:7} pr_state=${PR_STATE}"
+DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
+debug "pr_author=${PR_AUTHOR} pr_head=${PR_HEAD_SHA:0:7} pr_base=${PR_BASE_REF} pr_state=${PR_STATE}"
 
 if [ "$PR_STATE" != "open" ]; then
   echo "::notice::PR ${PR_NUMBER} is ${PR_STATE} — exiting 0 (closed PRs do not gate)"
+  exit 0
+fi
+if [ "$PR_BASE_REF" != "$DEFAULT_BRANCH" ]; then
+  echo "::notice::PR ${PR_NUMBER} targets ${PR_BASE_REF:-<unknown>} not ${DEFAULT_BRANCH} — ${TEAM}-review gate not applicable"
   exit 0
 fi
 if [ -z "$PR_AUTHOR" ] || [ -z "$PR_HEAD_SHA" ]; then
   echo "::error::PR ${PR_NUMBER} missing user.login or head.sha — webhook payload malformed"
   exit 1
 fi
+
+# --- RFC#324 §N/A follow-up: check N/A declarations status ---
+# sop-checklist-gate.py posts `sop-checklist / na-declarations (pull_request)`
+# status when a peer posts /sop-n/a <gate>. If our gate is declared N/A,
+# the requirement for a Gitea APPROVE review is waived.
+NA_STATUSES_TMP=$(mktemp)
+HTTP_CODE=$(curl -sS -o "$NA_STATUSES_TMP" -w '%{http_code}' \
+  -K "$CURL_AUTH_FILE" "${API}/repos/${OWNER}/${NAME}/statuses/${PR_HEAD_SHA}")
+debug "statuses/${PR_HEAD_SHA} → HTTP ${HTTP_CODE}"
+
+if [ "$HTTP_CODE" = "200" ]; then
+  # Gitea returns statuses as array; look for the na-declarations context.
+  # jq: find all statuses where context == "sop-checklist / na-declarations (pull_request)"
+  # and state == "success". Extract the description field.
+  NA_DESC=$(jq -r '
+    .[] |
+    select(.context == "sop-checklist / na-declarations (pull_request)") |
+    select(.state == "success") |
+    .description
+  ' "$NA_STATUSES_TMP" 2>/dev/null | head -1)
+
+  if [ -n "$NA_DESC" ] && [ "$NA_DESC" != "null" ]; then
+    debug "na-declarations status found: ${NA_DESC}"
+    # Check if our gate appears in the N/A description.
+    # The description format is "N/A: qa-review, security-review" or similar.
+    if echo "$NA_DESC" | grep -iq "\\b${TEAM}-review\\b"; then
+      echo "::notice::${TEAM}-review N/A — gate declared not-applicable via /sop-n/a: ${NA_DESC}"
+      echo "::notice::PR ${PR_NUMBER} passes ${TEAM}-review via N/A declaration"
+      rm -f "$NA_STATUSES_TMP"
+      exit 0
+    fi
+  fi
+else
+  debug "could not fetch statuses (HTTP ${HTTP_CODE}) — proceeding with normal eval"
+fi
+rm -f "$NA_STATUSES_TMP"
 
 # --- Fetch all reviews on the PR ---
 HTTP_CODE=$(curl -sS -o "$REVIEWS_JSON" -w '%{http_code}' \

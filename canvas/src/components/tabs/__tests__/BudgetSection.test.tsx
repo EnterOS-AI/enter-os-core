@@ -13,15 +13,15 @@ const apiQueue: QueueEntry[] = [];
 
 vi.mock("@/lib/api", () => ({
   api: {
-    get: vi.fn(async (_path: string) => {
+    get: vi.fn(async (path: string) => {
       const next = apiQueue.shift();
-      if (!next) throw new Error("api.get queue exhausted");
+      if (!next) throw new Error(`api.get queue exhausted at: ${path}`);
       if (next.err) throw next.err;
       return next.body;
     }),
-    patch: vi.fn(async (_path: string, _body?: unknown) => {
+    patch: vi.fn(async (path: string, _body?: unknown) => {
       const next = apiQueue.shift();
-      if (!next) throw new Error("api.patch queue exhausted");
+      if (!next) throw new Error(`api.patch queue exhausted at: ${path}`);
       if (next.err) throw next.err;
       return next.body;
     }),
@@ -78,6 +78,7 @@ describe("BudgetSection", () => {
 
       expect(screen.getByTestId("budget-loading")).toBeTruthy();
 
+      // Resolve after render to verify state clears
       resolveGet!(makeBudget());
       await vi.waitFor(() => {
         expect(screen.queryByTestId("budget-loading")).toBeNull();
@@ -98,6 +99,7 @@ describe("BudgetSection", () => {
     });
 
     it("shows 402 as exceeded banner, not fetch error", async () => {
+      // 402 means the budget limit was hit — different UX from a network/API error.
       qGetErr(402, "Payment Required");
 
       render(<BudgetSection workspaceId={WS_ID} />);
@@ -153,6 +155,7 @@ describe("BudgetSection", () => {
     });
 
     it("caps progress bar at 100% when used > limit", async () => {
+      // Over-limit: 12000 used of 10000 limit should show 100%, not 120%.
       qGet(makeBudget({ budget_limit: 10_000, budget_used: 12_000, budget_remaining: null }));
 
       render(<BudgetSection workspaceId={WS_ID} />);
@@ -234,13 +237,16 @@ describe("BudgetSection", () => {
 
       render(<BudgetSection workspaceId={WS_ID} />);
 
+      // Wait for the input to appear (loading → loaded)
       await vi.waitFor(() => {
         expect(screen.queryByTestId("budget-loading")).toBeNull();
       });
 
       const input = screen.getByTestId("budget-limit-input") as HTMLInputElement;
-      expect(input.value).toBe("10000");
-      expect(screen.getByTestId("budget-limit-value")!.textContent).toBe("10,000");
+      // Debug: check what values are rendered
+      const limitValue = screen.getByTestId("budget-limit-value")?.textContent;
+      expect(input.value).toBe("10000"); // initial value from API
+      expect(limitValue).toBe("10,000");
 
       fireEvent.change(input, { target: { value: "20000" } });
       expect(input.value).toBe("20000");
@@ -267,6 +273,7 @@ describe("BudgetSection", () => {
       fireEvent.click(screen.getByTestId("budget-save-btn"));
 
       await vi.waitFor(() => {
+        // After save with null limit, input should show empty (unlimited)
         expect(input.value).toBe("");
       });
     });

@@ -31,17 +31,25 @@ export function extractMessageText(body: Record<string, unknown> | null): string
     if (text) return text;
 
     // Response: result.parts[].text or result.parts[].root.text
+    // Use the first part that has a direct text field; within that part,
+    // prefer direct text over root.text. Subsequent parts' root.text fields
+    // are ignored when a direct text exists in an earlier part.
     const result = body.result as Record<string, unknown> | undefined;
     const rParts = (result?.parts || []) as Array<Record<string, unknown>>;
-    const rText = rParts
-      .map((p) => {
-        if (p.text) return p.text as string;
-        const root = p.root as Record<string, unknown> | undefined;
-        return (root?.text as string) || "";
-      })
-      .filter(Boolean)
-      .join("\n");
-    if (rText) return rText;
+    const firstPartWithText = rParts.find(
+      (p) => typeof p.text === "string" && (p.text as string) !== ""
+    );
+    if (firstPartWithText) {
+      return firstPartWithText.text as string;
+    }
+    // No direct text found; use root.text from the first part (if present).
+    const firstPart = rParts[0];
+    if (firstPart) {
+      const root = firstPart.root as Record<string, unknown> | undefined;
+      if (typeof root?.text === "string" && root.text !== "") {
+        return root.text as string;
+      }
+    }
 
     if (typeof body.result === "string") return body.result;
   } catch { /* ignore */ }
@@ -115,7 +123,7 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
                 <button
                   type="button"
                   aria-label="Close conversation trace"
-                  className="text-ink-mid hover:text-ink-mid text-lg px-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface rounded"
+                  className="text-ink-mid hover:text-ink-mid text-lg px-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
                 >
                   ✕
                 </button>
@@ -179,7 +187,7 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
                                 isError
                                   ? "bg-red-950/50 text-bad"
                                   : isSend
-                                  ? "bg-cyan-950/50 text-cyan-400"
+                                  ? "bg-cyan-950 text-cyan-300"
                                   : isReceive
                                   ? "bg-blue-950/50 text-accent"
                                   : "bg-surface-card text-ink-mid"
@@ -243,7 +251,7 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
 
                           {/* Error */}
                           {isError && entry.error_detail && (
-                            <div className="text-[10px] text-bad/80 mt-1 truncate">
+                            <div className="text-[10px] text-bad mt-1 truncate">
                               {entry.error_detail.slice(0, 200)}
                             </div>
                           )}
@@ -264,7 +272,7 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
                           )}
                           {responseText && (
                             <div className="mt-1 bg-surface/60 border border-emerald-900/30 rounded-lg px-3 py-2 max-h-32 overflow-y-auto">
-                              <div className="text-[8px] text-good/60 uppercase mb-1">Response</div>
+                              <div className="text-[8px] text-good uppercase mb-1">Response</div>
                               <div className="text-[10px] text-ink-mid whitespace-pre-wrap break-words leading-relaxed">
                                 {responseText.slice(0, 2000)}
                                 {responseText.length > 2000 && (

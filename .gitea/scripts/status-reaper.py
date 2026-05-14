@@ -58,9 +58,10 @@ What this script does, per `.gitea/workflows/status-reaper.yml` invocation:
      even if another tick happens before the runner finishes.
 
 What it does NOT do:
-  - Touch any context NOT ending in ` (push)`. The required-checks on
-    main (verified 2026-05-11) all have ` (pull_request)` suffixes;
-    they CANNOT be reached by this code path.
+  - Touch ` (pull_request)` contexts unless the exact same
+    workflow/job has a successful ` (push)` context on the same
+    default-branch SHA. That case is post-merge status pollution, not
+    an unproven PR gate.
   - Compensate `error`/`pending` states. Only `failure` — the only one
     Gitea emits for the hardcoded-suffix bug.
   - Write to non-default branches. WATCH_BRANCH is sourced from
@@ -91,7 +92,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -118,19 +121,28 @@ WORKFLOWS_DIR = _env("WORKFLOWS_DIR", default=".gitea/workflows")
 
 OWNER, NAME = (REPO.split("/", 1) + [""])[:2] if REPO else ("", "")
 API = f"https://{GITEA_HOST}/api/v1" if GITEA_HOST else ""
+API_TIMEOUT_SEC = int(_env("STATUS_REAPER_API_TIMEOUT_SEC", default="30") or "30")
+API_RETRIES = int(_env("STATUS_REAPER_API_RETRIES", default="3") or "3")
+API_RETRY_SLEEP_SEC = float(_env("STATUS_REAPER_API_RETRY_SLEEP_SEC", default="2") or "2")
 
 # Compensating-status description prefix. Used as the marker so a human
 # auditing commit statuses can tell at a glance that the green was
 # synthetic, not a real CI pass. Kept stable; downstream tooling
 # (e.g. main-red-watchdog visual diff) MAY key on it.
-COMPENSATION_DESCRIPTION = (
+PUSH_COMPENSATION_DESCRIPTION = (
     "Compensated by status-reaper (workflow has no push: trigger; "
     "Gitea 1.22.6 hardcoded-suffix bug — see .gitea/scripts/status-reaper.py)"
+)
+PR_SHADOW_COMPENSATION_DESCRIPTION = (
+    "Compensated by status-reaper (default-branch pull_request status "
+    "shadowed by successful push status on same SHA; see "
+    ".gitea/scripts/status-reaper.py)"
 )
 
 # Context suffix the reaper acts on. Gitea hardcodes this for ALL
 # default-branch workflow runs.
 PUSH_SUFFIX = " (push)"
+PULL_REQUEST_SUFFIX = " (pull_request)"
 
 
 def _require_runtime_env() -> None:
@@ -182,13 +194,27 @@ def api(
         data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, method=method, data=data, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            raw = resp.read()
-            status = resp.status
-    except urllib.error.HTTPError as e:
-        raw = e.read()
-        status = e.code
+    attempts = max(API_RETRIES, 1)
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=API_TIMEOUT_SEC) as resp:
+                raw = resp.read()
+                status = resp.status
+            break
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            status = e.code
+            break
+        except (TimeoutError, socket.timeout, urllib.error.URLError, OSError) as e:
+            if attempt >= attempts:
+                raise ApiError(
+                    f"{method} {path} failed after {attempts} attempts: {e}"
+                ) from e
+            print(
+                f"::warning::{method} {path} transient API error "
+                f"(attempt {attempt}/{attempts}): {e}; retrying"
+            )
+            time.sleep(API_RETRY_SLEEP_SEC)
 
     if not (200 <= status < 300):
         snippet = raw[:500].decode("utf-8", errors="replace") if raw else ""
@@ -357,22 +383,36 @@ def get_combined_status(sha: str) -> dict:
 # --------------------------------------------------------------------------
 # Context parsing
 # --------------------------------------------------------------------------
-def parse_push_context(context: str) -> tuple[str, str] | None:
-    """Parse `<workflow_name> / <job_name> (push)` into
+def parse_suffixed_context(context: str, suffix: str) -> tuple[str, str] | None:
+    """Parse `<workflow_name> / <job_name> (<event>)` into
     (workflow_name, job_name).
 
     Returns None if the context doesn't match the shape (caller skips).
-    Strict: requires the trailing ` (push)` and at least one ` / `
+    Strict: requires the trailing suffix and at least one ` / `
     separator. Anything else is left alone.
     """
-    if not context.endswith(PUSH_SUFFIX):
+    if not context.endswith(suffix):
         return None
-    head = context[: -len(PUSH_SUFFIX)]  # strip " (push)"
+    head = context[: -len(suffix)]
     if " / " not in head:
-        # No workflow/job separator — not the bug shape we compensate.
         return None
     workflow_name, job_name = head.split(" / ", 1)
     return workflow_name, job_name
+
+
+def parse_push_context(context: str) -> tuple[str, str] | None:
+    """Parse `<workflow_name> / <job_name> (push)` into
+    (workflow_name, job_name)."""
+    return parse_suffixed_context(context, PUSH_SUFFIX)
+
+
+def push_equivalent_context(context: str) -> str | None:
+    """Return the matching `(push)` context for a `(pull_request)` context."""
+    parsed = parse_suffixed_context(context, PULL_REQUEST_SUFFIX)
+    if parsed is None:
+        return None
+    workflow_name, job_name = parsed
+    return f"{workflow_name} / {job_name}{PUSH_SUFFIX}"
 
 
 # --------------------------------------------------------------------------
@@ -383,6 +423,7 @@ def post_compensating_status(
     context: str,
     target_url: str | None,
     *,
+    description: str = PUSH_COMPENSATION_DESCRIPTION,
     dry_run: bool = False,
 ) -> None:
     """POST a `state=success` to /repos/{o}/{r}/statuses/{sha} with the
@@ -394,7 +435,7 @@ def post_compensating_status(
     payload: dict[str, Any] = {
         "context": context,
         "state": "success",
-        "description": COMPENSATION_DESCRIPTION,
+        "description": description,
     }
     # Echo the original target_url when present so a human auditing
     # the (now-green) compensated status can still reach the run logs
@@ -431,7 +472,8 @@ def reap(
     Returns counters for observability:
       {compensated, preserved_real_push, preserved_unknown,
        preserved_non_failure, preserved_non_push_suffix,
-       preserved_unparseable,
+       preserved_unparseable, compensated_pr_shadowed_by_push_success,
+       preserved_pr_without_push_success,
        compensated_contexts: [<context>, ...]}
 
     `compensated_contexts` is rev2-added so `reap_branch` can build
@@ -444,10 +486,17 @@ def reap(
         "preserved_non_failure": 0,
         "preserved_non_push_suffix": 0,
         "preserved_unparseable": 0,
+        "compensated_pr_shadowed_by_push_success": 0,
+        "preserved_pr_without_push_success": 0,
         "compensated_contexts": [],
     }
 
     statuses = combined.get("statuses") or []
+    successful_contexts = {
+        (s.get("context") or "")
+        for s in statuses
+        if isinstance(s, dict) and (s.get("status") or s.get("state") or "") == "success"
+    }
     for s in statuses:
         if not isinstance(s, dict):
             continue
@@ -471,9 +520,31 @@ def reap(
             counters["preserved_non_failure"] += 1
             continue
 
+        # Default-branch `pull_request` contexts can be stale shadows of
+        # the exact same workflow/job already proven by the successful
+        # `push` context on the same SHA. Compensate only that narrow
+        # shape; a missing or failed push equivalent remains a real gate
+        # signal and is preserved.
+        push_equivalent = push_equivalent_context(context)
+        if push_equivalent is not None:
+            if push_equivalent in successful_contexts:
+                post_compensating_status(
+                    sha,
+                    context,
+                    s.get("target_url"),
+                    description=PR_SHADOW_COMPENSATION_DESCRIPTION,
+                    dry_run=dry_run,
+                )
+                counters["compensated"] += 1
+                counters["compensated_pr_shadowed_by_push_success"] += 1
+                counters["compensated_contexts"].append(context)
+            else:
+                counters["preserved_pr_without_push_success"] += 1
+            continue
+
         # Only `(push)`-suffix contexts hit the hardcoded-suffix bug.
-        # Branch-protection required checks (e.g. `Secret scan / Scan
-        # diff (pull_request)`) are NOT reachable from this path.
+        # Other failed contexts are preserved unless handled by the
+        # pull-request-shadow rule above.
         if not context.endswith(PUSH_SUFFIX):
             counters["preserved_non_push_suffix"] += 1
             continue
@@ -595,6 +666,8 @@ def reap_branch(
         "preserved_non_failure": 0,
         "preserved_non_push_suffix": 0,
         "preserved_unparseable": 0,
+        "compensated_pr_shadowed_by_push_success": 0,
+        "preserved_pr_without_push_success": 0,
         "compensated_per_sha": {},
     }
 
@@ -632,6 +705,8 @@ def reap_branch(
             "preserved_non_failure",
             "preserved_non_push_suffix",
             "preserved_unparseable",
+            "compensated_pr_shadowed_by_push_success",
+            "preserved_pr_without_push_success",
         ):
             aggregate[key] += per_sha[key]
 

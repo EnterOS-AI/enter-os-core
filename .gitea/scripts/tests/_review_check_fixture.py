@@ -16,6 +16,7 @@ Scenarios:
   T7_team_member              — team membership → 204 (member) → exit 0
   T8_team_not_member          — team membership → 404 (not a member) → exit 1
   T9_team_403                — team membership → 403 (token not in team) → exit 1
+  T14_non_default_base        — open PR targeting staging → script exits 0 (no-op)
 
 Usage:
   FIXTURE_STATE_DIR=/tmp/x python3 _review_check_fixture.py 8080
@@ -82,12 +83,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "number": int(pr_num),
                     "state": "closed",
                     "head": {"sha": "deadbeef0000111122223333444455556666"},
+                    "base": {"ref": "main"},
                     "user": {"login": "alice"},
                 })
             return self._json(200, {
                 "number": int(pr_num),
                 "state": "open",
                 "head": {"sha": "deadbeef0000111122223333444455556666"},
+                "base": {"ref": "staging" if sc == "T14_non_default_base" else "main"},
                 "user": {"login": "alice"},
             })
 

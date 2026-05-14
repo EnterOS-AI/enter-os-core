@@ -89,6 +89,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # bp-exempt: meta-lint for masked jobs; tracked separately until masks are burned down.
   lint:
     name: lint-continue-on-error-tracking
     runs-on: ubuntu-latest

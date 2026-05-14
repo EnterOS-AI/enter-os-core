@@ -40,7 +40,6 @@ interface NodeProjection {
   status: string;
 }
 
-// Exported for unit testing — the function is pure and deterministic.
 export function buildDeployMap(
   projections: NodeProjection[],
   deletingIds: ReadonlySet<string>,

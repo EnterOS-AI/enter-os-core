@@ -78,12 +78,11 @@ func TestGitHubToken_NilRegistry(t *testing.T) {
 // Post-#960/#1101 the handler now falls back to direct env-based App
 // token generation (GITHUB_APP_ID / INSTALLATION_ID / PRIVATE_KEY_FILE)
 // when no registered provider matches. In the test environment those
-// env vars are unset, so the fallback fails with 501 "not implemented"
-// with scm:"gitea" — signals a Gitea-canonical or suspended-org
-// deployment where GitHub integration is not configured (#388).
-// Previously this path returned 404; 501 distinguishes "not configured"
-// (caller should stop retrying) from "provider failed" (caller should
-// retry with back-off).
+// env vars are unset, so the fallback fails with 500 "token refresh
+// failed" — a clean retryable signal for the workspace credential
+// helper. Previously this path returned 404; the new 500 matches the
+// ProviderError shape so callers don't have to branch on "missing
+// provider" vs "provider failed".
 func TestGitHubToken_NoTokenProvider(t *testing.T) {
 	reg := provisionhook.NewRegistry()
 	reg.Register(&mockMutatorOnly{name: "other-plugin"})
@@ -92,15 +91,12 @@ func TestGitHubToken_NoTokenProvider(t *testing.T) {
 
 	h.GetInstallationToken(c)
 
-	if w.Code != http.StatusNotImplemented {
-		t.Fatalf("expected 501 (env-based fallback fails with unset GITHUB_APP_* vars), got %d: %s",
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 (env-based fallback fails with unset GITHUB_APP_* vars), got %d: %s",
 			w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "GitHub integration not configured") {
-		t.Errorf("expected body to contain 'GitHub integration not configured', got: %s", w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), `"scm":"gitea"`) {
-		t.Errorf("expected body to contain 'scm:gitea', got: %s", w.Body.String())
+	if !strings.Contains(w.Body.String(), "token refresh failed") {
+		t.Errorf("expected body to contain 'token refresh failed', got: %s", w.Body.String())
 	}
 }
 

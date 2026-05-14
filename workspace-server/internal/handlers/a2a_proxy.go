@@ -537,13 +537,6 @@ func (h *WorkspaceHandler) proxyA2ARequest(ctx context.Context, workspaceID stri
 
 	if logActivity {
 		h.logA2ASuccess(ctx, workspaceID, callerID, body, respBody, a2aMethod, resp.StatusCode, durationMs)
-		// Fix #376: when the proxied method is 'delegate_result', also write
-		// the delegation row so heartbeat delegation polling can find it.
-		// Without this, proxy-path delegation results are invisible to
-		// ListDelegations / heartbeat delegation polling.
-		if a2aMethod == "delegate_result" {
-			h.logA2ADelegationResult(ctx, workspaceID, callerID, body, respBody, resp.StatusCode)
-		}
 	}
 
 	// Track LLM token usage for cost transparency (#593).

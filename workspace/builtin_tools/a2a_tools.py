@@ -76,6 +76,8 @@ async def delegate_task(workspace_id: str, task: str) -> str:
                 result = data["result"]
                 parts = result.get("parts", []) if isinstance(result, dict) else []
                 if parts and isinstance(parts[0], dict):
+                    # OFFSEC-003: wrap peer-controlled text before returning
+                    # to LLM context. Issue #537.
                     return sanitize_a2a_result(parts[0].get("text", "(no text)"))
                 # Empty parts list (e.g. {"parts": []}) should return str(result),
                 # not "(no text)" — preserves pre-fix behavior (#279 regression fix).
@@ -93,8 +95,9 @@ async def delegate_task(workspace_id: str, task: str) -> str:
                     msg = err
                 else:
                     msg = str(err)
-                return f"Error: {msg}"
-            return str(data)
+                # OFFSEC-003: peer-controlled error message; wrap before return.
+                return sanitize_a2a_result(f"Error: {msg}")
+            return sanitize_a2a_result(str(data))
         except Exception as e:
             return f"Error sending A2A message: {e}"
 

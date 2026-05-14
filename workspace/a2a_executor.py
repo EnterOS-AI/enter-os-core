@@ -51,6 +51,7 @@ from shared_runtime import (
 from executor_helpers import (
     collect_outbound_files,
     extract_attached_files,
+    read_delegation_results,
     sanitize_agent_error,
 )
 from builtin_tools.telemetry import (
@@ -216,6 +217,17 @@ class LangGraphA2AExecutor(AgentExecutor):
           3. Message(final_text)                      — terminal event
         """
         user_input = extract_message_text(context)
+        # Inject delegation results from prior turns. Heartbeat writes
+        # completed delegation rows to DELEGATION_RESULTS_FILE and sends
+        # a self-message to wake the agent; this consumes the file and
+        # surfaces the results as context so the agent can act on them
+        # without needing an explicit check_task_status call.
+        # Results are prepended so they are visible even when the
+        # self-message text is overwritten by a subsequent user message.
+        pending_results = read_delegation_results()
+        if pending_results:
+            logger.info("A2A execute: injecting %d delegation result(s)", pending_results.count("\n") + 1)
+            user_input = f"[Delegation results available]\n{pending_results}\n\n{user_input}"
         # Pull attached files from A2A message parts (kind: "file") and
         # append a manifest to the prompt so the agent knows they exist.
         # LangGraph tools (filesystem, bash, skills) can then open the
@@ -536,12 +548,7 @@ class LangGraphA2AExecutor(AgentExecutor):
                 # receive the error and stop polling.
                 await updater.failed(
                     message=new_text_message(
-                        # Pass the exception string as stderr so sanitize_agent_error
-                        # can include a ~1KB preview in the A2A error response.
-                        # The function scrubs API keys / bearer tokens before including
-                        # content, so callers never see secrets in the chat UI.
-                        # Fixes: roadmap item "SDK executor stderr swallowing".
-                        sanitize_agent_error(stderr=str(e)), task_id=task_id, context_id=context_id,
+                        sanitize_agent_error(exc=e), task_id=task_id, context_id=context_id
                     )
                 )
             finally:

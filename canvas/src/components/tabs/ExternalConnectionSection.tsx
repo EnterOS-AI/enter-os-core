@@ -131,7 +131,7 @@ export function ExternalConnectionSection({ workspaceId }: Props) {
               <button
                 type="button"
                 onClick={doRotate}
-                className="px-3 py-1.5 bg-red-700 hover:bg-red-600 text-xs rounded text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-1"
+                className="px-3 py-1.5 bg-red-800 hover:bg-red-700 text-xs rounded text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-1"
               >
                 Rotate
               </button>

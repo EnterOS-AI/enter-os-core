@@ -321,7 +321,7 @@ export function ProvisioningTimeout({
                     onClick={() => handleDismiss(entry.workspaceId)}
                     aria-label="Dismiss provisioning timeout warning"
                     title="Dismiss — keep this workspace running without the warning"
-                    className="shrink-0 text-warm/60 hover:text-amber-200 transition-colors -mr-1"
+                    className="shrink-0 text-warm/60 hover:text-amber-200 transition-colors -mr-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-1 focus-visible:ring-offset-amber-950"
                   >
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                       <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
@@ -341,7 +341,7 @@ export function ProvisioningTimeout({
                     type="button"
                     onClick={() => handleRetry(entry.workspaceId)}
                     disabled={isRetrying || isCancelling || retryCooldown.has(entry.workspaceId)}
-                    className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-[11px] font-medium rounded-lg text-white disabled:opacity-40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/70 focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
+                    className="px-3 py-1.5 bg-amber-800 hover:bg-amber-700 text-[11px] font-medium rounded-lg text-white disabled:opacity-40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-1 focus-visible:ring-offset-amber-950"
                   >
                     {isRetrying ? "Retrying..." : retryCooldown.has(entry.workspaceId) ? "Wait..." : "Retry"}
                   </button>
@@ -349,14 +349,14 @@ export function ProvisioningTimeout({
                     type="button"
                     onClick={() => handleCancelRequest(entry.workspaceId)}
                     disabled={isRetrying || isCancelling}
-                    className="px-3 py-1.5 bg-surface-card hover:bg-surface-card text-[11px] text-ink-mid rounded-lg border border-line disabled:opacity-40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
+                    className="px-3 py-1.5 bg-surface-card hover:bg-surface-card text-[11px] text-ink-mid rounded-lg border border-line disabled:opacity-40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-amber-950"
                   >
                     {isCancelling ? "Cancelling..." : "Cancel"}
                   </button>
                   <button
                     type="button"
                     onClick={() => handleViewLogs(entry.workspaceId)}
-                    className="px-3 py-1.5 text-[11px] text-warm hover:text-warm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/70 focus-visible:ring-offset-1 focus-visible:ring-offset-surface rounded"
+                    className="px-3 py-1.5 text-[11px] text-warm hover:text-warm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-1 focus-visible:ring-offset-amber-950"
                   >
                     View Logs
                   </button>
@@ -382,14 +382,14 @@ export function ProvisioningTimeout({
               <button
                 type="button"
                 onClick={() => setConfirmingCancel(null)}
-                className="px-3.5 py-1.5 text-[12px] text-ink-mid hover:text-ink bg-surface-card hover:bg-surface-card border border-line rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
+                className="px-3.5 py-1.5 text-[12px] text-ink-mid hover:text-ink bg-surface-card hover:bg-surface-card border border-line rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
               >
                 Keep
               </button>
               <button
                 type="button"
                 onClick={handleCancelConfirm}
-                className="px-3.5 py-1.5 text-[12px] bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/70 focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
+                className="px-3.5 py-1.5 text-[12px] bg-red-800 hover:bg-red-700 text-white rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-1"
               >
                 Remove Workspace
               </button>

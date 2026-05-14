@@ -226,7 +226,7 @@ function PlatformOwnedFilesTab({ workspaceId }: { workspaceId: string }) {
         <div role="alertdialog" aria-labelledby="files-delete-all-msg" className="mx-3 mt-2 px-3 py-2 bg-red-950/30 border border-red-800/40 rounded space-y-1.5">
           <p id="files-delete-all-msg" className="text-xs text-bad">Delete all {files.filter((f) => !f.dir).length} files? This cannot be undone.</p>
           <div className="flex gap-2">
-            <button type="button" onClick={() => { handleDeleteAll(); setShowDeleteAll(false); }} className="px-2 py-0.5 bg-red-600 hover:bg-red-700 text-[10px] rounded text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface">Delete All</button>
+            <button type="button" onClick={() => { handleDeleteAll(); setShowDeleteAll(false); }} className="px-2 py-0.5 bg-red-700 hover:bg-red-600 text-[10px] rounded text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface">Delete All</button>
             <button type="button" onClick={() => setShowDeleteAll(false)} className="px-2 py-0.5 bg-surface-card hover:bg-surface-elevated hover:text-ink text-[10px] rounded text-ink-mid transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-surface">Cancel</button>
           </div>
         </div>
@@ -240,7 +240,7 @@ function PlatformOwnedFilesTab({ workspaceId }: { workspaceId: string }) {
         <div role="alertdialog" aria-labelledby="files-delete-one-msg" className="mx-3 mt-2 px-3 py-2 bg-amber-950/30 border border-amber-800/40 rounded space-y-1.5">
           <p id="files-delete-one-msg" className="text-xs text-warm">Delete <span className="font-mono">{confirmDelete}</span>{files.find((f) => f.path === confirmDelete && f.dir) ? " and all its contents" : ""}?</p>
           <div className="flex gap-2">
-            <button type="button" onClick={confirmDeleteFile} className="px-2 py-0.5 bg-red-600 hover:bg-red-700 text-[10px] rounded text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface">Delete</button>
+            <button type="button" onClick={confirmDeleteFile} className="px-2 py-0.5 bg-red-700 hover:bg-red-600 text-[10px] rounded text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface">Delete</button>
             <button type="button" onClick={() => setConfirmDelete(null)} className="px-2 py-0.5 bg-surface-card hover:bg-surface-elevated hover:text-ink text-[10px] rounded text-ink-mid transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-surface">Cancel</button>
           </div>
         </div>

@@ -63,13 +63,6 @@ const workspacesUniqueIndexName = "workspaces_parent_name_uniq"
 // Conflict — the user must rename and re-try.
 var errWorkspaceNameExhausted = errors.New("workspace name exhausted: too many duplicates of base name under same parent")
 
-// dbExec is the minimum surface our retry helper needs from
-// *sql.Tx (or *sql.DB). Declared as an interface so tests can
-// substitute a fake without standing up a real DB connection.
-type dbExec interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-}
-
 // insertWorkspaceWithNameRetry runs the workspace INSERT and, if it
 // hits the parent-name unique-violation, retries with a suffixed
 // name. Returns the name actually persisted (which the caller MUST

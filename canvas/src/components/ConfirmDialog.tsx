@@ -96,7 +96,7 @@ export function ConfirmDialog({
   // readable in both light and dark themes.
   const confirmColors =
     confirmVariant === "danger"
-      ? "bg-red-600 hover:bg-red-700 text-white"
+      ? "bg-red-700 hover:bg-red-600 text-white"
       : confirmVariant === "warning"
         ? "bg-amber-800 hover:bg-amber-700 text-white"
         : "bg-accent hover:bg-accent-strong text-white";

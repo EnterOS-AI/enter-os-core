@@ -12,22 +12,18 @@ name: security-review
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]
-  issue_comment:
-    types: [created]
 
 permissions:
   contents: read
   pull-requests: read
 
 jobs:
+  # bp-exempt: PR security review bot signal; required merge state is enforced by CI / all-required.
   approved:
-    # See qa-review.yml header for full A1-α / A1.1 (v1.3 — informational
-    # log only, NOT a gate) / A4 / A5 design rationale.
+    # Comment-triggered refires live in review-refire-comments.yml. Keeping
+    # this workflow PR-only avoids comment-triggered queue storms.
     if: |
-      github.event_name == 'pull_request_target' ||
-      (github.event_name == 'issue_comment' &&
-       github.event.issue.pull_request != null &&
-       startsWith(github.event.comment.body, '/security-recheck'))
+      github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
     steps:
       - name: Privilege check (A1.1 — INFORMATIONAL log only, NOT a gate)
@@ -36,7 +32,7 @@ jobs:
         # so re-running on a non-collaborator comment is harmless.
         if: github.event_name == 'issue_comment'
         env:
-          GITEA_TOKEN: ${{ secrets.RFC_324_TEAM_READ_TOKEN || secrets.GITHUB_TOKEN }}
+          GITEA_TOKEN: ${{ secrets.SOP_TIER_CHECK_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           login="${{ github.event.comment.user.login }}"
@@ -61,10 +57,11 @@ jobs:
 
       - name: Evaluate security-review
         env:
-          GITEA_TOKEN: ${{ secrets.RFC_324_TEAM_READ_TOKEN || secrets.GITHUB_TOKEN }}
+          GITEA_TOKEN: ${{ secrets.SOP_TIER_CHECK_TOKEN || secrets.GITHUB_TOKEN }}
           GITEA_HOST: git.moleculesai.app
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           TEAM: security
           TEAM_ID: '21'
           REVIEW_CHECK_DEBUG: '0'

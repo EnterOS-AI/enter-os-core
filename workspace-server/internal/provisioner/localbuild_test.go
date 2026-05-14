@@ -14,8 +14,8 @@ import (
 )
 
 // makeTestOpts produces a LocalBuildOptions where every external seam
-// (Gitea HEAD, git clone, docker build/has/tag, shell-dep pre-flight) is
-// replaced by a stub. Tests override the stub for the behavior they want to assert.
+// (Gitea HEAD, git clone, docker build/has/tag) is replaced by a stub.
+// Tests override the stub for the behavior they want to assert.
 func makeTestOpts(t *testing.T) *LocalBuildOptions {
 	t.Helper()
 	tmp := t.TempDir()
@@ -24,9 +24,6 @@ func makeTestOpts(t *testing.T) *LocalBuildOptions {
 		RepoPrefix: "https://git.test/molecule-ai/molecule-ai-workspace-template-",
 		Platform:   "linux/amd64",
 		HTTPClient: &http.Client{},
-		checkShellDeps: func() error {
-			return nil // tests bypass the real PATH check
-		},
 		remoteHeadSha: func(ctx context.Context, opts *LocalBuildOptions, runtime string) (string, error) {
 			return "abcdef0123456789abcdef0123456789abcdef01", nil
 		},
@@ -46,7 +43,10 @@ func makeTestOpts(t *testing.T) *LocalBuildOptions {
 		dockerTag: func(ctx context.Context, src, dst string) error {
 			return nil
 		},
-
+		// checkTool: skip the real LookPath in tests (docker/git may not be on PATH
+		// in the CI environment). Tests that exercise tool-not-found behaviour
+		// override this stub explicitly.
+		checkTool: func(tool string) error { return nil },
 	}
 }
 
@@ -91,51 +91,52 @@ func TestEnsureLocalImage_CacheHit(t *testing.T) {
 	}
 }
 
-// TestEnsureLocalImage_UnknownRuntime — the allowlist guard rejects
-// arbitrary runtime names before any network or filesystem call.
-func TestEnsureLocalImage_MissingShellDeps(t *testing.T) {
+// TestEnsureLocalImage_MissingTool_Docker — pre-flight catches a missing
+// docker binary before any cryptic exec-not-found error propagates up.
+// The error must mention both the missing tool and the escape-hatch hint.
+func TestEnsureLocalImage_MissingTool_Docker(t *testing.T) {
 	opts := makeTestOpts(t)
-	opts.checkShellDeps = func() error {
-		return errors.New("local-build mode requires `docker` and `git` on PATH; missing: docker")
+	opts.checkTool = func(tool string) error {
+		if tool == "docker" {
+			return errors.New(`"docker" not found on PATH`)
+		}
+		return nil
 	}
 	_, err := ensureLocalImageWithOpts(context.Background(), "claude-code", opts)
 	if err == nil {
-		t.Fatal("expected error, got nil")
+		t.Fatalf("expected error for missing docker")
 	}
-	if !strings.Contains(err.Error(), "missing: docker") {
-		t.Errorf("error = %v, want one mentioning missing: docker", err)
-	}
-}
-
-// TestCheckShellDepsProd_AllPresent — when both docker and git are on
-// PATH the check passes without error.
-func TestCheckShellDepsProd_AllPresent(t *testing.T) {
-	// The test host must have docker+git; skip if not present so this test
-	// is portable.
-	t.SkipNow() // implementation: exec.LookPath is not stubbed in production.
-	_ = checkShellDepsProd // compile-time pin that the symbol exists.
-}
-
-// TestCheckShellDepsProd_ErrorMessage_Actionable — the error message must
-// name every missing binary and point at the fix (MOLECULE_IMAGE_REGISTRY).
-func TestCheckShellDepsProd_ErrorMessage_Actionable(t *testing.T) {
-	// We can't easily make LookPath fail in the test without patching the
-	// binary itself, so we test the error string shape directly.
-	err := fmt.Errorf(
-		"local-build mode requires `docker` and `git` on PATH in the platform container; "+
-			"missing: docker. "+
-			"Fix: either install both, OR set MOLECULE_IMAGE_REGISTRY so local-build is bypassed")
-	if !strings.Contains(err.Error(), "missing: docker") {
-		t.Errorf("error = %v, want missing: docker", err)
+	if !strings.Contains(err.Error(), "docker") {
+		t.Errorf("error = %v, want one mentioning docker", err)
 	}
 	if !strings.Contains(err.Error(), "MOLECULE_IMAGE_REGISTRY") {
-		t.Errorf("error = %v, want MOLECULE_IMAGE_REGISTRY", err)
-	}
-	if !strings.Contains(err.Error(), "Fix: either install both") {
-		t.Errorf("error = %v, want actionable Fix: line", err)
+		t.Errorf("error = %v, want one mentioning MOLECULE_IMAGE_REGISTRY", err)
 	}
 }
 
+// TestEnsureLocalImage_MissingTool_Git — same for a missing git binary.
+func TestEnsureLocalImage_MissingTool_Git(t *testing.T) {
+	opts := makeTestOpts(t)
+	opts.checkTool = func(tool string) error {
+		if tool == "git" {
+			return errors.New(`"git" not found on PATH`)
+		}
+		return nil
+	}
+	_, err := ensureLocalImageWithOpts(context.Background(), "claude-code", opts)
+	if err == nil {
+		t.Fatalf("expected error for missing git")
+	}
+	if !strings.Contains(err.Error(), "git") {
+		t.Errorf("error = %v, want one mentioning git", err)
+	}
+	if !strings.Contains(err.Error(), "MOLECULE_IMAGE_REGISTRY") {
+		t.Errorf("error = %v, want one mentioning MOLECULE_IMAGE_REGISTRY", err)
+	}
+}
+
+// TestEnsureLocalImage_UnknownRuntime — the allowlist guard rejects
+// arbitrary runtime names before any network or filesystem call.
 func TestEnsureLocalImage_UnknownRuntime(t *testing.T) {
 	opts := makeTestOpts(t)
 	for _, bad := range []string{
@@ -672,41 +673,6 @@ func TestProvisionerStartUsesLocalBuild_LocalMode(t *testing.T) {
 	// reaching ContainerCreate. Pinning the boolean here means a refactor
 	// that flips the sense (e.g. `if src.Mode == RegistryModeSaaS`) is
 	// caught by this test.
-}
-
-// TestEnsureLocalImage_Hooks checkShellDeps — when preflight fails,
-func TestEnsureLocalImage_PreflightFailsIfDockerMissing(t *testing.T) {
-	opts := makeTestOpts(t)
-	opts.checkShellDeps = func() error {
-		return fmt.Errorf(
-			"local-build mode requires `docker` and `git` on PATH in the platform container; " +
-				"found: docker=<missing>, git=<missing>. " +
-				"Fix: either install both, OR set MOLECULE_IMAGE_REGISTRY so local-build mode is bypassed")
-	}
-	_, err := ensureLocalImageWithOpts(context.Background(), "claude-code", opts)
-	if err == nil {
-		t.Fatalf("expected preflight error, got nil")
-	}
-	if !strings.Contains(err.Error(), "local-build mode requires") {
-		t.Errorf("error = %v, want preflight failure message", err)
-	}
-	if !strings.Contains(err.Error(), "MOLECULE_IMAGE_REGISTRY") {
-		t.Errorf("error = %v, want recovery hint mentioning MOLECULE_IMAGE_REGISTRY", err)
-	}
-}
-
-// TestEnsureLocalImage_PreflightOKPassesThrough — when preflight returns
-// nil, execution proceeds normally.
-func TestEnsureLocalImage_PreflightOKPassesThrough(t *testing.T) {
-	opts := makeTestOpts(t)
-	opts.checkShellDeps = func() error { return nil }
-	tag, err := ensureLocalImageWithOpts(context.Background(), "claude-code", opts)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(tag, "abcdef012345") {
-		t.Errorf("tag = %q, want sha in it", tag)
-	}
 }
 
 // TestEnsureLocalImageHook_DefaultIsRealFunction — pin that the

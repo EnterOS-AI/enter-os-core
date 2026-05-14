@@ -82,6 +82,7 @@ env:
   GITHUB_SERVER_URL: https://git.moleculesai.app
 
 jobs:
+  # bp-exempt: post-merge staging verification side effect; CI / all-required gates merges.
   staging-smoke:
     runs-on: ubuntu-latest
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
@@ -190,6 +191,7 @@ jobs:
             echo "assertions in the staging-smoke step log above."
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # bp-exempt: post-merge image promotion side effect; staging-smoke controls promotion.
   promote-to-latest:
     # On green, calls the CP redeploy-fleet endpoint with target_tag=
     # staging-<sha> to promote the verified ECR image. This is the same

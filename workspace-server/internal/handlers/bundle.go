@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/bundle"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
@@ -49,16 +50,8 @@ func (h *BundleHandler) Import(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid bundle"})
 		return
 	}
-	if b.Schema == "" || b.Name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid bundle"})
-		return
-	}
-
-	// Reject null JSON (which binds to a zero-value Bundle{}) and empty schema.
-	// Without this guard a POST of `null` or `{}` would INSERT a workspace row
-	// with name="" and tier=0 into the DB before bundle.Import() fails.
-	if b.Schema == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid bundle"})
+	if strings.TrimSpace(b.Name) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bundle name is required"})
 		return
 	}
 

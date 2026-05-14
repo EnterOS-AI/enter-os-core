@@ -64,6 +64,7 @@ export function DropTargetBadge() {
       {ghostVisible && (
         <div
           data-testid="ghost-slot"
+          aria-hidden="true"
           className="pointer-events-none absolute z-40 rounded-lg border-2 border-dashed border-emerald-400/70 bg-emerald-500/10"
           style={{
             left: slotTL.x,
@@ -75,7 +76,9 @@ export function DropTargetBadge() {
       )}
       <div
         data-testid="drop-badge"
-        className="pointer-events-none absolute z-50 -translate-x-1/2 -translate-y-full rounded-md bg-emerald-500 px-2 py-0.5 text-[11px] font-medium text-white shadow-lg shadow-emerald-950/40"
+        role="status"
+        aria-label={`Drop target: ${targetName}`}
+        className="pointer-events-none absolute z-50 -translate-x-1/2 -translate-y-full rounded-md bg-emerald-700 px-2 py-0.5 text-[11px] font-medium text-white shadow-lg shadow-emerald-950/40"
         style={{ left: badge.x, top: badge.y - 6 }}
       >
         Drop into: {targetName}

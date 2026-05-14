@@ -761,8 +761,9 @@ def test_sanitize_agent_error_stderr_and_exc():
     """exception + stderr: exc type is the tag, stderr is the body."""
     err = ValueError("this should not appear")
     out = sanitize_agent_error(exc=err, stderr="rate limit exceeded")
-    assert "ValueError" not in out  # exc class is overridden by stderr
+    assert "ValueError" in out  # exc class IS the tag when stderr is provided
     assert "rate limit exceeded" in out
+    assert "workspace logs" not in out  # stderr form, not the generic form
 
 
 def test_sanitize_agent_error_stderr_empty_string():

@@ -90,18 +90,25 @@ jobs:
       - id: filter
         # Inline replacement for dorny/paths-filter — see e2e-api.yml.
         run: |
-          BASE="${GITHUB_BASE_REF:-${GITHUB_EVENT_BEFORE:-}}"
+          # Gitea Actions evaluates github.event.before to empty string in shell
+          # scripts. Use GITHUB_EVENT_BEFORE shell env var instead (Gitea
+          # correctly populates it for push events). PR case uses template var.
+          BASE=""
           if [ "${{ github.event_name }}" = "pull_request" ] && [ -n "${{ github.event.pull_request.base.sha }}" ]; then
             BASE="${{ github.event.pull_request.base.sha }}"
+          elif [ -n "$GITHUB_EVENT_BEFORE" ]; then
+            BASE="$GITHUB_EVENT_BEFORE"
           fi
           if [ -z "$BASE" ] || echo "$BASE" | grep -qE '^0+$'; then
             echo "handlers=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if ! git cat-file -e "$BASE" 2>/dev/null; then
+          # timeout 30 guards against the case where BASE points to a ref that
+          # git can resolve but cat-file hangs (rare on corrupted objects).
+          if ! timeout 30 git cat-file -e "$BASE" 2>/dev/null; then
             git fetch --depth=1 origin "$BASE" 2>/dev/null || true
           fi
-          if ! git cat-file -e "$BASE" 2>/dev/null; then
+          if ! timeout 30 git cat-file -e "$BASE" 2>/dev/null; then
             echo "handlers=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi

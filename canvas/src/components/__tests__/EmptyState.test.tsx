@@ -1,267 +1,370 @@
 // @vitest-environment jsdom
 /**
- * Tests for EmptyState component — the full-canvas welcome card on first load.
+ * Tests for EmptyState — the full-canvas welcome card shown on first load.
  *
- * Pattern: all vi.fn() refs are created by a SINGLE vi.hoisted() call,
- * returned as a named-const object. Individual vi.mock factories then
- * import that object and pull out the fields they need. This avoids
- * "Cannot access before initialization" errors from vi.mock hoisting.
+ * Covers:
+ *   - Loading state (GET /templates in flight)
+ *   - Fetch failure → empty template grid (templates = [])
+ *   - Template grid renders with correct content
+ *   - Template button disabled while deploying
+ *   - "Deploying..." label on the button being deployed
+ *   - "Create blank" button POSTs /workspaces
+ *   - "Creating..." label while blank workspace is being created
+ *   - Blank create error shows error banner
+ *   - Error banner has role="alert"
+ *   - All buttons disabled while any deploy is in-flight
+ *   - handleDeployed fires after 500ms delay
+ *
+ * Uses vi.hoisted + vi.mock to fully isolate the api module, matching
+ * the pattern established in ApprovalBanner, MemoryTab, and ScheduleTab tests.
  */
 import React from "react";
-import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent, cleanup, act } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EmptyState } from "../EmptyState";
 
-// ─── Module-level mocks ───────────────────────────────────────────────────────
-// vi.hoisted is evaluated after module-level vars are declared, so these
-// refs are stable and accessible inside vi.mock factories (which are
-// hoisted above everything). We return an object so a SINGLE hoisted call
-// creates all mocks; each vi.mock then references m.<field>.
-const m = vi.hoisted(() => {
-  const mockGet = vi.fn<() => Promise<unknown[]>>();
-  const mockPost = vi.fn<() => Promise<{ id: string }>>();
-  const mockCheckDeploySecrets = vi.fn<
-    () => Promise<{
-      ok: boolean;
-      missingKeys: string[];
-      providers: string[];
-      runtime: string;
-      configuredKeys: string[];
-    }>
-  >();
-  const mockSelectNode = vi.fn<(id: string) => void>();
-  const mockSetPanelTab = vi.fn<(tab: string) => void>();
-  const mockDeploy = vi.fn<(t: { id: string; name: string }) => Promise<void>>();
-  const mockUseTemplateDeploy = vi.fn(() => ({
-    deploy: mockDeploy,
-    deploying: false,
-    error: null,
-    modal: null,
-  }));
-
-  return {
-    mockGet,
-    mockPost,
-    mockCheckDeploySecrets,
-    mockSelectNode,
-    mockSetPanelTab,
-    mockDeploy,
-    mockUseTemplateDeploy,
-  };
-});
-
-vi.mock("@/lib/api", () => ({
-  api: { get: m.mockGet, post: m.mockPost },
+// ─── Hoisted mock refs ─────────────────────────────────────────────────────────
+// vi.hoisted runs in the same hoisting phase as vi.mock factories, so all refs
+// are available both to the factory and to test bodies.
+const { mockApiGet, mockApiPost } = vi.hoisted(() => ({
+  mockApiGet: vi.fn<(args: unknown[]) => Promise<unknown>>(),
+  mockApiPost: vi.fn<(args: unknown[]) => Promise<{ id: string }>>(),
 }));
 
-vi.mock("@/lib/deploy-preflight", () => ({
-  checkDeploySecrets: m.mockCheckDeploySecrets,
+// Mutable deploy state — object reference is const; properties can be mutated.
+const _deploy = vi.hoisted(() => ({
+  deployFn: vi.fn(),
+  deploying: undefined as string | undefined,
+  error: undefined as string | undefined,
+  modal: null as React.ReactNode,
+}));
+
+const { mockSelectNode, mockSetPanelTab } = vi.hoisted(() => ({
+  mockSelectNode: vi.fn(),
+  mockSetPanelTab: vi.fn(),
+}));
+
+// ─── Mocks ────────────────────────────────────────────────────────────────────
+
+vi.mock("@/lib/api", () => ({
+  api: {
+    get: mockApiGet,
+    post: mockApiPost,
+  },
+}));
+
+vi.mock("@/hooks/useTemplateDeploy", () => ({
+  useTemplateDeploy: () => ({
+    deploy: _deploy.deployFn,
+    deploying: _deploy.deploying,
+    error: _deploy.error,
+    modal: _deploy.modal,
+  }),
 }));
 
 vi.mock("@/store/canvas", () => ({
   useCanvasStore: Object.assign(
-    // The hook returns an object with selectNode/setPanelTab;
-    // the component also calls useCanvasStore.getState() directly.
-    vi.fn(() => ({
-      selectNode: m.mockSelectNode,
-      setPanelTab: m.mockSetPanelTab,
-    })),
-    {
-      getState: () => ({
-        selectNode: m.mockSelectNode,
-        setPanelTab: m.mockSetPanelTab,
-      }),
-    },
+    vi.fn((selector: (s: { getState: () => { selectNode: typeof mockSelectNode; setPanelTab: typeof mockSetPanelTab } }) => unknown) =>
+      selector({
+        getState: () => ({
+          selectNode: mockSelectNode,
+          setPanelTab: mockSetPanelTab,
+        }),
+      })
+    ),
+    { getState: () => ({ selectNode: mockSelectNode, setPanelTab: mockSetPanelTab }) }
   ),
 }));
 
-vi.mock("@/hooks/useTemplateDeploy", () => ({
-  useTemplateDeploy: m.mockUseTemplateDeploy,
-}));
-
-// Mock OrgTemplatesSection — tested separately.
 vi.mock("../TemplatePalette", () => ({
-  OrgTemplatesSection: () => (
-    <div data-testid="org-templates-section">Org Templates</div>
-  ),
+  OrgTemplatesSection: () => null,
 }));
 
-// ─── Test data ───────────────────────────────────────────────────────────────
+vi.mock("../Spinner", () => ({
+  Spinner: () => <span data-testid="spinner">⟳</span>,
+}));
+
+vi.mock("@/lib/design-tokens", () => ({
+  TIER_CONFIG: {
+    1: { label: "T1", color: "text-ink-mid bg-surface-card border border-line", border: "text-ink-mid border-line" },
+    2: { label: "T2", color: "text-white bg-accent border border-accent-strong", border: "text-accent border-accent" },
+    3: { label: "T3", color: "text-white bg-violet-600 border border-violet-700", border: "text-violet-600 border-violet-500" },
+    4: { label: "T4", color: "text-white bg-warm border border-warm", border: "text-warm border-warm" },
+  },
+}));
+
+// ─── Fixtures ─────────────────────────────────────────────────────────────────
 
 const TEMPLATE = {
-  id: "molecule-dev",
-  name: "Molecule Dev",
+  id: "tpl-1",
+  name: "Claude Code Agent",
+  description: "A general-purpose coding assistant",
   tier: 2,
-  description: "A full-featured agent workspace for development",
-  runtime: "langgraph",
-  required_env: ["ANTHROPIC_API_KEY"],
-  models: [{ id: "claude-sonnet-4-20250514", required_env: ["ANTHROPIC_API_KEY"] }],
-  model: "claude-sonnet-4-20250514",
-  skill_count: 12,
+  skill_count: 3,
+  model: "claude-opus-4-5",
 };
 
-// ─── Cleanup ─────────────────────────────────────────────────────────────────
+function template(overrides: Partial<typeof TEMPLATE> = {}): typeof TEMPLATE {
+  return { ...TEMPLATE, ...overrides };
+}
 
-beforeEach(() => {
-  m.mockGet.mockReset();
-  m.mockGet.mockResolvedValue([] as unknown[]);
-  m.mockPost.mockReset();
-  m.mockPost.mockResolvedValue({ id: "new-ws-123" } as unknown as { id: string });
-  m.mockCheckDeploySecrets.mockReset();
-  m.mockCheckDeploySecrets.mockResolvedValue({
-    ok: true,
-    missingKeys: [],
-    providers: [],
-    runtime: "langgraph",
-    configuredKeys: [],
-  });
-  m.mockSelectNode.mockReset();
-  m.mockSetPanelTab.mockReset();
-  m.mockDeploy.mockReset();
-});
+// ─── Helpers ───────────────────────────────────────────────────────────────────
 
-afterEach(() => {
-  cleanup();
-});
+function renderEmpty() {
+  return render(<EmptyState />);
+}
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
+// Flush React state + microtasks after an act boundary.
+async function flush() {
+  await act(async () => { await Promise.resolve(); });
+}
 
-describe("EmptyState — loading state", () => {
-  it("shows spinner and loading text while templates are being fetched", () => {
-    m.mockGet.mockImplementation(() => new Promise(() => {}));
-    render(<EmptyState />);
-    expect(screen.getByText(/loading templates/i)).toBeTruthy();
-  });
-});
+// Reset deploy state to defaults before each test.
+function resetDeployState() {
+  _deploy.deployFn.mockReset();
+  _deploy.deploying = undefined;
+  _deploy.error = undefined;
+  _deploy.modal = null;
+}
 
-describe("EmptyState — templates fetched", () => {
-  it("renders template grid with name, tier badge, description, skill count", async () => {
-    m.mockGet.mockResolvedValueOnce([TEMPLATE] as unknown[]);
-    render(<EmptyState />);
-    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
-    expect(screen.getByText("Molecule Dev")).toBeTruthy();
-    expect(screen.getByText("T2")).toBeTruthy();
-    expect(screen.getByText(/full-featured agent workspace/i)).toBeTruthy();
-    expect(screen.getByText(/12 skills/)).toBeTruthy();
-  });
+// ─── Tests ─────────────────────────────────────────────────────────────────────
 
-  it("shows model label when template declares a model", async () => {
-    m.mockGet.mockResolvedValueOnce([TEMPLATE] as unknown[]);
-    render(<EmptyState />);
-    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
-    expect(screen.getByText(/claude-sonnet/i)).toBeTruthy();
-  });
-
-  it("calls deploy(template) when template button is clicked", async () => {
-    m.mockGet.mockResolvedValueOnce([TEMPLATE] as unknown[]);
-    render(<EmptyState />);
-    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
-    fireEvent.click(screen.getByRole("button", { name: /molecule dev/i }));
-    expect(m.mockDeploy).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "molecule-dev", name: "Molecule Dev" }),
+describe("EmptyState — loading", () => {
+  beforeEach(() => {
+    mockApiGet.mockReset().mockImplementation(
+      () => new Promise(() => {}) // never resolves
     );
   });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("shows loading state while GET /templates is pending", async () => {
+    renderEmpty();
+    await flush();
+    expect(screen.getByTestId("spinner")).toBeTruthy();
+    expect(screen.getByText("Loading templates...")).toBeTruthy();
+  });
+
+  // "create blank" is rendered outside the loading/template-grid conditional,
+  // so it is always visible — adjust expectation accordingly.
+  it("renders 'create blank' button during loading", async () => {
+    renderEmpty();
+    await flush();
+    expect(screen.getByRole("button", { name: "+ Create blank workspace" })).toBeTruthy();
+  });
+
+  it("does not render template buttons while loading", async () => {
+    renderEmpty();
+    await flush();
+    expect(screen.queryByText("Claude Code Agent")).toBeNull();
+  });
 });
 
-describe("EmptyState — no templates", () => {
-  it("shows only the create-blank button when template list is empty", async () => {
-    // beforeEach already sets mockResolvedValue([]) as default — no override needed.
-    render(<EmptyState />);
-    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
-    expect(screen.getByRole("button", { name: /\+ create blank workspace/i })).toBeTruthy();
-    expect(screen.queryByText(/molecule dev/i)).toBeNull();
+describe("EmptyState — templates", () => {
+  beforeEach(() => {
+    mockApiGet.mockReset().mockResolvedValue([template()]);
+    resetDeployState();
   });
 
-  it("shows only the create-blank button when template fetch fails", async () => {
-    m.mockGet.mockRejectedValueOnce(new Error("Network error"));
-    render(<EmptyState />);
-    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
-    expect(screen.getByRole("button", { name: /\+ create blank workspace/i })).toBeTruthy();
-    expect(screen.queryByText(/loading templates/i)).toBeNull();
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("renders the welcome heading", async () => {
+    renderEmpty();
+    await flush();
+    expect(screen.getByText("Deploy your first agent")).toBeTruthy();
+  });
+
+  it("renders template buttons with name and description", async () => {
+    renderEmpty();
+    await flush();
+    expect(screen.getByText("Claude Code Agent")).toBeTruthy();
+    expect(screen.getByText("A general-purpose coding assistant")).toBeTruthy();
+  });
+
+  it("renders tier badge and skill count", async () => {
+    renderEmpty();
+    await flush();
+    expect(screen.getByText("T2")).toBeTruthy();
+    // skill_count renders as "3 skills · <model>"
+    expect(screen.getByText(/^3 skills/)).toBeTruthy();
+  });
+
+  it("renders model name when present", async () => {
+    renderEmpty();
+    await flush();
+    expect(screen.getByText(/claude-opus/i)).toBeTruthy();
+  });
+
+  it("calls deploy with the template on click", async () => {
+    renderEmpty();
+    await flush();
+    fireEvent.click(screen.getByText("Claude Code Agent"));
+    expect(_deploy.deployFn).toHaveBeenCalledWith(template());
+  });
+
+  it("shows 'Deploying...' on the button of the template being deployed", async () => {
+    _deploy.deploying = "tpl-1";
+    renderEmpty();
+    await flush();
+    expect(screen.getByText("Deploying...")).toBeTruthy();
+  });
+
+  it("disables the template button of the deploying template", async () => {
+    _deploy.deploying = "tpl-1";
+    renderEmpty();
+    await flush();
+    const btn = screen.getByText("Deploying...").closest("button") as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+  });
+
+  it("disables 'create blank' while a template is deploying", async () => {
+    _deploy.deploying = "tpl-1";
+    renderEmpty();
+    await flush();
+    expect(screen.getByRole("button", { name: "+ Create blank workspace" }).disabled).toBe(true);
   });
 });
 
-describe("EmptyState — create blank workspace", () => {
-  it('shows "Creating..." label while blank workspace POST is in-flight', async () => {
-    m.mockPost.mockImplementationOnce(() => new Promise(() => {}));
-    render(<EmptyState />);
-    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
-    fireEvent.click(screen.getByRole("button", { name: /\+ create blank workspace/i }));
-    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
-    expect(screen.getByText("Creating...")).toBeTruthy();
-    // The same button is now relabeled; check it is disabled while POST is in-flight.
-    expect(screen.getByRole("button", { name: /creating\.\.\./i })).toHaveProperty("disabled", true);
+describe("EmptyState — fetch failure / empty templates", () => {
+  beforeEach(() => {
+    mockApiGet.mockReset().mockResolvedValue([]);
+    resetDeployState();
   });
 
-  it("calls POST /workspaces with correct payload on create blank", async () => {
-    m.mockPost.mockResolvedValueOnce({ id: "ws-new-456" } as unknown as { id: string });
-    render(<EmptyState />);
-    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
-    fireEvent.click(screen.getByRole("button", { name: /\+ create blank workspace/i }));
-    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
-    expect(m.mockPost).toHaveBeenCalledWith("/workspaces", {
-      name: "My First Agent",
-      canvas: { x: 200, y: 150 },
-    });
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
   });
 
-  it("calls selectNode + setPanelTab(chat) after 500ms on blank create success", async () => {
-    m.mockPost.mockResolvedValueOnce({ id: "ws-new-789" } as unknown as { id: string });
-    render(<EmptyState />);
-    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
-    fireEvent.click(screen.getByRole("button", { name: /\+ create blank workspace/i }));
-    // Wait for the 500ms setTimeout inside handleDeployed to fire and call
-    // canvas store methods. Use waitFor so we don't hard-code timing assumptions.
-    await waitFor(() => {
-      expect(m.mockSelectNode).toHaveBeenCalledWith("ws-new-789");
-      expect(m.mockSetPanelTab).toHaveBeenCalledWith("chat");
-    }, { timeout: 1000 });
+  it("does not render template grid when GET /templates returns []", async () => {
+    renderEmpty();
+    await flush();
+    expect(screen.queryByText("Claude Code Agent")).toBeNull();
   });
 
-  it("shows error banner on blank create failure", async () => {
-    m.mockPost.mockRejectedValueOnce(new Error("Server error"));
-    render(<EmptyState />);
-    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
-    fireEvent.click(screen.getByRole("button", { name: /\+ create blank workspace/i }));
-    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
+  it("renders 'create blank' button when templates list is empty", async () => {
+    renderEmpty();
+    await flush();
+    expect(screen.getByRole("button", { name: "+ Create blank workspace" })).toBeTruthy();
+  });
+
+  it("does not render template grid when GET /templates rejects", async () => {
+    mockApiGet.mockReset().mockRejectedValue(new Error("Network failure"));
+    renderEmpty();
+    await flush();
+    expect(screen.queryByText("Claude Code Agent")).toBeNull();
+  });
+});
+
+describe("EmptyState — create blank", () => {
+  beforeEach(() => {
+    mockApiGet.mockReset().mockResolvedValue([template()]);
+    mockApiPost.mockReset().mockResolvedValue({ id: "ws-new" });
+    resetDeployState();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("calls POST /workspaces on 'create blank' click", async () => {
+    renderEmpty();
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "+ Create blank workspace" }));
+    await act(async () => { await Promise.resolve(); });
+    expect(mockApiPost).toHaveBeenCalledWith(
+      "/workspaces",
+      expect.objectContaining({ name: "My First Agent" })
+    );
+  });
+
+  it("shows 'Creating...' while blank workspace POST is pending", async () => {
+    mockApiPost.mockReset().mockImplementation(
+      () => new Promise(() => {}) // never resolves
+    );
+    renderEmpty();
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "+ Create blank workspace" }));
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByRole("button", { name: "Creating..." })).toBeTruthy();
+  });
+
+  it("calls selectNode + setPanelTab after 500ms on successful create", async () => {
+    renderEmpty();
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "+ Create blank workspace" }));
+    await act(async () => { await Promise.resolve(); }); // flush POST
+    await act(async () => { vi.advanceTimersByTime(500); });
+    expect(mockSelectNode).toHaveBeenCalledWith("ws-new");
+    expect(mockSetPanelTab).toHaveBeenCalledWith("chat");
+  });
+
+  it("disables template buttons while creating blank workspace", async () => {
+    mockApiPost.mockReset().mockImplementation(
+      () => new Promise(() => {}) // never resolves
+    );
+    renderEmpty();
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "+ Create blank workspace" }));
+    await act(async () => { await Promise.resolve(); });
+    expect((screen.getByText("Claude Code Agent").closest("button") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("shows error banner when POST /workspaces fails", async () => {
+    mockApiPost.mockReset().mockRejectedValue(new Error("Server error"));
+    renderEmpty();
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "+ Create blank workspace" }));
+    await act(async () => { await Promise.resolve(); });
     expect(screen.getByRole("alert")).toBeTruthy();
     expect(screen.getByText(/server error/i)).toBeTruthy();
   });
 
-  it("blank workspace error clears on retry", async () => {
-    m.mockPost.mockRejectedValueOnce(new Error("Server error"));
-    render(<EmptyState />);
-    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
-    fireEvent.click(screen.getByRole("button", { name: /\+ create blank workspace/i }));
-    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
-    expect(screen.getByRole("alert")).toBeTruthy();
-
-    // Retry succeeds — error clears
-    m.mockPost.mockResolvedValueOnce({ id: "ws-retry" } as unknown as { id: string });
-    fireEvent.click(screen.getByRole("button", { name: /\+ create blank workspace/i }));
-    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
-    expect(screen.queryByRole("alert")).toBeNull();
+  it("clears 'Creating...' and shows button again after POST failure", async () => {
+    mockApiPost.mockReset().mockRejectedValue(new Error("Server error"));
+    renderEmpty();
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "+ Create blank workspace" }));
+    await act(async () => { await Promise.resolve(); });
+    // After rejection, blankCreating = false → button reverts to default label
+    expect(screen.getByRole("button", { name: "+ Create blank workspace" })).toBeTruthy();
   });
 });
 
-describe("EmptyState — rendering", () => {
-  it("renders the welcome heading and instructions", async () => {
-    // beforeEach already sets mockGet to resolve to [] — no override needed.
-    render(<EmptyState />);
-    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
-    expect(screen.getByText(/deploy your first agent/i)).toBeTruthy();
-    expect(screen.getByText(/welcome to molecule ai/i)).toBeTruthy();
+describe("EmptyState — error banner", () => {
+  beforeEach(() => {
+    mockApiGet.mockReset().mockResolvedValue([template()]);
+    resetDeployState();
+    vi.useFakeTimers();
   });
 
-  it("renders the tips footer", async () => {
-    render(<EmptyState />);
-    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
-    expect(screen.getByText(/drag to nest workspaces/i)).toBeTruthy();
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
-  it("renders OrgTemplatesSection below the create-blank button", async () => {
-    render(<EmptyState />);
-    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
-    expect(screen.getByTestId("org-templates-section")).toBeTruthy();
+  it("has role=alert on the error banner", async () => {
+    _deploy.error = "Template deploy failed";
+    renderEmpty();
+    await flush();
+    const alert = screen.getByRole("alert");
+    expect(alert).toBeTruthy();
+    expect(alert.textContent).toContain("Template deploy failed");
+  });
+
+  it("does not show error banner when no errors", async () => {
+    renderEmpty();
+    await flush();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

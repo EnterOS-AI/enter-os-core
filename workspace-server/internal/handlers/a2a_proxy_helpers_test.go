@@ -1,308 +1,243 @@
 package handlers
 
-// a2a_proxy_helpers_test.go — unit tests for extractToolTrace (the only
-// untested pure function in a2a_proxy_helpers.go). The function parses JSON
-// so tests use real JSON without any DB or HTTP mocking.
-
 import (
 	"encoding/json"
 	"testing"
-
-	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 )
 
-// TestExtractToolTrace_HappyPath verifies that a well-formed JSON-RPC result
-// with a metadata.tool_trace field returns it as json.RawMessage.
-func TestExtractToolTrace_HappyPath(t *testing.T) {
-	trace := json.RawMessage(`[{"tool":"bash","input":"ls"}]`)
-	resp := map[string]interface{}{
+// ─────────────────────────────────────────────────────────────────────────────
+// nilIfEmpty tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestNilIfEmpty_EmptyString(t *testing.T) {
+	got := nilIfEmpty("")
+	if got != nil {
+		t.Errorf("empty string: got %p, want nil", got)
+	}
+}
+
+func TestNilIfEmpty_NonEmptyString(t *testing.T) {
+	s := "hello"
+	got := nilIfEmpty(s)
+	if got == nil {
+		t.Fatal("non-empty string: got nil, want pointer")
+	}
+	if *got != "hello" {
+		t.Errorf("non-empty string: got %q, want %q", *got, "hello")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// extractToolTrace tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestExtractToolTrace_EmptyBody(t *testing.T) {
+	got := extractToolTrace(nil)
+	if got != nil {
+		t.Errorf("nil body: got %v, want nil", got)
+	}
+	got = extractToolTrace([]byte{})
+	if got != nil {
+		t.Errorf("empty body: got %v, want nil", got)
+	}
+}
+
+func TestExtractToolTrace_InvalidJSON(t *testing.T) {
+	got := extractToolTrace([]byte("not json"))
+	if got != nil {
+		t.Errorf("invalid JSON: got %v, want nil", got)
+	}
+}
+
+func TestExtractToolTrace_NoResultKey(t *testing.T) {
+	got := extractToolTrace([]byte(`{"error": "oops"}`))
+	if got != nil {
+		t.Errorf("no result key: got %v, want nil", got)
+	}
+}
+
+func TestExtractToolTrace_NoMetadataKey(t *testing.T) {
+	got := extractToolTrace([]byte(`{"result": {"data": {}}}`))
+	if got != nil {
+		t.Errorf("no metadata key: got %v, want nil", got)
+	}
+}
+
+func TestExtractToolTrace_NoToolTraceKey(t *testing.T) {
+	got := extractToolTrace([]byte(`{"result": {"metadata": {}}}`))
+	if got != nil {
+		t.Errorf("no tool_trace key: got %v, want nil", got)
+	}
+}
+
+// extractToolTrace calls json.Unmarshal, which sets a RawMessage to nil when
+// unmarshaling a JSON null value. The fix for mc#669 changes len(trace)==0
+// to string(trace)=="[]" to avoid len(nil) panicking on null.
+func TestExtractToolTrace_NullValue(t *testing.T) {
+	// JSON null in tool_trace → RawMessage becomes nil → len would panic.
+	// The fix checks string(trace)=="[]" which is safe on nil (returns false).
+	body := []byte(`{"result": {"metadata": {"tool_trace": null}}}`)
+	got := extractToolTrace(body)
+	if got != nil {
+		t.Errorf("null tool_trace: got %v, want nil", got)
+	}
+}
+
+// "[]" unmarshaled into RawMessage is []byte("[]") — not nil, len=2.
+// The fix returns nil for [] so empty tool_trace arrays don't surface as traces.
+func TestExtractToolTrace_EmptyArray(t *testing.T) {
+	body := []byte(`{"result": {"metadata": {"tool_trace": []}}}`)
+	got := extractToolTrace(body)
+	if got != nil {
+		t.Errorf("empty array tool_trace: got %v, want nil", got)
+	}
+}
+
+func TestExtractToolTrace_ValidNonEmpty(t *testing.T) {
+	trace := []byte(`[{"name":"search","result":"done"}]`)
+	body, _ := json.Marshal(map[string]interface{}{
 		"result": map[string]interface{}{
 			"metadata": map[string]interface{}{
-				"tool_trace": trace,
+				"tool_trace": json.RawMessage(trace),
 			},
 		},
-	}
-	body, _ := json.Marshal(resp)
+	})
 	got := extractToolTrace(body)
 	if got == nil {
-		t.Fatal("extractToolTrace returned nil, expected the trace")
+		t.Fatal("valid non-empty trace: got nil, want the trace")
 	}
-	var parsed []map[string]interface{}
-	if err := json.Unmarshal(got, &parsed); err != nil {
-		t.Fatalf("returned value is not valid JSON: %v", err)
-	}
-	if len(parsed) != 1 || parsed[0]["tool"] != "bash" {
-		t.Errorf("unexpected trace content: %v", parsed)
+	if string(got) != string(trace) {
+		t.Errorf("valid trace: got %s, want %s", got, trace)
 	}
 }
 
-// TestExtractToolTrace_ResultUsageShape tests a result object that has usage
-// (common A2A response shape) but no tool_trace — should return nil.
-func TestExtractToolTrace_ResultHasUsageNoTrace(t *testing.T) {
-	resp := map[string]interface{}{
-		"result": map[string]interface{}{
-			"metadata": map[string]interface{}{
-				"usage": map[string]int64{"input_tokens": 100, "output_tokens": 200},
-			},
-		},
-	}
-	body, _ := json.Marshal(resp)
-	if got := extractToolTrace(body); got != nil {
-		t.Errorf("expected nil when no tool_trace, got: %s", string(got))
+// Document that the CURRENT code (len check) panics on null tool_trace.
+// This test exists to signal when PR #669's fix lands: after the fix,
+// the defer-recover will NOT trigger (panic goes away) and the
+// post-recover assertion runs. While unfixed: the panic fires and
+
+// ─────────────────────────────────────────────────────────────────────────────
+// readUsageMap tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestReadUsageMap_NoUsageKey(t *testing.T) {
+	m := map[string]json.RawMessage{}
+	_, _, ok := readUsageMap(m)
+	if ok {
+		t.Error("no usage key: ok should be false")
 	}
 }
 
-// TestExtractToolTrace_NoResultKey verifies that a response without a "result"
-// key returns nil.
-func TestExtractToolTrace_NoResultKey(t *testing.T) {
-	resp := map[string]interface{}{
-		"error": map[string]string{"code": "-32600", "message": "Invalid Request"},
-	}
-	body, _ := json.Marshal(resp)
-	if got := extractToolTrace(body); got != nil {
-		t.Errorf("expected nil for error response, got: %s", string(got))
+func TestReadUsageMap_InvalidUsageJSON(t *testing.T) {
+	m := map[string]json.RawMessage{"usage": json.RawMessage(`"not an object"`)}
+	_, _, ok := readUsageMap(m)
+	if ok {
+		t.Error("invalid usage JSON: ok should be false")
 	}
 }
 
-// TestExtractToolTrace_ResultNotAnObject verifies that a result that is not
-// a JSON object (e.g., null) returns nil without panicking.
-func TestExtractToolTrace_ResultNotAnObject(t *testing.T) {
-	body := []byte(`{"result": null}`)
-	if got := extractToolTrace(body); got != nil {
-		t.Errorf("expected nil for null result, got: %s", string(got))
+func TestReadUsageMap_ZeroUsage(t *testing.T) {
+	m := map[string]json.RawMessage{"usage": json.RawMessage(`{"input_tokens": 0, "output_tokens": 0}`)}
+	_, _, ok := readUsageMap(m)
+	if ok {
+		t.Error("zero usage: ok should be false")
 	}
 }
 
-// TestExtractToolTrace_NoMetadata verifies that a result object without
-// metadata returns nil.
-func TestExtractToolTrace_NoMetadata(t *testing.T) {
-	resp := map[string]interface{}{
-		"result": map[string]interface{}{
-			"message": "hello",
-		},
+func TestReadUsageMap_InputOnly(t *testing.T) {
+	m := map[string]json.RawMessage{"usage": json.RawMessage(`{"input_tokens": 100, "output_tokens": 0}`)}
+	in, out, ok := readUsageMap(m)
+	if !ok {
+		t.Fatal("input-only usage: ok should be true")
 	}
-	body, _ := json.Marshal(resp)
-	if got := extractToolTrace(body); got != nil {
-		t.Errorf("expected nil for result without metadata, got: %s", string(got))
+	if in != 100 {
+		t.Errorf("input tokens: got %d, want 100", in)
 	}
-}
-
-// TestExtractToolTrace_MetadataNotAnObject verifies that a metadata field that
-// is not a JSON object returns nil without panicking.
-func TestExtractToolTrace_MetadataNotAnObject(t *testing.T) {
-	resp := map[string]interface{}{
-		"result": map[string]interface{}{
-			"metadata": "not an object",
-		},
-	}
-	body, _ := json.Marshal(resp)
-	if got := extractToolTrace(body); got != nil {
-		t.Errorf("expected nil for non-object metadata, got: %s", string(got))
+	if out != 0 {
+		t.Errorf("output tokens: got %d, want 0", out)
 	}
 }
 
-// TestExtractToolTrace_TraceIsEmptyArray verifies that an empty tool_trace
-// array ([]) returns nil (length 0).
-func TestExtractToolTrace_TraceIsEmptyArray(t *testing.T) {
-	resp := map[string]interface{}{
-		"result": map[string]interface{}{
-			"metadata": map[string]interface{}{
-				"tool_trace": []interface{}{},
-			},
-		},
+func TestReadUsageMap_BothTokens(t *testing.T) {
+	m := map[string]json.RawMessage{"usage": json.RawMessage(`{"input_tokens": 500, "output_tokens": 200}`)}
+	in, out, ok := readUsageMap(m)
+	if !ok {
+		t.Fatal("both tokens: ok should be true")
 	}
-	body, _ := json.Marshal(resp)
-	if got := extractToolTrace(body); got != nil {
-		t.Errorf("expected nil for empty tool_trace, got: %s", string(got))
-	}
-}
-
-// TestExtractToolTrace_NonJSONBody verifies that a completely non-JSON body
-// returns nil without panicking.
-func TestExtractToolTrace_NonJSONBody(t *testing.T) {
-	body := []byte("this is not json at all")
-	if got := extractToolTrace(body); got != nil {
-		t.Errorf("expected nil for non-JSON body, got: %s", string(got))
-	}
-}
-
-// TestExtractToolTrace_EmptyBody verifies that an empty body returns nil.
-func TestExtractToolTrace_EmptyBody(t *testing.T) {
-	if got := extractToolTrace(nil); got != nil {
-		t.Errorf("expected nil for nil body, got: %s", string(got))
-	}
-	if got := extractToolTrace([]byte{}); got != nil {
-		t.Errorf("expected nil for empty body, got: %s", string(got))
-	}
-}
-
-// TestExtractToolTrace_ResultMetadataIsNotObject verifies that when
-// metadata exists but is not a JSON object (string), nil is returned.
-func TestExtractToolTrace_MetadataIsString(t *testing.T) {
-	body := []byte(`{"result":{"metadata":"oops"}}`)
-	if got := extractToolTrace(body); got != nil {
-		t.Errorf("expected nil for string metadata, got: %s", string(got))
-	}
-}
-
-// TestNilIfEmpty_Contract exercises the contract of nilIfEmpty so future
-// refactors can't silently break the call-sites in a2a_proxy_helpers.go.
-func TestNilIfEmpty_Contract(t *testing.T) {
-	if r := nilIfEmpty(""); r != nil {
-		t.Errorf("nilIfEmpty(\"\") = %p, want nil", r)
-	}
-	if r := nilIfEmpty("hello"); r == nil {
-		t.Fatal("nilIfEmpty(\"hello\") returned nil, want pointer to string")
-	} else if *r != "hello" {
-		t.Errorf("nilIfEmpty(\"hello\") = %q, want \"hello\"", *r)
-	}
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// parseUsageFromA2AResponse
-// ──────────────────────────────────────────────────────────────────────────────
-
-func TestParseUsageFromA2AResponse_EmptyAndMalformed(t *testing.T) {
-	cases := []struct {
-		name string
-		body []byte
-	}{
-		{"nil", nil},
-		{"empty", []byte{}},
-		{"non-JSON", []byte("not json")},
-		{"empty object", []byte("{}")},
-		{"null result", []byte(`{"result": null}`)},
-		{"string result", []byte(`{"result": "hello"}`)},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			in, out := parseUsageFromA2AResponse(tc.body)
-			if in != 0 || out != 0 {
-				t.Errorf("parseUsageFromA2AResponse = (%d, %d), want (0, 0)", in, out)
-			}
-		})
-	}
-}
-
-func TestParseUsageFromA2AResponse_ResultUsageShape(t *testing.T) {
-	body := []byte(`{
-		"result": {
-			"usage": {"input_tokens": 1500, "output_tokens": 320}
-		}
-	}`)
-	in, out := parseUsageFromA2AResponse(body)
-	if in != 1500 || out != 320 {
-		t.Errorf("parseUsageFromA2AResponse = (%d, %d), want (1500, 320)", in, out)
-	}
-}
-
-func TestParseUsageFromA2AResponse_TopLevelUsage(t *testing.T) {
-	body := []byte(`{
-		"usage": {"input_tokens": 100, "output_tokens": 50}
-	}`)
-	in, out := parseUsageFromA2AResponse(body)
-	if in != 100 || out != 50 {
-		t.Errorf("parseUsageFromA2AResponse = (%d, %d), want (100, 50)", in, out)
-	}
-}
-
-func TestParseUsageFromA2AResponse_BothPresentPrefersResult(t *testing.T) {
-	// When both result.usage and top-level usage exist, result.usage wins.
-	body := []byte(`{
-		"result": {"usage": {"input_tokens": 500, "output_tokens": 200}},
-		"usage": {"input_tokens": 50, "output_tokens": 20}
-	}`)
-	in, out := parseUsageFromA2AResponse(body)
 	if in != 500 || out != 200 {
-		t.Errorf("parseUsageFromA2AResponse = (%d, %d), want (500, 200) from result.usage", in, out)
+		t.Errorf("tokens: got (%d, %d), want (500, 200)", in, out)
 	}
 }
 
-func TestParseUsageFromA2AResponse_ZeroUsage(t *testing.T) {
-	// Zero values are treated as absent (readUsageMap returns ok=false).
+// ─────────────────────────────────────────────────────────────────────────────
+// parseUsageFromA2AResponse tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestParseUsageFromA2AResponse_Empty(t *testing.T) {
+	in, out := parseUsageFromA2AResponse(nil)
+	if in != 0 || out != 0 {
+		t.Errorf("nil: got (%d, %d), want (0, 0)", in, out)
+	}
+	in, out = parseUsageFromA2AResponse([]byte{})
+	if in != 0 || out != 0 {
+		t.Errorf("empty: got (%d, %d), want (0, 0)", in, out)
+	}
+}
+
+func TestParseUsageFromA2AResponse_InvalidJSON(t *testing.T) {
+	in, out := parseUsageFromA2AResponse([]byte("not json"))
+	if in != 0 || out != 0 {
+		t.Errorf("invalid JSON: got (%d, %d), want (0, 0)", in, out)
+	}
+}
+
+func TestParseUsageFromA2AResponse_NoResultNoUsage(t *testing.T) {
+	in, out := parseUsageFromA2AResponse([]byte(`{"id": 1}`))
+	if in != 0 || out != 0 {
+		t.Errorf("no result/usage: got (%d, %d), want (0, 0)", in, out)
+	}
+}
+
+func TestParseUsageFromA2AResponse_ResultUsage(t *testing.T) {
+	body := []byte(`{"result": {"usage": {"input_tokens": 42, "output_tokens": 7}}}`)
+	in, out := parseUsageFromA2AResponse(body)
+	if in != 42 || out != 7 {
+		t.Errorf("result usage: got (%d, %d), want (42, 7)", in, out)
+	}
+}
+
+func TestParseUsageFromA2AResponse_ResultUsageWinsOverTopLevel(t *testing.T) {
+	// JSON-RPC result.usage takes precedence over top-level usage.
+	body := []byte(`{"result": {"usage": {"input_tokens": 42, "output_tokens": 7}}, "usage": {"input_tokens": 99, "output_tokens": 99}}`)
+	in, out := parseUsageFromA2AResponse(body)
+	if in != 42 || out != 7 {
+		t.Errorf("result usage should win: got (%d, %d), want (42, 7)", in, out)
+	}
+}
+
+func TestParseUsageFromA2AResponse_TopLevelFallback(t *testing.T) {
+	// Direct (non-JSON-RPC) response: usage at top level.
+	body := []byte(`{"usage": {"input_tokens": 11, "output_tokens": 13}}`)
+	in, out := parseUsageFromA2AResponse(body)
+	if in != 11 || out != 13 {
+		t.Errorf("top-level usage: got (%d, %d), want (11, 13)", in, out)
+	}
+}
+
+func TestParseUsageFromA2AResponse_ZeroValuesInResult(t *testing.T) {
+	// Zero usage in result.result.usage: returns (0, 0) — no panic.
 	body := []byte(`{"result": {"usage": {"input_tokens": 0, "output_tokens": 0}}}`)
 	in, out := parseUsageFromA2AResponse(body)
 	if in != 0 || out != 0 {
-		t.Errorf("parseUsageFromA2AResponse = (%d, %d), want (0, 0)", in, out)
+		t.Errorf("zero usage: got (%d, %d), want (0, 0)", in, out)
 	}
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// readUsageMap
-// ──────────────────────────────────────────────────────────────────────────────
-
-func TestReadUsageMap_HappyPath(t *testing.T) {
-	m := map[string]json.RawMessage{
-		"usage": json.RawMessage(`{"input_tokens": 100, "output_tokens": 50}`),
-	}
-	in, out, ok := readUsageMap(m)
-	if !ok {
-		t.Fatal("readUsageMap returned ok=false, want true")
-	}
-	if in != 100 || out != 50 {
-		t.Errorf("readUsageMap = (%d, %d, %v), want (100, 50, true)", in, out, ok)
-	}
-}
-
-func TestReadUsageMap_MissingUsage(t *testing.T) {
-	m := map[string]json.RawMessage{
-		"other": json.RawMessage(`{}`),
-	}
-	_, _, ok := readUsageMap(m)
-	if ok {
-		t.Errorf("readUsageMap returned ok=true for missing usage, want false")
-	}
-}
-
-func TestReadUsageMap_ZeroValues(t *testing.T) {
-	m := map[string]json.RawMessage{
-		"usage": json.RawMessage(`{"input_tokens": 0, "output_tokens": 0}`),
-	}
-	in, out, ok := readUsageMap(m)
-	if ok {
-		t.Errorf("readUsageMap returned ok=true for zero usage, want false")
-	}
+func TestParseUsageFromA2AResponse_MissingTokensInUsageObject(t *testing.T) {
+	// usage object exists but tokens are absent — returns (0, 0).
+	body := []byte(`{"result": {"usage": {"other_field": 5}}}`)
+	in, out := parseUsageFromA2AResponse(body)
 	if in != 0 || out != 0 {
-		t.Errorf("readUsageMap = (%d, %d, %v), want (0, 0, false)", in, out, ok)
+		t.Errorf("missing tokens: got (%d, %d), want (0, 0)", in, out)
 	}
 }
-
-func TestReadUsageMap_OnlyInputTokens(t *testing.T) {
-	m := map[string]json.RawMessage{
-		"usage": json.RawMessage(`{"input_tokens": 200, "output_tokens": 0}`),
-	}
-	in, out, ok := readUsageMap(m)
-	if !ok {
-		t.Fatal("readUsageMap returned ok=false, want true")
-	}
-	if in != 200 || out != 0 {
-		t.Errorf("readUsageMap = (%d, %d, %v), want (200, 0, true)", in, out, ok)
-	}
-}
-
-func TestReadUsageMap_OnlyOutputTokens(t *testing.T) {
-	m := map[string]json.RawMessage{
-		"usage": json.RawMessage(`{"input_tokens": 0, "output_tokens": 150}`),
-	}
-	in, out, ok := readUsageMap(m)
-	if !ok {
-		t.Fatal("readUsageMap returned ok=false, want true")
-	}
-	if in != 0 || out != 150 {
-		t.Errorf("readUsageMap = (%d, %d, %v), want (0, 150, true)", in, out, ok)
-	}
-}
-
-func TestReadUsageMap_MalformedUsageJSON(t *testing.T) {
-	m := map[string]json.RawMessage{
-		"usage": json.RawMessage(`not valid json`),
-	}
-	_, _, ok := readUsageMap(m)
-	if ok {
-		t.Errorf("readUsageMap returned ok=true for malformed usage JSON, want false")
-	}
-}
-
-// Suppress unused import warning — setupTestDB references db.DB but this file
-// only tests pure functions, so db is only needed transitively through helpers.
-var _ = db.DB

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCanvasStore, type WorkspaceNodeData } from "@/store/canvas";
 import { api } from "@/lib/api";
 import { showToast } from "./Toaster";
@@ -23,9 +23,17 @@ export function ContextMenu() {
   const setPanelTab = useCanvasStore((s) => s.setPanelTab);
   const nestNode = useCanvasStore((s) => s.nestNode);
   const contextNodeId = contextMenu?.nodeId ?? null;
-  const hasChildren = useCanvasStore((s) =>
-    contextNodeId ? s.nodes.some((n) => n.data.parentId === contextNodeId) : false
+  // Select the full nodes array (stable reference across unrelated store
+  // updates) and derive children via useMemo. Filtering inside the
+  // selector returned a new array every call, which Zustand's
+  // useSyncExternalStore saw as "snapshot changed" → schedule
+  // re-render → loop → React error #185. See canvas-store-snapshots.
+  const nodes = useCanvasStore((s) => s.nodes);
+  const children = useMemo(
+    () => (contextNodeId ? nodes.filter((n) => n.data.parentId === contextNodeId) : []),
+    [nodes, contextNodeId],
   );
+  const hasChildren = children.length > 0;
   const setPendingDelete = useCanvasStore((s) => s.setPendingDelete);
   const ref = useRef<HTMLDivElement>(null);
   const [actionLoading, setActionLoading] = useState(false);
@@ -189,10 +197,9 @@ export function ContextMenu() {
     // it survives ContextMenu unmount. Closing the menu here avoids the
     // prior race where the portal dialog's Confirm click was treated as
     // "outside" by the menu's outside-click handler.
-    const childNodes = useCanvasStore.getState().nodes.filter((n) => n.data.parentId === contextMenu.nodeId);
-    setPendingDelete({ id: contextMenu.nodeId, name: contextMenu.nodeData.name, hasChildren, children: childNodes.map(c => ({ id: c.id, name: c.data.name })) });
+    setPendingDelete({ id: contextMenu.nodeId, name: contextMenu.nodeData.name, hasChildren, children: children.map(c => ({ id: c.id, name: c.data.name })) });
     closeContextMenu();
-  }, [contextMenu, setPendingDelete, closeContextMenu]);
+  }, [contextMenu, setPendingDelete, closeContextMenu, children, hasChildren]);
 
   const handleViewDetails = useCallback(() => {
     if (!contextMenu) return;
@@ -311,7 +318,7 @@ export function ContextMenu() {
             aria-hidden="true"
             className={`w-1.5 h-1.5 rounded-full ${statusDotClass(contextMenu.nodeData.status)}`}
           />
-          <span className="text-[10px] text-ink-mid">{contextMenu.nodeData.status}</span>
+          <span className="text-[10px] text-ink">{contextMenu.nodeData.status}</span>
         </div>
       </div>
 

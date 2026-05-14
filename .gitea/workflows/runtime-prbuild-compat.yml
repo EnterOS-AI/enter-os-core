@@ -66,19 +66,28 @@ jobs:
           # PR#372's ci.yml port used. Diffs against the PR base or the
           # previous push SHA, then matches against the wheel-relevant
           # path set.
-          BASE="${GITHUB_BASE_REF:-${{ github.event.before }}}"
-          if [ "${{ github.event_name }}" = "pull_request" ] && [ -n "${{ github.event.pull_request.base.sha }}" ]; then
+          #
+          # NOTE: Gitea Actions does not expose github.event.before as a
+          # shell environment variable. The ${{ github.event.before }} template
+          # expression works inside YAML run: blocks but is evaluated to an
+          # empty string for push events, making the ${VAR:-fallback} always
+          # use the fallback. Use GITHUB_EVENT_BEFORE instead — it IS set in
+          # the runner's shell environment for push events.
+          BASE=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
             BASE="${{ github.event.pull_request.base.sha }}"
+          elif [ -n "$GITHUB_EVENT_BEFORE" ]; then
+            BASE="$GITHUB_EVENT_BEFORE"
           fi
           if [ -z "$BASE" ] || echo "$BASE" | grep -qE '^0+$'; then
             # New branch or no previous SHA: treat as wheel-relevant.
             echo "wheel=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if ! git cat-file -e "$BASE" 2>/dev/null; then
+          if ! timeout 30 git cat-file -e "$BASE" 2>/dev/null; then
             git fetch --depth=1 origin "$BASE" 2>/dev/null || true
           fi
-          if ! git cat-file -e "$BASE" 2>/dev/null; then
+          if ! timeout 30 git cat-file -e "$BASE" 2>/dev/null; then
             echo "wheel=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi

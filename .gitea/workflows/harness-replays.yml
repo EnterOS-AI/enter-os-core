@@ -60,6 +60,7 @@ env:
   GITHUB_SERVER_URL: https://git.moleculesai.app
 
 jobs:
+  # bp-exempt: change detector only; downstream Harness Replays is the meaningful gate.
   detect-changes:
     runs-on: ubuntu-latest
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
@@ -132,7 +133,14 @@ jobs:
           RESP=$(curl -sS --fail --max-time 30 \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/json" \
-            "$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD")
+            "$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD") || {
+            # If Gitea's Compare API is slow/unavailable, choose the conservative
+            # behavior: run the harness instead of failing the detector and polluting
+            # main with a red non-gate context.
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "debug=compare-api-unavailable base=$BASE head=$HEAD" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
           DIFF_FILES=$(echo "$RESP" | bash .gitea/scripts/compare-api-diff-files.py 2>/dev/null || true)
 
           echo "debug=diff-base=$BASE diff-files=$DIFF_FILES" >> "$GITHUB_OUTPUT"
@@ -150,6 +158,7 @@ jobs:
   # matches e2e-api.yml — see that workflow's comment for why a
   # job-level `if: false` would block branch protection via the
   # SKIPPED-in-set bug.
+  # bp-exempt: path-filtered replay suite; CI / all-required is the branch-protection aggregate.
   harness-replays:
     needs: detect-changes
     name: Harness Replays

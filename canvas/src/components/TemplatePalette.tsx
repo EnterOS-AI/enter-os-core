@@ -236,7 +236,7 @@ export function OrgTemplatesSection() {
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
           aria-controls="org-templates-body"
-          className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-ink-mid hover:text-ink-mid font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface rounded"
+          className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-ink-mid hover:text-ink-mid font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
         >
           <span
             aria-hidden="true"
@@ -255,7 +255,7 @@ export function OrgTemplatesSection() {
           type="button"
           onClick={loadOrgs}
           aria-label="Refresh org templates"
-          className="text-[10px] text-ink-mid hover:text-ink-mid focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface rounded"
+          className="text-[10px] text-ink-mid hover:text-ink-mid focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
         >
           ↻
         </button>
@@ -306,7 +306,7 @@ export function OrgTemplatesSection() {
               type="button"
               onClick={() => handleImport(o)}
               disabled={isImporting}
-              className="w-full px-2 py-1.5 bg-accent-strong/20 hover:bg-accent-strong/30 border border-accent/30 rounded-lg text-[10px] text-accent font-medium transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
+              className="w-full px-2 py-1.5 bg-accent-strong/20 hover:bg-accent-strong/30 border border-accent/30 rounded-lg text-[10px] text-accent font-medium transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
             >
               {isImporting ? "Importing…" : "Import org"}
             </button>
@@ -411,7 +411,7 @@ function ImportAgentButton({ onImported }: { onImported: () => void }) {
         type="button"
         onClick={() => fileInputRef.current?.click()}
         disabled={importing}
-        className="w-full px-3 py-2 bg-accent-strong/20 hover:bg-accent-strong/30 border border-accent/30 rounded-lg text-[11px] text-accent font-medium transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
+        className="w-full px-3 py-2 bg-accent-strong/20 hover:bg-accent-strong/30 border border-accent/30 rounded-lg text-[11px] text-accent font-medium transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
       >
         {importing ? "Importing..." : "Import Agent Folder"}
       </button>
@@ -474,7 +474,7 @@ export function TemplatePalette() {
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className={`fixed top-4 left-4 z-40 w-9 h-9 flex items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface ${
+        className={`fixed top-4 left-4 z-40 w-9 h-9 flex items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 ${
           open
             ? "bg-accent-strong text-white"
             : "bg-surface-sunken/90 border border-line/50 text-ink-mid hover:text-ink hover:border-line"
@@ -580,7 +580,7 @@ export function TemplatePalette() {
             <button
               type="button"
               onClick={loadTemplates}
-              className="text-[10px] text-ink-mid hover:text-ink-mid transition-colors block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface rounded"
+              className="text-[10px] text-ink-mid hover:text-ink-mid transition-colors block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
             >
               Refresh templates
             </button>

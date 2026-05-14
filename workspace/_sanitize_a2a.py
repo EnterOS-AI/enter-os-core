@@ -1,116 +1,103 @@
-"""Sanitization helpers for A2A delegation results.
+"""OFFSEC-003: A2A peer-result sanitization — shared across delegation tools.
 
-OFFSEC-003: Peer text must not be able to escape trust boundaries by
-injecting control markers that the caller interprets as structured framing.
+This module is intentionally a LEAF (no imports from the molecule-runtime
+package) to avoid circular dependency cycles. Both ``a2a_tools_delegation``
+and ``a2a_tools`` can import from here without creating import loops.
 
-This module is intentionally isolated from the rest of the molecule-runtime
-import graph to avoid circular imports. Callers import only from here when
-they need to sanitize a2a result text before returning it to the agent.
+Trust-boundary design (OFFSEC-003):
+    A2A peer responses are untrusted third-party content. Before passing
+    them to the agent context, they MUST be wrapped in a trust-boundary
+    marker pair so the calling agent knows the content is external.
+
+Boundary markers:
+    - _A2A_BOUNDARY_START = "[A2A_RESULT_FROM_PEER]"
+    - _A2A_BOUNDARY_END   = "[/A2A_RESULT_FROM_PEER]"
+
+The boundary is the PRIMARY security control. A peer that sends
+"[A2A_RESULT_FROM_PEER]evil[/A2A_RESULT_FROM_PEER]safe" can make "safe"
+appear inside the trusted context unless the markers themselves are
+escaped before wrapping — see _escape_boundary_markers() below.
+
+Defense-in-depth (secondary):
+    Known prompt-injection control-words are also escaped so that even
+    if a calling agent ignores the boundary marker, embedded attack
+    patterns (SYSTEM:, OVERRIDE:, etc.) lose their special meaning.
+    This is not a complete injection sanitizer — do not rely on it as
+    the primary control.
 """
 
 from __future__ import annotations
 
 import re
 
+# ── Trust-boundary markers ────────────────────────────────────────────────────
 
-# Sentinel strings used by a2a_tools_delegation.py as control prefixes.
-_A2A_ERROR_PREFIX = "[A2A_ERROR] "
-_A2A_QUEUED_PREFIX = "[A2A_QUEUED] "
-_A2A_RESULT_FROM_PEER = "[A2A_RESULT_FROM_PEER]"
-_A2A_RESULT_TO_PEER = "[A2A_RESULT_TO_PEER]"
-
-# Convenience aliases used by tests to reference canonical trust-boundary markers.
-_A2A_BOUNDARY_START = _A2A_RESULT_FROM_PEER   # "[A2A_RESULT_FROM_PEER]"
+_A2A_BOUNDARY_START = "[A2A_RESULT_FROM_PEER]"
 _A2A_BOUNDARY_END = "[/A2A_RESULT_FROM_PEER]"
 
-# Regex patterns for the lookahead.  Each is a raw string where \[ = escaped
-# '[' and \] = escaped ']'.  The full pattern (separator + '[' + rest) is
-# matched in two pieces:
-#   1. (?=<marker>)   — lookahead: matches the ENTIRE marker (including '[')
-#                        at the current position without consuming any chars.
-#   2. \[              — consumes the '[' so it gets replaced, not duplicated.
-#
-# Why the lookahead-first approach?  If we match (^|\n)\[ first, the lookahead
-# would fire at the *new* position (after the '['), not the original one, and
-# would fail.  By matching the lookahead first, we assert the marker is present
-# at the correct token boundary, then consume the '[' separately.
-_BOUNDARY_PATTERNS: list[tuple[str, str]] = [
-    (_A2A_ERROR_PREFIX,      r"\[A2A_ERROR\] "),
-    (_A2A_QUEUED_PREFIX,      r"\[A2A_QUEUED\] "),
-    (_A2A_RESULT_FROM_PEER,  r"\[A2A_RESULT_FROM_PEER\]"),
-    (_A2A_RESULT_TO_PEER,    r"\[A2A_RESULT_TO_PEER\]"),
-]
-
-_CONTROL_PATTERNS: list[tuple[str, str]] = [
-    (r"[SYSTEM]",       r"\[SYSTEM\]"),
-    (r"[OVERRIDE]",    r"\[OVERRIDE\]"),
-    (r"[INSTRUCTIONS]", r"\[INSTRUCTIONS\]"),
-    (r"[IGNORE ALL]",  r"\[IGNORE ALL\]"),
-    (r"[YOU ARE NOW]", r"\[YOU ARE NOW\]"),
-]
-
-# ZERO-WIDTH SPACE (U+200B)
-_ZWSP = "​"
+# ── Boundary-marker escaping ─────────────────────────────────────────────────
+# A peer that sends "[/A2A_RESULT_FROM_PEER]evil" can make "evil" appear
+# inside the trusted zone. Escape BOTH boundary markers in the raw text
+# before wrapping so they can never close the boundary early.
+# We use "[/ " as the escape prefix — visually distinct from the real marker.
 
 
 def _escape_boundary_markers(text: str) -> str:
-    """Escape trust-boundary markers embedded in raw peer text.
+    """Escape boundary markers inside the raw peer text before wrapping.
 
-    Scans ``text`` for any known boundary-control pattern that appears as a
-    TOP-LEVEL token (start of string or after a newline) and inserts a
-    ZERO-WIDTH SPACE (U+200B) before the opening '[' so that downstream
-    parsers that look for the raw '[' no longer match the marker as a prefix.
+    Replaces any occurrence of the boundary start/end markers with a
+    visually-similar escaped form so a malicious peer can never close
+    the boundary early or inject a fake opener.
     """
-    if not text:
-        return ""
-
-    # Build alternation from the second (regex) element of each tuple.
-    marker_alts = "|".join(pat for _, pat in _BOUNDARY_PATTERNS + _CONTROL_PATTERNS)
-
-    # Pattern: (?=<marker>)\[  — lookahead for the FULL marker, then consume '['.
-    # This ensures the '[' is consumed so it gets replaced, not duplicated.
-    # We use regular string concatenation for (^|\n) so \n is 0x0A.
-    boundary_re = re.compile(
-        "(^|\n)(?=" + marker_alts + ")\\[",
-        flags=re.MULTILINE,
+    return (
+        text.replace(_A2A_BOUNDARY_START, "[/ A2A_RESULT_FROM_PEER]")
+        .replace(_A2A_BOUNDARY_END, "[/ /A2A_RESULT_FROM_PEER]")
     )
 
-    def _replacer(m: re.Match[str]) -> str:
-        # m.group(1) = '' or '\n'; the '[' is consumed by the match
-        return m.group(1) + _ZWSP + "["
 
-    return boundary_re.sub(_replacer, text)
+# ── Defense-in-depth: injection pattern escaping ───────────────────────────────
+# These patterns cover common prompt-injection phrasings. They are NOT a
+# complete sanitizer — see module docstring. The boundary marker is the
+# primary control; these are purely defense-in-depth.
+
+_INJECTION_PATTERNS = [
+    # Single-word patterns: anchor to word boundary so they don't match
+    # inside other words (e.g. "SYSTEM" in "mySYSTEMatic").
+    # Single-word patterns: anchor to word boundary so they don't match
+    # inside other words (e.g. "SYSTEM" in "mySYSTEMatic").
+    (re.compile(r"(^|[^\w])SYSTEM\b", re.IGNORECASE), r"\1[ESCAPED_SYSTEM]"),
+    (re.compile(r"(^|[^\w])OVERRIDE\b", re.IGNORECASE), r"\1[ESCAPED_OVERRIDE]"),
+    # "INSTRUCTIONS" may appear at the start of a string or after a newline.
+    (re.compile(r"(^|\n)INSTRUCTIONS?\b", re.IGNORECASE), " [ESCAPED_INSTRUCTIONS]"),
+    (re.compile(r"(^|[^\w])IGNORE\s+ALL\b", re.IGNORECASE), r"\1[ESCAPED_IGNORE_ALL]"),
+    (re.compile(r"(^|[^\w])YOU\s+ARE\s+NOW\b", re.IGNORECASE), r"\1[ESCAPED_YOU_ARE_NOW]"),
+]
 
 
 def sanitize_a2a_result(text: str) -> str:
-    """Sanitize raw A2A delegation result text before returning to the caller."""
+    """Sanitize untrusted text from an A2A peer (OFFSEC-003).
+
+    Order of operations:
+      1. Escape boundary markers in the raw text (prevents injection).
+      2. Escape known injection patterns (defense-in-depth).
+
+    Returns the input unchanged if it is empty/None.
+
+    Note: this function does NOT add boundary wrappers — callers that need
+    to establish a trust boundary should wrap the sanitized result with
+    ``[A2A_RESULT_FROM_PEER]\\n{sanitized}\\n[/A2A_RESULT_FROM_PEER]``.
+    See ``a2a_tools_delegation.py:tool_delegate_task`` for the canonical
+    wrapping pattern.
+    """
     if not text:
-        return ""
+        return text
 
-    text = _escape_boundary_markers(text)
-    text = _strip_closed_blocks(text)
-    return text
+    # 1. Escape boundary markers so a malicious peer cannot break the
+    #    trust boundary from inside their response.
+    escaped = _escape_boundary_markers(text)
 
+    # 2. Escape known injection control-words (defense-in-depth only).
+    for pattern, replacement in _INJECTION_PATTERNS:
+        escaped = pattern.sub(replacement, escaped)
 
-def _strip_closed_blocks(text: str) -> str:
-    """Remove content after a closing marker injected by a malicious peer."""
-    CLOSERS = [
-        "[/A2A_ERROR]",
-        "[/A2A_QUEUED]",
-        "[/A2A_RESULT_FROM_PEER]",
-        "[/A2A_RESULT_TO_PEER]",
-        "[/SYSTEM]",
-        "[/OVERRIDE]",
-        "[/INSTRUCTIONS]",
-        "[/IGNORE ALL]",
-        "[/YOU ARE NOW]",
-    ]
-    closer_re = "|".join(re.escape(c) for c in CLOSERS)
-
-    parts = re.split(
-        "(?<=\n)(?=" + closer_re + ")|(?=^)(?=" + closer_re + ")",
-        text, maxsplit=1, flags=re.MULTILINE,
-    )
-    # parts[0] may have a trailing \n that was part of the (?<=\n) boundary;
-    # strip it so the result ends cleanly at the closer boundary.
-    return parts[0].rstrip("\n")
+    return escaped

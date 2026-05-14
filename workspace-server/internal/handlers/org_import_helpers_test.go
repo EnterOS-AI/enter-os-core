@@ -1,431 +1,538 @@
 package handlers
 
-// org_import_helpers_test.go — 24 cases covering pure-logic helpers in org_import.go.
-//
-// Covered helpers (all package-local, called directly within this package):
-//   countWorkspaces         — recursive subtree count
-//   envRequirementKey       — canonical NUL-separated sort key
-//   sanitizeEnvMembers      — name-validation regex filter
-//   flattenAndSortRequirements — singles-first deterministic sort
-//   collectOrgEnv           — multi-tier dedup: required-wins + any-of domination
-//   EnvRequirement.Members  — Name/AnyOf accessor
-
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // ─────────────────────────────────────────────────────────────────────────────
-// countWorkspaces
+// countWorkspaces tests
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestCountWorkspaces_Leaf(t *testing.T) {
-	// A leaf workspace with no children counts as 1.
-	ws := OrgWorkspace{Name: "leaf"}
-	got := countWorkspaces([]OrgWorkspace{ws})
-	if got != 1 {
-		t.Errorf("leaf workspace: count=%d, want 1", got)
+func TestCountWorkspaces_Empty(t *testing.T) {
+	got := countWorkspaces(nil)
+	if got != 0 {
+		t.Errorf("nil: got %d, want 0", got)
+	}
+	got = countWorkspaces([]OrgWorkspace{})
+	if got != 0 {
+		t.Errorf("empty: got %d, want 0", got)
 	}
 }
 
-func TestCountWorkspaces_SingleChild(t *testing.T) {
-	// One child means 2 total: parent + child.
-	ws := OrgWorkspace{
-		Name:     "parent",
-		Children: []OrgWorkspace{{Name: "child"}},
+func TestCountWorkspaces_Flat(t *testing.T) {
+	tree := []OrgWorkspace{
+		{Name: "a"},
+		{Name: "b"},
+		{Name: "c"},
 	}
-	got := countWorkspaces([]OrgWorkspace{ws})
-	if got != 2 {
-		t.Errorf("parent+1child: count=%d, want 2", got)
-	}
-}
-
-func TestCountWorkspaces_Siblings(t *testing.T) {
-	// Two siblings under same parent: 1 parent + 2 children = 3.
-	ws := OrgWorkspace{
-		Name:     "parent",
-		Children: []OrgWorkspace{{Name: "a"}, {Name: "b"}},
-	}
-	got := countWorkspaces([]OrgWorkspace{ws})
+	got := countWorkspaces(tree)
 	if got != 3 {
-		t.Errorf("parent+2children: count=%d, want 3", got)
+		t.Errorf("flat 3: got %d, want 3", got)
 	}
 }
 
-func TestCountWorkspaces_NestedChildren(t *testing.T) {
-	// Two levels: 1 root + 1 child + 1 grandchild = 3.
-	ws := OrgWorkspace{
-		Name: "root",
-		Children: []OrgWorkspace{{
-			Name:     "child",
-			Children: []OrgWorkspace{{Name: "grandchild"}},
-		}},
+func TestCountWorkspaces_Nested(t *testing.T) {
+	//        root (1)
+	//       /  |  \  (3 children)
+	//      c1  c2  c3
+	//      |        |
+	//      g1      g2 (2 grandchildren)
+	tree := []OrgWorkspace{
+		{
+			Name: "root",
+			Children: []OrgWorkspace{
+				{Name: "child1", Children: []OrgWorkspace{{Name: "grandchild1"}}},
+				{Name: "child2"},
+				{Name: "child3", Children: []OrgWorkspace{{Name: "grandchild2"}}},
+			},
+		},
 	}
-	got := countWorkspaces([]OrgWorkspace{ws})
-	if got != 3 {
-		t.Errorf("2-level nesting: count=%d, want 3", got)
+	got := countWorkspaces(tree)
+	if got != 6 {
+		t.Errorf("nested: got %d, want 6 (1 root + 3 children + 2 grandchildren)", got)
 	}
 }
 
 func TestCountWorkspaces_DeepNesting(t *testing.T) {
-	// Three levels: root → child → grandchild → great-grandchild = 4.
-	ws := OrgWorkspace{
-		Name: "a",
-		Children: []OrgWorkspace{{
-			Name: "b",
-			Children: []OrgWorkspace{{
-				Name: "c",
-				Children: []OrgWorkspace{{Name: "d"}},
+	// chain of 5 levels
+	deep := []OrgWorkspace{
+		{Name: "L1", Children: []OrgWorkspace{
+			{Name: "L2", Children: []OrgWorkspace{
+				{Name: "L3", Children: []OrgWorkspace{
+					{Name: "L4", Children: []OrgWorkspace{
+						{Name: "L5"},
+					}},
+				}},
 			}},
 		}},
 	}
-	got := countWorkspaces([]OrgWorkspace{ws})
-	if got != 4 {
-		t.Errorf("3-level nesting: count=%d, want 4", got)
-	}
-}
-
-func TestCountWorkspaces_EmptySlice(t *testing.T) {
-	got := countWorkspaces([]OrgWorkspace{})
-	if got != 0 {
-		t.Errorf("empty slice: count=%d, want 0", got)
+	got := countWorkspaces(deep)
+	if got != 5 {
+		t.Errorf("deep chain: got %d, want 5", got)
 	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// envRequirementKey
+// envRequirementKey tests
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestEnvRequirementKey_SingleMember(t *testing.T) {
 	got := envRequirementKey([]string{"API_KEY"})
-	want := "API_KEY"
-	if got != want {
-		t.Errorf("single member: key=%q, want %q", got, want)
+	if got != "API_KEY" {
+		t.Errorf("single: got %q, want %q", got, "API_KEY")
 	}
 }
 
-func TestEnvRequirementKey_TwoMembersSorted(t *testing.T) {
-	// Already alphabetical — key should be stable.
-	got := envRequirementKey([]string{"API_KEY", "MODEL_NAME"})
-	want := "API_KEY\x00MODEL_NAME"
-	if got != want {
-		t.Errorf("sorted pair: key=%q, want %q", got, want)
+func TestEnvRequirementKey_TwoMembers_OrderInsensitive(t *testing.T) {
+	keyAB := envRequirementKey([]string{"A", "B"})
+	keyBA := envRequirementKey([]string{"B", "A"})
+	if keyAB != keyBA {
+		t.Errorf("order-insensitive: [A,B]=%q, [B,A]=%q — must match", keyAB, keyBA)
 	}
 }
 
-func TestEnvRequirementKey_TwoMembersReverse(t *testing.T) {
-	// Reversed order should canonicalise to same key as sorted.
-	got := envRequirementKey([]string{"MODEL_NAME", "API_KEY"})
-	want := "API_KEY\x00MODEL_NAME"
-	if got != want {
-		t.Errorf("reversed pair: key=%q, want %q", got, want)
+func TestEnvRequirementKey_ThreeMembers_Sorted(t *testing.T) {
+	key := envRequirementKey([]string{"Z", "A", "M"})
+	// Should be "A\x00M\x00Z"
+	want := "A\x00M\x00Z"
+	if key != want {
+		t.Errorf("three members sorted: got %q, want %q", key, want)
 	}
 }
 
-func TestEnvRequirementKey_PermutationEquivalence(t *testing.T) {
-	// All permutations of the same set must produce identical keys.
-	perms := [][]string{
-		{"X", "A", "M"},
-		{"A", "M", "X"},
-		{"M", "X", "A"},
-		{"X", "M", "A"},
-	}
-	var first string
-	for i, perm := range perms {
-		got := envRequirementKey(perm)
-		if i == 0 {
-			first = got
-		} else if got != first {
-			t.Errorf("permutation %d: key=%q differs from first key %q", i, got, first)
-		}
-	}
-}
-
-func TestEnvRequirementKey_Empty(t *testing.T) {
-	got := envRequirementKey([]string{})
+func TestEnvRequirementKey_EmptyMembers(t *testing.T) {
+	got := envRequirementKey(nil)
 	if got != "" {
-		t.Errorf("empty: key=%q, want empty string", got)
+		t.Errorf("nil: got %q, want empty", got)
+	}
+	got = envRequirementKey([]string{})
+	if got != "" {
+		t.Errorf("empty: got %q, want empty", got)
+	}
+}
+
+func TestEnvRequirementKey_DuplicateMembers(t *testing.T) {
+	// Duplicates should be preserved in sort; join still works
+	key := envRequirementKey([]string{"A", "A", "B"})
+	want := "A\x00A\x00B"
+	if key != want {
+		t.Errorf("duplicates: got %q, want %q", key, want)
+	}
+}
+
+func TestEnvRequirementKey_UsedForDedup(t *testing.T) {
+	// Real dedup case: {A,B} and {B,A} produce same key → dedup-eligible
+	// {A,B,C} produces a different key
+	keyAB := envRequirementKey([]string{"A", "B"})
+	keyBA := envRequirementKey([]string{"B", "A"})
+	keyABC := envRequirementKey([]string{"A", "B", "C"})
+	if keyAB != keyBA {
+		t.Errorf("AB vs BA: keys must match for dedup")
+	}
+	if keyAB == keyABC {
+		t.Errorf("AB vs ABC: keys must differ")
 	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// sanitizeEnvMembers
+// sanitizeEnvMembers tests
 // ─────────────────────────────────────────────────────────────────────────────
+// envVarNamePattern = ^[A-Z][A-Z0-9_]{0,127}$
 
 func TestSanitizeEnvMembers_AllValid(t *testing.T) {
-	// Valid POSIX env-var names (uppercase + underscore + digit).
-	got, ok := sanitizeEnvMembers([]string{"API_KEY", "MODEL_NAME", "A1"}, "test")
+	members := []string{"API_KEY", "MY_VAR_2", "A"}
+	got, ok := sanitizeEnvMembers(members, "test")
 	if !ok {
-		t.Error("all-valid: expected ok=true")
+		t.Error("all valid: ok should be true")
 	}
-	want := []string{"API_KEY", "MODEL_NAME", "A1"}
-	for i, w := range want {
-		if i >= len(got) || got[i] != w {
-			t.Errorf("all-valid: got=%v, want %v", got, want)
-			break
+	if len(got) != len(members) {
+		t.Errorf("all valid: got %v, want %v", got, members)
+	}
+}
+
+func TestSanitizeEnvMembers_SomeInvalid(t *testing.T) {
+	// Lowercase first char — invalid
+	members := []string{"API_KEY", "lowercase", "MY_VAR"}
+	got, ok := sanitizeEnvMembers(members, "test")
+	if !ok {
+		t.Error("one invalid: ok should be true (valid members remain)")
+	}
+	want := []string{"API_KEY", "MY_VAR"}
+	if len(got) != len(want) {
+		t.Errorf("one invalid: got %v, want %v", got, want)
+	}
+}
+
+func TestSanitizeEnvMembers_AllInvalid_DropsAll(t *testing.T) {
+	members := []string{"lowercase", "123_START", ""}
+	got, ok := sanitizeEnvMembers(members, "test")
+	if ok {
+		t.Error("all invalid: ok should be false")
+	}
+	if len(got) != 0 {
+		t.Errorf("all invalid: got %v, want empty", got)
+	}
+}
+
+func TestSanitizeEnvMembers_EmptyString_Skipped(t *testing.T) {
+	// Empty string is filtered but doesn't make ok=false
+	members := []string{"API_KEY", "", "MY_VAR"}
+	got, ok := sanitizeEnvMembers(members, "test")
+	if !ok {
+		t.Error("empty string in valid list: ok should be true")
+	}
+	if len(got) != 2 {
+		t.Errorf("empty string filtered: got %v, want [API_KEY, MY_VAR]", got)
+	}
+}
+
+func TestSanitizeEnvMembers_MaxLength(t *testing.T) {
+	// 128 chars: valid (1 prefix + 127 more = 128, all uppercase)
+	valid := "A" + strings.Repeat("B", 127)
+	got, ok := sanitizeEnvMembers([]string{valid}, "test")
+	if !ok {
+		t.Errorf("128 char valid: ok should be true, got %v", got)
+	}
+	// 129 chars: invalid (exceeds {0,127} suffix in regex)
+	tooLong := "A" + strings.Repeat("B", 128)
+	_, ok = sanitizeEnvMembers([]string{tooLong}, "test")
+	if ok {
+		t.Error("129 char invalid: ok should be false")
+	}
+}
+
+func TestSanitizeEnvMembers_DigitsAndUnderscore(t *testing.T) {
+	// regex ^[A-Z][A-Z0-9_]{0,127}$ — first char must be A-Z, not underscore
+	valid := []string{"A1", "A_2", "HTTP_200_OK", "ABC123"}
+	for _, v := range valid {
+		got, ok := sanitizeEnvMembers([]string{v}, "test")
+		if !ok {
+			t.Errorf("should be valid: %q", v)
+		}
+		if len(got) != 1 || got[0] != v {
+			t.Errorf("got %v, want [%q]", got, v)
 		}
 	}
 }
 
-func TestSanitizeEnvMembers_OneInvalid(t *testing.T) {
-	// One invalid name is filtered; valid remainder is kept.
-	got, ok := sanitizeEnvMembers([]string{"API_KEY", "invalid-name", "SECRET"}, "test")
-	if !ok {
-		t.Error("one-invalid: expected ok=true (valid members remain)")
-	}
-	if len(got) != 2 {
-		t.Errorf("one-invalid: got %v (len=%d), want [API_KEY SECRET]", got, len(got))
-	}
-}
-
-func TestSanitizeEnvMembers_AllInvalid(t *testing.T) {
-	// All invalid → empty output, ok=false.
-	got, ok := sanitizeEnvMembers([]string{"lowercase", "123", "has-dash"}, "test")
-	if ok {
-		t.Error("all-invalid: expected ok=false")
-	}
-	if len(got) != 0 {
-		t.Errorf("all-invalid: got %v, want []", got)
-	}
-}
-
-func TestSanitizeEnvMembers_EmptyStringSkipped(t *testing.T) {
-	// Empty string in list is silently skipped (not a regex failure).
-	got, ok := sanitizeEnvMembers([]string{"API_KEY", "", "SECRET"}, "test")
-	if !ok {
-		t.Error("empty-string: expected ok=true")
-	}
-	if len(got) != 2 {
-		t.Errorf("empty-string: got %v, want [API_KEY SECRET]", got)
-	}
-}
-
-func TestSanitizeEnvMembers_EmptyInput(t *testing.T) {
-	// Empty slice → empty output, ok=false.
-	got, ok := sanitizeEnvMembers([]string{}, "test")
-	if ok {
-		t.Error("empty-input: expected ok=false")
-	}
-	if len(got) != 0 {
-		t.Errorf("empty-input: got %v, want []", got)
-	}
-}
-
-func TestSanitizeEnvMembers_NameBoundary(t *testing.T) {
-	// Name must START with uppercase. Lowercase-start names are invalid.
-	got, ok := sanitizeEnvMembers([]string{"api_key", "API_KEY"}, "test")
-	if !ok {
-		t.Error("lower-start: expected ok=true (API_KEY passes)")
-	}
-	if len(got) != 1 || got[0] != "API_KEY" {
-		t.Errorf("lower-start: got %v, want [API_KEY]", got)
-	}
-}
-
-func TestSanitizeEnvMembers_NameTooLong(t *testing.T) {
-	// Max 128 chars after the leading uppercase char.
-	longName := "X" + string(make([]byte, 128))
-	got, ok := sanitizeEnvMembers([]string{longName, "SHORT"}, "test")
-	if !ok {
-		t.Error("too-long: expected ok=true (SHORT is valid)")
-	}
-	if len(got) != 1 || got[0] != "SHORT" {
-		t.Errorf("too-long: got %v, want [SHORT]", got)
-	}
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
-// flattenAndSortRequirements
+// flattenAndSortRequirements tests
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestFlattenAndSortRequirements_Empty(t *testing.T) {
 	got := flattenAndSortRequirements(map[string]EnvRequirement{})
 	if len(got) != 0 {
-		t.Errorf("empty map: got %d items, want 0", len(got))
+		t.Errorf("empty: got %d, want 0", len(got))
 	}
 }
 
-func TestFlattenAndSortRequirements_SinglesFirst(t *testing.T) {
-	// Singles sort before any-of groups.
-	by := map[string]EnvRequirement{
-		"Z":    {Name: "Z"}, // single
-		"X":    {Name: "X"}, // single
-		"any":  {AnyOf: []string{"A", "B"}},
-		"other": {AnyOf: []string{"C"}},
+func TestFlattenAndSortRequirements_SingleFirst(t *testing.T) {
+	// Singles come before groups; within singles, alphabetical
+	reqs := map[string]EnvRequirement{
+		envRequirementKey([]string{"ZETA"}):  {Name: "ZETA"},
+		envRequirementKey([]string{"ALPHA"}): {Name: "ALPHA"},
 	}
-	got := flattenAndSortRequirements(by)
-	if len(got) != 4 {
-		t.Fatalf("wrong count: got %d, want 4", len(got))
+	got := flattenAndSortRequirements(reqs)
+	if len(got) != 2 {
+		t.Fatalf("got %d, want 2", len(got))
 	}
-	// First two must be singles.
-	singlesFirst := got[0].Name != "" && got[1].Name != ""
-	anyOfAfter := len(got) > 2 && (got[2].Name == "" || got[3].Name == "")
-	if !singlesFirst || !anyOfAfter {
-		t.Errorf("singles-first order violated: %v", got)
+	if got[0].Name != "ALPHA" {
+		t.Errorf("first: got %q, want ALPHA", got[0].Name)
+	}
+	if got[1].Name != "ZETA" {
+		t.Errorf("second: got %q, want ZETA", got[1].Name)
 	}
 }
 
-func TestFlattenAndSortRequirements_SinglesAlphabetical(t *testing.T) {
-	// Within the singles section, alphabetical order.
-	by := map[string]EnvRequirement{
-		"Z": {Name: "Z"},
-		"A": {Name: "A"},
-		"M": {Name: "M"},
+func TestFlattenAndSortRequirements_GroupsAfterSingles(t *testing.T) {
+	reqs := map[string]EnvRequirement{
+		envRequirementKey([]string{"X"}):      {Name: "X"},                 // single
+		envRequirementKey([]string{"A", "B"}): {AnyOf: []string{"A", "B"}}, // group
 	}
-	got := flattenAndSortRequirements(by)
-	if got[0].Name != "A" || got[1].Name != "M" || got[2].Name != "Z" {
-		t.Errorf("singles not alphabetically sorted: %v", got)
+	got := flattenAndSortRequirements(reqs)
+	if len(got) != 2 {
+		t.Fatalf("got %d, want 2", len(got))
+	}
+	// Single X comes before any group
+	if got[0].Name != "X" {
+		t.Errorf("first should be single X: got %+v", got[0])
+	}
+	if len(got[1].AnyOf) != 2 {
+		t.Errorf("second should be group: got %+v", got[1])
 	}
 }
 
-func TestFlattenAndSortRequirements_AnyOfSortedByKey(t *testing.T) {
-	// Any-of groups are sorted by the envRequirementKey of their members.
-	// Keys must match what envRequirementKey() produces: sorted, NUL-separated.
-	by := map[string]EnvRequirement{
-		"a\x00b": {AnyOf: []string{"b", "a"}}, // canonical key = "a\x00b"
-		"a\x00c": {AnyOf: []string{"a", "c"}}, // canonical key = "a\x00c"
+func TestFlattenAndSortRequirements_GroupsSortedByMemberKey(t *testing.T) {
+	// Groups sorted by their member-key (envRequirementKey sorts AnyOf members).
+	// {Z,A} → key "A\x00Z"; {B,C} → key "B\x00C". "A..." < "B..." → A,Z group first.
+	reqs := map[string]EnvRequirement{
+		envRequirementKey([]string{"Z", "A"}): {AnyOf: []string{"Z", "A"}}, // key: A\x00Z
+		envRequirementKey([]string{"B", "C"}): {AnyOf: []string{"B", "C"}}, // key: B\x00C
 	}
-	got := flattenAndSortRequirements(by)
-	// Both are any-of (Name == ""), order by key.
-	if got[0].Name != "" || got[1].Name != "" {
-		t.Errorf("expected all any-of, got singles: %v", got)
+	got := flattenAndSortRequirements(reqs)
+	if len(got) != 2 {
+		t.Fatalf("got %d, want 2", len(got))
 	}
-	// "a\x00b" < "a\x00c" alphabetically → "a\x00b" first → [{b,a}] first.
-	first := got[0].AnyOf
-	if len(first) == 0 || first[0] != "b" {
-		t.Errorf("any-of sort wrong: got %v first, want any-of [{b,a}]", got)
+	// A\x00Z < B\x00C alphabetically, so the A,Z group sorts first
+	if len(got[0].AnyOf) != 2 || got[0].AnyOf[0] != "Z" {
+		t.Errorf("first group: got %+v, want [Z,A] (key A\\x00Z sorts before B\\x00C)", got[0])
 	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// collectOrgEnv — deduplication + required-wins
+// collectOrgEnv tests
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestCollectOrgEnv_EmptyTemplate(t *testing.T) {
-	tmpl := &OrgTemplate{}
+func TestCollectOrgEnv_SingleRequired(t *testing.T) {
+	tmpl := &OrgTemplate{
+		RequiredEnv: []EnvRequirement{{Name: "API_KEY"}},
+	}
 	req, rec := collectOrgEnv(tmpl)
-	if len(req) != 0 || len(rec) != 0 {
-		t.Errorf("empty template: req=%v rec=%v, want both empty", req, rec)
+	if len(req) != 1 {
+		t.Fatalf("got %d required, want 1", len(req))
+	}
+	if req[0].Name != "API_KEY" {
+		t.Errorf("name: got %q, want API_KEY", req[0].Name)
+	}
+	if len(rec) != 0 {
+		t.Errorf("recommended: got %d, want 0", len(rec))
 	}
 }
 
-func TestCollectOrgEnv_RequiredOnly(t *testing.T) {
+func TestCollectOrgEnv_SingleRecommended(t *testing.T) {
+	tmpl := &OrgTemplate{
+		RecommendedEnv: []EnvRequirement{{Name: "DEBUG"}},
+	}
+	req, rec := collectOrgEnv(tmpl)
+	if len(req) != 0 {
+		t.Errorf("required: got %d, want 0", len(req))
+	}
+	if len(rec) != 1 {
+		t.Fatalf("got %d recommended, want 1", len(rec))
+	}
+	if rec[0].Name != "DEBUG" {
+		t.Errorf("name: got %q, want DEBUG", rec[0].Name)
+	}
+}
+
+func TestCollectOrgEnv_AnyOfGroup(t *testing.T) {
+	tmpl := &OrgTemplate{
+		RequiredEnv: []EnvRequirement{{AnyOf: []string{"AWS_KEY", "GCP_KEY", "AZURE_KEY"}}},
+	}
+	req, _ := collectOrgEnv(tmpl)
+	if len(req) != 1 {
+		t.Fatalf("got %d, want 1", len(req))
+	}
+	if len(req[0].AnyOf) != 3 {
+		t.Errorf("any_of members: got %v, want [AWS_KEY, GCP_KEY, AZURE_KEY]", req[0].AnyOf)
+	}
+}
+
+func TestCollectOrgEnv_InvalidNamesFiltered(t *testing.T) {
+	// "lowercase" and "" fail envVarNamePattern → silently dropped
+	tmpl := &OrgTemplate{
+		RequiredEnv: []EnvRequirement{{AnyOf: []string{"VALID_KEY", "lowercase", ""}}},
+	}
+	req, _ := collectOrgEnv(tmpl)
+	if len(req) != 1 {
+		t.Fatalf("invalid names filtered: got %d, want 1", len(req))
+	}
+	if len(req[0].AnyOf) != 1 || req[0].AnyOf[0] != "VALID_KEY" {
+		t.Errorf("valid names kept: got %v", req[0].AnyOf)
+	}
+}
+
+func TestCollectOrgEnv_GroupWithOneInvalid_KeepsRest(t *testing.T) {
+	// Mixed: one valid + one invalid → valid member is kept, invalid dropped
+	// regex requires ^[A-Z][A-Z0-9_]* — lowercase names are invalid
+	tmpl := &OrgTemplate{
+		RequiredEnv: []EnvRequirement{{AnyOf: []string{"GOOD_KEY", "lowercase_invalid"}}},
+	}
+	req, _ := collectOrgEnv(tmpl)
+	if len(req) != 1 {
+		t.Fatalf("got %d, want 1", len(req))
+	}
+	if len(req[0].AnyOf) != 1 || req[0].AnyOf[0] != "GOOD_KEY" {
+		t.Errorf("kept valid member: got %v, want [GOOD_KEY]", req[0].AnyOf)
+	}
+}
+
+func TestCollectOrgEnv_AllInvalidGroup_Dropped(t *testing.T) {
+	tmpl := &OrgTemplate{
+		RequiredEnv: []EnvRequirement{{AnyOf: []string{"lowercase", ""}}},
+	}
+	req, _ := collectOrgEnv(tmpl)
+	if len(req) != 0 {
+		t.Errorf("all-invalid group: got %d, want 0", len(req))
+	}
+}
+
+func TestCollectOrgEnv_RequiredSingleDominatesAnyOfGroup(t *testing.T) {
+	// Required: API_KEY (strict)
+	// Required: any_of [API_KEY, ALT_KEY]
+	// → the any_of group is redundant (API_KEY satisfies it already)
+	// → any_of group should be dropped from required
 	tmpl := &OrgTemplate{
 		RequiredEnv: []EnvRequirement{
 			{Name: "API_KEY"},
+			{AnyOf: []string{"API_KEY", "ALT_KEY"}},
 		},
 	}
-	req, rec := collectOrgEnv(tmpl)
-	if len(req) != 1 || req[0].Name != "API_KEY" {
-		t.Errorf("required-only: req=%v, want [API_KEY]", req)
+	req, _ := collectOrgEnv(tmpl)
+	if len(req) != 1 {
+		t.Fatalf("strict dominates group: got %d entries, want 1", len(req))
 	}
-	if len(rec) != 0 {
-		t.Errorf("required-only: rec=%v, want []", rec)
+	if req[0].Name != "API_KEY" {
+		t.Errorf("strict: got %+v, want name=API_KEY", req[0])
 	}
 }
 
-func TestCollectOrgEnv_SameMembers_RequiredWins(t *testing.T) {
-	// Same set in required AND recommended → required wins, recommended drops it.
+func TestCollectOrgEnv_RequiredSingleDominatesRecommendedAnyOf(t *testing.T) {
+	// Required: FOO (strict)
+	// Recommended: any_of [FOO, BAR]
+	// → FOO is already required; the recommended any_of is redundant
+	// → recommended any_of should be dropped
 	tmpl := &OrgTemplate{
-		RequiredEnv: []EnvRequirement{
-			{Name: "SHARED_KEY"},
-		},
-		RecommendedEnv: []EnvRequirement{
-			{Name: "SHARED_KEY"},
-		},
+		RequiredEnv:    []EnvRequirement{{Name: "FOO"}},
+		RecommendedEnv: []EnvRequirement{{AnyOf: []string{"FOO", "BAR"}}},
 	}
 	req, rec := collectOrgEnv(tmpl)
-	if len(req) != 1 || req[0].Name != "SHARED_KEY" {
-		t.Errorf("required-wins: req=%v", req)
+	if len(req) != 1 || req[0].Name != "FOO" {
+		t.Errorf("required: got %+v", req)
 	}
 	if len(rec) != 0 {
-		t.Errorf("required-wins: rec=%v, want [] (dropped by required)", rec)
+		t.Errorf("recommended any_of dominated by strict: got %d, want 0", len(rec))
 	}
 }
 
-func TestCollectOrgEnv_StrictDominatesAnyOf_CrossTier(t *testing.T) {
-	// Required strict name X causes any-of [X, Y] in recommended to be pruned.
+func TestCollectOrgEnv_SameTierStrictDominatesGroup(t *testing.T) {
+	// Both in required: X (strict), any_of [X, Y] (group)
+	// Strict X makes the any_of redundant within the same tier
 	tmpl := &OrgTemplate{
 		RequiredEnv: []EnvRequirement{
-			{Name: "ANTHROPIC_API_KEY"},
+			{Name: "X"},
+			{AnyOf: []string{"X", "Y"}},
 		},
-		RecommendedEnv: []EnvRequirement{
-			{AnyOf: []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY"}},
+	}
+	req, _ := collectOrgEnv(tmpl)
+	if len(req) != 1 {
+		t.Fatalf("got %d, want 1", len(req))
+	}
+	if req[0].Name != "X" {
+		t.Errorf("strict dominates same-tier group: got %+v", req[0])
+	}
+}
+
+func TestCollectOrgEnv_WorkspaceLevel(t *testing.T) {
+	// Workspaces can also declare required/recommended env
+	tmpl := &OrgTemplate{
+		Workspaces: []OrgWorkspace{
+			{
+				Name:           "Dev",
+				RequiredEnv:    []EnvRequirement{{Name: "DEV_KEY"}},
+				RecommendedEnv: []EnvRequirement{{Name: "DEV_TOOL"}},
+			},
 		},
 	}
 	req, rec := collectOrgEnv(tmpl)
 	if len(req) != 1 {
-		t.Errorf("cross-tier: req=%v", req)
+		t.Fatalf("workspace required: got %d, want 1", len(req))
 	}
-	if len(rec) != 0 {
-		t.Errorf("cross-tier: any-of should be pruned from rec, got rec=%v", rec)
+	if req[0].Name != "DEV_KEY" {
+		t.Errorf("workspace required: got %v", req[0])
 	}
-}
-
-func TestCollectOrgEnv_StrictDominatesAnyOf_SameTier(t *testing.T) {
-	// Required strict X dominates any-of [X, Y] within required (same-tier dedup).
-	tmpl := &OrgTemplate{
-		RequiredEnv: []EnvRequirement{
-			{Name: "SECRET"},
-			{AnyOf: []string{"SECRET", "OTHER"}},
-		},
+	if len(rec) != 1 {
+		t.Fatalf("workspace recommended: got %d, want 1", len(rec))
 	}
-	req, _ := collectOrgEnv(tmpl)
-	if len(req) != 1 || req[0].Name != "SECRET" {
-		t.Errorf("same-tier: req=%v, want single [SECRET]", req)
+	if rec[0].Name != "DEV_TOOL" {
+		t.Errorf("workspace recommended: got %v", rec[0])
 	}
 }
 
-func TestCollectOrgEnv_DeduplicationAcrossLevels(t *testing.T) {
-	// Same requirement declared at org level and workspace level → deduped once.
+func TestCollectOrgEnv_DeepNesting(t *testing.T) {
+	// Nested children also contribute env requirements
 	tmpl := &OrgTemplate{
-		RequiredEnv: []EnvRequirement{
-			{Name: "SHARED"},
-		},
-		Workspaces: []OrgWorkspace{{
-			Name: "ws1",
-			RequiredEnv: []EnvRequirement{
-				{Name: "SHARED"}, // duplicate
+		RequiredEnv: []EnvRequirement{{Name: "ORG_LEVEL"}},
+		Workspaces: []OrgWorkspace{
+			{
+				Name:        "Root",
+				RequiredEnv: []EnvRequirement{{Name: "ROOT_LEVEL"}},
+				Children: []OrgWorkspace{
+					{
+						Name:        "Child",
+						RequiredEnv: []EnvRequirement{{Name: "CHILD_LEVEL"}},
+						Children: []OrgWorkspace{
+							{Name: "GrandChild", RecommendedEnv: []EnvRequirement{{Name: "GRANDCHILD_TOOL"}}},
+						},
+					},
+				},
 			},
-		}},
+		},
 	}
-	req, _ := collectOrgEnv(tmpl)
-	if len(req) != 1 || req[0].Name != "SHARED" {
-		t.Errorf("dedup: req=%v, want single [SHARED]", req)
+	req, rec := collectOrgEnv(tmpl)
+	if len(req) != 3 {
+		t.Errorf("3 required levels: got %d: %+v", len(req), req)
+	}
+	if len(rec) != 1 {
+		t.Errorf("1 recommended: got %d: %+v", len(rec), rec)
 	}
 }
 
-func TestCollectOrgEnv_WorkspaceInheritance(t *testing.T) {
-	// Child workspace inherits parent's required env (union, not override).
+func TestCollectOrgEnv_DedupAcrossTiers(t *testing.T) {
+	// Same key declared at org level AND workspace level → deduped to 1
 	tmpl := &OrgTemplate{
-		RequiredEnv: []EnvRequirement{
-			{Name: "ORG_KEY"},
+		RequiredEnv: []EnvRequirement{{Name: "SHARED"}},
+		Workspaces: []OrgWorkspace{
+			{Name: "ws", RequiredEnv: []EnvRequirement{{Name: "SHARED"}}},
 		},
-		Workspaces: []OrgWorkspace{{
-			Name: "child",
-			RequiredEnv: []EnvRequirement{
-				{Name: "CHILD_KEY"},
-			},
-		}},
 	}
 	req, _ := collectOrgEnv(tmpl)
-	if len(req) != 2 {
-		t.Errorf("inheritance: req=%v, want [ORG_KEY, CHILD_KEY]", req)
+	if len(req) != 1 {
+		t.Errorf("dedup across tiers: got %d, want 1", len(req))
 	}
 }
 
-func TestCollectOrgEnv_AnyOfInRecommended_CrossTier(t *testing.T) {
-	// Recommended any-of with member shared by required strict → pruned.
+func TestCollectOrgEnv_DedupWithinGroup(t *testing.T) {
+	// Same key declared multiple times within required → deduped
 	tmpl := &OrgTemplate{
 		RequiredEnv: []EnvRequirement{
-			{Name: "KEY_A"},
-		},
-		RecommendedEnv: []EnvRequirement{
-			{AnyOf: []string{"KEY_A", "KEY_B"}},
-			{Name: "KEY_C"},
+			{Name: "DUPE"},
+			{Name: "DUPE"},
 		},
 	}
-	_, rec := collectOrgEnv(tmpl)
-	// KEY_A (strict) prunes the any-of group from recommended.
-	// KEY_C (strict) remains.
-	if len(rec) != 1 || rec[0].Name != "KEY_C" {
-		t.Errorf("any-of cross-tier: rec=%v, want [KEY_C]", rec)
+	req, _ := collectOrgEnv(tmpl)
+	if len(req) != 1 {
+		t.Errorf("dedup within tier: got %d, want 1", len(req))
+	}
+}
+
+func TestCollectOrgEnv_MixedCasePreservesSort(t *testing.T) {
+	// Sort order: singles first (alpha), then groups (by member-key)
+	tmpl := &OrgTemplate{
+		RequiredEnv: []EnvRequirement{
+			{Name: "ZETA"},
+			{Name: "ALPHA"},
+			{AnyOf: []string{"B", "A"}}, // key: A\x00B
+			{AnyOf: []string{"Y", "X"}}, // key: X\x00Y
+		},
+	}
+	req, _ := collectOrgEnv(tmpl)
+	if len(req) != 4 {
+		t.Fatalf("got %d, want 4", len(req))
+	}
+	// Singles first
+	if req[0].Name != "ALPHA" {
+		t.Errorf("single ALPHA first: got %+v", req[0])
+	}
+	if req[1].Name != "ZETA" {
+		t.Errorf("single ZETA second: got %+v", req[1])
+	}
+	// Groups after singles; A,B (key A\x00B) < X,Y (key X\x00Y)
+	if len(req[2].AnyOf) != 2 {
+		t.Errorf("third should be group: got %+v", req[2])
+	}
+	if req[2].AnyOf[0] != "B" { // "B" is first alphabetically in [A,B]
+		t.Errorf("A,B group should come first: got %+v", req[2])
 	}
 }

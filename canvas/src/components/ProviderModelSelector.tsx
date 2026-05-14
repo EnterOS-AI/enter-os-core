@@ -420,7 +420,7 @@ export function ProviderModelSelector({
               spellCheck={false}
               autoComplete="off"
               data-testid="model-input"
-              className="w-full bg-surface-sunken border border-line rounded px-2 py-1.5 text-[11px] text-ink font-mono focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/20 transition-colors disabled:opacity-50"
+              className="w-full bg-surface-sunken border border-line rounded px-2 py-1.5 text-[11px] text-ink font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:border-accent transition-colors disabled:opacity-50"
             />
             <p className="text-[9px] text-ink-mid mt-1 leading-relaxed">
               {selected?.wildcard
@@ -437,7 +437,7 @@ export function ProviderModelSelector({
                     handleModelChange(selected.models[0]?.id ?? "");
                   }
                 }}
-                className="text-[9px] text-accent hover:text-accent mt-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface rounded"
+                className="text-[9px] text-accent hover:text-accent mt-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
               >
                 ← back to model list
               </button>

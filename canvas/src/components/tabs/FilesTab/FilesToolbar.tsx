@@ -32,7 +32,7 @@ export function FilesToolbar({
           value={root}
           onChange={(e) => setRoot(e.target.value)}
           aria-label="File root directory"
-          className="text-[10px] bg-surface-card text-ink-mid border border-line rounded px-1.5 py-0.5 outline-none"
+          className="text-[10px] bg-surface-card text-ink-mid border border-line rounded px-1.5 py-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
         >
           <option value="/configs">/configs</option>
           <option value="/home">/home</option>

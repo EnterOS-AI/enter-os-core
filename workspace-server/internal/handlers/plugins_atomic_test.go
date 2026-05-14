@@ -215,6 +215,51 @@ func TestTarWalk_EmptyDirectory(t *testing.T) {
 	}
 }
 
+// TestTarWalk_NestedDirs: deeply nested directories produce all intermediate
+// dir entries plus leaf entries. This exercises the recursive walk.
+func TestTarWalk_NestedDirs(t *testing.T) {
+	hostDir := t.TempDir()
+	deep := filepath.Join(hostDir, "a", "b", "c")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deep, "leaf.txt"), []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	tw := newTarWriter(&buf)
+	if err := tarWalk(hostDir, "configs/plugins/.staging", tw); err != nil {
+		t.Fatalf("tarWalk: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	entries := readTarNames(&buf)
+	// Must include: prefix/, prefix/a/, prefix/a/b/, prefix/a/b/c/, prefix/a/b/c/leaf.txt
+	expected := []string{
+		"configs/plugins/.staging/",
+		"configs/plugins/.staging/a/",
+		"configs/plugins/.staging/a/b/",
+		"configs/plugins/.staging/a/b/c/",
+		"configs/plugins/.staging/a/b/c/leaf.txt",
+	}
+	if len(entries) != len(expected) {
+		t.Errorf("nested dirs: got %d entries; want %d: %v", len(entries), len(expected), entries)
+	}
+	for _, e := range expected {
+		found := false
+		for _, g := range entries {
+			if g == e {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("missing entry: %q", e)
+		}
+	}
+}
+
 // TestTarWalk_DirEntryHasTrailingSlash: directory entries must end with '/'
 // per tar format; tar.Header.Typeflag '5' (dir) must produce "name/" not "name".
 func TestTarWalk_DirEntryHasTrailingSlash(t *testing.T) {

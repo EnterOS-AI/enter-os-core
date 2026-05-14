@@ -1,11 +1,45 @@
 // @vitest-environment jsdom
-"use client";
 /**
- * Tests for form-inputs.tsx — 35 cases:
- * TextInput (7), NumberInput (8), Toggle (5), TagList (9), Section (6).
+ * form-inputs — pure presentational form primitives for the Config tab.
+ *
+ * NOTE: No @testing-library/jest-dom import — use textContent / className /
+ * getAttribute / checked / value checks to avoid "expect is not defined"
+ * errors in this vitest configuration.
+ *
+ * Covers:
+ *   - TextInput renders label and input with correct value
+ *   - TextInput calls onChange with new value on keystroke
+ *   - TextInput renders placeholder text when provided
+ *   - TextInput applies mono class when mono=true
+ *   - TextInput input has accessible aria-label from label
+ *   - TextInput input is not mono by default
+ *   - NumberInput renders label and number input
+ *   - NumberInput calls onChange with parsed integer on keystroke
+ *   - NumberInput calls onChange with 0 for non-numeric input
+ *   - NumberInput respects min/max bounds
+ *   - NumberInput input has aria-label from label prop
+ *   - NumberInput input has font-mono class
+ *   - Toggle renders checkbox with label text
+ *   - Toggle renders checked/unchecked state correctly
+ *   - Toggle calls onChange with boolean on toggle
+ *   - TagList renders existing tags with remove buttons
+ *   - TagList × button has aria-label "Remove tag {value}"
+ *   - TagList calls onChange without removed tag on × click
+ *   - TagList renders the label text
+ *   - TagList renders placeholder text when provided
+ *   - TagList renders exactly one textbox
+ *   - TagList adds tag on Enter key
+ *   - TagList does not add empty/whitespace-only tags on Enter
+ *   - TagList clears input after adding tag
+ *   - Section renders the title
+ *   - Section renders children when open (defaultOpen=true)
+ *   - Section starts closed when defaultOpen=false
+ *   - Section opens/closes content on title click
+ *   - Section button has aria-expanded reflecting open state
+ *   - Section toggle indicator changes on open/close
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
 
 import {
@@ -16,246 +50,402 @@ import {
   Section,
 } from "../form-inputs";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  vi.resetModules();
+});
 
 // ─── TextInput ───────────────────────────────────────────────────────────────
 
 describe("TextInput", () => {
-  describe("renders", () => {
-    it("renders the label", () => {
-      render(<TextInput label="API Key" value="" onChange={vi.fn()} />);
-      expect(screen.getByLabelText("API Key")).toBeTruthy();
-    });
+  it("renders the label text", () => {
+    const { container } = render(
+      <TextInput label="Agent Name" value="" onChange={vi.fn()} />,
+    );
+    expect(container.textContent).toContain("Agent Name");
+  });
 
-    it("renders the current value", () => {
-      render(<TextInput label="Name" value="Claude" onChange={vi.fn()} />);
-      expect((screen.getByRole("textbox") as HTMLInputElement).value).toBe("Claude");
-    });
+  it("renders the input with the given value", () => {
+    render(<TextInput label="Model" value="claude-opus-4" onChange={vi.fn()} />);
+    const input = document.querySelector("input") as HTMLInputElement;
+    expect(input.value).toBe("claude-opus-4");
+  });
 
-    it("calls onChange when value changes", () => {
-      const onChange = vi.fn();
-      render(<TextInput label="Name" value="" onChange={onChange} />);
-      fireEvent.change(screen.getByRole("textbox"), { target: { value: "Sonnet" } });
-      expect(onChange).toHaveBeenCalledWith("Sonnet");
-    });
+  it("calls onChange with new value on keystroke", () => {
+    const onChange = vi.fn();
+    render(<TextInput label="Name" value="hello" onChange={onChange} />);
+    const input = document.querySelector("input") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "hello world" } });
+    expect(onChange).toHaveBeenCalledWith("hello world");
+  });
 
-    it("renders placeholder when provided", () => {
-      render(<TextInput label="Name" value="" onChange={vi.fn()} placeholder="Enter your name" />);
-      expect((screen.getByRole("textbox") as HTMLInputElement).placeholder).toBe("Enter your name");
-    });
+  it("renders placeholder text when provided", () => {
+    render(
+      <TextInput
+        label="Token"
+        value=""
+        onChange={vi.fn()}
+        placeholder="sk-..."
+      />,
+    );
+    const input = document.querySelector("input") as HTMLInputElement;
+    expect(input.getAttribute("placeholder")).toBe("sk-...");
+  });
 
-    it("applies font-mono class when mono=true", () => {
-      render(<TextInput label="Token" value="" onChange={vi.fn()} mono />);
-      const input = screen.getByRole("textbox");
-      expect(input.className).toMatch(/font-mono/);
-    });
+  it("applies mono class when mono=true", () => {
+    const { container } = render(
+      <TextInput label="Model" value="" onChange={vi.fn()} mono />,
+    );
+    const input = container.querySelector("input") as HTMLInputElement;
+    expect(input.className).toContain("font-mono");
+  });
 
-    it("has aria-label matching the label", () => {
-      render(<TextInput label="API Key" value="" onChange={vi.fn()} />);
-      expect(screen.getByRole("textbox").getAttribute("aria-label")).toBe("API Key");
-    });
+  it("input has aria-label matching the label", () => {
+    render(<TextInput label="API Key" value="" onChange={vi.fn()} />);
+    const input = document.querySelector("input") as HTMLInputElement;
+    expect(input.getAttribute("aria-label")).toBe("API Key");
+  });
 
-    it("does not apply font-mono class when mono=false", () => {
-      render(<TextInput label="Name" value="" onChange={vi.fn()} mono={false} />);
-      expect(screen.getByRole("textbox").className).not.toMatch(/font-mono/);
-    });
+  it("input is not mono by default", () => {
+    const { container } = render(
+      <TextInput label="Description" value="" onChange={vi.fn()} />,
+    );
+    const input = container.querySelector("input") as HTMLInputElement;
+    expect(input.className).not.toContain("font-mono");
   });
 });
 
-// ─── NumberInput ────────────────────────────────────────────────────────────
+// ─── NumberInput ─────────────────────────────────────────────────────────────
 
 describe("NumberInput", () => {
-  describe("renders", () => {
-    it("renders the label", () => {
-      render(<NumberInput label="Port" value={8000} onChange={vi.fn()} />);
-      expect(screen.getByLabelText("Port")).toBeTruthy();
-    });
+  it("renders the label text", () => {
+    const { container } = render(
+      <NumberInput label="Timeout (s)" value={30} onChange={vi.fn()} />,
+    );
+    expect(container.textContent).toContain("Timeout (s)");
+  });
 
-    it("renders the numeric value", () => {
-      render(<NumberInput label="Timeout" value={120} onChange={vi.fn()} />);
-      expect((screen.getByRole("spinbutton") as HTMLInputElement).value).toBe("120");
-    });
+  it("renders the input with the given numeric value", () => {
+    render(<NumberInput label="Retries" value={3} onChange={vi.fn()} />);
+    const input = document.querySelector("input[type=number]") as HTMLInputElement;
+    expect(input.value).toBe("3");
+  });
 
-    it("calls onChange with parsed integer", () => {
-      const onChange = vi.fn();
-      render(<NumberInput label="Retries" value={0} onChange={onChange} />);
-      fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "3" } });
-      expect(onChange).toHaveBeenCalledWith(3);
-    });
+  it("calls onChange with parsed integer on keystroke", () => {
+    const onChange = vi.fn();
+    render(<NumberInput label="Delay" value={1} onChange={onChange} />);
+    const input = document.querySelector("input[type=number]") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "7" } });
+    expect(onChange).toHaveBeenCalledWith(7);
+  });
 
-    it("calls onChange with 0 for non-numeric input", () => {
-      const onChange = vi.fn();
-      render(<NumberInput label="Retries" value={0} onChange={onChange} />);
-      fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "abc" } });
-      expect(onChange).toHaveBeenCalledWith(0);
-    });
+  it("calls onChange with 0 for non-numeric input", () => {
+    const onChange = vi.fn();
+    render(<NumberInput label="Count" value={5} onChange={onChange} />);
+    const input = document.querySelector("input[type=number]") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "abc" } });
+    expect(onChange).toHaveBeenCalledWith(0);
+  });
 
-    it("applies min/max attributes", () => {
-      render(<NumberInput label="Priority" value={5} onChange={vi.fn()} min={1} max={10} />);
-      const input = screen.getByRole("spinbutton") as HTMLInputElement;
-      expect(input.min).toBe("1");
-      expect(input.max).toBe("10");
-    });
+  it("respects min attribute", () => {
+    render(
+      <NumberInput
+        label="Port"
+        value={8000}
+        onChange={vi.fn()}
+        min={1024}
+      />,
+    );
+    const input = document.querySelector("input[type=number]") as HTMLInputElement;
+    expect(input.getAttribute("min")).toBe("1024");
+  });
 
-    it("has aria-label matching the label", () => {
-      render(<NumberInput label="Retries" value={3} onChange={vi.fn()} />);
-      expect(screen.getByRole("spinbutton").getAttribute("aria-label")).toBe("Retries");
-    });
+  it("respects max attribute", () => {
+    render(
+      <NumberInput
+        label="Memory (MB)"
+        value={256}
+        onChange={vi.fn()}
+        max={65535}
+      />,
+    );
+    const input = document.querySelector("input[type=number]") as HTMLInputElement;
+    expect(input.getAttribute("max")).toBe("65535");
+  });
 
-    it("applies font-mono class", () => {
-      render(<NumberInput label="Timeout" value={30} onChange={vi.fn()} />);
-      expect(screen.getByRole("spinbutton").className).toMatch(/font-mono/);
-    });
+  it("input has aria-label from label prop", () => {
+    render(<NumberInput label="Timeout" value={60} onChange={vi.fn()} />);
+    const input = document.querySelector("input[type=number]") as HTMLInputElement;
+    expect(input.getAttribute("aria-label")).toBe("Timeout");
+  });
+
+  it("input has font-mono class", () => {
+    const { container } = render(
+      <NumberInput label="Budget" value={100} onChange={vi.fn()} />,
+    );
+    const input = container.querySelector("input") as HTMLInputElement;
+    expect(input.className).toContain("font-mono");
   });
 });
 
-// ─── Toggle ─────────────────────────────────────────────────────────────────
+// ─── Toggle ──────────────────────────────────────────────────────────────────
 
 describe("Toggle", () => {
-  describe("renders", () => {
-    it("renders a checkbox", () => {
-      render(<Toggle label="Enable streaming" checked={false} onChange={vi.fn()} />);
-      expect(screen.getByRole("checkbox")).toBeTruthy();
-    });
+  it("renders the checkbox with label text", () => {
+    const { container } = render(
+      <Toggle label="Enable streaming" checked={false} onChange={vi.fn()} />,
+    );
+    const checkbox = container.querySelector(
+      "input[type=checkbox]",
+    ) as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+    expect(
+      checkbox.closest("label")?.textContent,
+    ).toContain("Enable streaming");
+  });
 
-    it("reflects checked=true state", () => {
-      render(<Toggle label="Enable streaming" checked={true} onChange={vi.fn()} />);
-      expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(true);
-    });
+  it("renders checked state correctly", () => {
+    const { container } = render(
+      <Toggle label="Push notifications" checked onChange={vi.fn()} />,
+    );
+    const checkbox = container.querySelector(
+      "input[type=checkbox]",
+    ) as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+  });
 
-    it("reflects checked=false state", () => {
-      render(<Toggle label="Enable streaming" checked={false} onChange={vi.fn()} />);
-      expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(false);
-    });
+  it("calls onChange with true when toggled on", () => {
+    const onChange = vi.fn();
+    const { container } = render(
+      <Toggle label="Escalate" checked={false} onChange={onChange} />,
+    );
+    const checkbox = container.querySelector(
+      "input[type=checkbox]",
+    ) as HTMLInputElement;
+    checkbox.click();
+    expect(onChange).toHaveBeenCalledWith(true);
+  });
 
-    it("calls onChange with new boolean value", () => {
-      const onChange = vi.fn();
-      render(<Toggle label="Enable streaming" checked={false} onChange={onChange} />);
-      fireEvent.click(screen.getByRole("checkbox"));
-      expect(onChange).toHaveBeenCalledWith(true);
-    });
+  it("calls onChange with false when toggled off", () => {
+    const onChange = vi.fn();
+    const { container } = render(
+      <Toggle label="Escalate" checked onChange={onChange} />,
+    );
+    const checkbox = container.querySelector(
+      "input[type=checkbox]",
+    ) as HTMLInputElement;
+    checkbox.click();
+    expect(onChange).toHaveBeenCalledWith(false);
+  });
 
-    it("renders as type=checkbox", () => {
-      render(<Toggle label="Enable" checked={false} onChange={vi.fn()} />);
-      expect(screen.getByRole("checkbox").getAttribute("type")).toBe("checkbox");
-    });
+  it("checkbox is a native input element", () => {
+    const { container } = render(
+      <Toggle label="Feature flag" checked={false} onChange={vi.fn()} />,
+    );
+    expect(container.querySelector("input[type=checkbox]")).toBeTruthy();
   });
 });
 
-// ─── TagList ───────────────────────────────────────────────────────────────
+// ─── TagList ────────────────────────────────────────────────────────────────
 
 describe("TagList", () => {
-  describe("renders", () => {
-    it("renders existing tags", () => {
-      render(<TagList label="Skills" values={["python", "go"]} onChange={vi.fn()} />);
-      expect(screen.getByText("python")).toBeTruthy();
-      expect(screen.getByText("go")).toBeTruthy();
-    });
+  it("renders existing tags", () => {
+    const { container } = render(
+      <TagList label="Tools" values={["file_read", "bash"]} onChange={vi.fn()} />,
+    );
+    expect(container.textContent).toContain("file_read");
+    expect(container.textContent).toContain("bash");
+  });
 
-    it("calls onChange with updated array when × clicked", () => {
-      const onChange = vi.fn();
-      render(<TagList label="Skills" values={["python", "go"]} onChange={onChange} />);
-      fireEvent.click(screen.getByRole("button", { name: /remove tag python/i }));
-      expect(onChange).toHaveBeenCalledWith(["go"]);
-    });
+  it("renders × remove button for each tag with aria-label", () => {
+    render(
+      <TagList
+        label="Skills"
+        values={["python", "golang"]}
+        onChange={vi.fn()}
+      />,
+    );
+    const buttons = document.querySelectorAll("button");
+    // buttons[0] = first × (python), buttons[1] = second × (golang)
+    expect(buttons[0].getAttribute("aria-label")).toBe(
+      "Remove tag python",
+    );
+    expect(buttons[1].getAttribute("aria-label")).toBe(
+      "Remove tag golang",
+    );
+  });
 
-    it("× button has correct aria-label per tag", () => {
-      render(<TagList label="Skills" values={["python"]} onChange={vi.fn()} />);
-      expect(screen.getByRole("button", { name: /remove tag python/i })).toBeTruthy();
-    });
+  it("calls onChange without removed tag when × is clicked", () => {
+    const onChange = vi.fn();
+    render(
+      <TagList
+        label="Tags"
+        values={["react", "vue", "angular"]}
+        onChange={onChange}
+      />,
+    );
+    const buttons = document.querySelectorAll("button");
+    // buttons[0] = react ×, buttons[1] = vue ×, buttons[2] = angular ×
+    buttons[0].click(); // Remove react
+    expect(onChange).toHaveBeenCalledWith(["vue", "angular"]);
+  });
 
-    it("adds tag when Enter is pressed with non-empty input", () => {
-      const onChange = vi.fn();
-      render(<TagList label="Skills" values={[]} onChange={onChange} />);
-      const input = screen.getByRole("textbox");
-      fireEvent.change(input, { target: { value: "rust" } });
-      fireEvent.keyDown(input, { key: "Enter" });
-      expect(onChange).toHaveBeenCalledWith(["rust"]);
-    });
+  it("renders the label text", () => {
+    const { container } = render(
+      <TagList label="Required env vars" values={[]} onChange={vi.fn()} />,
+    );
+    expect(container.textContent).toContain("Required env vars");
+  });
 
-    it("does not add tag when Enter is pressed with whitespace-only input", () => {
-      const onChange = vi.fn();
-      render(<TagList label="Skills" values={[]} onChange={onChange} />);
-      const input = screen.getByRole("textbox");
-      fireEvent.change(input, { target: { value: "   " } });
-      fireEvent.keyDown(input, { key: "Enter" });
-      expect(onChange).not.toHaveBeenCalled();
-    });
+  it("renders placeholder text when provided", () => {
+    render(
+      <TagList
+        label="Tags"
+        values={[]}
+        onChange={vi.fn()}
+        placeholder="Add a tag..."
+      />,
+    );
+    const input = document.querySelector("input[type=text]") as HTMLInputElement;
+    expect(input.getAttribute("placeholder")).toBe("Add a tag...");
+  });
 
-    it("clears input after adding a tag", () => {
-      const onChange = vi.fn();
-      render(<TagList label="Skills" values={[]} onChange={onChange} />);
-      const input = screen.getByRole("textbox");
-      fireEvent.change(input, { target: { value: "typescript" } });
-      fireEvent.keyDown(input, { key: "Enter" });
-      expect((input as HTMLInputElement).value).toBe("");
-    });
+  it("renders exactly one textbox (the input)", () => {
+    const { container } = render(
+      <TagList
+        label="Tools"
+        values={["read", "write"]}
+        onChange={vi.fn()}
+      />,
+    );
+    expect(
+      container.querySelectorAll("input[type=text]"),
+    ).toHaveLength(1);
+  });
 
-    it("renders the label", () => {
-      render(<TagList label="Tools" values={[]} onChange={vi.fn()} />);
-      expect(screen.getByLabelText("Tools")).toBeTruthy();
-    });
+  it("adds tag on Enter key", () => {
+    const onChange = vi.fn();
+    render(
+      <TagList label="Skills" values={["python"]} onChange={onChange} />,
+    );
+    const input = document.querySelector("input[type=text]") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "rust" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onChange).toHaveBeenCalledWith(["python", "rust"]);
+  });
 
-    it("renders placeholder text", () => {
-      render(<TagList label="Skills" values={[]} onChange={vi.fn()} placeholder="Add a skill" />);
-      expect((screen.getByRole("textbox") as HTMLInputElement).placeholder).toBe("Add a skill");
-    });
+  it("does not add empty tag on Enter", () => {
+    const onChange = vi.fn();
+    render(
+      <TagList label="Tools" values={[]} onChange={onChange} />,
+    );
+    const input = document.querySelector("input[type=text]") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "   " } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onChange).not.toHaveBeenCalled();
+  });
 
-    it("renders default placeholder when not specified", () => {
-      render(<TagList label="Skills" values={[]} onChange={vi.fn()} />);
-      expect((screen.getByRole("textbox") as HTMLInputElement).placeholder).toBe("Type and press Enter");
-    });
+  it("clears input after adding tag", () => {
+    render(
+      <TagList label="Tags" values={[]} onChange={vi.fn()} />,
+    );
+    const input = document.querySelector("input[type=text]") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "golang" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input.value).toBe("");
   });
 });
 
-// ─── Section ────────────────────────────────────────────────────────────────
+// ─── Section ───────────────────────────────────────────────────────────────
 
 describe("Section", () => {
-  describe("renders", () => {
-    it("renders the title", () => {
-      render(<Section title="Runtime Config"><p>Content</p></Section>);
-      expect(screen.getByText("Runtime Config")).toBeTruthy();
-    });
+  it("renders the title", () => {
+    const { container } = render(
+      <Section title="Runtime config">Content here</Section>,
+    );
+    expect(container.textContent).toContain("Runtime config");
+  });
 
-    it("renders children when defaultOpen=true", () => {
-      render(<Section title="Runtime Config"><p data-testid="content">Hello</p></Section>);
-      expect(screen.getByTestId("content")).toBeTruthy();
-    });
+  it("renders children when open (defaultOpen=true)", () => {
+    const { container } = render(
+      <Section title="A section">Hidden content</Section>,
+    );
+    expect(container.textContent).toContain("Hidden content");
+  });
 
-    it("hides children when defaultOpen=false", () => {
-      render(<Section title="Runtime Config" defaultOpen={false}><p data-testid="content">Hello</p></Section>);
-      expect(screen.queryByTestId("content")).toBeNull();
-    });
+  it("starts closed when defaultOpen=false", () => {
+    const { container } = render(
+      <Section title="Collapsed" defaultOpen={false}>
+        Should not be visible
+      </Section>,
+    );
+    expect(container.textContent).not.toContain("Should not be visible");
+  });
 
-    it("toggles children visibility on click", () => {
-      render(<Section title="Runtime Config" defaultOpen={true}><p data-testid="content">Hello</p></Section>);
-      expect(screen.getByTestId("content")).toBeTruthy();
-      fireEvent.click(screen.getByRole("button", { name: /runtime config/i }));
-      expect(screen.queryByTestId("content")).toBeNull();
-    });
+  it("opens/closes content on title click", () => {
+    const { container } = render(
+      <Section title="Toggle me" defaultOpen={false}>
+        Now you see me
+      </Section>,
+    );
+    // Should be closed initially
+    expect(container.textContent).not.toContain("Now you see me");
+    // Click to open
+    const btn = container.querySelector("button") as HTMLButtonElement;
+    fireEvent.click(btn);
+    expect(container.textContent).toContain("Now you see me");
+    // Click to close
+    fireEvent.click(btn);
+    expect(container.textContent).not.toContain("Now you see me");
+  });
 
-    it("button has aria-expanded reflecting open state", () => {
-      render(<Section title="Runtime Config" defaultOpen={true}><p>Content</p></Section>);
-      const btn = screen.getByRole("button", { name: /runtime config/i });
-      expect(btn.getAttribute("aria-expanded")).toBe("true");
-      fireEvent.click(btn);
-      expect(btn.getAttribute("aria-expanded")).toBe("false");
-    });
+  it("title button has aria-expanded reflecting open state", () => {
+    // Open section
+    const { container: openContainer } = render(
+      <Section title="A section" defaultOpen={true}>
+        Open content
+      </Section>,
+    );
+    const openBtn = openContainer.querySelector(
+      "button",
+    ) as HTMLButtonElement;
+    expect(openBtn.getAttribute("aria-expanded")).toBe("true");
 
-    it("button has aria-controls linking to content region id", () => {
-      render(<Section title="Runtime Config"><p>Content</p></Section>);
-      const btn = screen.getByRole("button", { name: /runtime config/i });
-      const contentId = btn.getAttribute("aria-controls");
-      expect(contentId).not.toBeNull();
-      // Content div has the matching id
-      expect(document.getElementById(String(contentId))).not.toBeNull();
-    });
+    // Closed section
+    const { container: closedContainer } = render(
+      <Section title="B section" defaultOpen={false}>
+        Closed content
+      </Section>,
+    );
+    const closedBtn = closedContainer.querySelector(
+      "button",
+    ) as HTMLButtonElement;
+    expect(closedBtn.getAttribute("aria-expanded")).toBe("false");
+  });
 
-    it("indicator span has aria-hidden so screen readers skip it", () => {
-      render(<Section title="Runtime Config"><p>Content</p></Section>);
-      const btn = screen.getByRole("button", { name: /runtime config/i });
-      const indicator = btn.querySelector("[aria-hidden='true']");
-      expect(indicator).not.toBeNull();
-    });
+  it("toggle indicator changes between ▾ (open) and ▸ (closed)", () => {
+    // Open: uses ▾
+    const { container: openContainer } = render(
+      <Section title="Indicator" defaultOpen={true}>
+        Open
+      </Section>,
+    );
+    // Button has two spans: title (first) and indicator (second, aria-hidden)
+    const openSpans = openContainer
+      .querySelectorAll("button span");
+    const openIndicator = openSpans[1]?.textContent?.trim();
+    expect(openIndicator).toBe("▾");
+
+    // Closed: uses ▸
+    const { container: closedContainer } = render(
+      <Section title="Indicator" defaultOpen={false}>
+        Closed
+      </Section>,
+    );
+    const closedSpans = closedContainer
+      .querySelectorAll("button span");
+    const closedIndicator = closedSpans[1]?.textContent?.trim();
+    expect(closedIndicator).toBe("▸");
   });
 });

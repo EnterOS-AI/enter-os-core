@@ -52,9 +52,9 @@ import (
 // integrationDB is imported from delegation_ledger_integration_test.go.
 // Each test gets a fresh table state.
 
-const testDelegationID = "del-159-test-integration"
-const testSourceID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-const testTargetID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+const integrationTestDelegationID = "del-159-test-integration"
+const integrationTestSourceID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+const integrationTestTargetID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 
 // rawHTTPServer starts a TCP listener, serves one HTTP response, and closes.
 // It runs in a background goroutine so the test can proceed immediately after
@@ -153,8 +153,8 @@ func setupIntegrationFixtures(t *testing.T, conn *sql.DB) func() {
 		name     string
 		parentID *string
 	}{
-		{testSourceID, "test-source", nil},
-		{testTargetID, "test-target", nil},
+		{integrationTestSourceID, "test-source", nil},
+		{integrationTestTargetID, "test-target", nil},
 	} {
 		if _, err := conn.ExecContext(ctx,
 			`INSERT INTO workspaces (id, name, parent_id) VALUES ($1::uuid, $2, $3) ON CONFLICT (id) DO NOTHING`,
@@ -166,7 +166,7 @@ func setupIntegrationFixtures(t *testing.T, conn *sql.DB) func() {
 	}
 
 	reqBody, _ := json.Marshal(map[string]any{
-		"delegation_id": testDelegationID,
+		"delegation_id": integrationTestDelegationID,
 		"task":          "do work",
 	})
 	if _, err := conn.ExecContext(ctx, `
@@ -174,7 +174,7 @@ func setupIntegrationFixtures(t *testing.T, conn *sql.DB) func() {
 			(workspace_id, activity_type, method, source_id, target_id, request_body, status)
 		VALUES ($1, 'delegate', 'delegate', $1, $2, $3::jsonb, 'pending')
 		ON CONFLICT DO NOTHING
-	`, testSourceID, testTargetID, string(reqBody)); err != nil {
+	`, integrationTestSourceID, integrationTestTargetID, string(reqBody)); err != nil {
 		cancel()
 		t.Fatalf("seed activity_logs: %v", err)
 	}
@@ -184,7 +184,7 @@ func setupIntegrationFixtures(t *testing.T, conn *sql.DB) func() {
 			(delegation_id, caller_id, callee_id, task_preview, status)
 		VALUES ($1, $2::uuid, $3::uuid, 'do work', 'queued')
 		ON CONFLICT (delegation_id) DO NOTHING
-	`, testDelegationID, testSourceID, testTargetID); err != nil {
+	`, integrationTestDelegationID, integrationTestSourceID, integrationTestTargetID); err != nil {
 		cancel()
 		t.Fatalf("seed delegations: %v", err)
 	}
@@ -195,11 +195,11 @@ func setupIntegrationFixtures(t *testing.T, conn *sql.DB) func() {
 		defer cancel2()
 		conn.ExecContext(ctx2,
 			`DELETE FROM activity_logs WHERE workspace_id = $1 AND request_body->>'delegation_id' = $2`,
-			testSourceID, testDelegationID)
+			integrationTestSourceID, integrationTestDelegationID)
 		conn.ExecContext(ctx2,
-			`DELETE FROM delegations WHERE delegation_id = $1`, testDelegationID)
+			`DELETE FROM delegations WHERE delegation_id = $1`, integrationTestDelegationID)
 		conn.ExecContext(ctx2,
-			`DELETE FROM workspaces WHERE id IN ($1, $2)`, testSourceID, testTargetID)
+			`DELETE FROM workspaces WHERE id IN ($1, $2)`, integrationTestSourceID, integrationTestTargetID)
 	}
 }
 
@@ -212,7 +212,7 @@ func readDelegationRow(t *testing.T, conn *sql.DB) (status, preview, errorDetail
 	var prev, errDet sql.NullString
 	err := conn.QueryRowContext(ctx,
 		`SELECT status, result_preview, error_detail FROM delegations WHERE delegation_id = $1`,
-		testDelegationID,
+		integrationTestDelegationID,
 	).Scan(&status, &prev, &errDet)
 	if err != nil {
 		t.Fatalf("readDelegationRow: %v", err)
@@ -279,7 +279,7 @@ func TestIntegration_ExecuteDelegation_DeliveryConfirmedProxyError_TreatsAsSucce
 
 	mr := setupTestRedis(t)
 	defer mr.Close()
-	db.CacheURL(context.Background(), testTargetID, agentURL)
+	db.CacheURL(context.Background(), integrationTestTargetID, agentURL)
 
 	prevClient := a2aClient
 	defer func() { a2aClient = prevClient }()
@@ -303,8 +303,7 @@ func TestIntegration_ExecuteDelegation_DeliveryConfirmedProxyError_TreatsAsSucce
 
 	start := time.Now()
 	runWithTimeout(t, 30*time.Second, func(ctx context.Context) {
-		_ = ctx // ctx unused: executeDelegation manages its own 30-min timeout internally
-		dh.executeDelegation(testSourceID, testTargetID, testDelegationID, a2aBody)
+		dh.executeDelegation(ctx, integrationTestSourceID, integrationTestTargetID, integrationTestDelegationID, a2aBody)
 	})
 	t.Logf("executeDelegation took %v", time.Since(start))
 
@@ -335,7 +334,7 @@ func TestIntegration_ExecuteDelegation_ProxyErrorNon2xx_RemainsFailed(t *testing
 
 	mr := setupTestRedis(t)
 	defer mr.Close()
-	db.CacheURL(context.Background(), testTargetID, agentURL)
+	db.CacheURL(context.Background(), integrationTestTargetID, agentURL)
 
 	prevClient := a2aClient
 	defer func() { a2aClient = prevClient }()
@@ -356,8 +355,7 @@ func TestIntegration_ExecuteDelegation_ProxyErrorNon2xx_RemainsFailed(t *testing
 	})
 	start := time.Now()
 	runWithTimeout(t, 30*time.Second, func(ctx context.Context) {
-		_ = ctx // ctx unused: executeDelegation manages its own 30-min timeout internally
-		dh.executeDelegation(testSourceID, testTargetID, testDelegationID, a2aBody)
+		dh.executeDelegation(ctx, integrationTestSourceID, integrationTestTargetID, integrationTestDelegationID, a2aBody)
 	})
 	t.Logf("executeDelegation took %v", time.Since(start))
 
@@ -385,7 +383,7 @@ func TestIntegration_ExecuteDelegation_ProxyErrorEmptyBody_RemainsFailed(t *test
 
 	mr := setupTestRedis(t)
 	defer mr.Close()
-	db.CacheURL(context.Background(), testTargetID, agentURL)
+	db.CacheURL(context.Background(), integrationTestTargetID, agentURL)
 
 	prevClient := a2aClient
 	defer func() { a2aClient = prevClient }()
@@ -406,8 +404,7 @@ func TestIntegration_ExecuteDelegation_ProxyErrorEmptyBody_RemainsFailed(t *test
 	})
 	start := time.Now()
 	runWithTimeout(t, 30*time.Second, func(ctx context.Context) {
-		_ = ctx // ctx unused: executeDelegation manages its own 30-min timeout internally
-		dh.executeDelegation(testSourceID, testTargetID, testDelegationID, a2aBody)
+		dh.executeDelegation(ctx, integrationTestSourceID, integrationTestTargetID, integrationTestDelegationID, a2aBody)
 	})
 	t.Logf("executeDelegation took %v", time.Since(start))
 
@@ -434,7 +431,7 @@ func TestIntegration_ExecuteDelegation_CleanProxyResponse_Unchanged(t *testing.T
 
 	mr := setupTestRedis(t)
 	defer mr.Close()
-	db.CacheURL(context.Background(), testTargetID, agentURL)
+	db.CacheURL(context.Background(), integrationTestTargetID, agentURL)
 
 	prevClient := a2aClient
 	defer func() { a2aClient = prevClient }()
@@ -455,8 +452,7 @@ func TestIntegration_ExecuteDelegation_CleanProxyResponse_Unchanged(t *testing.T
 	})
 	start := time.Now()
 	runWithTimeout(t, 30*time.Second, func(ctx context.Context) {
-		_ = ctx // ctx unused: executeDelegation manages its own 30-min timeout internally
-		dh.executeDelegation(testSourceID, testTargetID, testDelegationID, a2aBody)
+		dh.executeDelegation(ctx, integrationTestSourceID, integrationTestTargetID, integrationTestDelegationID, a2aBody)
 	})
 	t.Logf("executeDelegation took %v", time.Since(start))
 
@@ -501,8 +497,7 @@ func TestIntegration_ExecuteDelegation_RedisDown_FallsBackToDB(t *testing.T) {
 	})
 	start := time.Now()
 	runWithTimeout(t, 30*time.Second, func(ctx context.Context) {
-		_ = ctx // ctx unused: executeDelegation manages its own 30-min timeout internally
-		dh.executeDelegation(testSourceID, testTargetID, testDelegationID, a2aBody)
+		dh.executeDelegation(ctx, integrationTestSourceID, integrationTestTargetID, integrationTestDelegationID, a2aBody)
 	})
 	t.Logf("executeDelegation took %v", time.Since(start))
 

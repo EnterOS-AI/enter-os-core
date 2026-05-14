@@ -53,6 +53,7 @@ jobs:
   # Operational failures (PyPI unreachable, missing DISPATCH_TOKEN) are
   # surfaced via continue-on-error: true rather than blocking the merge.
   # The actual bump work happens on the main/staging push after merge.
+  # bp-exempt: advisory validation for runtime publication; not a branch-protection gate.
   pr-validate:
     runs-on: ubuntu-latest
     # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
@@ -79,6 +80,7 @@ jobs:
   # Actual bump-and-tag: runs on main/staging pushes, posts real success/failure.
   # No continue-on-error — operational failures here trip the main-red
   # watchdog, which is the desired signal for infrastructure degradation.
+  # bp-exempt: post-merge tag publication side effect; CI / all-required gates source changes.
   bump-and-tag:
     runs-on: ubuntu-latest
     # Only fire on push events (main/staging after PR merge). Pull_request

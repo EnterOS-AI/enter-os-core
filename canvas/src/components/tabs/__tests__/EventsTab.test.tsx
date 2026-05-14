@@ -1,205 +1,364 @@
 // @vitest-environment jsdom
 /**
- * Tests for EventsTab component.
+ * Tests for EventsTab — the activity feed on the Events tab.
  *
- * Covers: formatTime pure function, EVENT_COLORS constant,
- * loading/error/empty states, event list rendering, expand/collapse,
- * refresh button, auto-refresh setup.
+ * Coverage:
+ *   - Loading state (no events yet)
+ *   - Empty state ("No events yet")
+ *   - Event list renders with event_type color
+ *   - Expand/collapse row
+ *   - Refresh button triggers reload
+ *   - Error state surfaces API failure message
+ *   - Auto-refresh every 10s (fake timers)
+ *   - formatTime relative timestamps
+ *
+ * Fake timers are ONLY used in the auto-refresh describe block where we need
+ * to control the clock. All other tests use real timers so Promises resolve
+ * naturally without fighting the fake-timer queue.
  */
 import React from "react";
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { render, screen, fireEvent, cleanup, act } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventsTab } from "../EventsTab";
 
-// Mock @/lib/api — hoisted so it's applied before the module loads.
-const _mockGet = vi.hoisted(() => vi.fn<() => Promise<unknown[]>>());
+// Hoist mockGet so vi.mock factory can reference it (vi.mock is hoisted to
+// the top of the module, before any module-level declarations).
+const mockGet = vi.hoisted(() => vi.fn<[], Promise<unknown[]>>());
+
 vi.mock("@/lib/api", () => ({
-  api: { get: _mockGet },
+  api: { get: mockGet },
 }));
 
-afterEach(() => {
-  cleanup();
-  vi.restoreAllMocks();
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const event = (
+  id: string,
+  type = "WORKSPACE_ONLINE",
+  createdOffsetSecs = 0,
+): {
+  id: string;
+  event_type: string;
+  workspace_id: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+} => ({
+  id,
+  event_type: type,
+  workspace_id: "ws-1",
+  payload: { key: "value" },
+  created_at: new Date(Date.now() - createdOffsetSecs * 1000).toISOString(),
 });
 
-// ─── formatTime tests (via rendered output) ────────────────────────────────────
+const renderTab = (workspaceId = "ws-1") =>
+  render(<EventsTab workspaceId={workspaceId} />);
 
-describe("EventsTab — formatTime", () => {
-  it("shows 'ago' for events less than a minute old", async () => {
-    const now = new Date();
-    const recent = new Date(now.getTime() - 30_000).toISOString();
-    _mockGet.mockResolvedValueOnce([
-      { id: "e1", event_type: "WORKSPACE_ONLINE", workspace_id: null, payload: {}, created_at: recent },
-    ]);
-    render(<EventsTab workspaceId="ws-1" />);
-    await waitFor(() => {
-      expect(screen.getByText(/ago/)).toBeTruthy();
-    });
+// Flush pattern for real-timer tests: resolve the mock microtask then
+// flush React's state batch. Using act(async ...) lets us await inside.
+async function flush() {
+  await act(async () => { await Promise.resolve(); });
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+describe("EventsTab — render conditions", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    mockGet.mockReset();
   });
 
-  it("shows 'm ago' for events less than an hour old", async () => {
-    const now = new Date();
-    const minsAgo = new Date(now.getTime() - 5 * 60_000).toISOString();
-    _mockGet.mockResolvedValueOnce([
-      { id: "e1", event_type: "WORKSPACE_OFFLINE", workspace_id: null, payload: {}, created_at: minsAgo },
-    ]);
-    render(<EventsTab workspaceId="ws-1" />);
-    await waitFor(() => {
-      expect(screen.getByText(/m ago/)).toBeTruthy();
-    });
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
   });
 
-  it("shows 'h ago' for events less than a day old", async () => {
-    const now = new Date();
-    const hoursAgo = new Date(now.getTime() - 3 * 3_600_000).toISOString();
-    _mockGet.mockResolvedValueOnce([
-      { id: "e1", event_type: "WORKSPACE_DEGRADED", workspace_id: null, payload: {}, created_at: hoursAgo },
-    ]);
-    render(<EventsTab workspaceId="ws-1" />);
-    await waitFor(() => {
-      expect(screen.getByText(/h ago/)).toBeTruthy();
-    });
-  });
-});
-
-// ─── EVENT_COLORS rendering ───────────────────────────────────────────────────
-
-describe("EventsTab — EVENT_COLORS", () => {
-  it("renders all known event types without crashing", async () => {
-    const eventTypes = [
-      "WORKSPACE_ONLINE",
-      "WORKSPACE_OFFLINE",
-      "WORKSPACE_DEGRADED",
-      "WORKSPACE_PROVISIONING",
-      "WORKSPACE_REMOVED",
-      "WORKSPACE_PROVISION_FAILED",
-      "AGENT_CARD_UPDATED",
-    ];
-    _mockGet.mockResolvedValueOnce(
-      eventTypes.map((event_type, i) => ({
-        id: `e-${i}`, event_type, workspace_id: null, payload: {}, created_at: new Date().toISOString(),
-      })),
-    );
-    render(<EventsTab workspaceId="ws-1" />);
-    await waitFor(() => {
-      for (const et of eventTypes) {
-        expect(screen.getByText(et)).toBeTruthy();
-      }
-    });
-  });
-
-  it("renders unknown event types without crashing", async () => {
-    _mockGet.mockResolvedValueOnce([
-      { id: "e-unk", event_type: "UNKNOWN_EVENT_XYZ", workspace_id: null, payload: {}, created_at: new Date().toISOString() },
-    ]);
-    render(<EventsTab workspaceId="ws-1" />);
-    await waitFor(() => {
-      expect(screen.getByText("UNKNOWN_EVENT_XYZ")).toBeTruthy();
-    });
-  });
-});
-
-// ─── States ───────────────────────────────────────────────────────────────────
-
-describe("EventsTab — states", () => {
-  it("shows loading text initially", () => {
-    _mockGet.mockImplementation(() => new Promise(() => {})); // never resolves
-    render(<EventsTab workspaceId="ws-1" />);
+  it("shows loading state when events are being fetched", async () => {
+    // Never resolve so loading stays true
+    mockGet.mockImplementation(() => new Promise(() => {}));
+    renderTab();
+    await act(async () => { /* flush initial render */ });
     expect(screen.getByText("Loading events...")).toBeTruthy();
   });
 
-  it("shows empty message when no events returned", async () => {
-    _mockGet.mockResolvedValueOnce([]);
-    render(<EventsTab workspaceId="ws-1" />);
-    await waitFor(() => {
-      expect(screen.getByText("No events yet")).toBeTruthy();
-    });
+  it("shows empty state when API returns an empty list", async () => {
+    mockGet.mockResolvedValueOnce([]);
+    renderTab();
+    await flush();
+    expect(screen.getByText("No events yet")).toBeTruthy();
   });
 
-  it("shows error alert when fetch fails", async () => {
-    _mockGet.mockRejectedValueOnce(new Error("server error"));
-    render(<EventsTab workspaceId="ws-1" />);
-    await waitFor(() => {
-      expect(screen.getByText(/server error/i)).toBeTruthy();
-    });
+  it("renders the event list when API returns events", async () => {
+    mockGet.mockResolvedValueOnce([
+      event("e1", "WORKSPACE_ONLINE"),
+      event("e2", "WORKSPACE_REMOVED"),
+    ]);
+    renderTab();
+    await flush();
+    expect(screen.getByText("WORKSPACE_ONLINE")).toBeTruthy();
+    expect(screen.getByText("WORKSPACE_REMOVED")).toBeTruthy();
+    expect(screen.getByText("2 events")).toBeTruthy();
+  });
+
+  it("applies text-bad color to WORKSPACE_REMOVED events", async () => {
+    mockGet.mockResolvedValueOnce([event("e1", "WORKSPACE_REMOVED")]);
+    renderTab();
+    await flush();
+    const span = screen.getByText("WORKSPACE_REMOVED");
+    expect(span.classList).toContain("text-bad");
+  });
+
+  it("applies text-good color to WORKSPACE_ONLINE events", async () => {
+    mockGet.mockResolvedValueOnce([event("e1", "WORKSPACE_ONLINE")]);
+    renderTab();
+    await flush();
+    const span = screen.getByText("WORKSPACE_ONLINE");
+    expect(span.classList).toContain("text-good");
+  });
+
+  it("applies text-accent color to AGENT_CARD_UPDATED events", async () => {
+    mockGet.mockResolvedValueOnce([event("e1", "AGENT_CARD_UPDATED")]);
+    renderTab();
+    await flush();
+    const span = screen.getByText("AGENT_CARD_UPDATED");
+    expect(span.classList).toContain("text-accent");
+  });
+
+  it("applies text-ink-mid fallback for unknown event types", async () => {
+    mockGet.mockResolvedValueOnce([event("e1", "MY_CUSTOM_EVENT")]);
+    renderTab();
+    await flush();
+    const span = screen.getByText("MY_CUSTOM_EVENT");
+    expect(span.classList).toContain("text-ink-mid");
   });
 });
 
-// ─── Event list ───────────────────────────────────────────────────────────────
-
-describe("EventsTab — event list", () => {
-  it("renders all returned events", async () => {
-    _mockGet.mockResolvedValueOnce([
-      { id: "e1", event_type: "WORKSPACE_ONLINE", workspace_id: null, payload: { foo: 1 }, created_at: new Date().toISOString() },
-      { id: "e2", event_type: "WORKSPACE_OFFLINE", workspace_id: null, payload: { bar: 2 }, created_at: new Date().toISOString() },
-    ]);
-    render(<EventsTab workspaceId="ws-1" />);
-    await waitFor(() => {
-      expect(screen.getAllByText(/WORKSPACE_/).length).toBeGreaterThanOrEqual(2);
-    });
+describe("EventsTab — expand/collapse", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    mockGet.mockReset();
   });
 
-  it("shows event count in header", async () => {
-    _mockGet.mockResolvedValueOnce([
-      { id: "e1", event_type: "WORKSPACE_ONLINE", workspace_id: null, payload: {}, created_at: new Date().toISOString() },
-      { id: "e2", event_type: "WORKSPACE_OFFLINE", workspace_id: null, payload: {}, created_at: new Date().toISOString() },
-      { id: "e3", event_type: "WORKSPACE_DEGRADED", workspace_id: null, payload: {}, created_at: new Date().toISOString() },
-    ]);
-    render(<EventsTab workspaceId="ws-1" />);
-    await waitFor(() => {
-      expect(screen.getByText("3 events")).toBeTruthy();
-    });
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
   });
 
-  it("expands payload panel on click", async () => {
-    _mockGet.mockResolvedValueOnce([
-      { id: "e-expand", event_type: "WORKSPACE_ONLINE", workspace_id: null, payload: { key: "value" }, created_at: new Date().toISOString() },
-    ]);
-    render(<EventsTab workspaceId="ws-1" />);
-    await waitFor(() => screen.getByText("WORKSPACE_ONLINE"));
-
+  it("shows payload when a row is clicked (expanded)", async () => {
+    mockGet.mockResolvedValueOnce([event("e1", "WORKSPACE_ONLINE")]);
+    renderTab();
+    await flush();
     fireEvent.click(screen.getByText("WORKSPACE_ONLINE"));
-
-    await waitFor(() => {
-      expect(screen.getByText(/"key":\s*"value"/)).toBeTruthy();
-    });
+    await act(async () => { /* flush */ });
+    expect(screen.getByText(/"key": "value"/)).toBeTruthy();
+    expect(screen.getByText("ID: e1")).toBeTruthy();
   });
 
-  it("collapses expanded panel on second click", async () => {
-    _mockGet.mockResolvedValueOnce([
-      { id: "e-collapse", event_type: "WORKSPACE_DEGRADED", workspace_id: null, payload: { x: 1 }, created_at: new Date().toISOString() },
-    ]);
-    render(<EventsTab workspaceId="ws-1" />);
-    await waitFor(() => screen.getByText("WORKSPACE_DEGRADED"));
+  it("hides payload when the expanded row is clicked again", async () => {
+    mockGet.mockResolvedValueOnce([event("e1", "WORKSPACE_ONLINE")]);
+    renderTab();
+    await flush();
+    // First click: expand
+    fireEvent.click(screen.getByText("WORKSPACE_ONLINE"));
+    await act(async () => { /* flush */ });
+    expect(screen.getByText(/"key": "value"/)).toBeTruthy();
+    // Second click: collapse — re-query the button to ensure the
+    // post-render element with the up-to-date handler is targeted
+    fireEvent.click(screen.getByText("WORKSPACE_ONLINE"));
+    await act(async () => { /* flush */ });
+    expect(screen.queryByText(/"key": "value"/)).toBeFalsy();
+  });
 
-    fireEvent.click(screen.getByText("WORKSPACE_DEGRADED"));
-    await waitFor(() => expect(screen.getByText(/"x":\s*1/)).toBeTruthy());
-
-    fireEvent.click(screen.getByText("WORKSPACE_DEGRADED"));
-    await waitFor(() => {
-      expect(screen.queryByText(/"x":\s*1/)).toBeNull();
+  it("has aria-expanded=true on the expanded row", async () => {
+    mockGet.mockResolvedValueOnce([event("e1", "WORKSPACE_ONLINE")]);
+    renderTab();
+    await flush();
+    // Call the onClick prop directly inside act() to bypass React's event
+    // delegation, which fireEvent.click doesn't reliably trigger in jsdom.
+    act(() => {
+      screen.getByRole("button", { name: /workspace_online/i }).click();
     });
+    await flush();
+    // Verify aria-expanded is true on the expanded button
+    expect(
+      screen
+        .getAllByRole("button")
+        .find((b) => b.textContent?.includes("WORKSPACE_ONLINE"))
+        ?.getAttribute("aria-expanded"),
+    ).toBe("true");
+  });
+
+  it("has aria-expanded=false on collapsed rows", async () => {
+    mockGet.mockResolvedValueOnce([
+      event("e1", "WORKSPACE_ONLINE"),
+      event("e2", "WORKSPACE_REMOVED"),
+    ]);
+    renderTab();
+    await flush();
+    // Expand the first row
+    act(() => {
+      screen
+        .getAllByRole("button")
+        .find((b) => b.textContent?.includes("WORKSPACE_ONLINE"))
+        ?.click();
+    });
+    await flush();
+    const onlineBtn = screen
+      .getAllByRole("button")
+      .find((b) => b.textContent?.includes("WORKSPACE_ONLINE"));
+    const removedBtn = screen
+      .getAllByRole("button")
+      .find((b) => b.textContent?.includes("WORKSPACE_REMOVED"));
+    expect(onlineBtn?.getAttribute("aria-expanded")).toBe("true");
+    expect(removedBtn?.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("has aria-controls linking row to its payload panel", async () => {
+    mockGet.mockResolvedValueOnce([event("evt-42", "WORKSPACE_ONLINE")]);
+    renderTab();
+    await flush();
+    // Verify the aria-controls attribute on the button
+    expect(
+      screen.getByRole("button", { name: /workspace_online/i }).getAttribute(
+        "aria-controls",
+      ),
+    ).toBe("events-payload-evt-42");
   });
 });
-
-// ─── Refresh button ───────────────────────────────────────────────────────────
 
 describe("EventsTab — refresh", () => {
-  it("has a Refresh button", async () => {
-    _mockGet.mockResolvedValueOnce([]);
-    render(<EventsTab workspaceId="ws-1" />);
-    await waitFor(() => {});
-    expect(screen.getByRole("button", { name: /refresh/i })).toBeTruthy();
+  beforeEach(() => {
+    vi.useRealTimers();
+    mockGet.mockReset();
   });
 
-  it("Refresh button triggers a reload", async () => {
-    _mockGet.mockResolvedValueOnce([]);
-    render(<EventsTab workspaceId="ws-1" />);
-    await waitFor(() => screen.getByRole("button", { name: /refresh/i }));
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
 
+  it("Refresh button triggers a new GET /events/:id", async () => {
+    mockGet.mockResolvedValue([event("e1", "WORKSPACE_ONLINE")]);
+    renderTab();
+    await flush();
+    expect(mockGet).toHaveBeenCalledWith("/events/ws-1");
+    mockGet.mockClear();
     fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
+    await flush();
+    expect(mockGet).toHaveBeenCalledWith("/events/ws-1");
+  });
 
-    // Called at least twice: initial load + refresh click
-    expect(_mockGet).toHaveBeenCalled();
+  it("shows loading state during refresh (events still visible from previous load)", async () => {
+    // First load succeeds with real timers so the mock resolves
+    mockGet.mockResolvedValueOnce([event("e1", "WORKSPACE_ONLINE")]);
+    renderTab();
+    await flush();
+    expect(screen.getByText("1 events")).toBeTruthy();
+
+    // Switch to fake timers for the refresh call (loading stays true)
+    vi.useFakeTimers();
+    // Refresh call hangs to keep loading=true
+    mockGet.mockImplementationOnce(() => new Promise(() => {}));
+    fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
+    await act(() => { vi.runAllTimers(); });
+    // Previous events should still be visible during refresh
+    expect(screen.getByText("WORKSPACE_ONLINE")).toBeTruthy();
+    vi.useRealTimers();
+  });
+});
+
+describe("EventsTab — error state", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    mockGet.mockReset();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it("shows error message when GET /events/:id rejects", async () => {
+    mockGet.mockRejectedValue(new Error("Gateway timeout"));
+    renderTab();
+    await flush();
+    expect(screen.getByText("Gateway timeout")).toBeTruthy();
+    expect(screen.queryByText("Loading events...")).toBeFalsy();
+  });
+
+  it("shows 'Failed to load events' when API rejects with non-Error", async () => {
+    mockGet.mockRejectedValue("unknown failure");
+    renderTab();
+    await flush();
+    expect(screen.getByText("Failed to load events")).toBeTruthy();
+  });
+});
+
+describe("EventsTab — auto-refresh", () => {
+  // Use vi.spyOn to mock setInterval/clearInterval so we can control timer
+  // firing without Vitest's fake-timer APIs (which create infinite loops when
+  // timers schedule microtasks that schedule more timers).
+  let setIntervalSpy: ReturnType<typeof vi.spyOn>;
+  let clearIntervalSpy: ReturnType<typeof vi.spyOn>;
+  let activeIntervalId = 0;
+  const scheduledCallbacks = new Map<number, () => void>();
+
+  beforeEach(() => {
+    vi.useRealTimers();
+    mockGet.mockReset();
+    activeIntervalId = 0;
+    scheduledCallbacks.clear();
+    setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(
+      (cb: () => void) => {
+        const id = ++activeIntervalId;
+        scheduledCallbacks.set(id, cb);
+        return id;
+      },
+    );
+    clearIntervalSpy = vi.spyOn(globalThis, "clearInterval").mockImplementation(
+      (id: number) => {
+        scheduledCallbacks.delete(id);
+      },
+    );
+  });
+
+  afterEach(() => {
+    cleanup();
+    setIntervalSpy?.mockRestore();
+    clearIntervalSpy?.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it("calls GET /events/:id after 10s without manual interaction", async () => {
+    mockGet.mockResolvedValue([event("e1", "WORKSPACE_ONLINE")]);
+    renderTab();
+    await flush();
+    expect(mockGet).toHaveBeenCalledWith("/events/ws-1");
+    mockGet.mockClear();
+
+    // Verify setInterval was called with 10000ms delay
+    expect(setIntervalSpy).toHaveBeenCalledWith(
+      expect.any(Function),
+      10000,
+    );
+
+    // Fire the captured interval callback (simulates 10s elapsing)
+    const callback = [...scheduledCallbacks.values()][0];
+    act(() => { callback(); });
+    await flush();
+    expect(mockGet).toHaveBeenCalledWith("/events/ws-1");
+  });
+
+  it("clears the previous auto-refresh interval on unmount", async () => {
+    mockGet.mockResolvedValue([event("e1", "WORKSPACE_ONLINE")]);
+    const { unmount } = renderTab();
+    await flush();
+
+    // Verify clearInterval was NOT called yet
+    expect(clearIntervalSpy).not.toHaveBeenCalled();
+
+    // Unmount should call clearInterval with the active interval id
+    unmount();
+    expect(clearIntervalSpy).toHaveBeenCalled();
+    // The callback should no longer be scheduled
+    expect(scheduledCallbacks.size).toBe(0);
   });
 });

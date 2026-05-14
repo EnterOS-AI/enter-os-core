@@ -13,9 +13,7 @@ function hasChildren(nodeId: string, nodes: Node<WorkspaceNodeData>[]): boolean 
 /**
  * Canvas-wide keyboard shortcuts. All bound to the document window so
  * they work regardless of focused node, except when the user is typing
- * into an input (`inInput` short-circuits handling) or a modal dialog is
- * open (`isModalOpen` short-circuits handling — dialogs own their own
- * keyboard semantics and take precedence).
+ * into an input (`inInput` short-circuits handling).
  *
  *   Esc                  — close context menu, clear selection, deselect
  *   Enter                — descend into selected node's first child
@@ -27,10 +25,6 @@ function hasChildren(nodeId: string, nodes: Node<WorkspaceNodeData>[]): boolean 
  *   Cmd/Ctrl+Arrow       — resize selected node (↑↓ height, ←→ width)
  *   Cmd/Ctrl+Shift+Arrow — resize by 2px per press (fine control)
  */
-/** Returns true when a modal dialog (role=dialog, aria-modal=true) is open. */
-const isModalOpen = () =>
-  document.querySelector('[role="dialog"][aria-modal="true"]') !== null;
-
 export function useKeyboardShortcuts() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -42,7 +36,6 @@ export function useKeyboardShortcuts() {
         (e.target as HTMLElement).isContentEditable;
 
       if (e.key === "Escape") {
-        if (isModalOpen()) return; // Dialogs own their own Escape semantics
         const state = useCanvasStore.getState();
         if (state.contextMenu) {
           state.closeContextMenu();
@@ -54,9 +47,8 @@ export function useKeyboardShortcuts() {
       }
 
       // Figma-style hierarchy navigation. Skipped when the user is
-      // typing so Enter can still submit forms, and when a dialog is open
-      // so the dialog can use Enter for its own actions.
-      if (!inInput && !isModalOpen() && (e.key === "Enter" || e.key === "NumpadEnter")) {
+      // typing so Enter can still submit forms.
+      if (!inInput && (e.key === "Enter" || e.key === "NumpadEnter")) {
         e.preventDefault();
         const state = useCanvasStore.getState();
         const id = state.selectedNodeId;
@@ -70,9 +62,6 @@ export function useKeyboardShortcuts() {
           if (firstChild) state.selectNode(firstChild.id);
         }
       }
-
-      // Skip when a modal is open so dialog shortcuts take precedence.
-      if (isModalOpen()) return;
 
       if (
         !inInput &&
@@ -122,7 +111,7 @@ export function useKeyboardShortcuts() {
         if (!selectedId) return;
         // Skip when a modal/dialog is already open — dialogs own their own
         // arrow-key semantics and shouldn't trigger canvas moves.
-        if (isModalOpen()) return;
+        if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
         e.preventDefault();
         const step = e.shiftKey ? 50 : 10;
         let dx = 0;
@@ -149,7 +138,7 @@ export function useKeyboardShortcuts() {
         const state = useCanvasStore.getState();
         const selectedId = state.selectedNodeId;
         if (!selectedId) return;
-        if (isModalOpen()) return;
+        if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
         e.preventDefault();
         const step = e.shiftKey ? 2 : 10;
         const node = state.nodes.find((n) => n.id === selectedId);

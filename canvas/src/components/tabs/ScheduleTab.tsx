@@ -332,6 +332,13 @@ export function ScheduleTab({ workspaceId }: Props) {
                   <div className="flex items-center gap-1.5">
                     <button
                       onClick={() => handleToggle(sched)}
+                      aria-label={
+                        sched.last_status === "error"
+                          ? "Last run failed — click to disable"
+                          : sched.last_status === "ok"
+                          ? "Last run OK — click to disable"
+                          : "Never run — click to enable"
+                      }
                       className={`w-2 h-2 rounded-full flex-shrink-0 ${
                         sched.last_status === "error"
                           ? "bg-red-400"
@@ -360,7 +367,7 @@ export function ScheduleTab({ workspaceId }: Props) {
                     <span>Runs: {sched.run_count}</span>
                   </div>
                   {sched.last_error && (
-                    <div className="text-[8px] text-bad/70 mt-0.5 truncate">
+                    <div className="text-[8px] text-bad mt-0.5 truncate">
                       Error: {sched.last_error}
                     </div>
                   )}

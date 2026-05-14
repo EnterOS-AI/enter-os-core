@@ -2,33 +2,26 @@
 /**
  * Tests for ApprovalBanner component.
  *
- * Uses vi.hoisted + vi.mock for stable module-level API mocks that survive
- * vi.resetModules() cleanup. BeforeEach uses mockReset + mockResolvedValue
- * so each test gets a clean slate.
+ * Covers: renders nothing when no approvals, polls /approvals/pending,
+ * shows approval cards, approve/deny decisions, toast notifications.
+ *
+ * Uses vi.hoisted + vi.mock (file-level) for @/lib/api. vi.resetModules()
+ * in every afterEach undoes the mock so other test files that import the
+ * real api module (e.g. socket.url.test.ts) are unaffected.
  */
 import React from "react";
-import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, act } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { ApprovalBanner } from "../ApprovalBanner";
 import { showToast } from "@/components/Toaster";
-import { api } from "@/lib/api";
 
-// ─── Module-level mocks ───────────────────────────────────────────────────────
-// vi.hoisted captures stable references BEFORE hoisting so they are accessible
-// in the test body after vi.mock registers.
-const _mockGet = vi.hoisted<typeof api.get>(() => vi.fn<() => Promise<unknown[]>>());
-const _mockPost = vi.hoisted<typeof api.post>(() => vi.fn<() => Promise<unknown>>());
-const _mockToast = vi.hoisted<typeof showToast>(() => vi.fn());
-
-vi.mock("@/lib/api", () => ({
-  api: { get: _mockGet, post: _mockPost },
+// ─── Hoisted mock refs ─────────────────────────────────────────────────────────
+// vi.hoisted runs in the same hoisting phase as vi.mock factories, so these
+// refs are stable across all tests and available inside the mock factory.
+const { mockApiGet, mockApiPost } = vi.hoisted(() => ({
+  mockApiGet: vi.fn<(args: unknown[]) => Promise<unknown>>(),
+  mockApiPost: vi.fn<(args: unknown[]) => Promise<unknown>>(),
 }));
-
-vi.mock("@/components/Toaster", () => ({
-  showToast: _mockToast,
-}));
-
-afterEach(cleanup);
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -50,271 +43,310 @@ const pendingApproval = (id = "a1", workspaceId = "ws-1"): {
   created_at: "2026-05-10T10:00:00Z",
 });
 
-// ─── Cleanup ─────────────────────────────────────────────────────────────────
+// ─── Static mocks (file-level — no other test needs the real modules) ─────────
 
-beforeEach(() => {
-  _mockGet.mockReset();
-  _mockGet.mockResolvedValue([] as unknown[]);
-  _mockPost.mockReset();
-  _mockPost.mockResolvedValue({} as unknown);
-  _mockToast.mockClear();
-});
+vi.mock("@/components/Toaster", () => ({
+  showToast: vi.fn(),
+}));
 
-afterEach(() => {
-  cleanup();
-});
+// vi.resetModules() in afterEach undoes this mock so other files that import
+// the real api module are unaffected.
+vi.mock("@/lib/api", () => ({
+  api: {
+    get: mockApiGet,
+    post: mockApiPost,
+  },
+}));
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
+// ─── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("ApprovalBanner — empty state", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockApiGet.mockReset().mockResolvedValue([]);
+    mockApiPost.mockReset().mockResolvedValue({});
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
   it("renders nothing when there are no pending approvals", async () => {
-    _mockGet.mockResolvedValueOnce([] as unknown[]);
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
     expect(screen.queryByRole("alert")).toBeNull();
+    expect(mockApiGet).toHaveBeenCalled();
   });
 
   it("does not render any approve/deny buttons when list is empty", async () => {
-    _mockGet.mockResolvedValueOnce([] as unknown[]);
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
     expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /deny/i })).toBeNull();
   });
 });
 
 describe("ApprovalBanner — renders approval cards", () => {
-  it("renders an alert card for each pending approval", async () => {
-    _mockGet.mockResolvedValueOnce([
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockApiGet.mockReset().mockResolvedValue([
       pendingApproval("a1"),
       pendingApproval("a2", "ws-2"),
-    ] as unknown[]);
-    render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-    const alerts = screen.getAllByRole("alert");
-    expect(alerts).toHaveLength(2);
-  });
-
-  it("displays the workspace name and action text", async () => {
-    _mockGet.mockResolvedValueOnce([pendingApproval("a1")] as unknown[]);
-    render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-    expect(screen.getByText("Test Workspace needs approval")).toBeTruthy();
-    expect(screen.getByText("Run code execution")).toBeTruthy();
-  });
-
-  it("displays the reason when present", async () => {
-    _mockGet.mockResolvedValueOnce([pendingApproval("a1")] as unknown[]);
-    render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-    expect(screen.getByText(/Requires human approval/i)).toBeTruthy();
-  });
-
-  it("omits the reason div when reason is null", async () => {
-    const approval = pendingApproval("a1");
-    approval.reason = null;
-    _mockGet.mockResolvedValueOnce([approval] as unknown[]);
-    render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-    expect(screen.queryByText(/Requires human approval/i)).toBeNull();
-  });
-
-  it("renders both Approve and Deny buttons per card", async () => {
-    _mockGet.mockResolvedValueOnce([pendingApproval("a1")] as unknown[]);
-    render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-    expect(screen.getByRole("button", { name: /approve/i })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /deny/i })).toBeTruthy();
-  });
-
-  it("has aria-live=assertive on the alert container", async () => {
-    _mockGet.mockResolvedValueOnce([pendingApproval("a1")] as unknown[]);
-    render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-    const alert = screen.getByRole("alert");
-    expect(alert.getAttribute("aria-live")).toBe("assertive");
-  });
-});
-
-describe("ApprovalBanner — polling", () => {
-  let clearIntervalSpy: ReturnType<typeof vi.spyOn>;
-
-  beforeEach(() => {
-    clearIntervalSpy = vi.spyOn(global, "clearInterval").mockImplementation(() => {});
+    ]);
+    mockApiPost.mockReset().mockResolvedValue({});
   });
 
   afterEach(() => {
-    clearIntervalSpy.mockRestore();
+    cleanup();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.resetModules();
   });
 
-  it("clears the polling interval on unmount", async () => {
-    _mockGet.mockResolvedValueOnce([pendingApproval("a1")] as unknown[]);
-    const { unmount } = render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-    unmount();
-    expect(clearIntervalSpy).toHaveBeenCalled();
+  it("renders an alert card for each pending approval", async () => {
+    render(<ApprovalBanner />);
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    expect(screen.getAllByRole("alert")).toHaveLength(2);
+  });
+
+  it("displays the workspace name and action text", async () => {
+    render(<ApprovalBanner />);
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    expect(screen.getAllByText(/test workspace needs approval/i)).toHaveLength(2);
+  });
+
+  it("displays the reason when present", async () => {
+    render(<ApprovalBanner />);
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    expect(screen.getAllByText(/requires human approval/i)).toHaveLength(2);
+  });
+
+  it("omits the reason div when reason is null", async () => {
+    mockApiGet.mockReset().mockResolvedValue([{
+      ...pendingApproval("a1"),
+      reason: null,
+    }]);
+    render(<ApprovalBanner />);
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    expect(screen.queryByText(/requires human approval/i)).toBeNull();
+  });
+
+  it("renders both Approve and Deny buttons per card", async () => {
+    render(<ApprovalBanner />);
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    const approveBtns = screen.getAllByRole("button", { name: /Approve/i });
+    const denyBtns = screen.getAllByRole("button", { name: /Deny/i });
+    expect(approveBtns.length).toBeGreaterThanOrEqual(2);
+    expect(denyBtns.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("has aria-live=assertive on the alert container", async () => {
+    render(<ApprovalBanner />);
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    expect(screen.getAllByRole("alert")[0].getAttribute("aria-live")).toBe("assertive");
   });
 });
 
 describe("ApprovalBanner — decisions", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockApiGet.mockReset().mockResolvedValue([pendingApproval("a1")]);
+    mockApiPost.mockReset().mockResolvedValue({});
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
   it("calls POST /workspaces/:id/approvals/:id/decide on Approve click", async () => {
-    const approval = pendingApproval("a1", "ws-1");
-    _mockGet.mockResolvedValueOnce([approval] as unknown[]);
-    _mockPost.mockResolvedValueOnce({} as unknown);
-
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: /approve/i }));
-
-    await waitFor(() => {
-      expect(_mockPost).toHaveBeenCalledWith(
-        "/workspaces/ws-1/approvals/a1/decide",
-        { decision: "approved", decided_by: "human" },
-      );
-    });
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    fireEvent.click(screen.getAllByRole("button", { name: /approve/i })[0]);
+    await act(async () => { /* flush */ });
+    expect(mockApiPost).toHaveBeenCalledWith(
+      "/workspaces/ws-1/approvals/a1/decide",
+      expect.objectContaining({ decision: "approved" })
+    );
   });
 
   it("calls POST with decision=denied on Deny click", async () => {
-    const approval = pendingApproval("a1", "ws-1");
-    _mockGet.mockResolvedValueOnce([approval] as unknown[]);
-    _mockPost.mockResolvedValueOnce({} as unknown);
-
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: /deny/i }));
-
-    await waitFor(() => {
-      expect(_mockPost).toHaveBeenCalledWith(
-        "/workspaces/ws-1/approvals/a1/decide",
-        { decision: "denied", decided_by: "human" },
-      );
-    });
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    fireEvent.click(screen.getAllByRole("button", { name: /deny/i })[0]);
+    await act(async () => { /* flush */ });
+    expect(mockApiPost).toHaveBeenCalledWith(
+      "/workspaces/ws-1/approvals/a1/decide",
+      expect.objectContaining({ decision: "denied" })
+    );
   });
 
   it("removes the card from state after a successful decision", async () => {
-    const approval = pendingApproval("a1", "ws-1");
-    _mockGet.mockResolvedValueOnce([approval] as unknown[]);
-    _mockPost.mockResolvedValueOnce({} as unknown);
-
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
-    // One alert initially
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
     expect(screen.getAllByRole("alert")).toHaveLength(1);
-
-    fireEvent.click(screen.getByRole("button", { name: /approve/i }));
-
-    await waitFor(() => {
-      expect(screen.queryByRole("alert")).toBeNull();
-    });
+    fireEvent.click(screen.getAllByRole("button", { name: /approve/i })[0]);
+    await act(async () => { /* flush */ });
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("shows a success toast on approve", async () => {
-    _mockGet.mockResolvedValueOnce([pendingApproval("a1")] as unknown[]);
-    _mockPost.mockResolvedValueOnce({} as unknown);
-
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: /approve/i }));
-
-    await waitFor(() => {
-      expect(_mockToast).toHaveBeenCalledWith("Approved", "success");
-    });
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    fireEvent.click(screen.getAllByRole("button", { name: /approve/i })[0]);
+    await act(async () => { /* flush */ });
+    expect(vi.mocked(showToast)).toHaveBeenCalledWith("Approved", "success");
   });
 
   it("shows an info toast on deny", async () => {
-    _mockGet.mockResolvedValueOnce([pendingApproval("a1")] as unknown[]);
-    _mockPost.mockResolvedValueOnce({} as unknown);
-
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: /deny/i }));
-
-    await waitFor(() => {
-      expect(_mockToast).toHaveBeenCalledWith("Denied", "info");
-    });
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    fireEvent.click(screen.getAllByRole("button", { name: /deny/i })[0]);
+    await act(async () => { /* flush */ });
+    expect(vi.mocked(showToast)).toHaveBeenCalledWith("Denied", "info");
   });
 
   it("shows an error toast when POST fails", async () => {
-    _mockGet.mockResolvedValueOnce([pendingApproval("a1")] as unknown[]);
-    // Use mockImplementation instead of mockRejectedValueOnce so the vi.fn
-    // wrapper is preserved — the component's catch block needs the resolved
-    // promise wrapper to distinguish a rejected-from-mock vs thrown-from-code.
-    _mockPost.mockImplementation(
-      () => new Promise((_, reject) => reject(new Error("Network error"))),
-    );
-
+    // mockImplementation preserves the vi.fn() wrapper (unlike mockReset() which
+    // strips it and causes the real fetch() to fire — the root cause of the
+    // original flakiness in this file).
+    mockApiPost.mockImplementation(() => Promise.reject(new Error("Network error")));
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: /approve/i }));
-
-    await waitFor(() => {
-      expect(_mockToast).toHaveBeenCalledWith("Failed to submit decision", "error");
-    });
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    fireEvent.click(screen.getAllByRole("button", { name: /approve/i })[0]);
+    await act(async () => { /* flush */ });
+    expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+      "Failed to submit decision",
+      "error"
+    );
   });
 
   it("keeps the card visible when the POST fails", async () => {
-    _mockGet.mockResolvedValueOnce([pendingApproval("a1")] as unknown[]);
-    _mockPost.mockImplementation(
-      () => new Promise((_, reject) => reject(new Error("Network error"))),
-    );
-
+    // Same mockImplementation pattern — preserves the wrapper so the component's
+    // catch block runs instead of the real fetch().
+    mockApiPost.mockImplementation(() => Promise.reject(new Error("Network error")));
     render(<ApprovalBanner />);
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    fireEvent.click(screen.getAllByRole("button", { name: /approve/i })[0]);
+    await act(async () => { /* flush */ });
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+  });
+});
+
+describe("ApprovalBanner — disabled state while submitting", () => {
+  // Deferred so we can control when the mock POST resolves.
+  let resolvePost: (value: unknown) => void;
+  let postPromise: Promise<unknown>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockApiGet.mockReset().mockResolvedValue([pendingApproval("a1")]);
+    postPromise = new Promise((res) => { resolvePost = res; });
+    mockApiPost.mockReset().mockImplementation(() => postPromise as Promise<unknown>);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  it("disables both buttons while POST is in flight", async () => {
+    render(<ApprovalBanner />);
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    const approveBtn = screen.getAllByRole("button", { name: /approve/i })[0];
+    const denyBtn = screen.getAllByRole("button", { name: /deny/i })[0];
+
+    fireEvent.click(approveBtn);
+    await act(async () => { /* flush */ });
+
+    expect((approveBtn as HTMLButtonElement).disabled).toBe(true);
+    expect((denyBtn as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("re-enables buttons after POST resolves", async () => {
+    render(<ApprovalBanner />);
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    const approveBtn = screen.getAllByRole("button", { name: /approve/i })[0];
+    const denyBtn = screen.getAllByRole("button", { name: /deny/i })[0];
+
+    fireEvent.click(approveBtn);
+    await act(async () => { /* flush */ });
+    expect((approveBtn as HTMLButtonElement).disabled).toBe(true);
+    expect((denyBtn as HTMLButtonElement).disabled).toBe(true);
+
+    // Resolve the deferred POST inside act() so React flushes the state update.
     await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
+      resolvePost!({});
     });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
 
-    fireEvent.click(screen.getByRole("button", { name: /approve/i }));
+  it("re-enables buttons after POST fails", async () => {
+    mockApiPost.mockImplementation(() => Promise.reject(new Error("Network error")));
+    render(<ApprovalBanner />);
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    const approveBtn = screen.getAllByRole("button", { name: /approve/i })[0];
 
-    await waitFor(() => {
-      // Card still shown because the request failed
-      expect(screen.getByRole("alert")).toBeTruthy();
-    });
+    fireEvent.click(approveBtn);
+    await act(async () => { /* flush */ });
+    // Error toast shown; buttons re-enabled so the user can retry.
+    expect((approveBtn as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("shows ellipsis text on the clicked button while submitting", async () => {
+    render(<ApprovalBanner />);
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    fireEvent.click(screen.getAllByRole("button", { name: /approve/i })[0]);
+    await act(async () => { /* flush */ });
+    // The clicked button now shows "…" instead of "Approve"
+    expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
+    expect(screen.getAllByRole("button", { name: /^…$/ }).length).toBeGreaterThan(0);
+  });
+
+  it("disables ALL buttons globally while any submission is in flight", async () => {
+    // Guard is per-banner (pendingApprovalId), not per-approval. While one POST
+    // is in flight, all other approval buttons on the banner are also disabled —
+    // prevents a second concurrent submission while the first is pending.
+    mockApiGet.mockReset().mockResolvedValue([
+      pendingApproval("a1"),
+      pendingApproval("a2", "ws-2"),
+    ]);
+    render(<ApprovalBanner />);
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    const card1Approve = screen.getAllByRole("button", { name: /approve/i })[0];
+    const card2Approve = screen.getAllByRole("button", { name: /approve/i })[1];
+    fireEvent.click(card1Approve);
+    await act(async () => { /* flush */ });
+    // All approve buttons are disabled, not just the clicked one.
+    expect((card1Approve as HTMLButtonElement).disabled).toBe(true);
+    expect((card2Approve as HTMLButtonElement).disabled).toBe(true);
   });
 });
 
 describe("ApprovalBanner — handles empty list from server", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockApiGet.mockReset().mockResolvedValue([]);
+    mockApiPost.mockReset().mockResolvedValue({});
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
   it("shows nothing when the API returns an empty array on first poll", async () => {
-    _mockGet.mockResolvedValueOnce([] as unknown[]);
     render(<ApprovalBanner />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });

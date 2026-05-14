@@ -80,7 +80,6 @@ func (s *Store) PatchNamespace(ctx context.Context, name string, body contract.N
 		}
 		parts = append(parts, fmt.Sprintf("metadata = $%d", idx))
 		args = append(args, metadata)
-		idx++ // advance so subsequent fields (if any) get correct positional index
 	}
 	query := fmt.Sprintf(`
 		UPDATE memory_namespaces SET %s

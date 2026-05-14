@@ -18,110 +18,7 @@
 import { useCallback, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 
-// ─── Pure fill helpers ────────────────────────────────────────────────────────
-// Each snippet is server-stamped with workspace_id + platform_url but leaves
-// AUTH_TOKEN as a placeholder. These helpers stamp the real token in so the
-// operator's copy-paste is truly ready-to-run. All are pure string ops.
-
-export function fillPythonSnippet(
-  snippet: string,
-  authToken: string,
-): string {
-  return snippet.replace(
-    'AUTH_TOKEN    = "<paste from create response>"',
-    `AUTH_TOKEN    = "${authToken}"`,
-  );
-}
-
-export function fillCurlSnippet(
-  snippet: string,
-  authToken: string,
-): string {
-  return snippet.replace(
-    'WORKSPACE_AUTH_TOKEN="<paste from create response>"',
-    `WORKSPACE_AUTH_TOKEN="${authToken}"`,
-  );
-}
-
-export function fillChannelSnippet(
-  snippet: string | undefined,
-  authToken: string,
-): string | undefined {
-  return snippet?.replace(
-    'MOLECULE_WORKSPACE_TOKENS=<paste auth_token from create response>',
-    `MOLECULE_WORKSPACE_TOKENS=${authToken}`,
-  );
-}
-
-export function fillUniversalMcpSnippet(
-  snippet: string | undefined,
-  authToken: string,
-): string | undefined {
-  return snippet?.replace(
-    'MOLECULE_WORKSPACE_TOKEN="<paste from create response>"',
-    `MOLECULE_WORKSPACE_TOKEN="${authToken}"`,
-  );
-}
-
-export function fillHermesSnippet(
-  snippet: string | undefined,
-  authToken: string,
-): string | undefined {
-  return snippet?.replace(
-    'MOLECULE_WORKSPACE_TOKEN="<paste from create response>"',
-    `MOLECULE_WORKSPACE_TOKEN="${authToken}"`,
-  );
-}
-
-export function fillCodexSnippet(
-  snippet: string | undefined,
-  authToken: string,
-): string | undefined {
-  return snippet?.replace(
-    'MOLECULE_WORKSPACE_TOKEN = "<paste from create response>"',
-    `MOLECULE_WORKSPACE_TOKEN = "${authToken}"`,
-  );
-}
-
-export function fillOpenClawSnippet(
-  snippet: string | undefined,
-  authToken: string,
-): string | undefined {
-  return snippet?.replace(
-    'WORKSPACE_TOKEN="<paste from create response>"',
-    `WORKSPACE_TOKEN="${authToken}"`,
-  );
-}
-
-/** Build the ordered tab list shown in the modal. Each tab only appears when
- *  the platform supplies the corresponding snippet. */
-export function buildTabOrder(info: ExternalConnectionInfo): Tab[] {
-  const tabs: Tab[] = [];
-  const { filledUniversalMcp, filledChannel, filledHermes, filledCodex, filledOpenClaw } = buildFilledSnippets(info);
-  if (filledUniversalMcp) tabs.push("mcp");
-  tabs.push("python");
-  if (filledChannel) tabs.push("claude");
-  if (filledHermes) tabs.push("hermes");
-  if (filledCodex) tabs.push("codex");
-  if (filledOpenClaw) tabs.push("openclaw");
-  tabs.push("curl", "fields");
-  return tabs;
-}
-
-/** Pre-fill all snippets from an info object. Exposed for testing. */
-export function buildFilledSnippets(info: ExternalConnectionInfo) {
-  return {
-    filledPython: fillPythonSnippet(info.python_snippet, info.auth_token),
-    filledCurl: fillCurlSnippet(info.curl_register_template, info.auth_token),
-    filledChannel: fillChannelSnippet(info.claude_code_channel_snippet, info.auth_token),
-    filledUniversalMcp: fillUniversalMcpSnippet(info.universal_mcp_snippet, info.auth_token),
-    filledHermes: fillHermesSnippet(info.hermes_channel_snippet, info.auth_token),
-    filledCodex: fillCodexSnippet(info.codex_snippet, info.auth_token),
-    filledOpenClaw: fillOpenClawSnippet(info.openclaw_snippet, info.auth_token),
-  };
-}
-
-type Tab = "python" | "curl" | "claude" | "mcp" | "hermes" | "codex" | "openclaw" | "fields";
+type Tab = "python" | "curl" | "claude" | "mcp" | "hermes" | "codex" | "openclaw" | "kimi" | "fields";
 
 export interface ExternalConnectionInfo {
   workspace_id: string;
@@ -161,6 +58,10 @@ export interface ExternalConnectionInfo {
   // openclaw gateway on loopback. Outbound-tools-only today; push
   // parity on an external openclaw needs a sessions.steer bridge.
   openclaw_snippet?: string;
+  // Kimi CLI setup snippet — self-contained Python heartbeat script
+  // that keeps a Kimi workspace online in poll mode. Optional for
+  // backward compat with platforms that haven't shipped the Kimi tab.
+  kimi_snippet?: string;
 }
 
 interface Props {
@@ -205,7 +106,59 @@ export function ExternalConnectModal({ info, onClose }: Props) {
 
   if (!info) return null;
 
-  const { filledPython, filledCurl, filledChannel, filledUniversalMcp, filledHermes, filledCodex, filledOpenClaw } = buildFilledSnippets(info);
+  // Python snippet is stamped server-side with workspace_id +
+  // platform_url but leaves AUTH_TOKEN as a "<paste …>" placeholder
+  // (that's what we're showing in the modal). Fill in the real
+  // token here so the snippet the operator copies is truly ready-to-run.
+  const filledPython = info.python_snippet.replace(
+    'AUTH_TOKEN    = "<paste from create response>"',
+    `AUTH_TOKEN    = "${info.auth_token}"`,
+  );
+  const filledCurl = info.curl_register_template.replace(
+    'WORKSPACE_AUTH_TOKEN="<paste from create response>"',
+    `WORKSPACE_AUTH_TOKEN="${info.auth_token}"`,
+  );
+  // The channel snippet asks the operator to paste the auth_token into
+  // the .env file's MOLECULE_WORKSPACE_TOKENS field. Stamp it server-side
+  // here so the copy-paste-block is truly ready-to-run.
+  const filledChannel = info.claude_code_channel_snippet?.replace(
+    'MOLECULE_WORKSPACE_TOKENS=<paste auth_token from create response>',
+    `MOLECULE_WORKSPACE_TOKENS=${info.auth_token}`,
+  );
+  // Universal MCP snippet uses MOLECULE_WORKSPACE_TOKEN as the env-var
+  // name passed through to molecule-mcp via `claude mcp add ... -- env
+  // MOLECULE_WORKSPACE_TOKEN=...`. The placeholder must match the
+  // template's literal — pre-2026-04-30 polish this looked for
+  // WORKSPACE_AUTH_TOKEN (carryover from the curl tab), which silently
+  // skipped the substitution and left "<paste from create response>"
+  // visible in the operator's clipboard.
+  const filledUniversalMcp = info.universal_mcp_snippet?.replace(
+    'MOLECULE_WORKSPACE_TOKEN="<paste from create response>"',
+    `MOLECULE_WORKSPACE_TOKEN="${info.auth_token}"`,
+  );
+  // Hermes channel snippet uses MOLECULE_WORKSPACE_TOKEN (same env-var
+  // name as Universal MCP). Stamp the auth_token in so the operator's
+  // copy-paste is fully ready-to-run.
+  const filledHermes = info.hermes_channel_snippet?.replace(
+    'MOLECULE_WORKSPACE_TOKEN="<paste from create response>"',
+    `MOLECULE_WORKSPACE_TOKEN="${info.auth_token}"`,
+  );
+  // Codex + OpenClaw snippets carry the placeholder inside the
+  // generated config block (TOML / JSON respectively). Stamp the
+  // token in so the copy-paste is one less manual edit.
+  const filledCodex = info.codex_snippet?.replace(
+    'MOLECULE_WORKSPACE_TOKEN = "<paste from create response>"',
+    `MOLECULE_WORKSPACE_TOKEN = "${info.auth_token}"`,
+  );
+  const filledOpenClaw = info.openclaw_snippet?.replace(
+    'WORKSPACE_TOKEN="<paste from create response>"',
+    `WORKSPACE_TOKEN="${info.auth_token}"`,
+  );
+  // Kimi snippet carries the placeholder inside the shell heredoc.
+  const filledKimi = info.kimi_snippet?.replace(
+    'MOLECULE_WORKSPACE_TOKEN=<paste from create response>',
+    `MOLECULE_WORKSPACE_TOKEN=${info.auth_token}`,
+  );
 
   return (
     <Dialog.Root open onOpenChange={(o) => !o && onClose()}>
@@ -227,7 +180,28 @@ export function ExternalConnectModal({ info, onClose }: Props) {
             aria-label="Connection snippet format"
             className="mt-4 flex gap-1 border-b border-line"
           >
-            {buildTabOrder(info).map((t) => (
+            {(() => {
+              // Build the tab order dynamically. Claude Code first
+              // (when offered) since it's the simplest setup; Python
+              // SDK second (full register+heartbeat+inbound); Universal
+              // MCP third (any MCP-aware runtime, outbound-only); curl
+              // for one-shot register; Fields for raw values.
+              // Tab order: Universal MCP first (default, runtime-
+              // agnostic primitives), then runtime-specific channel/
+              // SDK tabs, then curl + Fields. Each runtime tab only
+              // appears when the platform supplies the snippet — no
+              // dead "tab missing snippet" UX.
+              const tabs: Tab[] = [];
+              if (filledUniversalMcp) tabs.push("mcp");
+              tabs.push("python");
+              if (filledChannel) tabs.push("claude");
+              if (filledHermes) tabs.push("hermes");
+              if (filledCodex) tabs.push("codex");
+              if (filledOpenClaw) tabs.push("openclaw");
+              if (filledKimi) tabs.push("kimi");
+              tabs.push("curl", "fields");
+              return tabs;
+            })().map((t) => (
               <button
                 key={t}
                 type="button"
@@ -248,6 +222,8 @@ export function ExternalConnectModal({ info, onClose }: Props) {
                   ? "Codex"
                   : t === "openclaw"
                   ? "OpenClaw"
+                  : t === "kimi"
+                  ? "Kimi"
                   : t === "python"
                   ? "Python SDK"
                   : t === "mcp"
@@ -324,6 +300,15 @@ export function ExternalConnectModal({ info, onClose }: Props) {
                 onCopy={() => copy(filledOpenClaw, "openclaw")}
               />
             )}
+            {tab === "kimi" && filledKimi && (
+              <SnippetBlock
+                value={filledKimi}
+                label="Kimi CLI — self-contained Python bridge. Registers, heartbeats, polls for canvas messages, and echoes replies back. NAT-safe (no public URL). Run in a background terminal or via launchd."
+                copyKey="kimi"
+                copied={copiedKey === "kimi"}
+                onCopy={() => copy(filledKimi, "kimi")}
+              />
+            )}
             {tab === "fields" && (
               <div className="space-y-2">
                 <Field label="workspace_id" value={info.workspace_id} onCopy={() => copy(info.workspace_id, "wsid")} copied={copiedKey === "wsid"} />
@@ -375,7 +360,7 @@ function SnippetBlock({
         <button
           type="button"
           onClick={onCopy}
-          className="text-xs px-2 py-1 rounded bg-accent-strong/80 hover:bg-accent text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
+          className="text-xs px-2 py-1 rounded bg-accent text-white hover:bg-accent-strong transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
         >
           {copied ? "Copied!" : "Copy"}
         </button>
@@ -412,7 +397,7 @@ function Field({
         type="button"
         onClick={onCopy}
         disabled={!value}
-        className="text-xs px-2 py-1 rounded bg-surface-card hover:bg-surface-card text-ink disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
+        className="text-xs px-2 py-1 rounded bg-surface-card hover:bg-surface-card text-ink disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
       >
         {copied ? "Copied!" : "Copy"}
       </button>

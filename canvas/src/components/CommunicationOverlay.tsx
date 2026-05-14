@@ -226,7 +226,7 @@ export function CommunicationOverlay() {
           type="button"
           onClick={() => setVisible(false)}
           aria-label="Close communications panel"
-          className="text-ink-mid hover:text-ink-mid text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface rounded"
+          className="text-ink-mid hover:text-ink-mid text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
         >
           <span aria-hidden="true">✕</span>
         </button>

@@ -51,7 +51,7 @@ export class ErrorBoundary extends React.Component<
   render() {
     if (this.state.hasError) {
       return (
-        <div className="fixed inset-0 flex items-center justify-center bg-surface z-50">
+        <div role="alert" aria-live="assertive" className="fixed inset-0 flex items-center justify-center bg-surface z-50">
           <div className="max-w-md rounded-2xl border border-red-500/30 bg-surface-sunken/90 px-8 py-8 text-center shadow-2xl shadow-black/40">
             <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-red-500/10 border border-red-500/30">
               <svg
@@ -76,7 +76,7 @@ export class ErrorBoundary extends React.Component<
             <p className="text-sm text-ink-mid mb-1">
               An unexpected error occurred while rendering the application.
             </p>
-            <p className="text-xs text-bad/80 mb-6 font-mono break-all">
+            <p className="text-xs text-bad mb-6 font-mono break-all">
               {this.state.error?.message ?? "Unknown error"}
             </p>
             <div className="flex items-center justify-center gap-3">

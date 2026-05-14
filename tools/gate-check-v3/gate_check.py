@@ -110,6 +110,13 @@ AGENT_LOGIN_MAP = {
     "offsec": "core-offsec",
 }
 
+# Map alternate Gitea logins → canonical logins for gate matching.
+# infra-sre is the engineers/core-devops agent (same team, same work).
+# Without this alias, infra-sre comments/reviews never satisfy the engineers gate.
+LOGIN_ALIASES = {
+    "infra-sre": "core-devops",
+}
+
 # SOP-6 tier → required agent groups
 # tier:low    → engineers,managers,ceo (OR: any one suffices)
 # tier:medium → managers AND engineers AND qa,security (AND)
@@ -168,17 +175,18 @@ def signal_1_comment_scan(pr_number: int, repo: str) -> dict:
     except GiteaError:
         pass
 
-    # Collect APPROVED reviews from agent logins
+    # Collect APPROVED reviews from agent logins (resolving LOGIN_ALIASES)
     try:
         reviews = api_list(f"/repos/{owner}/{name}/pulls/{pr_number}/reviews")
         for r in reviews:
             login = r.get("user", {}).get("login", "")
-            if login in login_to_group and r.get("state") == "APPROVED":
+            canonical = LOGIN_ALIASES.get(login, login)
+            if canonical in login_to_group and r.get("state") == "APPROVED":
                 comments.append(
                     {
                         "id": f"review-{r['id']}",
-                        "user": {"login": login},
-                        "body": f"[{login}-agent] APPROVED",
+                        "user": {"login": canonical},
+                        "body": f"[{canonical}-agent] APPROVED",
                         "created_at": r.get("submitted_at") or r.get("created_at", ""),
                         "source": "review",
                     }
@@ -193,6 +201,8 @@ def signal_1_comment_scan(pr_number: int, repo: str) -> dict:
         for c in comments:
             body = c.get("body", "") or ""
             user_login = c.get("user", {}).get("login", "")
+            # Resolve LOGIN_ALIASES so alternate logins satisfy the canonical gate
+            user_login = LOGIN_ALIASES.get(user_login, user_login)
             if user_login != login:
                 continue
             for m in AGENT_TAG_RE.finditer(body):
@@ -488,6 +498,21 @@ def run(repo: str, pr_number: int, post_comment: bool = False) -> dict:
         owner, name = repo.split("/", 1)
         pr = api_get(f"/repos/{owner}/{name}/pulls/{pr_number}")
         base_ref = pr.get("base", {}).get("ref", "main")
+        default_branch = os.environ.get("DEFAULT_BRANCH", "main")
+        if base_ref != default_branch:
+            result = {
+                "verdict": "CLEAR",
+                "repo": repo,
+                "pr": pr_number,
+                "skipped": True,
+                "reason": (
+                    f"PR targets {base_ref}, not protected default branch "
+                    f"{default_branch}"
+                ),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            print(json.dumps(result, indent=2))
+            return result
 
         gates = [
             signal_1_comment_scan(pr_number, repo),

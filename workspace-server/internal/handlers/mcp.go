@@ -31,7 +31,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/events"
@@ -421,16 +420,11 @@ func (h *MCPHandler) dispatchRPC(ctx context.Context, workspaceID string, req mc
 		}
 		text, err := h.dispatch(ctx, workspaceID, params.Name, params.Arguments)
 		if err != nil {
-			// Log full error server-side for forensics.
+			// Log full error server-side for forensics; return constant string
+			// to client per OFFSEC-001 / #259.  WorkspaceAuth required — caller
+			// already authenticated, so this is defence-in-depth.
 			log.Printf("mcp: tool call failed workspace=%s tool=%s: %v", workspaceID, params.Name, err)
-			// Unknown-tool errors are suppressed per OFFSEC-001 (#259) to avoid
-			// leaking tool names; all other tool errors surface their detail so
-			// callers (including test suites) can assert on permission messages.
-			errMsg := err.Error()
-			if strings.HasPrefix(errMsg, "unknown tool:") {
-				errMsg = "tool call failed"
-			}
-			base.Error = &mcpRPCError{Code: -32000, Message: errMsg}
+			base.Error = &mcpRPCError{Code: -32000, Message: "tool call failed"}
 			return base
 		}
 		base.Result = map[string]interface{}{
