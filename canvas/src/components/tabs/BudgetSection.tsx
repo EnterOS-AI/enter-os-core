@@ -243,7 +243,7 @@ export function BudgetSection({ workspaceId }: Props) {
           onClick={handleSave}
           disabled={saving}
           data-testid="budget-save-btn"
-          className="px-4 py-1.5 bg-accent-strong hover:bg-accent active:bg-accent-strong rounded-lg text-xs font-medium text-white disabled:opacity-50 transition-colors"
+          className="px-4 py-1.5 bg-accent-strong hover:bg-accent active:bg-accent-strong rounded-lg text-xs font-medium text-white disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-900"
         >
           {saving ? "Saving…" : "Save"}
         </button>

@@ -194,7 +194,7 @@ export function ScheduleTab({ workspaceId }: Props) {
         </span>
         <button
           onClick={() => { resetForm(); setShowForm(true); }}
-          className="text-[11px] px-2 py-0.5 bg-accent-strong/20 text-accent rounded hover:bg-accent-strong/30 transition-colors"
+          className="text-[11px] px-2 py-0.5 bg-accent-strong/20 text-accent rounded hover:bg-accent-strong/30 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-900"
         >
           + Add Schedule
         </button>
@@ -339,7 +339,7 @@ export function ScheduleTab({ workspaceId }: Props) {
                           ? "Last run OK — click to disable"
                           : "Never run — click to enable"
                       }
-                      className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                      className={`w-2 h-2 rounded-full flex-shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-900 ${
                         sched.last_status === "error"
                           ? "bg-red-400"
                           : sched.last_status === "ok"
@@ -376,7 +376,7 @@ export function ScheduleTab({ workspaceId }: Props) {
                   <button
                     onClick={() => handleRunNow(sched)}
                     aria-label={`Run schedule ${sched.name} now`}
-                    className="text-[11px] px-1.5 py-0.5 text-accent hover:bg-accent-strong/20 rounded transition-colors"
+                    className="text-[11px] px-1.5 py-0.5 text-accent hover:bg-accent-strong/20 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-900"
                     title="Run now"
                   >
                     ▶
@@ -384,7 +384,7 @@ export function ScheduleTab({ workspaceId }: Props) {
                   <button
                     onClick={() => handleEdit(sched)}
                     aria-label={`Edit schedule ${sched.name}`}
-                    className="text-[11px] px-1.5 py-0.5 text-ink-mid hover:bg-surface-card rounded transition-colors"
+                    className="text-[11px] px-1.5 py-0.5 text-ink-mid hover:bg-surface-card rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-900"
                     title="Edit"
                   >
                     ✎
@@ -392,7 +392,7 @@ export function ScheduleTab({ workspaceId }: Props) {
                   <button
                     onClick={() => setPendingDelete({ id: sched.id, name: sched.name })}
                     aria-label={`Delete schedule ${sched.name}`}
-                    className="text-[11px] px-1.5 py-0.5 text-bad hover:bg-red-600/20 rounded transition-colors"
+                    className="text-[11px] px-1.5 py-0.5 text-bad hover:bg-red-600/20 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-900"
                     title="Delete"
                   >
                     ✕
