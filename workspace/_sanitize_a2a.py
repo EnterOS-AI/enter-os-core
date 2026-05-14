@@ -19,6 +19,10 @@ _A2A_QUEUED_PREFIX = "[A2A_QUEUED] "
 _A2A_RESULT_FROM_PEER = "[A2A_RESULT_FROM_PEER]"
 _A2A_RESULT_TO_PEER = "[A2A_RESULT_TO_PEER]"
 
+# Convenience aliases used by tests to reference canonical trust-boundary markers.
+_A2A_BOUNDARY_START = _A2A_RESULT_FROM_PEER   # "[A2A_RESULT_FROM_PEER]"
+_A2A_BOUNDARY_END = "[/A2A_RESULT_FROM_PEER]"
+
 # Regex patterns for the lookahead.  Each is a raw string where \[ = escaped
 # '[' and \] = escaped ']'.  The full pattern (separator + '[' + rest) is
 # matched in two pieces:
