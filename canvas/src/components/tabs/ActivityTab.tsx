@@ -307,7 +307,7 @@ function ActivityRow({
 
         {/* Error detail */}
         {isError && entry.error_detail && (
-          <div className="text-[9px] text-bad/80 mt-1 truncate">
+          <div className="text-[9px] text-bad mt-1 truncate">
             {entry.error_detail}
           </div>
         )}
@@ -358,10 +358,10 @@ function A2AErrorPreview({ label, raw }: { label: string; raw: string }) {
   const hint = inferA2AErrorHint(detail);
   return (
     <div>
-      <div className="text-[8px] text-bad/80 uppercase tracking-wider mb-1">{label} — delivery failed</div>
+      <div className="text-[8px] text-bad uppercase tracking-wider mb-1">{label} — delivery failed</div>
       <div className="text-[10px] text-bad bg-red-950/30 border border-red-800/40 rounded p-2 space-y-1.5">
         <div className="font-mono whitespace-pre-wrap break-words max-h-32 overflow-y-auto">{detail}</div>
-        <div className="text-[9px] text-bad/70 leading-relaxed border-t border-red-800/30 pt-1.5">{hint}</div>
+        <div className="text-[9px] text-bad leading-relaxed border-t border-red-800/30 pt-1.5">{hint}</div>
       </div>
     </div>
   );

@@ -367,7 +367,7 @@ export function ScheduleTab({ workspaceId }: Props) {
                     <span>Runs: {sched.run_count}</span>
                   </div>
                   {sched.last_error && (
-                    <div className="text-[8px] text-bad/70 mt-0.5 truncate">
+                    <div className="text-[8px] text-bad mt-0.5 truncate">
                       Error: {sched.last_error}
                     </div>
                   )}

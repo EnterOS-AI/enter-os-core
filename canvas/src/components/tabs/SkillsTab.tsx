@@ -492,7 +492,7 @@ export function SkillsTab({ workspaceId, data }: Props) {
                 <div className="text-[10px] text-bad font-semibold mb-0.5">
                   Couldn't load the plugin registry
                 </div>
-                <div className="text-[10px] text-bad/80">{registryError}</div>
+                <div className="text-[10px] text-bad">{registryError}</div>
                 <div className="mt-1 text-[10px] text-ink-mid">
                   Check the platform server is reachable at /plugins. The Retry button is in the header above.
                 </div>

@@ -251,7 +251,7 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
 
                           {/* Error */}
                           {isError && entry.error_detail && (
-                            <div className="text-[10px] text-bad/80 mt-1 truncate">
+                            <div className="text-[10px] text-bad mt-1 truncate">
                               {entry.error_detail.slice(0, 200)}
                             </div>
                           )}
@@ -272,7 +272,7 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
                           )}
                           {responseText && (
                             <div className="mt-1 bg-surface/60 border border-emerald-900/30 rounded-lg px-3 py-2 max-h-32 overflow-y-auto">
-                              <div className="text-[8px] text-good/60 uppercase mb-1">Response</div>
+                              <div className="text-[8px] text-good uppercase mb-1">Response</div>
                               <div className="text-[10px] text-ink-mid whitespace-pre-wrap break-words leading-relaxed">
                                 {responseText.slice(0, 2000)}
                                 {responseText.length > 2000 && (
