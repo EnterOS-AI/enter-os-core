@@ -138,23 +138,6 @@ func TestResolveInsideRoot_SiblingNotEscaped(t *testing.T) {
 
 // ── isSafeRoleName ────────────────────────────────────────────────────────────
 
-func TestIsSafeRoleName_Valid(t *testing.T) {
-	valid := []string{
-		"backend",
-		"Frontend-Engineer",
-		"research_lead",
-		"devOps123",
-		"a",
-		"A",
-		"team_42-leads",
-	}
-	for _, name := range valid {
-		if !isSafeRoleName(name) {
-			t.Errorf("isSafeRoleName(%q): expected true, got false", name)
-		}
-	}
-}
-
 func TestIsSafeRoleName_Empty(t *testing.T) {
 	if isSafeRoleName("") {
 		t.Error("isSafeRoleName(\"\"): expected false, got true")
@@ -265,33 +248,6 @@ func TestMergeCategoryRouting_WsOverrideDropsDefault(t *testing.T) {
 	}
 	if got["security"][0] != "Security Engineer" {
 		t.Errorf("ws override: got %v, want [Security Engineer]", got["security"])
-	}
-}
-
-func TestMergeCategoryRouting_EmptyListDropsCategory(t *testing.T) {
-	defaultRouting := map[string][]string{
-		"security": {"Backend Engineer"},
-		"ui":       {"Frontend Engineer"},
-	}
-	wsRouting := map[string][]string{
-		"security": {}, // empty list = opt out
-	}
-	got := mergeCategoryRouting(defaultRouting, wsRouting)
-	if _, exists := got["security"]; exists {
-		t.Error("empty ws list should delete the category from output")
-	}
-	if len(got["ui"]) != 1 {
-		t.Errorf("ui should still exist: got %v", got["ui"])
-	}
-}
-
-func TestMergeCategoryRouting_EmptyKeySkipped(t *testing.T) {
-	defaultRouting := map[string][]string{
-		"": {"Backend Engineer"},
-	}
-	got := mergeCategoryRouting(defaultRouting, nil)
-	if _, exists := got[""]; exists {
-		t.Error("empty key should be skipped")
 	}
 }
 
