@@ -267,7 +267,51 @@ else
   printf '  ✗ unknown-flag should fail (got %s)\n' "$rc"
 fi
 
-printf '\n== Test 9: ROLLBACK_TAG follows YYYYMMDD via NOW_OVERRIDE_DATE ==\n'
+printf '\n== Test 9: slug validation — invalid slugs rejected with exit 64 (OFFSEC-006) ==\n'
+# Attack vectors: SSRF via ? (curl query separator), subdomain takeover via @,
+# path traversal via /, shell metacharacters.  Use a newline-delimited temp file
+# so slugs containing spaces are NOT split by shell word-splitting.
+_invalid_tmp=$(mktemp)
+cat > "$_invalid_tmp" <<'INVALID_EOF'
+a?url=https://evil.com
+a&url=https://evil.com
+a@evil.com
+a/b
+a\b
+a b
+chloe-dong?url=http://evil.com
+evil.com@legitimate
+INVALID_EOF
+while IFS= read -r attack || [[ -n "$attack" ]]; do
+  set +e
+  out=$("$SCRIPT" --source-tag x --dest-tag y --tenants "$attack" 2>&1); rc=$?
+  set -e
+  if [[ $rc -eq 64 ]] && printf '%s' "$out" | grep -q 'invalid slug'; then
+    PASS=$((PASS + 1)); printf '  ✓ slug rejected: %s\n' "$(printf '%q' "$attack")"
+  else
+    FAIL=$((FAIL + 1)); FAIL_NAMES+=("slug-reject:$attack")
+    printf '  ✗ slug should be rejected: %s — got exit %s\n' "$(printf '%q' "$attack")" "$rc"
+  fi
+done < "$_invalid_tmp"
+rm -f "$_invalid_tmp"
+
+printf '\n== Test 10: slug validation — valid slugs pass through ==\n'
+valid_slugs='chloe-dong hongming ab a abc123 my-tenant-42'
+for slug in $valid_slugs; do
+  set +e
+  out=$("$SCRIPT" --source-tag x --dest-tag y --tenants "$slug" --mock-dir /nonexistent 2>&1); rc=$?
+  set -e
+  # valid slugs: script should fail at preflight (no such mock dir / no real infra),
+  # but NOT at slug validation (exit 64). So we check exit != 64.
+  if [[ $rc -ne 64 ]]; then
+    PASS=$((PASS + 1)); printf '  ✓ valid slug accepted: %s\n' "$slug"
+  else
+    FAIL=$((FAIL + 1)); FAIL_NAMES+=("slug-accept:$slug")
+    printf '  ✗ valid slug rejected: %s (should have passed slug check)\n' "$slug"
+  fi
+done
+
+printf '\n== Test 11: ROLLBACK_TAG follows YYYYMMDD via NOW_OVERRIDE_DATE ==\n'
 m=$(mkmock)
 mock_set "$m" aws_ecr_get_image       '{}' 0
 mock_set "$m" aws_ecr_describe_image  '' 1
@@ -289,7 +333,7 @@ fi
 assert_calls_contain "rollback tag uses NOW_OVERRIDE_DATE (20260603)" "$m" 'aws_ecr_put_image b-prev-20260603'
 rm -rf "$m"
 
-printf '\n== Test 10: empty source manifest fails preflight ==\n'
+printf '\n== Test 12: empty source manifest fails preflight ==\n'
 m=$(mkmock)
 mock_set "$m" aws_ecr_get_image '' 0   # rc=0 but empty body (the "None" case)
 out=$(run_script "$m")
@@ -297,7 +341,7 @@ assert_exit "empty source manifest fails preflight" "$out" 1
 assert_contains "empty manifest message" "$out" 'returned empty manifest'
 rm -rf "$m"
 
-printf '\n== Test 11: tenant_buildinfo failure during verify → rollback ==\n'
+printf '\n== Test 13: tenant_buildinfo failure during verify → rollback ==\n'
 m=$(mkmock)
 mock_set "$m" aws_ecr_get_image          '{"manifests":[]}' 0
 mock_set "$m" aws_ecr_describe_image     '' 1
@@ -311,7 +355,7 @@ assert_contains "logs buildinfo failure" "$out" '/buildinfo failed for chloe-don
 assert_contains "rollback fired after verify fail" "$out" 'ROLLBACK:'
 rm -rf "$m"
 
-printf '\n== Test 12: ssm_refresh_ecr_auth JSON escaping (CWE-78 / OFFSEC-001) ==\n'
+printf '\n== Test 14: ssm_refresh_ecr_auth JSON escaping (CWE-78 / OFFSEC-001) ==\n'
 # Verify the python3 snippet in ssm_refresh_ecr_auth produces valid JSON and
 # correctly escapes shell-injection characters in region + account ID fields.
 # The fix replaces unquoted shell-printf interpolation with json.dumps.
