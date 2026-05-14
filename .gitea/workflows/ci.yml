@@ -135,30 +135,17 @@ jobs:
     name: Platform (Go)
     needs: changes
     runs-on: ubuntu-latest
-    # mc#774 (interim): re-mask platform-build pending fix-forward. Phase 4
-    # (#656) flipped this to continue-on-error: false based on a Phase-3-masked
-    # "green on main 2026-05-12" — the prior continue-on-error: true had
-    # been hiding failing tests in workspace-server/internal/handlers/.
-    # Two distinct failure classes surfaced on 0e5152c3:
-    #   (1) 4x delegation_test.go (lines 1110/1176/1228/1271): helpers
-    #       expectExecuteDelegationBase/Success/Failed are missing sqlmock
-    #       expectations for queries production has issued since ~2026-04-21
-    #       (last_outbound_at UPDATE, lookupDeliveryMode/Runtime SELECTs,
-    #       a2a_receive INSERT activity_logs, recordLedgerStatus writes).
-    #       Halt cond #3 applies (regression > 7 days → broader sweep).
-    #   (2) 1x mcp_test.go:433 (TestMCPHandler_CommitMemory_GlobalScope_Blocked):
-    #       commit 7d1a189f (2026-05-10) hardened mcp.go to scrub err.Error()
-    #       from JSON-RPC responses (OFFSEC-001), but the test asserts the
-    #       error message contains "GLOBAL". Production-vs-test contract
-    #       collision — needs design call, not mock update.
-    # Time-boxed Option A (90 min) did not fit the cross-cutting scope.
-    # This is a sequenced revert→fix→reflip per
-    # feedback_strict_root_only_after_class_a emergency clause — NOT
-    # a permanent re-mask. Re-flip blocked on mc#774 fix-forward landing.
-    # Other 4 #656 flips (changes, canvas-build, shellcheck, python-lint)
-    # retain continue-on-error: false; only platform-build regresses.
-    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
-    continue-on-error: true  # mc#774 fix-forward in flight; re-flip when mc#774 lands (PR #669 → rebase after #709)
+    # mc#774 (closed 2026-05-14): Phase 4 flip of the platform-build job.
+    # Phase 4 (#656) originally flipped this to continue-on-error: false based on
+    # Phase-3-masked "green on main 2026-05-12". Two failure classes then surfaced:
+    #   (1) 4x delegation_test.go sqlmock gaps (PR #669 / #634 fix-forward, closed).
+    #   (2) TestMCPHandler_CommitMemory_GlobalScope_Blocked (mcp_test.go:433):
+    #       OFFSEC-001 hardening collided with test assertion; tracked in mc#762.
+    # Fix-forward for (1) landed in PR #669. The mc#762 gap (2) is a separate
+    # issue — it does NOT block this flip because the test is already wrapped in
+    # the diagnostic step with its own continue-on-error: true (line 203).
+    # Flip confirmed by CI / Platform (Go) status = success on main HEAD 68560cec.
+    continue-on-error: false
     defaults:
       run:
         working-directory: workspace-server
