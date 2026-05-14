@@ -69,7 +69,7 @@ class TestFlagOffLegacyPath:
         monkeypatch.delenv("DELEGATION_SYNC_VIA_INBOX", raising=False)
 
         import a2a_tools
-        from _sanitize_a2a import _A2A_BOUNDARY_END, _A2A_BOUNDARY_START
+        from _sanitize_a2a import _A2A_BOUNDARY_END_ESCAPED, _A2A_BOUNDARY_START_ESCAPED
         send_calls = []
 
         async def fake_send(workspace_id, task, source_workspace_id=None):
@@ -91,8 +91,8 @@ class TestFlagOffLegacyPath:
             )
 
         # OFFSEC-003: result is wrapped in boundary markers
-        assert _A2A_BOUNDARY_START in result
-        assert _A2A_BOUNDARY_END in result
+        assert _A2A_BOUNDARY_START_ESCAPED in result
+        assert _A2A_BOUNDARY_END_ESCAPED in result
         assert "legacy ok" in result
         assert send_calls == [("ws-target", "task body", "ws-self")]
         poll_mock.assert_not_called()
@@ -124,7 +124,7 @@ class TestPollModeAutoFallback:
         monkeypatch.delenv("DELEGATION_SYNC_VIA_INBOX", raising=False)
 
         import a2a_tools
-        from _sanitize_a2a import _A2A_BOUNDARY_END, _A2A_BOUNDARY_START
+        from _sanitize_a2a import _A2A_BOUNDARY_END_ESCAPED, _A2A_BOUNDARY_START_ESCAPED
         from a2a_client import _A2A_QUEUED_PREFIX
 
         send_calls = []
@@ -159,8 +159,8 @@ class TestPollModeAutoFallback:
         assert poll_calls[0] == ("ws-target", "task body", "ws-self")
         # Caller sees the real reply, NOT the queued sentinel and NOT
         # a DELEGATION FAILED string. Wrapped in OFFSEC-003 boundary markers.
-        assert _A2A_BOUNDARY_START in result
-        assert _A2A_BOUNDARY_END in result
+        assert _A2A_BOUNDARY_START_ESCAPED in result
+        assert _A2A_BOUNDARY_END_ESCAPED in result
         assert "real response from poll-mode peer" in result
 
     async def test_non_queued_send_result_does_not_trigger_fallback(self, monkeypatch):
@@ -169,7 +169,7 @@ class TestPollModeAutoFallback:
         monkeypatch.delenv("DELEGATION_SYNC_VIA_INBOX", raising=False)
 
         import a2a_tools
-        from _sanitize_a2a import _A2A_BOUNDARY_END, _A2A_BOUNDARY_START
+        from _sanitize_a2a import _A2A_BOUNDARY_END_ESCAPED, _A2A_BOUNDARY_START_ESCAPED
 
         async def fake_send(*_a, **_kw):
             return "normal reply"
@@ -189,8 +189,8 @@ class TestPollModeAutoFallback:
             )
 
         # OFFSEC-003: wrapped in boundary markers
-        assert _A2A_BOUNDARY_START in result
-        assert _A2A_BOUNDARY_END in result
+        assert _A2A_BOUNDARY_START_ESCAPED in result
+        assert _A2A_BOUNDARY_END_ESCAPED in result
         assert "normal reply" in result
         poll_mock.assert_not_called()
 

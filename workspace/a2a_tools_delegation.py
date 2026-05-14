@@ -49,7 +49,9 @@ from a2a_client import (
 from a2a_tools_rbac import auth_headers_for_heartbeat as _auth_headers_for_heartbeat
 from _sanitize_a2a import (
     _A2A_BOUNDARY_END,
+    _A2A_BOUNDARY_END_ESCAPED,
     _A2A_BOUNDARY_START,
+    _A2A_BOUNDARY_START_ESCAPED,
     sanitize_a2a_result,
 )  # noqa: E402
 
@@ -330,8 +332,18 @@ async def tool_delegate_task(
     # markers so the agent can distinguish trusted (own output) from untrusted
     # (peer-supplied) content.  Explicit wrapping here rather than inside
     # sanitize_a2a_result preserves a clean separation of concerns.
+    #
+    # Truncate at the closer BEFORE sanitizing so the raw closer (which gets
+    # lost during escaping) is removed from the content.  After truncation,
+    # sanitize the remaining text and wrap with escaped boundary markers.
+    if _A2A_BOUNDARY_END in result:
+        result = result[:result.index(_A2A_BOUNDARY_END)]
     escaped = sanitize_a2a_result(result)
-    return f"{_A2A_BOUNDARY_START}\n{escaped}\n{_A2A_BOUNDARY_END}"
+    return (
+        f"{_A2A_BOUNDARY_START_ESCAPED}\n"
+        f"{escaped}\n"
+        f"{_A2A_BOUNDARY_END_ESCAPED}"
+    )
 
 
 async def tool_delegate_task_async(
