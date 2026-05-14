@@ -133,7 +133,6 @@ jobs:
   # the name match works on PRs that don't touch workspace-server/).
   platform-build:
     name: Platform (Go)
-    needs: changes
     runs-on: ubuntu-latest
     # mc#774 (closed 2026-05-14): Phase 4 flip of the platform-build job.
     # Phase 4 (#656) originally flipped this to continue-on-error: false based on
@@ -154,29 +153,29 @@ jobs:
       run:
         working-directory: workspace-server
     steps:
-      - if: needs.changes.outputs.platform != 'true'
+      - if: false
         working-directory: .
         run: echo "No platform/** changes — skipping real build steps; this job always runs to satisfy the required-check name on branch protection."
-      - if: needs.changes.outputs.platform == 'true'
+      - if: always()
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - if: needs.changes.outputs.platform == 'true'
+      - if: always()
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: 'stable'
-      - if: needs.changes.outputs.platform == 'true'
+      - if: always()
         run: go mod download
-      - if: needs.changes.outputs.platform == 'true'
+      - if: always()
         run: go build ./cmd/server
       # CLI (molecli) moved to standalone repo: git.moleculesai.app/molecule-ai/molecule-cli
-      - if: needs.changes.outputs.platform == 'true'
+      - if: always()
         run: go vet ./...
-      - if: needs.changes.outputs.platform == 'true'
+      - if: always()
         name: Install golangci-lint
         run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
-      - if: needs.changes.outputs.platform == 'true'
+      - if: always()
         name: Run golangci-lint
         run: $(go env GOPATH)/bin/golangci-lint run --timeout 3m ./...
-      - if: needs.changes.outputs.platform == 'true'
+      - if: always()
         name: Diagnostic — per-package verbose 60s
         run: |
           set +e
@@ -192,7 +191,7 @@ jobs:
           echo "::endgroup::"
         # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
         continue-on-error: true
-      - if: needs.changes.outputs.platform == 'true'
+      - if: always()
         name: Run tests with race detection and coverage
         # Explicit timeout: cold runner cache causes OOM kills at ~4m39s on the
         # full ./... suite with race detection + coverage. A 10m per-step timeout
@@ -200,7 +199,7 @@ jobs:
         # instead of OOM-killing. The job-level timeout (15m) is a backstop.
         run: go test -race -timeout 10m -coverprofile=coverage.out ./...
 
-      - if: needs.changes.outputs.platform == 'true'
+      - if: always()
         name: Per-file coverage report
         # Advisory — lists every source file with its coverage so reviewers
         # can see at-a-glance where gaps are. Sorted ascending so the worst
@@ -214,7 +213,7 @@ jobs:
                    END {for (f in s) printf "%6.1f%%  %s\n", s[f]/c[f], f}' \
             | sort -n
 
-      - if: needs.changes.outputs.platform == 'true'
+      - if: always()
         name: Check coverage thresholds
         # Enforces two gates from #1823 Layer 1:
         #   1. Total floor (25% — ratchet plan in COVERAGE_FLOOR.md).
@@ -302,7 +301,6 @@ jobs:
   # siblings — verified empirically on PR #2314).
   canvas-build:
     name: Canvas (Next.js)
-    needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Phase 4 (RFC #219 §1): confirmed green on main 2026-05-12.
@@ -311,20 +309,20 @@ jobs:
       run:
         working-directory: canvas
     steps:
-      - if: needs.changes.outputs.canvas != 'true'
+      - if: false
         working-directory: .
         run: echo "No canvas/** changes — skipping real build steps; this job always runs to satisfy the required-check name on branch protection."
-      - if: needs.changes.outputs.canvas == 'true'
+      - if: always()
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - if: needs.changes.outputs.canvas == 'true'
+      - if: always()
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: '22'
-      - if: needs.changes.outputs.canvas == 'true'
+      - if: always()
         run: rm -f package-lock.json && npm install
-      - if: needs.changes.outputs.canvas == 'true'
+      - if: always()
         run: npm run build
-      - if: needs.changes.outputs.canvas == 'true'
+      - if: always()
         name: Run tests with coverage
         # Coverage instrumentation is configured in canvas/vitest.config.ts
         # (provider: v8, reporters: text + html + json-summary). Step 2 of
@@ -333,7 +331,7 @@ jobs:
         # tracked in #1815) after the team sees what current coverage is.
         run: npx vitest run --coverage
       - name: Upload coverage summary as artifact
-        if: needs.changes.outputs.canvas == 'true' && always()
+        if: always()
         # Pinned to v3 for Gitea act_runner v0.6 compatibility — v4+ uses
         # the GHES 3.10+ artifact protocol that Gitea 1.22.x does NOT
         # implement, surfacing as `GHESNotSupportedError: @actions/artifact
@@ -350,16 +348,15 @@ jobs:
   # Shellcheck (E2E scripts) — required check, always runs.
   shellcheck:
     name: Shellcheck (E2E scripts)
-    needs: changes
     runs-on: ubuntu-latest
     # Phase 4 (RFC #219 §1): confirmed green on main 2026-05-12.
     continue-on-error: false
     steps:
-      - if: needs.changes.outputs.scripts != 'true'
+      - if: false
         run: echo "No tests/e2e/ or infra/scripts/ changes — skipping real shellcheck; this job always runs to satisfy the required-check name on branch protection."
-      - if: needs.changes.outputs.scripts == 'true'
+      - if: always()
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - if: needs.changes.outputs.scripts == 'true'
+      - if: always()
         name: Run shellcheck on tests/e2e/*.sh and infra/scripts/*.sh
         # shellcheck is pre-installed on ubuntu-latest runners (via apt).
         # infra/scripts/ is included because setup.sh + nuke.sh gate the
@@ -370,16 +367,16 @@ jobs:
           find tests/e2e infra/scripts -type f -name '*.sh' -print0 \
             | xargs -0 shellcheck --severity=warning
 
-      - if: needs.changes.outputs.scripts == 'true'
+      - if: always()
         name: Lint cleanup-trap hygiene (RFC #2873)
         run: bash tests/e2e/lint_cleanup_traps.sh
 
-      - if: needs.changes.outputs.scripts == 'true'
+      - if: always()
         name: Run E2E bash unit tests (no live infra)
         run: |
           bash tests/e2e/test_model_slug.sh
 
-      - if: needs.changes.outputs.scripts == 'true'
+      - if: always()
         name: Test ECR promote-tenant-image script (mock-driven, no live infra)
         # Covers scripts/promote-tenant-image.sh — the codified
         # :staging-latest → :latest ECR promote + tenant fleet redeploy
@@ -389,7 +386,7 @@ jobs:
         run: |
           bash scripts/test-promote-tenant-image.sh
 
-      - if: needs.changes.outputs.scripts == 'true'
+      - if: always()
         name: Shellcheck promote-tenant-image script
         # scripts/ is excluded from the bulk shellcheck pass above (legacy
         # SC3040/SC3043 cleanup pending). Run shellcheck explicitly on
@@ -406,12 +403,12 @@ jobs:
     # This job must run on PRs because all-required needs it. The step exits
     # 0 when it is not a main push, giving branch protection a green no-op
     # instead of a skipped/missing required dependency.
-    needs: [changes, canvas-build]
+    needs: canvas-build
     steps:
       - name: Write deploy reminder to step summary
         env:
           COMMIT_SHA: ${{ github.sha }}
-          CANVAS_CHANGED: ${{ needs.changes.outputs.canvas }}
+          CANVAS_CHANGED: "true"
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref }}
           # github.server_url resolves via the workflow-level env override
@@ -456,7 +453,6 @@ jobs:
   # Python Lint & Test — required check, always runs.
   python-lint:
     name: Python Lint & Test
-    needs: changes
     runs-on: ubuntu-latest
     # Phase 4 (RFC #219 §1): confirmed green on main 2026-05-12.
     continue-on-error: false
@@ -466,25 +462,25 @@ jobs:
       run:
         working-directory: workspace
     steps:
-      - if: needs.changes.outputs.python != 'true'
+      - if: false
         working-directory: .
         run: echo "No workspace/** changes — skipping real lint+test; this job always runs to satisfy the required-check name on branch protection."
-      - if: needs.changes.outputs.python == 'true'
+      - if: always()
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - if: needs.changes.outputs.python == 'true'
+      - if: always()
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.11'
           cache: pip
           cache-dependency-path: workspace/requirements.txt
-      - if: needs.changes.outputs.python == 'true'
+      - if: always()
         run: pip install -r requirements.txt pytest pytest-asyncio pytest-cov sqlalchemy>=2.0.0
       # Coverage flags + fail-under floor moved into workspace/pytest.ini
       # (issue #1817) so local `pytest` and CI use identical config.
-      - if: needs.changes.outputs.python == 'true'
+      - if: always()
         run: python -m pytest --tb=short
 
-      - if: needs.changes.outputs.python == 'true'
+      - if: always()
         name: Per-file critical-path coverage (MCP / inbox / auth)
         # MCP-critical Python files have a per-file floor on top of the
         # 86% total floor in pytest.ini. See issue #2790 for full rationale.
