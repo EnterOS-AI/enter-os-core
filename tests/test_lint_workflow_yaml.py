@@ -22,6 +22,7 @@ Cross-links:
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import textwrap
@@ -542,3 +543,89 @@ def test_rule9_prod_manual_deploy_allows_rollback_control(tmp_path):
     _write(tmp_path, "ok.yml", PROD_ROLLBACK_OK)
     r = _run_lint(tmp_path)
     assert r.returncode == 0, f"stdout={r.stdout}\nstderr={r.stderr}"
+
+
+# ---------------------------------------------------------------------------
+# CI change detector fanout — workflow-only PRs keep required contexts without
+# running Go/Canvas/Python/shellcheck heavy steps.
+# ---------------------------------------------------------------------------
+
+CI_WORKFLOW = REPO_ROOT / ".gitea" / "workflows" / "ci.yml"
+CI_SURFACES = ("platform", "canvas", "python", "scripts")
+
+
+def _ci_change_patterns() -> dict[str, re.Pattern[str]]:
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    patterns: dict[str, re.Pattern[str]] = {}
+    for surface, pattern in re.findall(
+        r'echo "(platform|canvas|python|scripts)=.*?grep -qE \'([^\']+)\'',
+        text,
+    ):
+        patterns[surface] = re.compile(pattern)
+    assert set(patterns) == set(CI_SURFACES)
+    return patterns
+
+
+def _classify_ci_change(*paths: str) -> dict[str, bool]:
+    patterns = _ci_change_patterns()
+    return {
+        surface: any(pattern.search(path) for path in paths)
+        for surface, pattern in patterns.items()
+    }
+
+
+def test_ci_change_detector_workflow_only_edits_do_not_trigger_heavy_surfaces():
+    assert _classify_ci_change(".gitea/workflows/ci.yml") == {
+        "platform": False,
+        "canvas": False,
+        "python": False,
+        "scripts": False,
+    }
+    assert _classify_ci_change(".github/workflows/ci.yml") == {
+        "platform": False,
+        "canvas": False,
+        "python": False,
+        "scripts": False,
+    }
+
+
+def test_ci_change_detector_narrow_surface_edits_only_trigger_their_surface():
+    assert _classify_ci_change("workspace-server/internal/handlers/foo.go") == {
+        "platform": True,
+        "canvas": False,
+        "python": False,
+        "scripts": False,
+    }
+    assert _classify_ci_change("canvas/app/page.tsx") == {
+        "platform": False,
+        "canvas": True,
+        "python": False,
+        "scripts": False,
+    }
+    assert _classify_ci_change("workspace/a2a_mcp_server.py") == {
+        "platform": False,
+        "canvas": False,
+        "python": True,
+        "scripts": False,
+    }
+    assert _classify_ci_change("tests/e2e/test_model_slug.sh") == {
+        "platform": False,
+        "canvas": False,
+        "python": False,
+        "scripts": True,
+    }
+
+
+def test_ci_change_detector_docs_and_meta_scripts_do_not_trigger_surfaces():
+    assert _classify_ci_change("README.md") == {
+        "platform": False,
+        "canvas": False,
+        "python": False,
+        "scripts": False,
+    }
+    assert _classify_ci_change(".gitea/scripts/lint-workflow-yaml.py") == {
+        "platform": False,
+        "canvas": False,
+        "python": False,
+        "scripts": False,
+    }

@@ -107,16 +107,25 @@ jobs:
             echo "scripts=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # Both .github/workflows/ci.yml AND .gitea/workflows/ci.yml count
-          # as "this workflow changed" — either edit should force-run every
-          # downstream job. The Gitea port follows the same shape as the
-          # GitHub original so behavior matches when triggered on either
-          # platform.
-          DIFF=$(git diff --name-only "$BASE" HEAD 2>/dev/null || echo ".gitea/workflows/ci.yml")
-          echo "platform=$(echo "$DIFF" | grep -qE '^workspace-server/|^\.gitea/workflows/ci\.yml$|^\.github/workflows/ci\.yml$' && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          echo "canvas=$(echo "$DIFF" | grep -qE '^canvas/|^\.gitea/workflows/ci\.yml$|^\.github/workflows/ci\.yml$' && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          echo "python=$(echo "$DIFF" | grep -qE '^workspace/|^\.gitea/workflows/ci\.yml$|^\.github/workflows/ci\.yml$' && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          echo "scripts=$(echo "$DIFF" | grep -qE '^tests/e2e/|^scripts/|^infra/scripts/|^\.gitea/workflows/ci\.yml$|^\.github/workflows/ci\.yml$' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          # Workflow-only edits are covered by the workflow lint family
+          # and by this workflow's always-present required jobs. Do not fan
+          # those edits out into Go/Canvas/Python/shellcheck work; the
+          # downstream jobs still emit their required contexts via no-op
+          # steps when their surface flag is false.
+          #
+          # If the diff itself cannot be trusted, fail open by running every
+          # surface instead of silently under-testing the PR.
+          if ! DIFF=$(git diff --name-only "$BASE" HEAD 2>/dev/null); then
+            echo "platform=true" >> "$GITHUB_OUTPUT"
+            echo "canvas=true" >> "$GITHUB_OUTPUT"
+            echo "python=true" >> "$GITHUB_OUTPUT"
+            echo "scripts=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "platform=$(echo "$DIFF" | grep -qE '^workspace-server/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "canvas=$(echo "$DIFF" | grep -qE '^canvas/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "python=$(echo "$DIFF" | grep -qE '^workspace/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "scripts=$(echo "$DIFF" | grep -qE '^tests/e2e/|^scripts/|^infra/scripts/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
   # Platform (Go) — Go build/vet/test/lint + coverage gates. The always-run
   # + per-step gating shape preserves the GitHub-side required-check name
@@ -380,17 +389,27 @@ jobs:
     # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     needs: [changes, canvas-build]
-    # Only fires on direct pushes to main (i.e. after staging→main promotion).
-    if: needs.changes.outputs.canvas == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Keep the job itself always runnable. Gitea 1.22.6 leaves job-level
+    # event/ref `if:` gates as pending on PRs, which blocks the combined
+    # status even though this reminder is intentionally non-required.
     steps:
       - name: Write deploy reminder to step summary
         env:
           COMMIT_SHA: ${{ github.sha }}
+          CANVAS_CHANGED: ${{ needs.changes.outputs.canvas }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref }}
           # github.server_url resolves via the workflow-level env override
           # to the Gitea instance, so the RUN_URL points at the Gitea run
           # page (not github.com). See feedback_act_runner_github_server_url.
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          set -euo pipefail
+          if [ "$CANVAS_CHANGED" != "true" ] || [ "$EVENT_NAME" != "push" ] || [ "$REF_NAME" != "refs/heads/main" ]; then
+            echo "Canvas deploy reminder not applicable for event=$EVENT_NAME ref=$REF_NAME canvas_changed=$CANVAS_CHANGED."
+            exit 0
+          fi
+
           # Write body to a temp file — avoids backtick escaping in shell.
           cat > /tmp/deploy-reminder.md << 'BODY'
           ## Canvas build passed — deploy required
@@ -535,11 +554,10 @@ jobs:
     #     hourly if this list diverges from status_check_contexts or from
     #     audit-force-merge.yml's REQUIRED_CHECKS env (RFC §4 + §6).
     #
-    # Excluded from `needs:`: `canvas-deploy-reminder` — gated by
-    # `if: ... github.event_name == 'push' && github.ref == 'refs/heads/main'`,
-    # so on PR events it's legitimately `skipped`. The drift detector
-    # explicitly excludes `github.event_name`-gated jobs from F1 (see
-    # `.gitea/scripts/ci-required-drift.py::ci_job_names`).
+    # Excluded from `needs:`: `canvas-deploy-reminder` — it is an
+    # operational reminder, not a CI prerequisite. Keep that job runnable
+    # on PRs with an internal no-op guard; job-level event/ref `if:` gates
+    # are a Gitea 1.22.6 pending-status trap.
     #
     # Phase 3 (RFC #219 §1) safety: underlying build jobs carry
     # continue-on-error: true so their failures are masked to null (2026-05-12: re-enabled mc#774 interim)
@@ -559,7 +577,7 @@ jobs:
       - canvas-build
       - shellcheck
       - python-lint
-    if: always()
+    if: ${{ always() }}
     steps:
       - name: Assert every required dependency succeeded
         run: |

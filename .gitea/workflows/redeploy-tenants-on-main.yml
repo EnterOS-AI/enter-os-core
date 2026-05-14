@@ -36,17 +36,19 @@ name: redeploy-tenants-on-main
 #
 # Runtime ordering:
 #   1. publish-workspace-server-image completes → new :staging-<sha> in ECR.
-#   2. This workflow fires via workflow_run, calls redeploy-fleet with
-#      target_tag=staging-<sha>. No CDN propagation wait needed —
-#      ECR image manifest is consistent immediately after push.
+#   2. The merge that updates publish-workspace-server-image.yml triggers
+#      this push/path-filtered workflow, which calls redeploy-fleet with
+#      target_tag=staging-<sha>. No CDN propagation wait needed — ECR image
+#      manifest is consistent immediately after push.
 #   3. Calls redeploy-fleet with canary_slug (if set) and a soak
 #      period. Canary proves the image boots; batches follow.
 #   4. Any failure aborts the rollout and leaves older tenants on the
 #      prior image — safer default than half-and-half state.
 #
-# Rollback path: re-run this workflow with a specific SHA pinned via
-# the workflow_dispatch input. That calls redeploy-fleet with
-# target_tag=<sha>, re-pulling the older image on every tenant.
+# Rollback path: set PROD_MANUAL_REDEPLOY_TARGET_TAG as a repo/org
+# variable or secret, run workflow_dispatch, then unset it after the
+# rollback. That calls redeploy-fleet with target_tag=<value>,
+# re-pulling the pinned image on every tenant.
 
 on:
   push:
@@ -77,13 +79,11 @@ env:
   GITHUB_SERVER_URL: https://git.moleculesai.app
 
 jobs:
+  # bp-exempt: production redeploy is a side-effect workflow, not a merge gate.
   redeploy:
-    # Skip the auto-trigger if publish-workspace-server-image didn't
-    # actually succeed. workflow_run fires on any completion state; we
-    # don't want to redeploy against a half-built image.
-    # NOTE (Gitea port): workflow_dispatch trigger dropped; only the
-    # workflow_run path remains.
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    # Gitea 1.22.6 does not support workflow_run. This workflow is now
+    # controlled by push/path triggers plus an explicit kill switch.
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
     # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
@@ -119,16 +119,16 @@ jobs:
         #      dead (staging-verify soft-skips without canary fleet, so
         #      the only thing retagging `:latest` today is the manual
         #      promote-latest.yml — last run 2026-04-28). Auto-trigger
-        #      from workflow_run uses workflow_run.head_sha; manual
-        #      dispatch with no input falls through to github.sha.
+        #      from the main push uses github.sha; manual
+        #      dispatch with no variable falls through to github.sha.
         env:
-          INPUT_TAG: ${{ inputs.target_tag }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          PROD_MANUAL_REDEPLOY_TARGET_TAG: ${{ vars.PROD_MANUAL_REDEPLOY_TARGET_TAG || secrets.PROD_MANUAL_REDEPLOY_TARGET_TAG || '' }}
+          HEAD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          if [ -n "${INPUT_TAG:-}" ]; then
-            echo "target_tag=$INPUT_TAG" >> "$GITHUB_OUTPUT"
-            echo "Using operator-pinned tag: $INPUT_TAG"
+          if [ -n "${PROD_MANUAL_REDEPLOY_TARGET_TAG:-}" ]; then
+            echo "target_tag=$PROD_MANUAL_REDEPLOY_TARGET_TAG" >> "$GITHUB_OUTPUT"
+            echo "Using operator-pinned tag from PROD_MANUAL_REDEPLOY_TARGET_TAG."
           else
             SHORT="${HEAD_SHA:0:7}"
             echo "target_tag=staging-$SHORT" >> "$GITHUB_OUTPUT"
@@ -144,12 +144,25 @@ jobs:
           CP_URL: ${{ vars.CP_URL || 'https://api.moleculesai.app' }}
           CP_ADMIN_API_TOKEN: ${{ secrets.CP_ADMIN_API_TOKEN }}
           TARGET_TAG: ${{ steps.tag.outputs.target_tag }}
-          CANARY_SLUG: ${{ inputs.canary_slug || 'hongming' }}
-          SOAK_SECONDS: ${{ inputs.soak_seconds || '60' }}
-          BATCH_SIZE: ${{ inputs.batch_size || '3' }}
-          DRY_RUN: ${{ inputs.dry_run || false }}
+          CANARY_SLUG: ${{ vars.PROD_REDEPLOY_CANARY_SLUG || secrets.PROD_REDEPLOY_CANARY_SLUG || '' }}
+          SOAK_SECONDS: ${{ vars.PROD_REDEPLOY_SOAK_SECONDS || secrets.PROD_REDEPLOY_SOAK_SECONDS || '' }}
+          BATCH_SIZE: ${{ vars.PROD_REDEPLOY_BATCH_SIZE || secrets.PROD_REDEPLOY_BATCH_SIZE || '' }}
+          DRY_RUN: ${{ vars.PROD_REDEPLOY_DRY_RUN || secrets.PROD_REDEPLOY_DRY_RUN || '' }}
+          PROD_AUTO_DEPLOY_DISABLED: ${{ vars.PROD_AUTO_DEPLOY_DISABLED || secrets.PROD_AUTO_DEPLOY_DISABLED || '' }}
         run: |
           set -euo pipefail
+
+          case "${PROD_AUTO_DEPLOY_DISABLED,,}" in
+            1|true|yes|on)
+              echo "::notice::PROD_AUTO_DEPLOY_DISABLED is set; skipping production redeploy."
+              exit 0
+              ;;
+          esac
+
+          CANARY_SLUG="${CANARY_SLUG:-hongming}"
+          SOAK_SECONDS="${SOAK_SECONDS:-60}"
+          BATCH_SIZE="${BATCH_SIZE:-3}"
+          DRY_RUN="${DRY_RUN:-false}"
 
           if [ -z "${CP_ADMIN_API_TOKEN:-}" ]; then
             echo "::error::CP_ADMIN_API_TOKEN secret not set — skipping redeploy"
@@ -172,7 +185,7 @@ jobs:
             }')
 
           echo "POST $CP_URL/cp/admin/tenants/redeploy-fleet"
-          echo "  body: $BODY"
+          echo "  target_tag=$TARGET_TAG canary=$CANARY_SLUG soak_seconds=$SOAK_SECONDS batch_size=$BATCH_SIZE dry_run=$DRY_RUN"
 
           HTTP_RESPONSE=$(mktemp)
           HTTP_CODE_FILE=$(mktemp)
@@ -281,10 +294,10 @@ jobs:
           if [ "$TARGET_TAG" != "latest" ] \
              && [ "$TARGET_TAG" != "$EXPECTED_SHA" ] \
              && [ "$TARGET_TAG" != "staging-$EXPECTED_SHORT" ]; then
-            # workflow_dispatch with a pinned tag that isn't the head
+            # Manual redeploy with a pinned tag that isn't the head
             # SHA — operator is rolling back / pinning. Skip the
             # verification because we don't have the expected SHA in
-            # this context (would need to crane-inspect the GHCR
+            # this context (would need to inspect the ECR
             # manifest, which is a follow-up). Failing-open here is
             # safe: the operator chose the tag deliberately.
             #
