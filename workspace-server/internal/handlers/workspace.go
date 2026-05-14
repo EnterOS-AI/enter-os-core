@@ -161,15 +161,14 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 
 	id := uuid.New().String()
 	awarenessNamespace := workspaceAwarenessNamespace(id)
-	if payload.Tier == 0 {
-		// SaaS-aware default. SaaS → T4 (full host access; each
-		// workspace runs on its own sibling EC2 so the tier boundary
-		// is a Docker resource limit on the only container present —
-		// no neighbour to protect from). Self-hosted → T3 (read-write
-		// workspace mount + Docker daemon access, most templates'
-		// baseline). Lower tiers (T1 sandboxed, T2 standard) remain
-		// explicit opt-ins for low-trust agents. Matches the canvas
-		// CreateWorkspaceDialog defaults so the API and the UI agree.
+	if h.IsSaaS() {
+		// SaaS hard gate: every hosted workspace gets its own sibling
+		// EC2 instance, so T4 is the only meaningful runtime boundary.
+		// Do not trust stale clients/templates that still send T1/T2/T3.
+		payload.Tier = 4
+	} else if payload.Tier == 0 {
+		// Self-hosted default remains T3. Lower tiers (T1 sandboxed,
+		// T2 standard) stay explicit opt-ins for low-trust local agents.
 		payload.Tier = h.DefaultTier()
 	}
 

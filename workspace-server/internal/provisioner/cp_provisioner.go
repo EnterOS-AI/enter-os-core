@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -156,6 +158,7 @@ type cpProvisionRequest struct {
 	Tier        int               `json:"tier"`
 	PlatformURL string            `json:"platform_url"`
 	Env         map[string]string `json:"env"`
+	ConfigFiles map[string]string `json:"config_files,omitempty"`
 }
 
 type cpProvisionResponse struct {
@@ -179,6 +182,11 @@ func (p *CPProvisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string,
 		}
 		env["ADMIN_TOKEN"] = p.adminToken
 	}
+	configFiles, err := collectCPConfigFiles(cfg)
+	if err != nil {
+		return "", fmt.Errorf("cp provisioner: collect config files: %w", err)
+	}
+
 	req := cpProvisionRequest{
 		OrgID:       p.orgID,
 		WorkspaceID: cfg.WorkspaceID,
@@ -186,6 +194,7 @@ func (p *CPProvisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string,
 		Tier:        cfg.Tier,
 		PlatformURL: cfg.PlatformURL,
 		Env:         env,
+		ConfigFiles: configFiles,
 	}
 
 	body, err := json.Marshal(req)
@@ -235,6 +244,64 @@ func (p *CPProvisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string,
 		"runtime":      cfg.Runtime,
 	})
 	return result.InstanceID, nil
+}
+
+const cpConfigFilesMaxBytes = 12 << 10
+
+func collectCPConfigFiles(cfg WorkspaceConfig) (map[string]string, error) {
+	files := make(map[string]string)
+	total := 0
+	addFile := func(name string, data []byte) error {
+		name = filepath.ToSlash(filepath.Clean(name))
+		if name == "." || strings.HasPrefix(name, "../") || strings.HasPrefix(name, "/") || strings.Contains(name, "/../") {
+			return fmt.Errorf("invalid config file path %q", name)
+		}
+		total += len(data)
+		if total > cpConfigFilesMaxBytes {
+			return fmt.Errorf("config files exceed %d bytes", cpConfigFilesMaxBytes)
+		}
+		files[name] = base64.StdEncoding.EncodeToString(data)
+		return nil
+	}
+
+	if cfg.TemplatePath != "" {
+		err := filepath.WalkDir(cfg.TemplatePath, func(path string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if d.IsDir() {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			if !info.Mode().IsRegular() {
+				return nil
+			}
+			rel, err := filepath.Rel(cfg.TemplatePath, path)
+			if err != nil {
+				return err
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			return addFile(rel, data)
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	for name, data := range cfg.ConfigFiles {
+		if err := addFile(name, data); err != nil {
+			return nil, err
+		}
+	}
+	if len(files) == 0 {
+		return nil, nil
+	}
+	return files, nil
 }
 
 // Stop terminates the workspace's EC2 instance via the control plane.
@@ -391,7 +458,9 @@ func (p *CPProvisioner) IsRunning(ctx context.Context, workspaceID string) (bool
 		// Don't leak the body — upstream errors may echo headers.
 		return true, fmt.Errorf("cp provisioner: status: unexpected %d", resp.StatusCode)
 	}
-	var result struct{ State string `json:"state"` }
+	var result struct {
+		State string `json:"state"`
+	}
 	// Cap body read at 64 KiB for parity with Start — a misconfigured
 	// or compromised CP streaming a huge body could otherwise exhaust
 	// memory in this hot path (called reactively per-request from

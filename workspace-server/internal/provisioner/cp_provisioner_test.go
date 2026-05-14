@@ -2,10 +2,13 @@ package provisioner
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -213,6 +216,53 @@ func TestStart_HappyPath(t *testing.T) {
 	}
 }
 
+func TestStart_SendsTemplateAndGeneratedConfigFiles(t *testing.T) {
+	tmpl := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpl, "config.yaml"), []byte("name: template\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(tmpl, "prompts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpl, "prompts", "system.md"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var body cpProvisionRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"instance_id":"i-abc123","state":"pending"}`)
+	}))
+	defer srv.Close()
+
+	p := &CPProvisioner{baseURL: srv.URL, orgID: "org-1", httpClient: srv.Client()}
+	_, err := p.Start(context.Background(), WorkspaceConfig{
+		WorkspaceID:  "ws-1",
+		Runtime:      "claude-code",
+		Tier:         4,
+		PlatformURL:  "http://tenant",
+		TemplatePath: tmpl,
+		ConfigFiles: map[string][]byte{
+			"config.yaml": []byte("name: generated\n"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	wantConfig := base64.StdEncoding.EncodeToString([]byte("name: generated\n"))
+	if got := body.ConfigFiles["config.yaml"]; got != wantConfig {
+		t.Errorf("config.yaml payload = %q, want generated override %q", got, wantConfig)
+	}
+	wantPrompt := base64.StdEncoding.EncodeToString([]byte("hello"))
+	if got := body.ConfigFiles["prompts/system.md"]; got != wantPrompt {
+		t.Errorf("prompt payload = %q, want %q", got, wantPrompt)
+	}
+}
+
 // TestStart_Non201ReturnsStructuredError — when CP returns 401 with a
 // structured {"error":"..."} body, Start surfaces that error message.
 // Verifies the defense against log-leaking raw upstream bodies.
@@ -416,9 +466,9 @@ func TestStop_4xxResponseSurfacesError(t *testing.T) {
 func TestStop_2xxVariantsAllSucceed(t *testing.T) {
 	primeInstanceIDLookup(t, map[string]string{"ws-1": "i-ok"})
 	for _, code := range []int{
-		http.StatusOK,           // 200
-		http.StatusAccepted,     // 202
-		http.StatusNoContent,    // 204
+		http.StatusOK,        // 200
+		http.StatusAccepted,  // 202
+		http.StatusNoContent, // 204
 	} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(code)
@@ -486,11 +536,11 @@ func TestIsRunning_ParsesStateField(t *testing.T) {
 			_, _ = io.WriteString(w, `{"state":"`+state+`"}`)
 		}))
 		p := &CPProvisioner{
-			baseURL:    srv.URL,
-			orgID:      "org-1",
+			baseURL:      srv.URL,
+			orgID:        "org-1",
 			sharedSecret: "s3cret",
 			adminToken:   "tok-xyz",
-			httpClient: srv.Client(),
+			httpClient:   srv.Client(),
 		}
 		got, err := p.IsRunning(context.Background(), "ws-1")
 		srv.Close()

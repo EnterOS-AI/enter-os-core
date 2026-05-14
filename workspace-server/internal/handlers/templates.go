@@ -186,11 +186,16 @@ func (h *TemplatesHandler) List(c *gin.Context) {
 			model = raw.RuntimeConfig.Model
 		}
 
+		tier := raw.Tier
+		if h.wh != nil && h.wh.IsSaaS() {
+			tier = h.wh.DefaultTier()
+		}
+
 		templates = append(templates, templateSummary{
 			ID:                      id,
 			Name:                    raw.Name,
 			Description:             raw.Description,
-			Tier:                    raw.Tier,
+			Tier:                    tier,
 			Runtime:                 raw.Runtime,
 			Model:                   model,
 			Models:                  raw.RuntimeConfig.Models,
