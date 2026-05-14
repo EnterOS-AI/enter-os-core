@@ -255,7 +255,7 @@ export function ChannelsTab({ workspaceId }: Props) {
         </h3>
         <button
           onClick={() => setShowForm(!showForm)}
-          className="text-[10px] px-2.5 py-1 rounded bg-accent-strong/20 text-accent hover:bg-accent-strong/30 transition"
+          className="text-[10px] px-2.5 py-1 rounded bg-accent-strong/20 text-accent hover:bg-accent-strong/30 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-900"
         >
           {showForm ? "Cancel" : "+ Connect"}
         </button>
@@ -308,7 +308,7 @@ export function ChannelsTab({ workspaceId }: Props) {
                             <button
                               onClick={handleDiscover}
                               disabled={discovering || !formValues["bot_token"]}
-                              className="text-[10px] px-2 py-0.5 rounded bg-accent-strong/20 text-accent hover:bg-accent-strong/30 transition disabled:opacity-40"
+                              className="text-[10px] px-2 py-0.5 rounded bg-accent-strong/20 text-accent hover:bg-accent-strong/30 transition disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-900"
                             >
                               {discovering ? "Detecting..." : "Detect Chats"}
                             </button>
