@@ -78,26 +78,103 @@ func hasUnresolvedVarRef(original, expanded string) bool {
 }
 
 // expandWithEnv expands ${VAR} and $VAR references in s using the env map.
-// Falls back to the platform process env if a var isn't in the map.
-// Shell variables must start with a letter or '_' per POSIX; invalid identifiers
-// are returned literally so that "$100" and "$5" stay as-is.
+// Falls back to the platform process env only when the whole value is a
+// single variable reference; embedded process-env expansion is too broad for
+// imported org YAML because host variables such as HOME are not template data.
 func expandWithEnv(s string, env map[string]string) string {
-	return os.Expand(s, func(key string) string {
-		if len(key) == 0 {
-			return "$"
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] != '$' {
+			b.WriteByte(s[i])
+			i++
+			continue
 		}
-		c := key[0]
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_') {
-			return "$" + key // not a valid shell identifier — return literal
+
+		if i+1 >= len(s) {
+			b.WriteByte('$')
+			i++
+			continue
 		}
-		if v, ok := env[key]; ok {
-			return v
+
+		if s[i+1] == '{' {
+			end := strings.IndexByte(s[i+2:], '}')
+			if end < 0 {
+				b.WriteByte('$')
+				i++
+				continue
+			}
+			end += i + 2
+			key := s[i+2 : end]
+			ref := s[i : end+1]
+			b.WriteString(expandEnvRef(key, ref, s, env))
+			i = end + 1
+			continue
 		}
-		return os.Getenv(key)
-	})
+
+		if !isEnvIdentStart(s[i+1]) {
+			b.WriteByte('$')
+			i++
+			continue
+		}
+		j := i + 2
+		for j < len(s) && isEnvIdentPart(s[j]) {
+			j++
+		}
+		key := s[i+1 : j]
+		ref := s[i:j]
+		b.WriteString(expandEnvRef(key, ref, s, env))
+		i = j
+	}
+	return b.String()
 }
 
-// loadWorkspaceEnv reads the org root .env and the workspace-specific .env
+// expandEnvRef resolves a single variable reference extracted from s.
+//
+// Guards:
+//   - Empty key → "$$" escape, return "$"
+//   - key[0] not POSIX ident start → "$" + partial chars, return "$<chars>"
+//   - Key in env map → return the mapped value (template override wins)
+//   - Otherwise → only fall back to os.Getenv if the whole input string IS the
+//     variable reference (ref == whole).
+//
+// Bare $VAR format:
+//   $HOME (alone) → ref==whole → os.Getenv ✓  (host HOME is org-template HOME)
+//   $HOME/path (partial) → ref!=whole → literal "$HOME" ✓  (CWE-78: prevents host leak)
+//
+// Braced ${VAR} format:
+//   ${HOME} (alone) → ref==whole → os.Getenv ✓
+//   ${ROLE}/admin (partial) → ref!=whole → literal ✓
+//   "yes and ${NOT_SET}" (embedded) → ref!=whole → literal ✓
+//
+// This is the CWE-78 fix from commit a3a358f9.
+func expandEnvRef(key, ref, whole string, env map[string]string) string {
+	if key == "" {
+		return "$"
+	}
+	if !isEnvIdentStart(key[0]) {
+		return "$" + key
+	}
+	if v, ok := env[key]; ok {
+		return v
+	}
+	if ref == whole {
+		return os.Getenv(key)
+	}
+	return ref
+}
+
+func isEnvIdentStart(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+
+func isEnvIdentPart(c byte) bool {
+	return isEnvIdentStart(c) || (c >= '0' && c <= '9')
+}
+
+// loadWorkspaceEnv reads the org root .env and the workspace-specific .env .env and the workspace-specific .env
 // (workspace overrides org root). Used by both secret injection and channel
 // config expansion.
 //
