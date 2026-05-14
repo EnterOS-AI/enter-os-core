@@ -614,11 +614,10 @@ def list_recent_commit_shas(branch: str, limit: int) -> list[str]:
     (verified via vendor-truth probe 2026-05-11 against
     git.moleculesai.app — `feedback_smoke_test_vendor_truth_not_shape_match`).
 
-    Raises ApiError on non-2xx OR on unexpected response shape. This is
-    a HARD halt — without the commit list the sweep can't proceed. (The
-    per-SHA error isolation downstream is a different concern: tolerating
-    a transient 5xx on ONE commit's status is best-effort; losing the
-    commit list itself means we don't even know which commits to try.)
+    Raises ApiError on non-2xx OR on unexpected response shape. The
+    branch-level caller soft-skips this tick because the next scheduled
+    tick can safely retry the listing. Per-SHA status/write errors remain
+    separate and must not be mislabeled as commit-list outages.
     """
     _, body = api(
         "GET",
@@ -659,7 +658,27 @@ def reap_branch(
       - compensated_per_sha: {<sha_full>: [<context>, ...]} — only
         SHAs that actually got at least one compensation are included
     """
-    shas = list_recent_commit_shas(branch, limit)
+    try:
+        shas = list_recent_commit_shas(branch, limit)
+    except ApiError as e:
+        print(
+            "::warning::status-reaper skipped this tick because the "
+            f"commit list could not be read after retries: {e}"
+        )
+        return {
+            "scanned_shas": 0,
+            "compensated": 0,
+            "preserved_real_push": 0,
+            "preserved_unknown": 0,
+            "preserved_non_failure": 0,
+            "preserved_non_push_suffix": 0,
+            "preserved_unparseable": 0,
+            "compensated_pr_shadowed_by_push_success": 0,
+            "preserved_pr_without_push_success": 0,
+            "compensated_per_sha": {},
+            "skipped": True,
+            "skip_reason": "commit-list-api-error",
+        }
 
     aggregate: dict[str, Any] = {
         "scanned_shas": 0,
@@ -749,32 +768,12 @@ def main() -> int:
         f"class-O candidates={sum(1 for v in workflow_trigger_map.values() if not v)}"
     )
 
-    try:
-        counters = reap_branch(
-            workflow_trigger_map,
-            WATCH_BRANCH,
-            limit=args.limit,
-            dry_run=args.dry_run,
-        )
-    except ApiError as e:
-        print(
-            "::warning::status-reaper skipped this tick because the "
-            f"commit list could not be read after retries: {e}"
-        )
-        counters = {
-            "scanned_shas": 0,
-            "compensated": 0,
-            "preserved_real_push": 0,
-            "preserved_unknown": 0,
-            "preserved_non_failure": 0,
-            "preserved_non_push_suffix": 0,
-            "preserved_unparseable": 0,
-            "compensated_pr_shadowed_by_push_success": 0,
-            "preserved_pr_without_push_success": 0,
-            "compensated_per_sha": {},
-            "skipped": True,
-            "skip_reason": "commit-list-api-error",
-        }
+    counters = reap_branch(
+        workflow_trigger_map,
+        WATCH_BRANCH,
+        limit=args.limit,
+        dry_run=args.dry_run,
+    )
 
     # Observability: print one JSON line summarising the tick. Loki
     # ingestion via the runner's stdout (`source="gitea-actions"`).

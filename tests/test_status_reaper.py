@@ -1020,14 +1020,14 @@ def test_main_soft_skips_when_commit_listing_times_out(sr_module, monkeypatch, c
     retry safely, so `main()` should emit an observable warning and return 0.
     """
 
-    monkeypatch.setattr(sr_module, "scan_workflows", lambda _: {"status-reaper": False})
+    monkeypatch.setattr(sr_module, "scan_workflows", lambda _: {"workflow-without-push": False})
 
-    def fake_reap_branch(*args, **kwargs):
+    def fake_list_recent_commit_shas(*args, **kwargs):
         raise sr_module.ApiError(
             "GET /repos/owner/repo/commits failed after 4 attempts: timed out"
         )
 
-    monkeypatch.setattr(sr_module, "reap_branch", fake_reap_branch)
+    monkeypatch.setattr(sr_module, "list_recent_commit_shas", fake_list_recent_commit_shas)
     monkeypatch.setattr(sys, "argv", ["status-reaper.py"])
 
     assert sr_module.main() == 0
@@ -1035,3 +1035,38 @@ def test_main_soft_skips_when_commit_listing_times_out(sr_module, monkeypatch, c
     assert "::warning::status-reaper skipped this tick" in captured.out
     assert '"skipped": true' in captured.out
     assert '"skip_reason": "commit-list-api-error"' in captured.out
+
+
+def test_main_does_not_soft_skip_status_write_failures(sr_module, monkeypatch):
+    """Only commit-list read failures are soft-skipped.
+
+    A compensation write failure means the reaper could not repair a red
+    status. That must still fail the job loudly instead of being mislabeled as
+    a transient commit-list outage.
+    """
+
+    monkeypatch.setattr(sr_module, "scan_workflows", lambda _: {"workflow-without-push": False})
+    monkeypatch.setattr(sr_module, "list_recent_commit_shas", lambda *_args, **_kwargs: [SHA_A])
+    monkeypatch.setattr(
+        sr_module,
+        "get_combined_status",
+        lambda _sha: {
+            "state": "failure",
+            "statuses": [
+                {
+                    "context": "workflow-without-push / job (push)",
+                    "status": "failure",
+                    "description": "stranded class-O red",
+                }
+            ],
+        },
+    )
+
+    def fake_post_compensating_status(*args, **kwargs):
+        raise sr_module.ApiError("POST /statuses failed: 403")
+
+    monkeypatch.setattr(sr_module, "post_compensating_status", fake_post_compensating_status)
+    monkeypatch.setattr(sys, "argv", ["status-reaper.py"])
+
+    with pytest.raises(sr_module.ApiError, match="POST /statuses failed"):
+        sr_module.main()

@@ -67,12 +67,6 @@
 
 name: sop-checklist
 
-# Cancel any in-progress runs for the same PR to prevent
-# stale runs from overwriting newer status contexts.
-concurrency:
-  group: ${{ github.repository }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 # bp-required: yes  ← emits sop-checklist / all-items-acked (pull_request)
 
 on:
