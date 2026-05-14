@@ -417,7 +417,21 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     _require_runtime_env()
-    return process_once(dry_run=args.dry_run)
+    try:
+        return process_once(dry_run=args.dry_run)
+    except ApiError as exc:
+        # API errors (401/403/404/500) are transient for a queue tick —
+        # log and exit 0 so the workflow is not marked failed and the next
+        # tick can retry. Returning non-zero would permanently fail the
+        # workflow run, blocking future ticks.
+        sys.stderr.write(f"::error::queue API error: {exc}\n")
+        return 0
+    except urllib.error.URLError as exc:
+        sys.stderr.write(f"::error::queue network error: {exc}\n")
+        return 0
+    except TimeoutError as exc:
+        sys.stderr.write(f"::error::queue timeout: {exc}\n")
+        return 0
 
 
 if __name__ == "__main__":
