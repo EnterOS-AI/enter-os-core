@@ -388,9 +388,13 @@ func TestActivityList_BeforeTSRejectsInvalidFormat(t *testing.T) {
 // ---------- Activity type allowlist (#125: memory_write added) ----------
 
 func TestActivityReport_AcceptsMemoryWriteType(t *testing.T) {
-	mockDB, mock, _ := sqlmock.New()
-	defer mockDB.Close()
+	mockDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	prevDB := db.DB
 	db.DB = mockDB
+	t.Cleanup(func() { db.DB = prevDB; mockDB.Close() })
 
 	mock.ExpectExec(`INSERT INTO activity_logs`).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -413,9 +417,13 @@ func TestActivityReport_AcceptsMemoryWriteType(t *testing.T) {
 }
 
 func TestActivityReport_RejectsUnknownType(t *testing.T) {
-	mockDB, _, _ := sqlmock.New()
-	defer mockDB.Close()
+	mockDB, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	prevDB := db.DB
 	db.DB = mockDB
+	t.Cleanup(func() { db.DB = prevDB; mockDB.Close() })
 
 	broadcaster := newTestBroadcaster()
 	handler := NewActivityHandler(broadcaster)
@@ -447,9 +455,13 @@ func TestNotify_PersistsToActivityLogsForReloadRecovery(t *testing.T) {
 	//   - Have source_id NULL (canvas-source filter)
 	//   - Carry the message text in response_body so extractResponseText
 	//     can reconstruct the agent reply on reload
-	mockDB, mock, _ := sqlmock.New()
-	defer mockDB.Close()
+	mockDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	prevDB := db.DB
 	db.DB = mockDB
+	t.Cleanup(func() { db.DB = prevDB; mockDB.Close() })
 
 	// Workspace existence check
 	mock.ExpectQuery(`SELECT name FROM workspaces`).
@@ -491,9 +503,13 @@ func TestNotify_WithAttachments_PersistsFilePartsForReload(t *testing.T) {
 	// download chips after a page reload. Without `parts`, the bubble
 	// shows up but the attachment chip is silently dropped on every
 	// refresh.
-	mockDB, mock, _ := sqlmock.New()
-	defer mockDB.Close()
+	mockDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	prevDB := db.DB
 	db.DB = mockDB
+	t.Cleanup(func() { db.DB = prevDB; mockDB.Close() })
 
 	mock.ExpectQuery(`SELECT name FROM workspaces`).
 		WithArgs("ws-attach").
@@ -565,9 +581,13 @@ func TestNotify_RejectsAttachmentWithEmptyURIOrName(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			mockDB, _, _ := sqlmock.New()
-			defer mockDB.Close()
+			mockDB, _, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("failed to create sqlmock: %v", err)
+			}
+			prevDB := db.DB
 			db.DB = mockDB
+			t.Cleanup(func() { db.DB = prevDB; mockDB.Close() })
 			// No DB expectations — handler must reject with 400 BEFORE
 			// reaching SELECT/INSERT. sqlmock will fail "expectations not met"
 			// only if the handler unexpectedly queries.
@@ -612,9 +632,13 @@ func TestNotify_DBFailure_StillBroadcastsAnd200(t *testing.T) {
 	// WebSocket push (which the user is already seeing in their open
 	// canvas). Pre-fix the WS push always succeeded; we don't want
 	// the new persistence step to regress that path.
-	mockDB, mock, _ := sqlmock.New()
-	defer mockDB.Close()
+	mockDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	prevDB := db.DB
 	db.DB = mockDB
+	t.Cleanup(func() { db.DB = prevDB; mockDB.Close() })
 
 	mock.ExpectQuery(`SELECT name FROM workspaces`).
 		WithArgs("ws-x").

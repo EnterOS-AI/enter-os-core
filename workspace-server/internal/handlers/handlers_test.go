@@ -35,8 +35,9 @@ func setupTestDB(t *testing.T) sqlmock.Sqlmock {
 	if err != nil {
 		t.Fatalf("failed to create sqlmock: %v", err)
 	}
+	prevDB := db.DB
 	db.DB = mockDB
-	t.Cleanup(func() { mockDB.Close() })
+	t.Cleanup(func() { db.DB = prevDB; mockDB.Close() })
 
 	// Disable SSRF checks for the duration of this test only. Restore
 	// the previous state via t.Cleanup so that TestIsSafeURL_* tests
