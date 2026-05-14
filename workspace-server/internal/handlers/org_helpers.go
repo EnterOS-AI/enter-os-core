@@ -79,13 +79,33 @@ func hasUnresolvedVarRef(original, expanded string) bool {
 
 // expandWithEnv expands ${VAR} and $VAR references in s using the env map.
 // Falls back to the platform process env if a var isn't in the map.
+var envVarRx = regexp.MustCompile(`\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}|\$([a-zA-Z_][a-zA-Z0-9_]*)`)
+
 func expandWithEnv(s string, env map[string]string) string {
-	return os.Expand(s, func(key string) string {
-		if v, ok := env[key]; ok {
-			return v
+	result := s
+	for {
+		loc := envVarRx.FindStringIndex(result)
+		if loc == nil {
+			break
 		}
-		return os.Getenv(key)
-	})
+		match := result[loc[0]:loc[1]]
+		var key string
+		if match[0] == '$' && match[1] == '{' {
+			// ${VAR} form
+			key = match[2 : len(match)-1]
+		} else {
+			// $VAR form
+			key = match[1:]
+		}
+		var replacement string
+		if v, ok := env[key]; ok {
+			replacement = v
+		} else {
+			replacement = os.Getenv(key)
+		}
+		result = result[:loc[0]] + replacement + result[loc[1]:]
+	}
+	return result
 }
 
 // loadWorkspaceEnv reads the org root .env and the workspace-specific .env

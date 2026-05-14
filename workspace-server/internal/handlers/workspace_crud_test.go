@@ -45,8 +45,8 @@ func TestState_LegacyWorkspaceNoLiveToken(t *testing.T) {
 
 	// No live token — legacy workspace, no auth required.
 	// HasAnyLiveToken always runs first (queries workspace_auth_tokens).
-	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM workspace_auth_tokens`).
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM workspace_auth_tokens WHERE workspace_id = \$1 AND revoked_at IS NULL`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery(`SELECT status FROM workspaces WHERE id = \$1`).
 		WithArgs(wsID).
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("running"))
@@ -81,8 +81,8 @@ func TestState_HasLiveTokenMissingAuth(t *testing.T) {
 
 	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
-	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM workspace_auth_tokens`).
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM workspace_auth_tokens WHERE workspace_id = \$1 AND revoked_at IS NULL`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 
 	req, _ := http.NewRequest("GET", "/workspaces/"+wsID+"/state", nil)
 	// No Authorization header
@@ -101,8 +101,8 @@ func TestState_WorkspaceNotFound(t *testing.T) {
 
 	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
-	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM workspace_auth_tokens`).
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM workspace_auth_tokens WHERE workspace_id = \$1 AND revoked_at IS NULL`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery(`SELECT status FROM workspaces WHERE id = \$1`).
 		WithArgs(wsID).
 		WillReturnError(sql.ErrNoRows)
@@ -131,8 +131,8 @@ func TestState_WorkspaceSoftDeleted(t *testing.T) {
 
 	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
-	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM workspace_auth_tokens`).
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM workspace_auth_tokens WHERE workspace_id = \$1 AND revoked_at IS NULL`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery(`SELECT status FROM workspaces WHERE id = \$1`).
 		WithArgs(wsID).
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("removed"))
@@ -164,8 +164,8 @@ func TestState_QueryError(t *testing.T) {
 
 	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
-	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM workspace_auth_tokens`).
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM workspace_auth_tokens WHERE workspace_id = \$1 AND revoked_at IS NULL`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery(`SELECT status FROM workspaces WHERE id = \$1`).
 		WithArgs(wsID).
 		WillReturnError(sql.ErrConnDone)

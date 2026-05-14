@@ -117,7 +117,7 @@ func TestExtractExpiresInSeconds_invalidOrMissing(t *testing.T) {
 		{"empty body", ``, 0},
 		{"null value", `{"params":{"expires_in_seconds":null}}`, 0},
 		{"string value", `{"params":{"expires_in_seconds":"30"}}`, 0},
-		{"float value", `{"params":{"expires_in_seconds":30.5}}`, 0},
+		{"float value", `{"params":{"expires_in_seconds":30.5}}`, 30},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

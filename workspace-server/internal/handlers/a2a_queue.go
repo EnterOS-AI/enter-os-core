@@ -57,16 +57,18 @@ func extractIdempotencyKey(body []byte) string {
 func extractExpiresInSeconds(body []byte) int {
 	var envelope struct {
 		Params struct {
-			ExpiresInSeconds int `json:"expires_in_seconds"`
+			ExpiresInSeconds float64 `json:"expires_in_seconds"`
 		} `json:"params"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return 0
 	}
-	if envelope.Params.ExpiresInSeconds < 0 {
+	// JSON numbers are floats; truncate to int (Go's int(x) truncates toward zero).
+	secs := int(envelope.Params.ExpiresInSeconds)
+	if secs < 0 {
 		return 0
 	}
-	return envelope.Params.ExpiresInSeconds
+	return secs
 }
 
 const (
