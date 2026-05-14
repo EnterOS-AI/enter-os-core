@@ -686,8 +686,8 @@ def _format_channel_content(
 # --- MCP Server (JSON-RPC over stdio) ---
 
 
-def _warn_if_stdio_not_pipe(stdin_fd: int = 0, stdout_fd: int = 1) -> None:
-    """Warn when stdio isn't a pipe — but continue anyway.
+def _assert_stdio_is_pipe_compatible(stdin_fd: int = 0, stdout_fd: int = 1) -> None:
+    """Assert that stdio fds are pipe/socket/char-device compatible.
 
     The legacy asyncio.connect_read_pipe / connect_write_pipe transport
     rejected regular files, PTYs, and sockets with:
@@ -709,6 +709,10 @@ def _warn_if_stdio_not_pipe(stdin_fd: int = 0, stdout_fd: int = 1) -> None:
                 f"PTYs, and sockets. If you see garbled output, launch from an "
                 f"MCP-aware client (Claude Code, Cursor, OpenClaw, etc.)."
             )
+
+
+# Deprecated alias — the canonical name is _assert_stdio_is_pipe_compatible.
+_warn_if_stdio_not_pipe = _assert_stdio_is_pipe_compatible
 
 
 async def main():  # pragma: no cover
@@ -967,7 +971,7 @@ def cli_main(transport: str = "stdio", port: int = 9100) -> None:  # pragma: no 
     if transport == "http":
         asyncio.run(_run_http_server(port))
     else:
-        _warn_if_stdio_not_pipe()
+        _assert_stdio_is_pipe_compatible()
         asyncio.run(main())
 
 
