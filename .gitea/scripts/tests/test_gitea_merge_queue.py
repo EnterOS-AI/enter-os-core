@@ -85,7 +85,10 @@ def test_pr_needs_update_when_base_sha_absent_from_commits():
 
 def test_merge_decision_requires_main_green_pr_green_and_current_base():
     required = ["CI / all-required (pull_request)"]
-    main_status = {"state": "success", "statuses": []}
+    main_status = {
+        "state": "success",
+        "statuses": [{"context": "CI / all-required (push)", "status": "success"}],
+    }
     pr_status = {
         "state": "success",
         "statuses": [{"context": "CI / all-required (pull_request)", "status": "success"}],
@@ -104,7 +107,10 @@ def test_merge_decision_requires_main_green_pr_green_and_current_base():
 
 def test_merge_decision_updates_stale_pr_before_merge():
     decision = mq.evaluate_merge_readiness(
-        main_status={"state": "success", "statuses": []},
+        main_status={
+            "state": "success",
+            "statuses": [{"context": "CI / all-required (push)", "status": "success"}],
+        },
         pr_status={"state": "success", "statuses": [{"context": "CI / all-required (pull_request)", "status": "success"}]},
         required_contexts=["CI / all-required (pull_request)"],
         pr_has_current_base=False,
