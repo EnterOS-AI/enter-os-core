@@ -62,6 +62,24 @@ func TestValidateConfigSource_TemplateIsDirName(t *testing.T) {
 	}
 }
 
+func TestStartSeedsConfigsBeforeContainerStart(t *testing.T) {
+	src, err := os.ReadFile("provisioner.go")
+	if err != nil {
+		t.Fatalf("read provisioner.go: %v", err)
+	}
+	text := string(src)
+	copyTemplate := strings.Index(text, "p.CopyTemplateToContainer(ctx, resp.ID, cfg.TemplatePath)")
+	writeFiles := strings.Index(text, "p.WriteFilesToContainer(ctx, resp.ID, cfg.ConfigFiles)")
+	start := strings.Index(text, "p.cli.ContainerStart(ctx, resp.ID, container.StartOptions{})")
+
+	if copyTemplate < 0 || writeFiles < 0 || start < 0 {
+		t.Fatalf("expected Start to copy template, write config files, and start container")
+	}
+	if !(copyTemplate < start && writeFiles < start) {
+		t.Fatalf("config seeding must happen before ContainerStart: copyTemplate=%d writeFiles=%d start=%d", copyTemplate, writeFiles, start)
+	}
+}
+
 // baseHostConfig returns a fresh HostConfig with typical pre-tier binds,
 // mimicking what Start() builds before calling ApplyTierConfig.
 func baseHostConfig(pluginsPath string) *container.HostConfig {

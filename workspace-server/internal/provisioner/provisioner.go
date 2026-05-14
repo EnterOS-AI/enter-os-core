@@ -481,6 +481,22 @@ func (p *Provisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string, e
 		return "", fmt.Errorf("failed to create container: %w", err)
 	}
 
+	// Seed /configs before the entrypoint starts. molecule-runtime reads
+	// /configs/config.yaml immediately; post-start copy races fast runtimes
+	// into a FileNotFoundError crash loop.
+	if cfg.TemplatePath != "" {
+		if err := p.CopyTemplateToContainer(ctx, resp.ID, cfg.TemplatePath); err != nil {
+			_ = p.cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+			return "", fmt.Errorf("failed to copy template to container %s before start: %w", name, err)
+		}
+	}
+	if len(cfg.ConfigFiles) > 0 {
+		if err := p.WriteFilesToContainer(ctx, resp.ID, cfg.ConfigFiles); err != nil {
+			_ = p.cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+			return "", fmt.Errorf("failed to write config files to container %s before start: %w", name, err)
+		}
+	}
+
 	if err := p.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
 		// Clean up created container on start failure
 		_ = p.cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
@@ -495,20 +511,6 @@ func (p *Provisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string, e
 	// Volume ownership is fixed by the entrypoint (starts as root, chowns
 	// /configs and /workspace, then drops to agent via gosu). No per-start
 	// chown needed here.
-
-	// Copy template files into /configs if TemplatePath is set
-	if cfg.TemplatePath != "" {
-		if err := p.CopyTemplateToContainer(ctx, resp.ID, cfg.TemplatePath); err != nil {
-			log.Printf("Provisioner: warning — failed to copy template to container %s: %v", name, err)
-		}
-	}
-
-	// Write generated config files into /configs if ConfigFiles is set
-	if len(cfg.ConfigFiles) > 0 {
-		if err := p.WriteFilesToContainer(ctx, resp.ID, cfg.ConfigFiles); err != nil {
-			log.Printf("Provisioner: warning — failed to write config files to container %s: %v", name, err)
-		}
-	}
 
 	// Resolve the host-mapped port. Retry inspect up to 3 times if Docker hasn't
 	// bound the ephemeral port yet (rare race under heavy load).
