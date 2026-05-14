@@ -37,12 +37,6 @@ name: publish-workspace-server-image
 on:
   push:
     branches: [main]
-    paths:
-      - 'workspace-server/**'
-      - 'canvas/**'
-      - 'manifest.json'
-      - 'scripts/**'
-      - '.gitea/workflows/publish-workspace-server-image.yml'
   workflow_dispatch:
 
 # No `concurrency:` block here. Gitea 1.22.6 can cancel queued runs despite
