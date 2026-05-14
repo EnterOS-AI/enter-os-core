@@ -269,6 +269,11 @@ func collectCPConfigFiles(cfg WorkspaceConfig) (map[string]string, error) {
 			if walkErr != nil {
 				return walkErr
 			}
+			// Skip symlinks to prevent path traversal via ../  relative paths
+			// inside the template directory (OFFSEC-010).
+			if d.Type()&os.ModeSymlink != 0 {
+				return nil
+			}
 			if d.IsDir() {
 				return nil
 			}
