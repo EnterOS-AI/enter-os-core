@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -1074,5 +1076,172 @@ func TestCollectOrgEnv_AnyOfWithInvalidMemberKeepsValidOnes(t *testing.T) {
 	// promoted to a single-name requirement (len(members)==1 path).
 	if req[0].Name != "VALID_ONE" && !stringSlicesEqual(req[0].AnyOf, []string{"VALID_ONE"}) {
 		t.Errorf("expected VALID_ONE to survive, got %v", reqNames(req))
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// walkOrgWorkspaceNames tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestWalkOrgWorkspaceNames_Empty(t *testing.T) {
+	var names []string
+	walkOrgWorkspaceNames(nil, &names)
+	if len(names) != 0 {
+		t.Errorf("empty tree: expected 0 names, got %d", len(names))
+	}
+}
+
+func TestWalkOrgWorkspaceNames_SingleNode(t *testing.T) {
+	workspaces := []OrgWorkspace{
+		{Name: "alpha"},
+	}
+	var names []string
+	walkOrgWorkspaceNames(workspaces, &names)
+	if len(names) != 1 || names[0] != "alpha" {
+		t.Errorf("single node: got %v", names)
+	}
+}
+
+func TestWalkOrgWorkspaceNames_NestedChildren(t *testing.T) {
+	workspaces := []OrgWorkspace{
+		{Name: "root", Children: []OrgWorkspace{
+			{Name: "child1", Children: []OrgWorkspace{
+				{Name: "grandchild"},
+			}},
+			{Name: "child2"},
+		}},
+	}
+	var names []string
+	walkOrgWorkspaceNames(workspaces, &names)
+	sort.Strings(names)
+	want := []string{"child1", "child2", "grandchild", "root"}
+	if !stringSlicesEqual(names, want) {
+		t.Errorf("nested: got %v, want %v", names, want)
+	}
+}
+
+func TestWalkOrgWorkspaceNames_SkipsEmptyNames(t *testing.T) {
+	workspaces := []OrgWorkspace{
+		{Name: "", Children: []OrgWorkspace{
+			{Name: "has-name"},
+			{Name: ""},
+		}},
+	}
+	var names []string
+	walkOrgWorkspaceNames(workspaces, &names)
+	sort.Strings(names)
+	want := []string{"has-name"}
+	if !stringSlicesEqual(names, want) {
+		t.Errorf("skips empty: got %v, want %v", names, want)
+	}
+}
+
+func TestWalkOrgWorkspaceNames_DeeplyNested(t *testing.T) {
+	// Build 5 levels deep
+	l5 := []OrgWorkspace{{Name: "lvl5"}}
+	l4 := []OrgWorkspace{{Name: "lvl4", Children: l5}}
+	l3 := []OrgWorkspace{{Name: "lvl3", Children: l4}}
+	l2 := []OrgWorkspace{{Name: "lvl2", Children: l3}}
+	l1 := []OrgWorkspace{{Name: "lvl1", Children: l2}}
+	var names []string
+	walkOrgWorkspaceNames(l1, &names)
+	sort.Strings(names)
+	want := []string{"lvl1", "lvl2", "lvl3", "lvl4", "lvl5"}
+	if !stringSlicesEqual(names, want) {
+		t.Errorf("deeply nested: got %v, want %v", names, want)
+	}
+}
+
+func TestWalkOrgWorkspaceNames_MultipleRoots(t *testing.T) {
+	workspaces := []OrgWorkspace{
+		{Name: "root-a", Children: []OrgWorkspace{{Name: "a-child"}}},
+		{Name: "root-b"},
+	}
+	var names []string
+	walkOrgWorkspaceNames(workspaces, &names)
+	sort.Strings(names)
+	want := []string{"a-child", "root-a", "root-b"}
+	if !stringSlicesEqual(names, want) {
+		t.Errorf("multiple roots: got %v, want %v", names, want)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveProvisionConcurrency tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestResolveProvisionConcurrency_Default(t *testing.T) {
+	t.Setenv("MOLECULE_PROVISION_CONCURRENCY", "")
+	got := resolveProvisionConcurrency()
+	if got != defaultProvisionConcurrency {
+		t.Errorf("unset: got %d, want %d", got, defaultProvisionConcurrency)
+	}
+}
+
+func TestResolveProvisionConcurrency_ValidPositive(t *testing.T) {
+	t.Setenv("MOLECULE_PROVISION_CONCURRENCY", "8")
+	got := resolveProvisionConcurrency()
+	if got != 8 {
+		t.Errorf("valid positive: got %d, want 8", got)
+	}
+}
+
+func TestResolveProvisionConcurrency_Zero(t *testing.T) {
+	t.Setenv("MOLECULE_PROVISION_CONCURRENCY", "0")
+	got := resolveProvisionConcurrency()
+	if got != 1<<20 {
+		t.Errorf("zero (unlimited): got %d, want %d", got, 1<<20)
+	}
+}
+
+func TestResolveProvisionConcurrency_Negative(t *testing.T) {
+	t.Setenv("MOLECULE_PROVISION_CONCURRENCY", "-5")
+	got := resolveProvisionConcurrency()
+	if got != defaultProvisionConcurrency {
+		t.Errorf("negative: got %d, want default %d", got, defaultProvisionConcurrency)
+	}
+}
+
+func TestResolveProvisionConcurrency_NonInteger(t *testing.T) {
+	t.Setenv("MOLECULE_PROVISION_CONCURRENCY", "abc")
+	got := resolveProvisionConcurrency()
+	if got != defaultProvisionConcurrency {
+		t.Errorf("non-integer: got %d, want default %d", got, defaultProvisionConcurrency)
+	}
+}
+
+func TestResolveProvisionConcurrency_Whitespace(t *testing.T) {
+	t.Setenv("MOLECULE_PROVISION_CONCURRENCY", "  7  ")
+	got := resolveProvisionConcurrency()
+	if got != 7 {
+		t.Errorf("whitespace: got %d, want 7", got)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// errString tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestErrString_Nil(t *testing.T) {
+	got := errString(nil)
+	if got != "" {
+		t.Errorf("nil error: got %q, want empty string", got)
+	}
+}
+
+func TestErrString_NonNil(t *testing.T) {
+	err := fmt.Errorf("something went wrong")
+	got := errString(err)
+	if got != "something went wrong" {
+		t.Errorf("non-nil error: got %q, want %q", got, "something went wrong")
+	}
+}
+
+func TestErrString_Wrapped(t *testing.T) {
+	inner := errors.New("inner")
+	err := fmt.Errorf("outer: %w", inner)
+	got := errString(err)
+	if !strings.Contains(got, "outer") {
+		t.Errorf("wrapped error: got %q, want containing 'outer'", got)
 	}
 }
