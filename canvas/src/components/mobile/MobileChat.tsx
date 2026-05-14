@@ -5,7 +5,7 @@
 // that the desktop ChatTab uses, but with a slimmer surface: no
 // attachments, no A2A topology overlay, no conversation tracing.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
 import { useCanvasStore } from "@/store/canvas";
@@ -50,26 +50,13 @@ export function MobileChat({
 }) {
   const p = usePalette(dark);
   const node = useCanvasStore((s) => s.nodes.find((n) => n.id === agentId));
-  // Bootstrap from the canvas store's per-workspace message buffer so the
-  // user sees their prior thread on entry. The store is updated by the
-  // socket → ChatTab flows the desktop runs; on mobile we read from the
-  // same buffer to keep state coherent across viewports.
-  // NOTE: selector returns undefined (stable) — do NOT use ?? [] here,
-  // that creates a new [] reference on every store update when the key is
-  // absent, causing infinite re-render (React error #185).
-  const storedMessages = useCanvasStore((s) => s.agentMessages[agentId]);
-  const [messages, setMessages] = useState<ChatMessage[]>(() =>
-    (storedMessages ?? []).map((m) => ({
-      id: m.id,
-      role: "agent",
-      text: m.content,
-      ts: formatStoredTimestamp(m.timestamp),
-    })),
-  );
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [tab, setTab] = useState<SubTab>("my");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Synchronous re-entry guard. `setSending(true)` schedules a state
   // update but doesn't flush before a second tap can fire send() — a ref
@@ -94,6 +81,74 @@ export function MobileChat({
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
+
+  // Load chat history on mount / agent switch.
+  const loadHistory = useCallback(async () => {
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      const resp = await api.get<{
+        messages: Array<{
+          id: string;
+          role: string;
+          content: string;
+          timestamp: string;
+        }>;
+      }>(`/workspaces/${agentId}/chat-history?limit=50`);
+      const loaded = (resp.messages ?? []).map((m) => ({
+        id: m.id,
+        role: m.role as "user" | "agent" | "system",
+        text: m.content,
+        ts: formatStoredTimestamp(m.timestamp),
+      }));
+      setMessages(loaded);
+    } catch (e) {
+      setHistoryError(e instanceof Error ? e.message : "Failed to load history");
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [agentId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadHistory().then(() => {
+      if (cancelled) return;
+      // Consume any agent messages that arrived while history was loading.
+      const consume = useCanvasStore.getState().consumeAgentMessages;
+      const msgs = consume(agentId);
+      if (msgs.length > 0) {
+        setMessages((prev) => [
+          ...prev,
+          ...msgs.map((m) => ({
+            id: m.id,
+            role: "agent" as const,
+            text: m.content,
+            ts: formatStoredTimestamp(m.timestamp),
+          })),
+        ]);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [agentId, loadHistory]);
+
+  // Consume live agent pushes while the panel is mounted.
+  const pendingAgentMsgs = useCanvasStore((s) => s.agentMessages[agentId]);
+  useEffect(() => {
+    if (!pendingAgentMsgs || pendingAgentMsgs.length === 0) return;
+    const consume = useCanvasStore.getState().consumeAgentMessages;
+    const msgs = consume(agentId);
+    if (msgs.length > 0) {
+      setMessages((prev) => [
+        ...prev,
+        ...msgs.map((m) => ({
+          id: m.id,
+          role: "agent" as const,
+          text: m.content,
+          ts: formatStoredTimestamp(m.timestamp),
+        })),
+      ]);
+    }
+  }, [pendingAgentMsgs, agentId]);
 
   if (!node) {
     return (
@@ -308,7 +363,17 @@ export function MobileChat({
             Agent Comms — peer-to-peer A2A traffic surfaces in the Comms tab.
           </div>
         )}
-        {tab === "my" && messages.length === 0 && (
+        {tab === "my" && historyLoading && (
+          <div style={{ padding: "20px 4px", textAlign: "center", color: p.text3, fontSize: 13 }}>
+            Loading chat history…
+          </div>
+        )}
+        {tab === "my" && !historyLoading && historyError && messages.length === 0 && (
+          <div style={{ padding: "20px 4px", textAlign: "center", color: p.text3, fontSize: 13 }}>
+            {historyError}
+          </div>
+        )}
+        {tab === "my" && !historyLoading && !historyError && messages.length === 0 && (
           <div style={{ padding: "20px 4px", textAlign: "center", color: p.text3, fontSize: 13 }}>
             Send a message to start chatting.
           </div>
