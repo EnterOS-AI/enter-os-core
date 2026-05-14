@@ -1826,8 +1826,8 @@ def test_inbox_bridge_swallows_closed_loop_runtime_error():
 
 
 class TestStdioPipeAssertion:
-    """Pin _warn_if_stdio_not_pipe — the diagnostic warning that replaces
-    the old fatal _assert_stdio_is_pipe_compatible guard.
+    """Pin _assert_stdio_is_pipe_compatible — the canonical function name.
+    _warn_if_stdio_not_pipe is a deprecated alias.
 
     The universal stdio transport now works with ANY file descriptor
     (pipes, regular files, PTYs, sockets), so the old exit-2 behavior
@@ -1838,12 +1838,12 @@ class TestStdioPipeAssertion:
 
     def test_pipe_pair_passes_silently(self, caplog):
         """Happy path — both fds are pipes. No warning emitted."""
-        from a2a_mcp_server import _warn_if_stdio_not_pipe
+        from a2a_mcp_server import _assert_stdio_is_pipe_compatible
 
         r, w = os.pipe()
         try:
             with caplog.at_level("WARNING"):
-                _warn_if_stdio_not_pipe(stdin_fd=r, stdout_fd=w)
+                _assert_stdio_is_pipe_compatible(stdin_fd=r, stdout_fd=w)
             assert "not a pipe" not in caplog.text
         finally:
             os.close(r)
@@ -1852,14 +1852,14 @@ class TestStdioPipeAssertion:
     def test_regular_file_stdout_warns(self, tmp_path, caplog):
         """Reproducer for runtime#61: stdout redirected to a regular file.
         Now emits a warning instead of exiting."""
-        from a2a_mcp_server import _warn_if_stdio_not_pipe
+        from a2a_mcp_server import _assert_stdio_is_pipe_compatible
 
         r, _w = os.pipe()
         regular = tmp_path / "captured.log"
         f = open(regular, "wb")
         try:
             with caplog.at_level("WARNING"):
-                _warn_if_stdio_not_pipe(stdin_fd=r, stdout_fd=f.fileno())
+                _assert_stdio_is_pipe_compatible(stdin_fd=r, stdout_fd=f.fileno())
             assert "stdout" in caplog.text
             assert "not a pipe" in caplog.text
         finally:
@@ -1868,7 +1868,7 @@ class TestStdioPipeAssertion:
 
     def test_regular_file_stdin_warns(self, tmp_path, caplog):
         """Symmetric case — stdin redirected from a regular file."""
-        from a2a_mcp_server import _warn_if_stdio_not_pipe
+        from a2a_mcp_server import _assert_stdio_is_pipe_compatible
 
         regular = tmp_path / "input.json"
         regular.write_bytes(b'{"jsonrpc":"2.0","id":1,"method":"initialize"}\n')
@@ -1876,7 +1876,7 @@ class TestStdioPipeAssertion:
         _r, w = os.pipe()
         try:
             with caplog.at_level("WARNING"):
-                _warn_if_stdio_not_pipe(stdin_fd=f.fileno(), stdout_fd=w)
+                _assert_stdio_is_pipe_compatible(stdin_fd=f.fileno(), stdout_fd=w)
             assert "stdin" in caplog.text
             assert "not a pipe" in caplog.text
         finally:
@@ -1886,13 +1886,13 @@ class TestStdioPipeAssertion:
     def test_closed_fd_warns_about_stat_error(self, caplog):
         """If stdio is closed, os.fstat raises OSError. Warning is
         skipped silently (can't stat the fd)."""
-        from a2a_mcp_server import _warn_if_stdio_not_pipe
+        from a2a_mcp_server import _assert_stdio_is_pipe_compatible
 
         r, w = os.pipe()
         os.close(w)  # Now `w` is a stale fd — fstat will fail.
         try:
             with caplog.at_level("WARNING"):
-                _warn_if_stdio_not_pipe(stdin_fd=r, stdout_fd=w)
+                _assert_stdio_is_pipe_compatible(stdin_fd=r, stdout_fd=w)
             # No warning emitted because fstat failed before the check
             assert "not a pipe" not in caplog.text
         finally:
