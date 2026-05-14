@@ -16,7 +16,7 @@ import (
 func TestResolveInsideRoot_EmptyUserPath(t *testing.T) {
 	_, err := resolveInsideRoot("/safe/root", "")
 	if err == nil {
-		t.Error("empty userPath: expected error, got nil")
+		t.Fatal("empty userPath: expected error, got nil")
 	}
 	if err.Error() != "path is empty" {
 		t.Errorf("empty userPath: got %q, want %q", err.Error(), "path is empty")
@@ -26,7 +26,7 @@ func TestResolveInsideRoot_EmptyUserPath(t *testing.T) {
 func TestResolveInsideRoot_AbsolutePathRejected(t *testing.T) {
 	_, err := resolveInsideRoot("/safe/root", "/etc/passwd")
 	if err == nil {
-		t.Error("absolute userPath: expected error, got nil")
+		t.Fatal("absolute userPath: expected error, got nil")
 	}
 	if err.Error() != "absolute paths are not allowed" {
 		t.Errorf("absolute userPath: got %q, want %q", err.Error(), "absolute paths are not allowed")
@@ -37,7 +37,7 @@ func TestResolveInsideRoot_DotDotTraversal(t *testing.T) {
 	// ../../etc/passwd from /safe/root
 	got, err := resolveInsideRoot("/safe/root", "../../etc/passwd")
 	if err == nil {
-		t.Errorf("dotdot traversal: expected error, got %q", got)
+		t.Fatalf("dotdot traversal: expected error, got %q", got)
 	}
 	if err.Error() != "path escapes root" {
 		t.Errorf("dotdot traversal: got %q, want %q", err.Error(), "path escapes root")
@@ -48,7 +48,7 @@ func TestResolveInsideRoot_DotDotWithIntermediate(t *testing.T) {
 	// a/b/../../c should escape if a/b is not under root
 	got, err := resolveInsideRoot("/safe/root", "a/b/../../c")
 	if err == nil {
-		t.Errorf("dotdot with intermediate: expected error, got %q", got)
+		t.Fatalf("dotdot with intermediate: expected error, got %q", got)
 	}
 	if err.Error() != "path escapes root" {
 		t.Errorf("dotdot with intermediate: got %q, want %q", err.Error(), "path escapes root")
@@ -97,7 +97,7 @@ func TestResolveInsideRoot_NestedDotDotEscapes(t *testing.T) {
 	// a/../../b from /tmp/dirsomething → /tmp/b (escapes temp dir)
 	got, err := resolveInsideRoot(root, "a/../../b")
 	if err == nil {
-		t.Errorf("nested dotdot: expected error, got %q", got)
+		t.Fatalf("nested dotdot: expected error, got %q", got)
 	}
 	if err.Error() != "path escapes root" {
 		t.Errorf("nested dotdot: got %q, want %q", err.Error(), "path escapes root")
@@ -108,7 +108,7 @@ func TestResolveInsideRoot_DotdotAtStart(t *testing.T) {
 	root := t.TempDir()
 	got, err := resolveInsideRoot(root, "../sibling")
 	if err == nil {
-		t.Errorf("../sibling: expected error, got %q", got)
+		t.Fatalf("../sibling: expected error, got %q", got)
 	}
 	if err.Error() != "path escapes root" {
 		t.Errorf("../sibling: got %q, want %q", err.Error(), "path escapes root")
