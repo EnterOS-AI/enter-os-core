@@ -327,6 +327,207 @@ func TestChannelHandler_Send_EmptyText(t *testing.T) {
 	}
 }
 
+// ==================== Test (send outbound) ====================
+
+// TestChannelHandler_Test_Success exercises the /channels/:channelId/test endpoint
+// with a mock SendAdapter so the full success path is covered without hitting real
+// Telegram/Slack/etc. APIs.
+func TestChannelHandler_Test_Success(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	handler := NewChannelHandler(newTestChannelManager())
+
+	mockAdapter := &channels.MockSendAdapter{Err: nil}
+	channels.SetGetSendAdapter(func(ct string) (channels.SendAdapter, bool) {
+		if ct == "telegram" {
+			return mockAdapter, true
+		}
+		return channels.GetSendAdapter(ct)
+	})
+	t.Cleanup(channels.ResetSendAdapters)
+
+	// loadChannel → valid row
+	mock.ExpectQuery("SELECT .+ FROM workspace_channels WHERE id").
+		WithArgs("ch-test-ok").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "workspace_id", "channel_type", "channel_config",
+			"enabled", "allowed_users",
+		}).AddRow("ch-test-ok", "ws-1", "telegram",
+			`{"bot_token":"123:AAA","chat_id":"-100"}`,
+			true, `[]`))
+
+	// UPDATE message_count + last_message_at
+	mock.ExpectExec("UPDATE workspace_channels SET last_message_at").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/workspaces/ws-1/channels/ch-test-ok/test", nil)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "channelId", Value: "ch-test-ok"}}
+
+	handler.Test(c)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != "ok" {
+		t.Errorf("expected status 'ok', got %v", resp["status"])
+	}
+	if mockAdapter.Calls != 1 {
+		t.Errorf("expected SendMessage called once, got %d", mockAdapter.Calls)
+	}
+	if mockAdapter.SentChat != "-100" {
+		t.Errorf("expected chat_id '-100', got %q", mockAdapter.SentChat)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations not met: %v", err)
+	}
+}
+
+// TestChannelHandler_Test_ChannelNotFound verifies that when loadChannel returns
+// no rows, the Test handler returns 500 with a "test message failed" error.
+func TestChannelHandler_Test_ChannelNotFound(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	handler := NewChannelHandler(newTestChannelManager())
+
+	// loadChannel → no rows
+	mock.ExpectQuery("SELECT .+ FROM workspace_channels WHERE id").
+		WithArgs("ch-missing").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "workspace_id", "channel_type", "channel_config",
+			"enabled", "allowed_users",
+		}))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/workspaces/ws-1/channels/ch-missing/test", nil)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "channelId", Value: "ch-missing"}}
+
+	handler.Test(c)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for missing channel, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["error"] != "test message failed" {
+		t.Errorf("expected error 'test message failed', got %v", resp["error"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations not met: %v", err)
+	}
+}
+
+// TestChannelHandler_Send_Success covers the full outbound send success path:
+// budget check passes → loadChannel → mock SendMessage succeeds → UPDATE count → 200.
+func TestChannelHandler_Send_Success(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	handler := NewChannelHandler(newTestChannelManager())
+
+	mockAdapter := &channels.MockSendAdapter{Err: nil}
+	channels.SetGetSendAdapter(func(ct string) (channels.SendAdapter, bool) {
+		if ct == "telegram" {
+			return mockAdapter, true
+		}
+		return channels.GetSendAdapter(ct)
+	})
+	t.Cleanup(channels.ResetSendAdapters)
+
+	// Budget check: count=0, no budget limit
+	mock.ExpectQuery("SELECT message_count, channel_budget FROM workspace_channels WHERE id").
+		WithArgs("ch-send-ok").
+		WillReturnRows(sqlmock.NewRows([]string{"message_count", "channel_budget"}).
+			AddRow(0, nil))
+
+	// loadChannel → valid row
+	mock.ExpectQuery("SELECT .+ FROM workspace_channels WHERE id").
+		WithArgs("ch-send-ok").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "workspace_id", "channel_type", "channel_config",
+			"enabled", "allowed_users",
+		}).AddRow("ch-send-ok", "ws-1", "telegram",
+			`{"bot_token":"123:AAA","chat_id":"-100"}`,
+			true, `[]`))
+
+	// UPDATE message_count
+	mock.ExpectExec("UPDATE workspace_channels SET last_message_at").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	body, _ := json.Marshal(map[string]string{"text": "hello from test"})
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/workspaces/ws-1/channels/ch-send-ok/send", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "channelId", Value: "ch-send-ok"}}
+
+	handler.Send(c)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != "sent" {
+		t.Errorf("expected status 'sent', got %v", resp["status"])
+	}
+	if mockAdapter.Calls != 1 {
+		t.Errorf("expected SendMessage called once, got %d", mockAdapter.Calls)
+	}
+	if mockAdapter.SentText != "hello from test" {
+		t.Errorf("expected 'hello from test', got %q", mockAdapter.SentText)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations not met: %v", err)
+	}
+}
+
+// TestChannelHandler_Send_ChannelNotFound verifies that after the budget check
+// passes, a missing channel returns 500 (not 404) with "send failed".
+func TestChannelHandler_Send_ChannelNotFound(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	handler := NewChannelHandler(newTestChannelManager())
+
+	// Budget check passes (NULL budget → no limit)
+	mock.ExpectQuery("SELECT message_count, channel_budget FROM workspace_channels WHERE id").
+		WithArgs("ch-send-missing").
+		WillReturnRows(sqlmock.NewRows([]string{"message_count", "channel_budget"}).
+			AddRow(0, nil))
+
+	// loadChannel → no rows
+	mock.ExpectQuery("SELECT .+ FROM workspace_channels WHERE id").
+		WithArgs("ch-send-missing").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "workspace_id", "channel_type", "channel_config",
+			"enabled", "allowed_users",
+		}))
+
+	body, _ := json.Marshal(map[string]string{"text": "hello"})
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/workspaces/ws-1/channels/ch-send-missing/send", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "channelId", Value: "ch-send-missing"}}
+
+	handler.Send(c)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for missing channel, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["error"] != "send failed" {
+		t.Errorf("expected error 'send failed', got %v", resp["error"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations not met: %v", err)
+	}
+}
+
 // ==================== Webhook ====================
 
 func TestChannelHandler_Webhook_UnknownType(t *testing.T) {
