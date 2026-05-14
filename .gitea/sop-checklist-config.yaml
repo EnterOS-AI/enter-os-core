@@ -107,3 +107,39 @@ items:
     description: >-
       List of feedback memories applicable to this change. Ack from
       any engineer who has the same memory access.
+
+# N/A gate declarations (RFC#324 §N/A follow-up).
+# PRs where a gate genuinely does not apply (e.g., pure-infra with no
+# qa surface, or docs-only) can be declared N/A by a non-author peer
+# who is in one of the gate's required_teams. The sop-checklist-gate
+# posts a `sop-checklist / na-declarations (pull_request)` status that
+# review-check.sh reads to skip the Gitea-APPROVE requirement.
+#
+# Usage: any PR commenter (peer) posts:
+#   /sop-n/a qa-review  <reason>
+#   /sop-n/a security-review  <reason>
+#
+# Slash commands:
+#   /sop-n/a <gate> [reason] — declare gate N/A (most-recent per-user wins)
+#   /sop-revoke <gate>      — revoke prior N/A declaration for that gate
+#
+# Gate names must match the context strings used by review-check.sh:
+#   qa-review      → qa-review / approved (<event>)        [TEAM_ID=20]
+#   security-review → security-review / approved (<event>)  [TEAM_ID=21]
+#
+# required_teams: OR semantics — any team member can declare N/A.
+# Authors cannot self-declare N/A (enforced by gate script).
+n/a_gates:
+  qa-review:
+    required_teams: [qa, security, engineers]
+    description: >-
+      QA review N/A when this change has no qa surface (pure-infra,
+      tooling-only, revert, dependency-only). A qa/eng/security member
+      must post /sop-n/a qa-review to activate.
+
+  security-review:
+    required_teams: [security, managers, ceo]
+    description: >-
+      Security review N/A when this change has no security surface
+      (docs-only, pure-frontend, dependency-only). A security/owners
+      member must post /sop-n/a security-review to activate.
