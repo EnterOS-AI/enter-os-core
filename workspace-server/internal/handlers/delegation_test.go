@@ -133,9 +133,9 @@ func TestDelegate_Success(t *testing.T) {
 	targetID := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 	// Expect INSERT into activity_logs for delegation tracking
-	// (6th arg is idempotency_key — nil here since the request omits it)
+	// (6th arg is response_body, 7th is idempotency_key — nil here since the request omits it)
 	mock.ExpectExec("INSERT INTO activity_logs").
-		WithArgs("ws-source", "ws-source", targetID, "Delegating to "+targetID, sqlmock.AnyArg(), nil).
+		WithArgs("ws-source", "ws-source", targetID, "Delegating to "+targetID, sqlmock.AnyArg(), sqlmock.AnyArg(), nil).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// Expect RecordAndBroadcast INSERT into structure_events
@@ -189,9 +189,9 @@ func TestDelegate_DBInsertFails_Still202WithWarning(t *testing.T) {
 
 	targetID := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
-	// DB insert fails (6th arg = idempotency_key, nil for this test)
+	// DB insert fails (6th arg = response_body, 7th = idempotency_key, nil for this test)
 	mock.ExpectExec("INSERT INTO activity_logs").
-		WithArgs("ws-source", "ws-source", targetID, "Delegating to "+targetID, sqlmock.AnyArg(), nil).
+		WithArgs("ws-source", "ws-source", targetID, "Delegating to "+targetID, sqlmock.AnyArg(), sqlmock.AnyArg(), nil).
 		WillReturnError(fmt.Errorf("database connection lost"))
 
 	// RecordAndBroadcast still fires
@@ -491,6 +491,7 @@ func TestDelegationRecord_InsertsActivityLogRow(t *testing.T) {
 			"550e8400-e29b-41d4-a716-446655440001",               // target_id
 			"Delegating to 550e8400-e29b-41d4-a716-446655440001", // summary
 			sqlmock.AnyArg(), // request_body (jsonb)
+			sqlmock.AnyArg(), // response_body (jsonb) — mc#984 fix
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	// RecordAndBroadcast INSERT for DELEGATION_SENT
@@ -699,9 +700,9 @@ func TestDelegate_IdempotentFailedRowIsReleasedAndReplaced(t *testing.T) {
 	mock.ExpectExec("DELETE FROM activity_logs").
 		WithArgs("ws-source", "retry-key").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	// Fresh insert with the same idempotency key.
+	// Fresh insert with the same idempotency key (response_body added as mc#984 fix).
 	mock.ExpectExec("INSERT INTO activity_logs").
-		WithArgs("ws-source", "ws-source", targetID, "Delegating to "+targetID, sqlmock.AnyArg(), "retry-key").
+		WithArgs("ws-source", "ws-source", targetID, "Delegating to "+targetID, sqlmock.AnyArg(), sqlmock.AnyArg(), "retry-key").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO structure_events").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -745,9 +746,9 @@ func TestDelegate_IdempotentRaceUniqueViolationReturnsExisting(t *testing.T) {
 	mock.ExpectQuery("SELECT request_body->>'delegation_id', status, target_id").
 		WithArgs("ws-source", "race-key").
 		WillReturnError(fmt.Errorf("sql: no rows in result set"))
-	// Insert loses the race against a concurrent caller.
+	// Insert loses the race against a concurrent caller (response_body added as mc#984 fix).
 	mock.ExpectExec("INSERT INTO activity_logs").
-		WithArgs("ws-source", "ws-source", targetID, "Delegating to "+targetID, sqlmock.AnyArg(), "race-key").
+		WithArgs("ws-source", "ws-source", targetID, "Delegating to "+targetID, sqlmock.AnyArg(), sqlmock.AnyArg(), "race-key").
 		WillReturnError(fmt.Errorf("pq: duplicate key value violates unique constraint \"activity_logs_idempotency_uniq\""))
 	// Re-query returns the winner.
 	mock.ExpectQuery("SELECT request_body->>'delegation_id', status").

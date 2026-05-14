@@ -367,7 +367,7 @@ func TestBuildProvisionerConfig_IncludesAwarenessSettings(t *testing.T) {
 		"ws-123",
 		"/tmp/configs/template",
 		map[string][]byte{"config.yaml": []byte("name: test")},
-		models.CreateWorkspacePayload{Tier: 2, Runtime: "claude-code"},
+		models.CreateWorkspacePayload{Tier: 2, Runtime: "claude-code", WorkspaceDir: "/tmp/workspace", WorkspaceAccess: "read_write"},
 		map[string]string{"OPENAI_API_KEY": "sk-test"},
 		"/tmp/plugins",
 		"workspace:ws-123",

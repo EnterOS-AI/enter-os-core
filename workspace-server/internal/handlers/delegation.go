@@ -262,14 +262,20 @@ func insertDelegationRow(ctx context.Context, c *gin.Context, sourceID string, b
 		"task":          body.Task,
 		"delegation_id": delegationID,
 	})
+	// Store delegation_id in response_body so agent check_delegation_status
+	// (which reads response_body->>delegation_id) can locate this row even
+	// when request_body hasn't propagated yet. Fixes mc#984.
+	respJSON, _ := json.Marshal(map[string]interface{}{
+		"delegation_id": delegationID,
+	})
 	var idemArg interface{}
 	if body.IdempotencyKey != "" {
 		idemArg = body.IdempotencyKey
 	}
 	_, err := db.DB.ExecContext(ctx, `
-		INSERT INTO activity_logs (workspace_id, activity_type, method, source_id, target_id, summary, request_body, status, idempotency_key)
-		VALUES ($1, 'delegation', 'delegate', $2, $3, $4, $5::jsonb, 'pending', $6)
-	`, sourceID, sourceID, body.TargetID, "Delegating to "+body.TargetID, string(taskJSON), idemArg)
+		INSERT INTO activity_logs (workspace_id, activity_type, method, source_id, target_id, summary, request_body, response_body, status, idempotency_key)
+		VALUES ($1, 'delegation', 'delegate', $2, $3, $4, $5::jsonb, $6::jsonb, 'pending', $7)
+	`, sourceID, sourceID, body.TargetID, "Delegating to "+body.TargetID, string(taskJSON), string(respJSON), idemArg)
 	if err == nil {
 		// RFC #2829 #318 — mirror to the durable delegations ledger
 		// (gated by DELEGATION_LEDGER_WRITE; default off → no-op).
@@ -544,10 +550,15 @@ func (h *DelegationHandler) Record(c *gin.Context) {
 		"task":          body.Task,
 		"delegation_id": body.DelegationID,
 	})
+	// Store delegation_id in response_body so agent check_delegation_status
+	// can locate this row. Fixes mc#984.
+	respJSON, _ := json.Marshal(map[string]interface{}{
+		"delegation_id": body.DelegationID,
+	})
 	if _, err := db.DB.ExecContext(ctx, `
-		INSERT INTO activity_logs (workspace_id, activity_type, method, source_id, target_id, summary, request_body, status)
-		VALUES ($1, 'delegation', 'delegate', $2, $3, $4, $5::jsonb, 'dispatched')
-	`, sourceID, sourceID, body.TargetID, "Delegating to "+body.TargetID, string(taskJSON)); err != nil {
+		INSERT INTO activity_logs (workspace_id, activity_type, method, source_id, target_id, summary, request_body, response_body, status)
+		VALUES ($1, 'delegation', 'delegate', $2, $3, $4, $5::jsonb, $6::jsonb, 'dispatched')
+	`, sourceID, sourceID, body.TargetID, "Delegating to "+body.TargetID, string(taskJSON), string(respJSON)); err != nil {
 		log.Printf("Delegation Record: insert failed for %s: %v", body.DelegationID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record delegation"})
 		return
