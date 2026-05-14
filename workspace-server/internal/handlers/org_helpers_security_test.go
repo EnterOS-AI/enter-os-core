@@ -276,3 +276,121 @@ func TestMergeCategoryRouting_OriginalMapsUnmodified(t *testing.T) {
 		t.Error("ws routing should be unmodified after merge")
 	}
 }
+
+// ── expandWithEnv ─────────────────────────────────────────────────────────────
+//
+// CWE-78 regression tests. The original fix (a3a358f9) ensures that partial
+// variable references like $HOME/path are NOT resolved via os.Getenv — the
+// host HOME env var must not leak into org template values. Only whole-string
+// references ($VAR or ${VAR}) may fall back to the host process environment.
+
+func TestExpandWithEnv_PartialRefDollarHomePath(t *testing.T) {
+	// $HOME/path must NOT resolve to the host's HOME env var.
+	// The literal $HOME must be returned as-is.
+	got := expandWithEnv("$HOME/path", nil)
+	if got != "$HOME/path" {
+		t.Errorf("$HOME/path: got %q, want literal $HOME/path", got)
+	}
+}
+
+func TestExpandWithEnv_PartialRefBracedRoleAdmin(t *testing.T) {
+	// ${ROLE}/admin — ROLE is not in env, so expand to the literal ${ROLE}/admin.
+	got := expandWithEnv("${ROLE}/admin", nil)
+	if got != "${ROLE}/admin" {
+		t.Errorf("${ROLE}/admin: got %q, want literal ${ROLE}/admin", got)
+	}
+}
+
+func TestExpandWithEnv_PartialRefMiddleOfString(t *testing.T) {
+	// $ROLE in the middle of a string — literal, not os.Getenv.
+	got := expandWithEnv("prefix/$ROLE/suffix", nil)
+	if got != "prefix/$ROLE/suffix" {
+		t.Errorf("prefix/$ROLE/suffix: got %q, want literal", got)
+	}
+}
+
+func TestExpandWithEnv_WholeVarInEnv(t *testing.T) {
+	// Whole-string $VAR that IS in env — env value wins.
+	env := map[string]string{"FOO": "barvalue"}
+	got := expandWithEnv("$FOO", env)
+	if got != "barvalue" {
+		t.Errorf("$FOO with FOO=barvalue: got %q, want barvalue", got)
+	}
+}
+
+func TestExpandWithEnv_WholeVarBracedInEnv(t *testing.T) {
+	// Whole-string ${VAR} that IS in env — env value wins.
+	env := map[string]string{"FOO": "barvalue"}
+	got := expandWithEnv("${FOO}", env)
+	if got != "barvalue" {
+		t.Errorf("${FOO} with FOO=barvalue: got %q, want barvalue", got)
+	}
+}
+
+func TestExpandWithEnv_WholeVarNotInEnvBare(t *testing.T) {
+	// Whole-string $VAR not in env — falls back to os.Getenv.
+	// If the host has the var, we get the host value. If not, empty.
+	// At minimum, the result must NOT be the literal "$UNDEFINED_VAR_9Z".
+	got := expandWithEnv("$UNDEFINED_VAR_9Z", nil)
+	if got == "$UNDEFINED_VAR_9Z" {
+		t.Errorf("$UNDEFINED_VAR_9Z: should expand (whole-string fallback to os.Getenv), got literal")
+	}
+}
+
+func TestExpandWithEnv_WholeVarNotInEnvBraced(t *testing.T) {
+	// Whole-string ${VAR} not in env — falls back to os.Getenv.
+	got := expandWithEnv("${UNDEFINED_VAR_9Z}", nil)
+	if got == "${UNDEFINED_VAR_9Z}" {
+		t.Errorf("${UNDEFINED_VAR_9Z}: should expand (whole-string fallback to os.Getenv), got literal")
+	}
+}
+
+func TestExpandWithEnv_EmptyString(t *testing.T) {
+	got := expandWithEnv("", map[string]string{"FOO": "bar"})
+	if got != "" {
+		t.Errorf("empty string: got %q, want empty", got)
+	}
+}
+
+func TestExpandWithEnv_NoVarRefs(t *testing.T) {
+	got := expandWithEnv("plain string with no vars", map[string]string{"FOO": "bar"})
+	if got != "plain string with no vars" {
+		t.Errorf("plain string: got %q, want unchanged", got)
+	}
+}
+
+func TestExpandWithEnv_MultipleVarRefs(t *testing.T) {
+	// Two vars, both whole — both expand from env.
+	env := map[string]string{"A": "alpha", "B": "beta"}
+	got := expandWithEnv("$A and $B and more", env)
+	if got != "alpha and beta and more" {
+		t.Errorf("multiple vars: got %q, want alpha and beta and more", got)
+	}
+}
+
+func TestExpandWithEnv_NumericVarRef(t *testing.T) {
+	// $5 — starts with digit, not a valid identifier start.
+	// Must return the literal "$5", not expand via os.Getenv.
+	got := expandWithEnv("$5", map[string]string{"5": "five"})
+	if got != "$5" {
+		t.Errorf("$5: got %q, want literal $5", got)
+	}
+}
+
+func TestExpandWithEnv_DollarEscape(t *testing.T) {
+	// $$ → both $ written literally (each $ is not followed by an identifier char,
+	// so it is written as-is). No special escape sequence for $$.
+	got := expandWithEnv("$$", nil)
+	if got != "$$" {
+		t.Errorf("$$: got %q, want literal $$", got)
+	}
+}
+
+func TestExpandWithEnv_MixedPartialAndWhole(t *testing.T) {
+	// $A is in env (whole), $HOME is partial — only $A expands.
+	env := map[string]string{"A": "alpha"}
+	got := expandWithEnv("$A at $HOME", env)
+	if got != "alpha at $HOME" {
+		t.Errorf("$A at $HOME: got %q, want alpha at $HOME", got)
+	}
+}

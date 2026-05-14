@@ -462,8 +462,9 @@ func TestExpandWithEnv_LiteralDollar(t *testing.T) {
 func TestExpandWithEnv_PartiallyPresent(t *testing.T) {
 	env := map[string]string{"SET": "yes"}
 	result := expandWithEnv("${SET} and ${NOT_SET}", env)
-	// ${SET} resolved; ${NOT_SET} -> "" via empty fallback.
-	assert.Equal(t, "yes and ", result)
+	// ${SET} resolved from env; ${NOT_SET} stays literal (not whole-string ref,
+	// so os.Getenv fallback is NOT used — CWE-78 regression guard).
+	assert.Equal(t, "yes and ${NOT_SET}", result)
 }
 
 // mergeCategoryRouting tests — unions defaults with per-workspace routing.
