@@ -63,6 +63,9 @@ func (h *SecretsHandler) List(c *gin.Context) {
 			"updated_at": updatedAt,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("List secrets rows.Err: %v", err)
+	}
 
 	// 2. Global secrets not overridden at workspace level
 	globalRows, err := db.DB.QueryContext(ctx,
@@ -90,6 +93,9 @@ func (h *SecretsHandler) List(c *gin.Context) {
 			"created_at": createdAt,
 			"updated_at": updatedAt,
 		})
+	}
+	if err := globalRows.Err(); err != nil {
+		log.Printf("List secrets (global) rows.Err: %v", err)
 	}
 
 	c.JSON(http.StatusOK, secrets)
@@ -174,6 +180,9 @@ func (h *SecretsHandler) Values(c *gin.Context) {
 				out[k] = string(decrypted)
 			}
 		}
+		if err := globalRows.Err(); err != nil {
+			log.Printf("secrets.Values globalRows.Err: %v", err)
+		}
 	}
 
 	wsRows, wErr := db.DB.QueryContext(ctx,
@@ -194,6 +203,9 @@ func (h *SecretsHandler) Values(c *gin.Context) {
 				}
 				out[k] = string(decrypted) // workspace override wins over global
 			}
+		}
+		if err := wsRows.Err(); err != nil {
+			log.Printf("secrets.Values wsRows.Err: %v", err)
 		}
 	}
 
@@ -324,6 +336,9 @@ func (h *SecretsHandler) ListGlobal(c *gin.Context) {
 			"scope":      "global",
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("ListGlobal rows.Err: %v", err)
+	}
 	c.JSON(http.StatusOK, secrets)
 }
 
@@ -399,6 +414,9 @@ func (h *SecretsHandler) restartAllAffectedByGlobalKey(key string) {
 		if err := rows.Scan(&id); err == nil {
 			ids = append(ids, id)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("restartAllAffectedByGlobalKey rows.Err: %v", err)
 	}
 	if len(ids) == 0 {
 		return
