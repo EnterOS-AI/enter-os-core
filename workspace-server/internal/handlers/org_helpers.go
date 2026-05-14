@@ -81,6 +81,13 @@ func hasUnresolvedVarRef(original, expanded string) bool {
 // Falls back to the platform process env if a var isn't in the map.
 func expandWithEnv(s string, env map[string]string) string {
 	return os.Expand(s, func(key string) string {
+		if len(key) == 0 {
+			return "$"
+		}
+		c := key[0]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_') {
+			return "$" + key // not a valid shell identifier — return literally
+		}
 		if v, ok := env[key]; ok {
 			return v
 		}
