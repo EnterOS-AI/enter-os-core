@@ -90,7 +90,7 @@ jobs:
       - id: filter
         # Inline replacement for dorny/paths-filter — see e2e-api.yml.
         run: |
-          BASE="${GITHUB_BASE_REF:-${{ github.event.before }}}"
+          BASE="${GITHUB_BASE_REF:-${GITHUB_EVENT_BEFORE:-}}"
           if [ "${{ github.event_name }}" = "pull_request" ] && [ -n "${{ github.event.pull_request.base.sha }}" ]; then
             BASE="${{ github.event.pull_request.base.sha }}"
           fi
