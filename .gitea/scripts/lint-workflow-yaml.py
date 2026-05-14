@@ -36,6 +36,9 @@ Rules (4 fatal + 1 fatal cross-file + 1 heuristic-warn):
      raw `.error` fields into CI logs/summaries.
   9. Production deploy/redeploy workflows must expose an operational control:
      kill switch for auto deploys or rollback tag for manual deploys.
+  10. Docker health checks must not run `docker info | head` under pipefail.
+      `head` closes the pipe early, `docker info` can exit nonzero from
+      SIGPIPE, and the step can falsely report Docker daemon failure.
 
 Per `feedback_smoke_test_vendor_truth_not_shape_match`: fixtures used to
 validate this lint must mirror real Gitea 1.22.6 YAML semantics, not
@@ -225,6 +228,24 @@ def _iter_uses(doc: Any) -> Iterable[str]:
                 yield step["uses"]
 
 
+def _iter_run_blocks(doc: Any) -> Iterable[str]:
+    """Yield every shell `run:` block from job steps in a workflow document."""
+    if not isinstance(doc, dict):
+        return
+    jobs = doc.get("jobs")
+    if not isinstance(jobs, dict):
+        return
+    for job in jobs.values():
+        if not isinstance(job, dict):
+            continue
+        steps = job.get("steps")
+        if not isinstance(steps, list):
+            continue
+        for step in steps:
+            if isinstance(step, dict) and isinstance(step.get("run"), str):
+                yield step["run"]
+
+
 def check_cross_repo_uses(filename: str, doc: Any) -> list[str]:
     """Return per-violation error lines for cross-repo `uses:` references."""
     errors: list[str] = []
@@ -264,6 +285,10 @@ GITHUB_API_REF_RE = re.compile(
 
 PROD_CP_URL_RE = re.compile(r"https://api\.moleculesai\.app\b")
 REDEPLOY_FLEET_RE = re.compile(r"\b/cp/admin/tenants/redeploy-fleet\b")
+RUN_SETS_PIPEFAIL_RE = re.compile(r"(?m)^\s*set\s+-[^\n]*o\s+pipefail\b")
+DOCKER_INFO_HEAD_PIPE_RE = re.compile(
+    r"(?m)^\s*docker\s+info\b[^\n|]*\|\s*head\b"
+)
 RAW_CP_RESPONSE_RE = re.compile(
     r"""(?x)
     (?:\bjq\s+\.\s+["']?\$HTTP_RESPONSE["']?)
@@ -384,6 +409,30 @@ def check_production_operational_control(filename: str, raw: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Rule 10 — docker info piped to head under pipefail
+# ---------------------------------------------------------------------------
+
+def check_docker_info_head_pipefail(filename: str, doc: Any) -> list[str]:
+    errors: list[str] = []
+    for run_block in _iter_run_blocks(doc):
+        if not (
+            RUN_SETS_PIPEFAIL_RE.search(run_block)
+            and DOCKER_INFO_HEAD_PIPE_RE.search(run_block)
+        ):
+            continue
+        errors.append(
+            f"::error file={filename}::Rule 10 (FATAL): workflow runs "
+            f"`docker info | head` after enabling `pipefail`. `head` can "
+            f"close the pipe early, making `docker info` exit nonzero and "
+            f"falsely fail the Docker daemon health check. Capture "
+            f"`docker_info=\"$(docker info 2>&1)\"` first, then print a "
+            f"bounded preview with `printf ... | sed -n '1,5p'`."
+        )
+        break
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
 
@@ -436,6 +485,7 @@ def main(argv: list[str] | None = None) -> int:
         fatal_errors.extend(check_production_concurrency(rel, doc, raw))
         fatal_errors.extend(check_production_raw_response_logging(rel, raw))
         fatal_errors.extend(check_production_operational_control(rel, raw))
+        fatal_errors.extend(check_docker_info_head_pipefail(rel, doc))
         warnings.extend(check_github_server_url_missing(rel, doc, raw))
 
     # Cross-file checks

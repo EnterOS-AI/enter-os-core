@@ -546,6 +546,70 @@ def test_rule9_prod_manual_deploy_allows_rollback_control(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Rule 10 — docker info piped to head under pipefail
+# ---------------------------------------------------------------------------
+
+DOCKER_INFO_HEAD_BAD = """
+    name: docker-info-head-bad
+    on: [push]
+    jobs:
+      build:
+        runs-on: ubuntu-latest
+        steps:
+          - run: |
+              set -euo pipefail
+              docker info 2>&1 | head -5 || exit 1
+"""
+
+DOCKER_INFO_CAPTURE_OK = """
+    name: docker-info-capture-ok
+    on: [push]
+    jobs:
+      build:
+        runs-on: ubuntu-latest
+        steps:
+          - run: |
+              set -euo pipefail
+              docker_info="$(docker info 2>&1)" || exit 1
+              printf '%s\\n' "${docker_info}" | sed -n '1,5p'
+"""
+
+DOCKER_INFO_SEPARATE_STEP_OK = """
+    name: docker-info-separate-step-ok
+    on: [push]
+    jobs:
+      build:
+        runs-on: ubuntu-latest
+        steps:
+          - run: |
+              set -euo pipefail
+              echo setup
+          - run: |
+              docker info 2>&1 | head -5 || true
+"""
+
+
+def test_rule10_docker_info_head_under_pipefail_detects_violation(tmp_path):
+    _write(tmp_path, "bad.yml", DOCKER_INFO_HEAD_BAD)
+    r = _run_lint(tmp_path)
+    assert r.returncode == 1
+    assert "docker info" in r.stdout.lower()
+    assert "pipefail" in r.stdout.lower()
+
+
+def test_rule10_docker_info_capture_passes(tmp_path):
+    _write(tmp_path, "ok.yml", DOCKER_INFO_CAPTURE_OK)
+    r = _run_lint(tmp_path)
+    assert r.returncode == 0, f"stdout={r.stdout}\nstderr={r.stderr}"
+
+
+def test_rule10_docker_info_head_in_separate_step_without_pipefail_passes(tmp_path):
+    _write(tmp_path, "ok.yml", DOCKER_INFO_SEPARATE_STEP_OK)
+    r = _run_lint(tmp_path)
+    assert r.returncode == 0, f"stdout={r.stdout}\nstderr={r.stderr}"
+
+
+# ---------------------------------------------------------------------------
 # CI change detector fanout — workflow-only PRs keep required contexts without
 # running Go/Canvas/Python/shellcheck heavy steps.
 # ---------------------------------------------------------------------------
