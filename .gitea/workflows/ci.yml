@@ -549,84 +549,95 @@ jobs:
     # red silently merged through. See internal#286 for the three concrete
     # tonight-of-2026-05-11 incidents that prompted the emergency bump.
     #
-    # Three properties of this job each close a failure mode:
-    #
-    #  1. `if: always()` — runs even when an upstream fails. Without it the
-    #     sentinel is `skipped` and protection treats that as missing → merge
-    #     ungated.
-    #
-    #  2. Assertion is `result == "success"` per dep, NOT `!= "failure"`.
-    #     A `skipped` upstream (job gated by `if:` evaluating false, matrix
-    #     entry that couldn't run) must NOT silently pass through.
-    #     `skipped`-as-green is exactly the failure mode this gate closes.
-    #
-    #  3. `needs:` is the canonical list of "what counts as required."
-    #     status_check_contexts will reference only `ci/all-required` (Step 5
-    #     follow-up — branch-protection PATCH is Owners-tier per
-    #     `feedback_never_admin_merge_bypass`, separate PR); a new job is
-    #     added simply by listing it in `needs:` here.
-    #     `.gitea/workflows/ci-required-drift.yml` files a [ci-drift] issue
-    #     hourly if this list diverges from status_check_contexts or from
-    #     audit-force-merge.yml's REQUIRED_CHECKS env (RFC §4 + §6).
+    # This job deliberately has no `needs:`. Gitea 1.22/act_runner can mark a
+    # job-level `if: always()` + `needs:` sentinel as skipped before upstream
+    # jobs settle, leaving branch protection with a permanent pending
+    # `CI / all-required` context. Instead, this independent sentinel polls the
+    # required commit-status contexts for this SHA and fails if any fail, skip,
+    # or never emit.
     #
     # canvas-deploy-reminder is intentionally NOT included in all-required.needs.
     # It is an informational main-push reminder, not a PR quality gate. Keeping
     # it in this dependency list lets a skipped reminder skip the required
     # sentinel before the `always()` guard can emit a branch-protection status.
     #
-    # Phase 3 (RFC #219 §1) safety: underlying build jobs carry
-    # continue-on-error: true so their failures are masked to null (2026-05-12: re-enabled mc#774 interim)
-    # (Gitea suppresses status reporting for CoE jobs). This sentinel
-    # runs with continue-on-error: false so it always reports its
-    # result to the API — without this, the required-status entry
-    # (CI / all-required (pull_request)) is never created, which
-    # blocks PR merges. When Phase 3 ends, flip underlying jobs to
-    # continue-on-error: false; this sentinel can then be flipped to
-    # continue-on-error: true if a Phase-4 regression requires it.
     continue-on-error: false
     runs-on: ubuntu-latest
-    timeout-minutes: 1
-    needs:
-      - changes
-      - platform-build
-      - canvas-build
-      - shellcheck
-      - python-lint
-    if: ${{ always() }}
+    timeout-minutes: 45
     steps:
-      - name: Assert every required dependency succeeded
+      - name: Wait for required CI contexts
+        env:
+          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          API_ROOT: ${{ github.server_url }}/api/v1
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          # `needs.*.result` is one of: success | failure | cancelled | skipped | null.
-          # We assert success per dep (not != failure) — see RFC §2 reasoning above.
-          # Null results are skipped: they come from Phase 3 (continue-on-error: true
-          # suppresses status) or from jobs still in-flight. The sentinel succeeds
-          # rather than blocking PRs on Phase 3 noise.
-          results='${{ toJSON(needs) }}'
-          echo "$results"
-          echo "$results" | python3 -c '
-          import json, sys
-          ns = json.load(sys.stdin)
-          # Phase 3 masked: jobs with continue-on-error: true may report "failure"
-          # Remove when mc#774 handler test failures are resolved.
-          PHASE3_MASKED = {"platform-build"}
-          # Exclude null (Phase 3 suppressed / in-flight) from the bad list.
-          bad = [(k, v.get("result")) for k, v in ns.items()
-                 if v.get("result") not in ("success", None, "cancelled", "skipped") and k not in PHASE3_MASKED]
-          if bad:
-              print(f"FAIL: jobs not green:", file=sys.stderr)
-              for k, r in bad:
-                  print(f"  - {k}: {r}", file=sys.stderr)
-              sys.exit(1)
-          pending = [(k, v.get("result")) for k, v in ns.items()
-                     if v.get("result") is None]
-          cancelled = [(k, v.get("result")) for k, v in ns.items()
-                       if v.get("result") == "cancelled"]
-          if pending:
-              print(f"WARN: {len(pending)} job(s) still in-flight (result=null): " +
-                    ", ".join(k for k, _ in pending), file=sys.stderr)
-          if cancelled:
-              print(f"INFO: {len(cancelled)} job(s) masked by continue-on-error: " +
-                    ", ".join(k for k, _ in cancelled), file=sys.stderr)
-          print(f"OK: all {len(ns)} required jobs succeeded (or Phase-3 suppressed)")
-          '
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          import time
+          import urllib.request
+
+          token = os.environ["GITEA_TOKEN"]
+          api_root = os.environ["API_ROOT"].rstrip("/")
+          repo = os.environ["REPOSITORY"]
+          sha = os.environ["COMMIT_SHA"]
+          event = os.environ["EVENT_NAME"]
+          required = [
+              f"CI / Detect changes ({event})",
+              f"CI / Platform (Go) ({event})",
+              f"CI / Canvas (Next.js) ({event})",
+              f"CI / Shellcheck (E2E scripts) ({event})",
+              f"CI / Python Lint & Test ({event})",
+          ]
+          terminal_bad = {"failure", "error"}
+          deadline = time.time() + 40 * 60
+          last_summary = None
+
+          def fetch_statuses():
+              statuses = []
+              for page in range(1, 6):
+                  url = f"{api_root}/repos/{repo}/commits/{sha}/statuses?page={page}&limit=100"
+                  req = urllib.request.Request(url, headers={"Authorization": f"token {token}"})
+                  with urllib.request.urlopen(req, timeout=20) as resp:
+                      chunk = json.load(resp)
+                  if not chunk:
+                      break
+                  statuses.extend(chunk)
+              latest = {}
+              for item in statuses:
+                  ctx = item.get("context")
+                  if not ctx:
+                      continue
+                  prev = latest.get(ctx)
+                  if prev is None or (item.get("updated_at") or item.get("created_at") or "") >= (prev.get("updated_at") or prev.get("created_at") or ""):
+                      latest[ctx] = item
+              return latest
+
+          while True:
+              latest = fetch_statuses()
+              states = {ctx: (latest.get(ctx) or {}).get("status") or (latest.get(ctx) or {}).get("state") or "missing" for ctx in required}
+              summary = ", ".join(f"{ctx}={state}" for ctx, state in states.items())
+              if summary != last_summary:
+                  print(summary, flush=True)
+                  last_summary = summary
+              bad = {ctx: state for ctx, state in states.items() if state in terminal_bad}
+              if bad:
+                  print("FAIL: required CI context failed:", file=sys.stderr)
+                  for ctx, state in bad.items():
+                      desc = (latest.get(ctx) or {}).get("description") or ""
+                      print(f"  - {ctx}: {state} {desc}", file=sys.stderr)
+                  sys.exit(1)
+              if all(state == "success" for state in states.values()):
+                  print(f"OK: all {len(required)} required CI contexts succeeded")
+                  sys.exit(0)
+              if time.time() >= deadline:
+                  print("FAIL: timed out waiting for required CI contexts:", file=sys.stderr)
+                  for ctx, state in states.items():
+                      print(f"  - {ctx}: {state}", file=sys.stderr)
+                  sys.exit(1)
+              time.sleep(15)
+          PY
