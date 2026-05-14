@@ -805,6 +805,9 @@ func loadWorkspaceSecrets(ctx context.Context, workspaceID string) (map[string]s
 				envVars[k] = string(decrypted)
 			}
 		}
+		if err := globalRows.Err(); err != nil {
+			log.Printf("Provisioner: global_secrets rows.Err workspace=%s: %v", workspaceID, err)
+		}
 	}
 	wsRows, err := db.DB.QueryContext(ctx,
 		`SELECT key, encrypted_value, encryption_version FROM workspace_secrets WHERE workspace_id = $1`, workspaceID)
@@ -822,6 +825,9 @@ func loadWorkspaceSecrets(ctx context.Context, workspaceID string) (map[string]s
 				}
 				envVars[k] = string(decrypted)
 			}
+		}
+		if err := wsRows.Err(); err != nil {
+			log.Printf("Provisioner: workspace_secrets rows.Err workspace=%s: %v", workspaceID, err)
 		}
 	}
 	return envVars, ""
