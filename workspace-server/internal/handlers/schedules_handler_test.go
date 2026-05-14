@@ -6,12 +6,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
 
-	sqlmock "github.com/DATA-DOG/go-sqlmock"
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 )
 
@@ -171,29 +170,18 @@ func TestScheduleHandler_Create_InvalidCron(t *testing.T) {
 }
 
 func TestScheduleHandler_Create_CRLFStripped(t *testing.T) {
-	mock := setupTestDB(t)
+	// Use setupTestDBForQueueTests which sets up QueryMatcherEqual for exact
+	// string matching. The INSERT statement is deterministic enough for that.
+	customSqlmock := setupTestDBForQueueTests(t)
+
 	handler := NewScheduleHandler()
 
 	// Prompt with CRLF from a Windows-committed org-template file.
 	// The handler strips \r before inserting so agent doesn't see empty responses.
 	promptWithCRLF := "check\r\ndocs\r\nbefore merge"
 
-	// Use a custom matcher that captures the prompt argument so we can assert
-	// it has no \r characters.
-	matcher := sqlmock.NewArgMatcher(func(a interface{}) bool {
-		if s, ok := a.(string); ok {
-			// This will be called for multiple args; capture the prompt (5th arg).
-			return strings.Contains(s, "check\ndocs\nbefore merge")
-		}
-		return true
-	})
-	customMock, _, _ := sqlmock.New(sqlmock.QueryMatcherOption(matcher))
-	t.Cleanup(func() { customMock.Close() })
-	prevDB := db.DB
-	db.DB = customMock
-	t.Cleanup(func() { db.DB = prevDB })
-
-	customMock.ExpectQuery("INSERT INTO workspace_schedules").
+	// The handler strips \r → query should receive the LF-only version.
+	customSqlmock.ExpectQuery("INSERT INTO workspace_schedules (workspace_id, name, cron_expr, timezone, prompt, enabled, next_run_at, source) VALUES ($1, $2, $3, $4, $5, $6, $7, 'runtime') RETURNING id").
 		WithArgs("ws-crlf", "", "0 9 * * *", "UTC", "check\ndocs\nbefore merge", true, sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("sched-crlf"))
 
@@ -212,6 +200,9 @@ func TestScheduleHandler_Create_CRLFStripped(t *testing.T) {
 
 	if w.Code != http.StatusCreated {
 		t.Errorf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := customSqlmock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations not met: %v", err)
 	}
 }
 
@@ -376,16 +367,16 @@ func TestScheduleHandler_Create_NextRunAtReturned(t *testing.T) {
 // ==================== Update ====================
 
 func TestScheduleHandler_Update_PartialRecomputeCron(t *testing.T) {
-	mock := setupTestDB(t)
+	// Uses QueryMatcherEqual so query strings are compared verbatim — no escaping needed.
+	mock := setupTestDBForQueueTests(t)
 	handler := NewScheduleHandler()
 
-	// Changing cron_expr → handler SELECTs current cron+tz, recomputes next_run_at.
-	mock.ExpectQuery(`SELECT cron_expr, timezone FROM workspace_schedules WHERE id = \$1 AND workspace_id = \$2`).
+	mock.ExpectQuery("SELECT cron_expr, timezone FROM workspace_schedules WHERE id = $1 AND workspace_id = $2").
 		WithArgs("sched-recompute-cron", "ws-1").
 		WillReturnRows(sqlmock.NewRows([]string{"cron_expr", "timezone"}).
 			AddRow("0 8 * * *", "UTC"))
 
-	mock.ExpectExec(regexp.MustCompile(`UPDATE workspace_schedules SET[\s\S]+WHERE id = \$1 AND workspace_id = \$8`)).
+	mock.ExpectExec(`UPDATE workspace_schedules SET name = COALESCE($2, name), cron_expr = COALESCE($3, cron_expr), timezone = COALESCE($4, timezone), prompt = COALESCE($5, prompt), enabled = COALESCE($6, enabled), next_run_at = COALESCE($7, next_run_at), updated_at = now() WHERE id = $1 AND workspace_id = $8`).
 		WithArgs("sched-recompute-cron", nil, "0 6 * * *", nil, nil, nil, sqlmock.AnyArg(), "ws-1").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -408,15 +399,15 @@ func TestScheduleHandler_Update_PartialRecomputeCron(t *testing.T) {
 }
 
 func TestScheduleHandler_Update_PartialRecomputeTimezone(t *testing.T) {
-	mock := setupTestDB(t)
+	mock := setupTestDBForQueueTests(t)
 	handler := NewScheduleHandler()
 
-	mock.ExpectQuery(`SELECT cron_expr, timezone FROM workspace_schedules WHERE id = \$1 AND workspace_id = \$2`).
+	mock.ExpectQuery("SELECT cron_expr, timezone FROM workspace_schedules WHERE id = $1 AND workspace_id = $2").
 		WithArgs("sched-recompute-tz", "ws-1").
 		WillReturnRows(sqlmock.NewRows([]string{"cron_expr", "timezone"}).
 			AddRow("0 9 * * *", "UTC"))
 
-	mock.ExpectExec(regexp.MustCompile(`UPDATE workspace_schedules SET[\s\S]+WHERE id = \$1 AND workspace_id = \$8`)).
+	mock.ExpectExec(`UPDATE workspace_schedules SET name = COALESCE($2, name), cron_expr = COALESCE($3, cron_expr), timezone = COALESCE($4, timezone), prompt = COALESCE($5, prompt), enabled = COALESCE($6, enabled), next_run_at = COALESCE($7, next_run_at), updated_at = now() WHERE id = $1 AND workspace_id = $8`).
 		WithArgs("sched-recompute-tz", nil, nil, "America/New_York", nil, nil, sqlmock.AnyArg(), "ws-1").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -439,10 +430,10 @@ func TestScheduleHandler_Update_PartialRecomputeTimezone(t *testing.T) {
 }
 
 func TestScheduleHandler_Update_InvalidTimezone(t *testing.T) {
-	mock := setupTestDB(t)
+	mock := setupTestDBForQueueTests(t)
 	handler := NewScheduleHandler()
 
-	mock.ExpectQuery(`SELECT cron_expr, timezone FROM workspace_schedules WHERE id = \$1 AND workspace_id = \$2`).
+	mock.ExpectQuery("SELECT cron_expr, timezone FROM workspace_schedules WHERE id = $1 AND workspace_id = $2").
 		WithArgs("sched-bad-tz", "ws-1").
 		WillReturnRows(sqlmock.NewRows([]string{"cron_expr", "timezone"}).
 			AddRow("0 9 * * *", "UTC"))
@@ -471,10 +462,10 @@ func TestScheduleHandler_Update_InvalidTimezone(t *testing.T) {
 }
 
 func TestScheduleHandler_Update_InvalidCron(t *testing.T) {
-	mock := setupTestDB(t)
+	mock := setupTestDBForQueueTests(t)
 	handler := NewScheduleHandler()
 
-	mock.ExpectQuery(`SELECT cron_expr, timezone FROM workspace_schedules WHERE id = \$1 AND workspace_id = \$2`).
+	mock.ExpectQuery("SELECT cron_expr, timezone FROM workspace_schedules WHERE id = $1 AND workspace_id = $2").
 		WithArgs("sched-bad-cron", "ws-1").
 		WillReturnRows(sqlmock.NewRows([]string{"cron_expr", "timezone"}).
 			AddRow("0 9 * * *", "UTC"))
@@ -498,11 +489,11 @@ func TestScheduleHandler_Update_InvalidCron(t *testing.T) {
 }
 
 func TestScheduleHandler_Update_NotFound(t *testing.T) {
-	mock := setupTestDB(t)
+	mock := setupTestDBForQueueTests(t)
 	handler := NewScheduleHandler()
 
-	mock.ExpectExec(regexp.MustCompile(`UPDATE workspace_schedules SET[\s\S]+WHERE id = \$1 AND workspace_id = \$8`)).
-		WithArgs("sched-missing", nil, nil, nil, nil, nil, nil, "ws-1").
+	mock.ExpectExec(`UPDATE workspace_schedules SET name = COALESCE($2, name), cron_expr = COALESCE($3, cron_expr), timezone = COALESCE($4, timezone), prompt = COALESCE($5, prompt), enabled = COALESCE($6, enabled), next_run_at = COALESCE($7, next_run_at), updated_at = now() WHERE id = $1 AND workspace_id = $8`).
+		WithArgs("sched-missing", "renamed", nil, nil, nil, nil, nil, "ws-1").
 		WillReturnResult(sqlmock.NewResult(0, 0)) // no rows affected
 
 	body, _ := json.Marshal(map[string]string{"name": "renamed"})
@@ -524,11 +515,11 @@ func TestScheduleHandler_Update_NotFound(t *testing.T) {
 }
 
 func TestScheduleHandler_Update_DBError(t *testing.T) {
-	mock := setupTestDB(t)
+	mock := setupTestDBForQueueTests(t)
 	handler := NewScheduleHandler()
 
-	mock.ExpectExec(regexp.MustCompile(`UPDATE workspace_schedules SET[\s\S]+WHERE id = \$1 AND workspace_id = \$8`)).
-		WithArgs("sched-update-err", nil, nil, nil, nil, nil, nil, "ws-1").
+	mock.ExpectExec(`UPDATE workspace_schedules SET name = COALESCE($2, name), cron_expr = COALESCE($3, cron_expr), timezone = COALESCE($4, timezone), prompt = COALESCE($5, prompt), enabled = COALESCE($6, enabled), next_run_at = COALESCE($7, next_run_at), updated_at = now() WHERE id = $1 AND workspace_id = $8`).
+		WithArgs("sched-update-err", "updated", nil, nil, nil, nil, nil, "ws-1").
 		WillReturnError(sql.ErrConnDone)
 
 	body, _ := json.Marshal(map[string]string{"name": "updated"})
@@ -550,12 +541,12 @@ func TestScheduleHandler_Update_DBError(t *testing.T) {
 }
 
 func TestScheduleHandler_Update_PromptCRLFStripped(t *testing.T) {
-	mock := setupTestDB(t)
+	mock := setupTestDBForQueueTests(t)
 	handler := NewScheduleHandler()
 
 	// Changing prompt with CRLF → handler strips \r before the UPDATE.
-	mock.ExpectExec(regexp.MustCompile(`UPDATE workspace_schedules SET[\s\S]+WHERE id = \$1 AND workspace_id = \$8`)).
-		WithArgs("sched-crlf-upd", nil, nil, nil, "fix\r\nthat", nil, nil, "ws-1").
+	mock.ExpectExec(`UPDATE workspace_schedules SET name = COALESCE($2, name), cron_expr = COALESCE($3, cron_expr), timezone = COALESCE($4, timezone), prompt = COALESCE($5, prompt), enabled = COALESCE($6, enabled), next_run_at = COALESCE($7, next_run_at), updated_at = now() WHERE id = $1 AND workspace_id = $8`).
+		WithArgs("sched-crlf-upd", nil, nil, nil, "fix\nthat", nil, nil, "ws-1").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	body, _ := json.Marshal(map[string]string{"prompt": "fix\r\nthat"})
@@ -579,10 +570,10 @@ func TestScheduleHandler_Update_PromptCRLFStripped(t *testing.T) {
 // ==================== Delete ====================
 
 func TestScheduleHandler_Delete_Success(t *testing.T) {
-	mock := setupTestDB(t)
+	mock := setupTestDBForQueueTests(t)
 	handler := NewScheduleHandler()
 
-	mock.ExpectExec(regexp.MustCompile(`DELETE FROM workspace_schedules WHERE id = \$1 AND workspace_id = \$2`)).
+	mock.ExpectExec(`DELETE FROM workspace_schedules WHERE id = $1 AND workspace_id = $2`).
 		WithArgs("sched-del", "ws-1").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -602,11 +593,11 @@ func TestScheduleHandler_Delete_Success(t *testing.T) {
 }
 
 func TestScheduleHandler_Delete_NotFound(t *testing.T) {
-	mock := setupTestDB(t)
+	mock := setupTestDBForQueueTests(t)
 	handler := NewScheduleHandler()
 
 	// IDOR guard: row belongs to different workspace → 0 rows affected → 404.
-	mock.ExpectExec(regexp.MustCompile(`DELETE FROM workspace_schedules WHERE id = \$1 AND workspace_id = \$2`)).
+	mock.ExpectExec(`DELETE FROM workspace_schedules WHERE id = $1 AND workspace_id = $2`).
 		WithArgs("sched-idor", "ws-1").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -626,10 +617,10 @@ func TestScheduleHandler_Delete_NotFound(t *testing.T) {
 }
 
 func TestScheduleHandler_Delete_DBError(t *testing.T) {
-	mock := setupTestDB(t)
+	mock := setupTestDBForQueueTests(t)
 	handler := NewScheduleHandler()
 
-	mock.ExpectExec(regexp.MustCompile(`DELETE FROM workspace_schedules WHERE id = \$1 AND workspace_id = \$2`)).
+	mock.ExpectExec(`DELETE FROM workspace_schedules WHERE id = $1 AND workspace_id = $2`).
 		WithArgs("sched-del-err", "ws-1").
 		WillReturnError(sql.ErrConnDone)
 
