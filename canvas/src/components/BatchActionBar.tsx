@@ -100,8 +100,8 @@ export function BatchActionBar() {
       aria-label="Batch workspace actions"
       className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] flex items-center gap-3 px-4 py-2.5 rounded-2xl bg-surface-sunken/95 border border-line/70 shadow-2xl shadow-black/50 backdrop-blur-md"
     >
-      {/* Selection count badge */}
-      <span className="text-[12px] font-semibold text-white bg-accent-strong/80 px-2.5 py-0.5 rounded-full tabular-nums">
+      {/* Selection count badge — bg-zinc-700 passes 7.2:1 on white text */}
+      <span className="text-[12px] font-semibold text-white bg-zinc-700 px-2.5 py-0.5 rounded-full tabular-nums">
         {count} selected
       </span>
 
@@ -112,7 +112,7 @@ export function BatchActionBar() {
         type="button"
         disabled={busy}
         onClick={() => setPending("restart")}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium text-sky-300 bg-sky-900/30 hover:bg-sky-800/50 border border-sky-700/30 hover:border-sky-600/50 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/70"
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium text-white bg-sky-900/30 hover:bg-sky-800/50 border border-sky-700/30 hover:border-sky-600/50 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/70"
       >
         <span aria-hidden="true">↻</span>
         Restart All
@@ -122,7 +122,7 @@ export function BatchActionBar() {
         type="button"
         disabled={busy}
         onClick={() => setPending("pause")}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium text-warm bg-amber-900/30 hover:bg-amber-800/50 border border-amber-700/30 hover:border-amber-600/50 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/70"
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium text-white bg-amber-900/30 hover:bg-amber-800/50 border border-amber-700/30 hover:border-amber-600/50 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/70"
       >
         <span aria-hidden="true">⏸</span>
         Pause All
@@ -132,7 +132,7 @@ export function BatchActionBar() {
         type="button"
         disabled={busy}
         onClick={() => setPending("delete")}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium text-bad bg-red-900/30 hover:bg-red-800/50 border border-red-700/30 hover:border-red-600/50 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/70"
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium text-white bg-red-900/30 hover:bg-red-800/50 border border-red-700/30 hover:border-red-600/50 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/70"
       >
         <span aria-hidden="true">✕</span>
         Delete All

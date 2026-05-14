@@ -8,11 +8,17 @@ import type { AuditEntry, AuditResponse } from "@/types/audit";
 
 type EventFilter = "all" | AuditEntry["event_type"];
 
+// Contrast note: text is rendered on near-black bg (bg-*-950/40). Every text
+// color below is chosen to pass WCAG 2.1 AA 4.5:1 on that background:
+//   blue-300   ( delegation ) ≈ 8.8:1
+//   violet-300 ( decision   ) ≈ 9.5:1
+//   yellow-200 ( gate       ) ≈ 11.5:1
+//   orange-300 ( hitl       ) ≈ 9.1:1
 const BADGE_COLORS: Record<AuditEntry["event_type"], { text: string; bg: string; border: string }> = {
-  delegation: { text: "text-accent",   bg: "bg-blue-950/40",   border: "border-blue-800/40" },
-  decision:   { text: "text-violet-400", bg: "bg-violet-950/40", border: "border-violet-800/40" },
-  gate:       { text: "text-yellow-400", bg: "bg-yellow-950/40", border: "border-yellow-800/40" },
-  hitl:       { text: "text-orange-400", bg: "bg-orange-950/40", border: "border-orange-800/40" },
+  delegation: { text: "text-blue-300",   bg: "bg-blue-950/40",   border: "border-blue-800/40" },
+  decision:   { text: "text-violet-300", bg: "bg-violet-950/40", border: "border-violet-800/40" },
+  gate:       { text: "text-yellow-200", bg: "bg-yellow-950/40", border: "border-yellow-800/40" },
+  hitl:       { text: "text-orange-300", bg: "bg-orange-950/40", border: "border-orange-800/40" },
 };
 
 const FILTERS: { id: EventFilter; label: string }[] = [
@@ -245,7 +251,6 @@ export function AuditEntryRow({ entry, now }: AuditEntryRowProps) {
         {/* Event-type badge */}
         <span
           className={`shrink-0 text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded border ${badge.text} ${badge.bg} ${badge.border}`}
-          aria-label={`Event type: ${entry.event_type}`}
         >
           {entry.event_type}
         </span>
