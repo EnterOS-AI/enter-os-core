@@ -342,6 +342,11 @@ func TestPluginInstall_InstanceLookupError_Returns503(t *testing.T) {
 // ---------- dispatch: uninstall ----------
 
 func TestPluginUninstall_SaaS_DispatchesToEIC(t *testing.T) {
+	mock := setupTestDB(t)
+	mock.ExpectExec("DELETE FROM workspace_plugins WHERE workspace_id").
+		WithArgs("ws-1", "browser-automation").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
 	stubReadPluginManifestViaEIC(t, func(ctx context.Context, instanceID, runtime, pluginName string) ([]byte, error) {
 		return []byte("name: browser-automation\nskills:\n  - browse\n"), nil
 	})

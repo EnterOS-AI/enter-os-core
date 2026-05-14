@@ -629,6 +629,9 @@ func TestPluginInstall_RejectsUnknownScheme(t *testing.T) {
 }
 
 func TestPluginInstall_LocalSourceReachesContainerLookup(t *testing.T) {
+	mock := setupTestDB(t)
+	expectAllowlistAllowAll(mock)
+
 	base := t.TempDir()
 	pluginDir := filepath.Join(base, "demo")
 	_ = os.MkdirAll(pluginDir, 0o755)
@@ -955,14 +958,14 @@ func TestLogInstallLimitsOnce(t *testing.T) {
 
 func TestRegexpEscapeForAwk(t *testing.T) {
 	cases := map[string]string{
-		"my-plugin":                 `my-plugin`,
-		"# Plugin: foo /":           `# Plugin: foo \/`,
-		"# Plugin: a.b /":           `# Plugin: a\.b \/`,
-		"foo[bar]":                  `foo\[bar\]`,
-		"a*b+c?":                    `a\*b\+c\?`,
-		"path|with|pipes":           `path\|with\|pipes`,
-		`back\slash`:                `back\\slash`,
-		"":                          ``,
+		"my-plugin":       `my-plugin`,
+		"# Plugin: foo /": `# Plugin: foo \/`,
+		"# Plugin: a.b /": `# Plugin: a\.b \/`,
+		"foo[bar]":        `foo\[bar\]`,
+		"a*b+c?":          `a\*b\+c\?`,
+		"path|with|pipes": `path\|with\|pipes`,
+		`back\slash`:      `back\\slash`,
+		"":                ``,
 	}
 	for in, want := range cases {
 		got := regexpEscapeForAwk(in)
@@ -1247,7 +1250,7 @@ func TestPluginDownload_GithubSchemeStreamsTarball(t *testing.T) {
 		scheme: "github",
 		fetchFn: func(_ context.Context, _ string, dst string) (string, error) {
 			files := map[string]string{
-				"plugin.yaml":            "name: remote-plugin\nversion: 1.0.0\n",
+				"plugin.yaml":             "name: remote-plugin\nversion: 1.0.0\n",
 				"skills/x/SKILL.md":       "---\nname: x\n---\n",
 				"adapters/claude_code.py": "from plugins_registry.builtins import AgentskillsAdaptor as Adaptor\n",
 			}

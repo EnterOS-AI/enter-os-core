@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"os"
@@ -634,6 +635,11 @@ func TestSeedInitialMemories_EmptyMemoriesNil(t *testing.T) {
 // ==================== buildProvisionerConfig ====================
 
 func TestBuildProvisionerConfig_BasicFields(t *testing.T) {
+	mock := setupTestDB(t)
+	mock.ExpectQuery(`SELECT COALESCE\(workspace_dir`).
+		WithArgs("ws-basic").
+		WillReturnRows(sqlmock.NewRows([]string{"workspace_dir", "workspace_access"}).AddRow("", "none"))
+
 	broadcaster := newTestBroadcaster()
 	tmpDir := t.TempDir()
 	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", tmpDir)
@@ -678,6 +684,14 @@ func TestBuildProvisionerConfig_BasicFields(t *testing.T) {
 }
 
 func TestBuildProvisionerConfig_WorkspacePathFromEnv(t *testing.T) {
+	mock := setupTestDB(t)
+	mock.ExpectQuery(`SELECT COALESCE\(workspace_dir`).
+		WithArgs("ws-env").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(`SELECT digest FROM runtime_image_pins`).
+		WithArgs("claude-code").
+		WillReturnError(sql.ErrNoRows)
+
 	broadcaster := newTestBroadcaster()
 	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
 

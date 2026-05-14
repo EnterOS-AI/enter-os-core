@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 	"github.com/gin-gonic/gin"
 )
 
@@ -193,7 +192,7 @@ func TestInstructionsHandler_Create_InvalidScope(t *testing.T) {
 
 	handler.Create(c)
 
-	if w.Code != http.BadRequest {
+	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 }
@@ -277,7 +276,7 @@ func TestInstructionsHandler_Create_WorkspaceScopeWithScopeTarget(t *testing.T) 
 		"scope_target": wsID,
 		"title":        "WS rule",
 		"content":      "Use HTTPS",
-		"priority":      10,
+		"priority":     10,
 	})
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -299,10 +298,9 @@ func TestInstructionsHandler_Create_WorkspaceScopeWithScopeTarget(t *testing.T) 
 func TestInstructionsHandler_Update_Success(t *testing.T) {
 	mock := setupTestDB(t)
 	handler := NewInstructionsHandler()
-	title := "Updated title"
 
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE platform_instructions SET\n\t\t\t\ttitle = COALESCE($2, title),\n\t\t\t\tcontent = COALESCE($3, content),\n\t\t\t\tpriority = COALESCE($4, priority),\n\t\t\t\tenabled = COALESCE($5, enabled),\n\t\t\t\tupdated_at = NOW()\n\t\t\t\tWHERE id = $1")).
-		WithArgs(&title, "inst-1").
+		WithArgs("inst-1", sqlmock.AnyArg(), nil, nil, nil).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	body, _ := json.Marshal(map[string]interface{}{"title": "Updated title"})
@@ -325,10 +323,9 @@ func TestInstructionsHandler_Update_Success(t *testing.T) {
 func TestInstructionsHandler_Update_NotFound(t *testing.T) {
 	mock := setupTestDB(t)
 	handler := NewInstructionsHandler()
-	title := "Updated title"
 
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE platform_instructions SET\n\t\t\t\ttitle = COALESCE($2, title),\n\t\t\t\tcontent = COALESCE($3, content),\n\t\t\t\tpriority = COALESCE($4, priority),\n\t\t\t\tenabled = COALESCE($5, enabled),\n\t\t\t\tupdated_at = NOW()\n\t\t\t\tWHERE id = $1")).
-		WithArgs(&title, "nonexistent").
+		WithArgs("nonexistent", sqlmock.AnyArg(), nil, nil, nil).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
 	body, _ := json.Marshal(map[string]interface{}{"title": "Updated title"})
