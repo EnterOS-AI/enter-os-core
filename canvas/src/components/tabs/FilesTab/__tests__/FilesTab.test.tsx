@@ -12,6 +12,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import React from "react";
 
 import { FilesTab } from "../../FilesTab.tsx";
+import { FilesToolbar } from "../FilesToolbar.tsx";
 import type { FileEntry } from "../../FilesTab/tree";
 
 // ─── Mock ──────────────────────────────────────────────────────────────────
@@ -38,6 +39,23 @@ function renderPlatformTab(extraProps: Partial<React.ComponentProps<typeof Files
       data={{ id: "ws-1", name: "Test", runtime: "claude-code", status: "online", tier: 0, skills: [], created_at: "" }}
       {...extraProps}
     />,
+  );
+}
+
+/** Render FilesToolbar directly with stub handlers. */
+function renderToolbar(extraProps: Partial<React.ComponentProps<typeof FilesToolbar>> = {}) {
+  return render(
+    <FilesToolbar
+      root="/configs"
+      setRoot={vi.fn()}
+      fileCount={0}
+      onNewFile={vi.fn()}
+      onUpload={vi.fn()}
+      onDownloadAll={vi.fn()}
+      onClearAll={vi.fn()}
+      onRefresh={vi.fn()}
+      {...extraProps}
+    />
   );
 }
 
