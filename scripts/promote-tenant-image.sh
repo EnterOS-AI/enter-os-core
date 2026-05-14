@@ -179,6 +179,7 @@ cp_redeploy_tenant() {
   #   1  — any other failure
   # stdout = response body. stderr = "HTTP_STATUS=NNN" line.
   local slug="$1" tag="$2"
+  validate_slug "$slug"
   _mock_call cp_redeploy_tenant "$slug" "$tag"; local _mrc=$?
   [[ $_mrc -ne 99 ]] && return $_mrc
   local tok="${!CP_TOKEN_ENV:-}"
@@ -204,6 +205,7 @@ cp_redeploy_tenant() {
 tenant_buildinfo() {
   # args: <slug>; prints JSON
   local slug="$1"
+  validate_slug "$slug"
   _mock_call tenant_buildinfo "$slug"; local _mrc=$?
   [[ $_mrc -ne 99 ]] && return $_mrc
   curl -sf --max-time 10 "https://${slug}.moleculesai.app/buildinfo"
@@ -212,6 +214,7 @@ tenant_buildinfo() {
 tenant_health() {
   # args: <slug>; prints raw response, returns 0 if "ok"
   local slug="$1"
+  validate_slug "$slug"
   _mock_call tenant_health "$slug"; local _mrc=$?
   [[ $_mrc -ne 99 ]] && return $_mrc
   curl -sf --max-time 10 "https://${slug}.moleculesai.app/health"
@@ -256,6 +259,7 @@ print(json.dumps({'commands': [ecr_login]}))
 resolve_tenant_instance_id() {
   # args: <slug>; prints i-xxx
   local slug="$1"
+  validate_slug "$slug"
   _mock_call resolve_tenant_instance_id "$slug"; local _mrc=$?
   [[ $_mrc -ne 99 ]] && return $_mrc
   local tok="${!CP_TOKEN_ENV:-}"
@@ -270,6 +274,19 @@ resolve_tenant_instance_id() {
 
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 err() { printf '[%s] ERROR: %s\n' "$(date -u +%H:%M:%SZ)" "$*" >&2; }
+
+# validate_slug — exit 64 if slug contains characters outside the safe set.
+# Prevents SSRF via query-separator injection (?foo) and subdomain takeover
+# (@evil) when slug is interpolated into URL paths or subdomains.
+# OFFSEC-006 fix.
+validate_slug() {
+  local slug="$1"
+  if ! [[ "$slug" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; then
+    printf '[%s] ERROR: invalid slug: %s\n' \
+      "$(date -u +%H:%M:%SZ)" "$slug" >&2
+    exit 64
+  fi
+}
 
 preflight() {
   log "preflight: source=$SOURCE_TAG dest=$DEST_TAG repo=$REPO region=$REGION"
@@ -339,6 +356,7 @@ promote() {
 redeploy_tenant() {
   # args: <slug> — handle the 403→SSM-refresh→retry pattern
   local slug="$1"
+  validate_slug "$slug"
   log "  redeploy: $slug"
   if [[ "$DRY_RUN" == "true" ]]; then
     log "    [dry-run] would POST /redeploy slug=$slug"
@@ -372,6 +390,7 @@ redeploy_tenant() {
 
 verify_tenant() {
   local slug="$1"
+  validate_slug "$slug"
   log "  verify: $slug"
   if [[ "$DRY_RUN" == "true" ]]; then
     log "    [dry-run] would curl /buildinfo + /health"
@@ -398,6 +417,7 @@ rollback() {
   rm -f "$mfile"
   IFS=',' read -ra slugs <<<"$TENANTS"
   for slug in "${slugs[@]}"; do
+    validate_slug "$slug"
     redeploy_tenant "$slug" || err "  rollback redeploy failed for $slug"
   done
   log "rollback: complete"
@@ -408,6 +428,13 @@ rollback() {
 # ─────────────────────────────────────────────────────────────────────────────
 
 main() {
+  # OFFSEC-006: validate slugs before any network I/O.
+  IFS=',' read -ra _slugs <<<"$TENANTS"
+  for _slug in "${_slugs[@]}"; do
+    validate_slug "$_slug"
+  done
+  unset _slugs _slug
+
   preflight || return 1
   snapshot_dest_tag || return 2
   promote || return 2
@@ -415,8 +442,15 @@ main() {
   local promote_rc=0
   IFS=',' read -ra slugs <<<"$TENANTS"
   for slug in "${slugs[@]}"; do
-    redeploy_tenant "$slug" || promote_rc=1
-    [[ $promote_rc -eq 0 ]] && { verify_tenant "$slug" || promote_rc=1; }
+    validate_slug "$slug"
+    if ! redeploy_tenant "$slug"; then
+      promote_rc=1
+    fi
+    if [[ $promote_rc -eq 0 ]]; then
+      if ! verify_tenant "$slug"; then
+        promote_rc=1
+      fi
+    fi
     [[ $promote_rc -ne 0 ]] && break
   done
 
