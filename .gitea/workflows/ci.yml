@@ -399,15 +399,18 @@ jobs:
             scripts/promote-tenant-image.sh \
             scripts/test-promote-tenant-image.sh
 
+  # mc#959 root-fix (sre)
+
   canvas-deploy-reminder:
     name: Canvas Deploy Reminder
     runs-on: ubuntu-latest
-    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
-    continue-on-error: true
+    # mc#774 root-fix: added job-level `if:` so ci-required-drift.py's
+    # ci_job_names() detects this as github.ref-gated and skips it from F1.
+    # The step-level exit 0 handles the "not main push" case; the job-level
+    # `if:` makes the gating explicit so the drift script sees it.
+    # continue-on-error removed (was mc#774 mask): step exits 0 when not applicable.
+    if: ${{ github.ref == 'refs/heads/staging' }}
     needs: [changes, canvas-build]
-    # Keep the job itself always runnable. Gitea 1.22.6 leaves job-level
-    # event/ref `if:` gates as pending on PRs, which blocks the combined
-    # status even though this reminder is intentionally non-required.
     steps:
       - name: Write deploy reminder to step summary
         env:
@@ -594,6 +597,7 @@ jobs:
       - canvas-build
       - shellcheck
       - python-lint
+      - canvas-deploy-reminder
     if: ${{ always() }}
     steps:
       - name: Assert every required dependency succeeded
