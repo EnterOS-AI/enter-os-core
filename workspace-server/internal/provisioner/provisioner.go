@@ -795,6 +795,15 @@ func (p *Provisioner) CopyTemplateToContainer(ctx context.Context, containerID, 
 		if err != nil {
 			return err
 		}
+		// OFFSEC-010: skip symlinks to prevent path traversal via malicious
+		// template symlinks (e.g. template/.ssh → /root/.ssh). filepath.Walk
+		// follows symlinks by default, so without this guard a crafted symlink
+		// inside the template directory could escape to include arbitrary host
+		// files in the tar archive. We intentionally skip rather than error so
+		// a broken symlink in an org template is a silent no-op.
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
 		rel, err := filepath.Rel(templatePath, path)
 		if err != nil {
 			return err
