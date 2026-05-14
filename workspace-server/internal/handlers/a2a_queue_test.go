@@ -32,8 +32,9 @@ func setupTestDBForQueueTests(t *testing.T) sqlmock.Sqlmock {
 	if err != nil {
 		t.Fatalf("failed to create sqlmock: %v", err)
 	}
+	prevDB := db.DB
 	db.DB = mockDB
-	t.Cleanup(func() { mockDB.Close() })
+	t.Cleanup(func() { db.DB = prevDB; mockDB.Close() })
 	return mock
 }
 
