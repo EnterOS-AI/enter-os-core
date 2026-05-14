@@ -304,6 +304,7 @@ jobs:
     name: Canvas (Next.js)
     needs: changes
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # Phase 4 (RFC #219 §1): confirmed green on main 2026-05-12.
     continue-on-error: false
     defaults:
