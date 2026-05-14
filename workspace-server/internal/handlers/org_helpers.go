@@ -351,7 +351,11 @@ func resolveInsideRoot(root, userPath string) (string, error) {
 		return "", fmt.Errorf("root abs: %w", err)
 	}
 	joined := filepath.Join(absRoot, userPath)
-	absJoined, err := filepath.Abs(joined)
+	// filepath.Join preserves "." components when root is absolute; clean
+	// them before computing the final absolute path so "./subdir/./file.txt"
+	// resolves to root/subdir/file.txt (not root/./subdir/./file.txt).
+	cleaned := filepath.Clean(joined)
+	absJoined, err := filepath.Abs(cleaned)
 	if err != nil {
 		return "", fmt.Errorf("joined abs: %w", err)
 	}

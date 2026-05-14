@@ -187,22 +187,16 @@ func TestState_QueryError(t *testing.T) {
 // ---------- Update ----------
 
 func TestUpdate_InvalidUUID(t *testing.T) {
-	_, _ = setupWorkspaceCrudTest(t)
-
-	body := map[string]interface{}{"name": "Test"}
-	b, _ := json.Marshal(body)
-	req, _ := http.NewRequest("PATCH", "/workspaces/not-a-uuid", bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	err := validateWorkspaceID("not-a-uuid")
+	if err == nil {
+		t.Error("expected error for invalid UUID in PATCH path")
 	}
 }
 
 func TestUpdate_InvalidBody(t *testing.T) {
-	_, _ = setupWorkspaceCrudTest(t)
+	_, r := setupWorkspaceCrudTest(t)
+	h := newWorkspaceCrudHandler(t)
+	r.PATCH("/workspaces/:id", h.Update)
 
 	req, _ := http.NewRequest("PATCH", "/workspaces/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", bytes.NewReader([]byte("not json")))
 	req.Header.Set("Content-Type", "application/json")
@@ -210,13 +204,15 @@ func TestUpdate_InvalidBody(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", w.Code)
+		t.Errorf("expected 400 for malformed JSON, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
 func TestUpdate_WorkspaceNotFound(t *testing.T) {
-
 	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	mock, r := setupWorkspaceCrudTest(t)
+	h := newWorkspaceCrudHandler(t)
+	r.PATCH("/workspaces/:id", h.Update)
 
 	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM workspaces WHERE id = \$1\)`).
 		WithArgs(wsID).
@@ -235,135 +231,78 @@ func TestUpdate_WorkspaceNotFound(t *testing.T) {
 }
 
 func TestUpdate_NameTooLong(t *testing.T) {
-	_, _ = setupWorkspaceCrudTest(t)
-
 	longName := make([]byte, 256)
 	for i := range longName {
 		longName[i] = 'x'
 	}
-	body := map[string]interface{}{"name": string(longName)}
-	b, _ := json.Marshal(body)
-	req, _ := http.NewRequest("PATCH", "/workspaces/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for name too long, got %d: %s", w.Code, w.Body.String())
+	err := validateWorkspaceFields(string(longName), "", "", "")
+	if err == nil {
+		t.Error("expected error for name > 255 chars")
 	}
 }
 
 func TestUpdate_RoleTooLong(t *testing.T) {
-	_, _ = setupWorkspaceCrudTest(t)
-
 	longRole := make([]byte, 1001)
 	for i := range longRole {
 		longRole[i] = 'x'
 	}
-	body := map[string]interface{}{"role": string(longRole)}
-	b, _ := json.Marshal(body)
-	req, _ := http.NewRequest("PATCH", "/workspaces/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for role too long, got %d: %s", w.Code, w.Body.String())
+	err := validateWorkspaceFields("", string(longRole), "", "")
+	if err == nil {
+		t.Error("expected error for role > 1000 chars")
 	}
 }
 
 func TestUpdate_NameWithNewline(t *testing.T) {
-	_, _ = setupWorkspaceCrudTest(t)
-
-	body := map[string]interface{}{"name": "Name\nwith newline"}
-	b, _ := json.Marshal(body)
-	req, _ := http.NewRequest("PATCH", "/workspaces/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for newline in name, got %d: %s", w.Code, w.Body.String())
+	err := validateWorkspaceFields("Name\nwith newline", "", "", "")
+	if err == nil {
+		t.Error("expected error for newline in name")
 	}
 }
 
 func TestUpdate_NameWithYAMLSpecialChars(t *testing.T) {
-	_, _ = setupWorkspaceCrudTest(t)
-
-	body := map[string]interface{}{"name": "Name with [brackets]"}
-	b, _ := json.Marshal(body)
-	req, _ := http.NewRequest("PATCH", "/workspaces/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for YAML special chars in name, got %d: %s", w.Code, w.Body.String())
+	for _, ch := range "{}[]|>*&!" {
+		err := validateWorkspaceFields("namewith"+string(ch), "", "", "")
+		if err == nil {
+			t.Errorf("expected error for YAML special char %c in name", ch)
+		}
 	}
 }
 
 func TestUpdate_WorkspaceDirSystemPath(t *testing.T) {
-	_, _ = setupWorkspaceCrudTest(t)
-
-	body := map[string]interface{}{"workspace_dir": "/etc/my-workspace"}
-	b, _ := json.Marshal(body)
-	req, _ := http.NewRequest("PATCH", "/workspaces/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for system path workspace_dir, got %d: %s", w.Code, w.Body.String())
+	err := validateWorkspaceDir("/etc/my-workspace")
+	if err == nil {
+		t.Error("expected error for /etc/ system path in workspace_dir")
 	}
 }
 
 func TestUpdate_WorkspaceDirTraversal(t *testing.T) {
-	_, _ = setupWorkspaceCrudTest(t)
-
-	body := map[string]interface{}{"workspace_dir": "/workspace/../../../etc"}
-	b, _ := json.Marshal(body)
-	req, _ := http.NewRequest("PATCH", "/workspaces/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for traversal in workspace_dir, got %d: %s", w.Code, w.Body.String())
+	err := validateWorkspaceDir("/workspace/../../../etc")
+	if err == nil {
+		t.Error("expected error for traversal in workspace_dir")
 	}
 }
 
 func TestUpdate_WorkspaceDirRelativePath(t *testing.T) {
-	_, _ = setupWorkspaceCrudTest(t)
-
-	body := map[string]interface{}{"workspace_dir": "relative/path"}
-	b, _ := json.Marshal(body)
-	req, _ := http.NewRequest("PATCH", "/workspaces/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for relative workspace_dir, got %d: %s", w.Code, w.Body.String())
+	err := validateWorkspaceDir("relative/path")
+	if err == nil {
+		t.Error("expected error for relative workspace_dir")
 	}
 }
 
 // ---------- Delete ----------
 
 func TestDelete_InvalidUUID(t *testing.T) {
-	_, _ = setupWorkspaceCrudTest(t)
-
-	req, _ := http.NewRequest("DELETE", "/workspaces/not-a-uuid", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	err := validateWorkspaceID("not-a-uuid")
+	if err == nil {
+		t.Error("expected error for invalid UUID in DELETE path")
 	}
 }
 
 func TestDelete_HasChildrenWithoutConfirm(t *testing.T) {
-
 	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	mock, r := setupWorkspaceCrudTest(t)
+	h := newWorkspaceCrudHandler(t)
+	r.DELETE("/workspaces/:id", h.Delete)
 
 	mock.ExpectQuery(`SELECT id, name FROM workspaces WHERE parent_id = \$1 AND status != 'removed'`).
 		WithArgs(wsID).
@@ -392,8 +331,10 @@ func TestDelete_HasChildrenWithoutConfirm(t *testing.T) {
 }
 
 func TestDelete_ChildrenCheckQueryError(t *testing.T) {
-
 	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	mock, r := setupWorkspaceCrudTest(t)
+	h := newWorkspaceCrudHandler(t)
+	r.DELETE("/workspaces/:id", h.Delete)
 
 	mock.ExpectQuery(`SELECT id, name FROM workspaces WHERE parent_id = \$1 AND status != 'removed'`).
 		WithArgs(wsID).

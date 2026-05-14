@@ -109,9 +109,11 @@ func (h *TerminalHandler) HandleConnect(c *gin.Context) {
 	// provisionWorkspaceCP → migration 038). Null instance_id means the
 	// workspace runs as a local Docker container on this tenant.
 	var instanceID string
-	db.DB.QueryRowContext(ctx,
-		`SELECT COALESCE(instance_id, '') FROM workspaces WHERE id = $1`,
-		workspaceID).Scan(&instanceID)
+	if db.DB != nil {
+		db.DB.QueryRowContext(ctx,
+			`SELECT COALESCE(instance_id, '') FROM workspaces WHERE id = $1`,
+			workspaceID).Scan(&instanceID)
+	}
 
 	if instanceID != "" {
 		h.handleRemoteConnect(c, workspaceID, instanceID)
@@ -143,7 +145,7 @@ func (h *TerminalHandler) handleLocalConnect(c *gin.Context, workspaceID string)
 
 	// Look up workspace name for manual container naming
 	var wsName string
-	if _, err := h.docker.Ping(ctx); err == nil {
+	if db.DB != nil && h.docker != nil {
 		db.DB.QueryRowContext(ctx, `SELECT LOWER(REPLACE(name, ' ', '-')) FROM workspaces WHERE id = $1`, workspaceID).Scan(&wsName)
 		if wsName != "" {
 			candidates = append(candidates, wsName)
