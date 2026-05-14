@@ -40,6 +40,8 @@ _A2A_BOUNDARY_END = "[/A2A_RESULT_FROM_PEER]"
 # inside the trusted zone. Escape BOTH boundary markers in the raw text
 # before wrapping so they can never close the boundary early.
 # We use "[/ " as the escape prefix — visually distinct from the real marker.
+_A2A_BOUNDARY_START_ESCAPED = "[/ A2A_RESULT_FROM_PEER]"
+_A2A_BOUNDARY_END_ESCAPED = "[/ /A2A_RESULT_FROM_PEER]"
 
 
 def _escape_boundary_markers(text: str) -> str:
@@ -50,8 +52,8 @@ def _escape_boundary_markers(text: str) -> str:
     the boundary early or inject a fake opener.
     """
     return (
-        text.replace(_A2A_BOUNDARY_START, "[/ A2A_RESULT_FROM_PEER]")
-        .replace(_A2A_BOUNDARY_END, "[/ /A2A_RESULT_FROM_PEER]")
+        text.replace(_A2A_BOUNDARY_START, _A2A_BOUNDARY_START_ESCAPED)
+        .replace(_A2A_BOUNDARY_END, _A2A_BOUNDARY_END_ESCAPED)
     )
 
 

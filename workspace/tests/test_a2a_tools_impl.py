@@ -277,7 +277,7 @@ class TestToolDelegateTask:
              patch("a2a_tools.report_activity", new=AsyncMock()):
             result = await a2a_tools.tool_delegate_task("ws-1", "do something")
 
-        assert result == "[A2A_RESULT_FROM_PEER]\nTask completed!\n[/A2A_RESULT_FROM_PEER]"
+        assert result == "[/ A2A_RESULT_FROM_PEER]\nTask completed!\n[/ /A2A_RESULT_FROM_PEER]"
 
     async def test_error_response_returns_delegation_failed_message(self):
         """When send_a2a_message returns _A2A_ERROR_PREFIX text, delegation fails."""
@@ -305,7 +305,7 @@ class TestToolDelegateTask:
              patch("a2a_tools.report_activity", new=AsyncMock()):
             result = await a2a_tools.tool_delegate_task("ws-cached", "task")
 
-        assert result == "[A2A_RESULT_FROM_PEER]\ndone\n[/A2A_RESULT_FROM_PEER]"
+        assert result == "[/ A2A_RESULT_FROM_PEER]\ndone\n[/ /A2A_RESULT_FROM_PEER]"
 
     async def test_peer_name_falls_back_to_id_prefix(self):
         """When peer has no name and cache is empty, name = first 8 chars of workspace_id."""
@@ -319,7 +319,7 @@ class TestToolDelegateTask:
              patch("a2a_tools.report_activity", new=AsyncMock()):
             result = await a2a_tools.tool_delegate_task("ws-nona000", "task")
 
-        assert result == "[A2A_RESULT_FROM_PEER]\nok\n[/A2A_RESULT_FROM_PEER]"
+        assert result == "[/ A2A_RESULT_FROM_PEER]\nok\n[/ /A2A_RESULT_FROM_PEER]"
         # Cache should now have been set
         assert a2a_tools._peer_names.get("ws-nona000") is not None
 

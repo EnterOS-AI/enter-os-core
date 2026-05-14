@@ -218,7 +218,8 @@ class TestPollingPathSanitization:
         result = asyncio.run(d.tool_delegate_task("ws-peer", "do it"))
         # tool_delegate_task wraps the sanitized text in _A2A_BOUNDARY_START/END
         # (NOT _A2A_RESULT_FROM_PEER — that marker is for the messaging path).
-        assert d._A2A_BOUNDARY_START in result
-        assert d._A2A_BOUNDARY_END in result
+        # Wrapped in escaped form to prevent raw closer from appearing in output.
+        assert d._A2A_BOUNDARY_START_ESCAPED in result
+        assert d._A2A_BOUNDARY_END_ESCAPED in result
         assert "Sanitized peer reply" in result
 
