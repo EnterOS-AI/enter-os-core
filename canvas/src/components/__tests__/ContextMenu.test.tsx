@@ -398,3 +398,78 @@ describe("ContextMenu — item actions", () => {
     expect(mockPost).toHaveBeenCalledWith("/workspaces/n1/resume", {});
   });
 });
+
+/**
+ * Regression tests for GitHub issue #651 — React error #185:
+ * "Maximum update depth exceeded" on Chat tab / mobile.
+ *
+ * Root cause: ContextMenu's children selector ran `.filter()` inside the
+ * Zustand hook, returning a brand-new array reference on every render.
+ * Zustand's useSyncExternalStore compared snapshots with Object.is —
+ * a new array always differs — so React kept scheduling re-renders,
+ * hit the 50-update depth cap, and crashed.
+ *
+ * Fix: select the stable `nodes` array once, derive children via
+ * useMemo outside the store subscription.
+ */
+describe("ContextMenu — hasChildren regression (GitHub #651)", () => {
+  beforeEach(() => { setupApiMocks(); });
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+    mockStoreState.contextMenu = null;
+    mockStoreState.closeContextMenu.mockClear();
+    mockStoreState.updateNodeData.mockClear();
+    mockStoreState.selectNode.mockClear();
+    mockStoreState.setPanelTab.mockClear();
+    mockStoreState.nestNode.mockClear();
+    mockStoreState.setPendingDelete.mockClear();
+    mockStoreState.setCollapsed.mockClear();
+    mockStoreState.arrangeChildren.mockClear();
+    mockStoreState.nodes = [];
+    resetApiMocks();
+    vi.mocked(showToast).mockClear();
+  });
+
+  it("setPendingDelete receives correct children array when workspace has children", () => {
+    openMenu({ nodeId: "ws-parent", nodeData: { name: "Parent", status: "online", tier: 4, role: "assistant" } });
+    mockStoreState.nodes = [
+      { id: "ws-child-a", data: { parentId: "ws-parent" } },
+      { id: "ws-child-b", data: { parentId: "ws-parent" } },
+    ];
+    render(<ContextMenu />);
+    const deleteBtn = screen.getAllByRole("menuitem").find((el) =>
+      el.textContent?.includes("Delete")
+    )!;
+    fireEvent.click(deleteBtn);
+    expect(mockStoreState.setPendingDelete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "ws-parent",
+        name: "Parent",
+        hasChildren: true,
+        children: [
+          { id: "ws-child-a", name: undefined },
+          { id: "ws-child-b", name: undefined },
+        ],
+      })
+    );
+  });
+
+  it("setPendingDelete hasChildren=false and empty children array when workspace has no children", () => {
+    openMenu({ nodeId: "ws-leaf", nodeData: { name: "Leaf", status: "online", tier: 4, role: "assistant" } });
+    mockStoreState.nodes = [];
+    render(<ContextMenu />);
+    const deleteBtn = screen.getAllByRole("menuitem").find((el) =>
+      el.textContent?.includes("Delete")
+    )!;
+    fireEvent.click(deleteBtn);
+    expect(mockStoreState.setPendingDelete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "ws-leaf",
+        name: "Leaf",
+        hasChildren: false,
+        children: [],
+      })
+    );
+  });
+});
