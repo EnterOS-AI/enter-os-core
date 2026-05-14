@@ -4,6 +4,7 @@ package handlers
 // Tree creation logic is in org_import.go; utility helpers in org_helpers.go.
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -147,6 +148,17 @@ func sizeOfSubtree(ws OrgWorkspace) nodeSize {
 	}
 }
 
+// childSlot returns the (x, y) position of child `index` in a 2-column
+// fixed-size grid. Used as the default when sibling sizes are unknown.
+// Formula: x = parentSidePadding + col*(childDefaultWidth+childGutter),
+// y = parentHeaderPadding + row*(childDefaultHeight+childGutter).
+func childSlot(index int) (x, y float64) {
+	col := index % childGridColumnCount
+	row := index / childGridColumnCount
+	return parentSidePadding + float64(col)*(childDefaultWidth+childGutter),
+		parentHeaderPadding + float64(row)*(childDefaultHeight+childGutter)
+}
+
 // childSlotInGrid computes the relative position of sibling `index`
 // given all siblings' subtree sizes. Uniform column width (= max width
 // across siblings), per-row max height, so a nested parent sibling
@@ -252,6 +264,7 @@ type EnvRequirement struct {
 // Members returns every env name this requirement considers —
 // [Name] for single, AnyOf for groups. Used by preflight, collect,
 // and the name-validation regex gate.
+
 func (e EnvRequirement) Members() []string {
 	if e.Name != "" {
 		return []string{e.Name}
@@ -326,6 +339,95 @@ func (e *EnvRequirement) UnmarshalJSON(data []byte) error {
 	}
 	e.AnyOf = alt.AnyOf
 	return nil
+}
+
+// perWorkspaceUnsatisfied is the return type of collectPerWorkspaceUnsatisfied.
+// Each entry names the workspace and files_dir that declared an unsatisfied
+// requirement, plus the requirement itself (EnvRequirement serialises to
+// the same dual shape {string | {any_of: [...]}} in the 412 JSON response).
+type perWorkspaceUnsatisfied struct {
+	Workspace   string         `json:"workspace"`
+	FilesDir    string         `json:"files_dir"`
+	Unsatisfied EnvRequirement `json:"unsatisfied"`
+}
+
+// collectPerWorkspaceUnsatisfied walks the workspace tree and reports every
+// RequiredEnv that is not covered by global secrets (configured) or by an
+// on-disk .env file. orgBaseDir is the on-disk root of the org template
+// (each workspace's .env lives at orgBaseDir/<files_dir>/.env); when empty
+// no .env files are checked and only global coverage can satisfy a requirement.
+// A workspace is satisfied by the .env in its own files_dir AND the org root
+// .env (env vars cascade downward from the root).
+func collectPerWorkspaceUnsatisfied(
+	workspaces []OrgWorkspace,
+	orgBaseDir string,
+	configured map[string]struct{},
+) []perWorkspaceUnsatisfied {
+	var result []perWorkspaceUnsatisfied
+	for _, ws := range workspaces {
+		// Check each RequiredEnv.
+		for _, req := range ws.RequiredEnv {
+			if req.IsSatisfied(configured) {
+				continue
+			}
+			// Not covered by global secrets — check .env files if available.
+			// When orgBaseDir is empty (inline template import) we cannot check
+			// .env files, so any key not in configured is genuinely missing.
+			if orgBaseDir == "" || !envKeyPresent(orgBaseDir, ws.FilesDir, req.Members()...) {
+				result = append(result, perWorkspaceUnsatisfied{
+					Workspace:   ws.Name,
+					FilesDir:    ws.FilesDir,
+					Unsatisfied: req,
+				})
+			}
+		}
+		// Recurse into children so deeply nested workspaces are also checked.
+		result = append(result, collectPerWorkspaceUnsatisfied(ws.Children, orgBaseDir, configured)...)
+	}
+	return result
+}
+
+// envKeyPresent checks whether all env keys appear in either
+// orgBaseDir/.env (root) or orgBaseDir/filesDir/.env (workspace).
+// Returns true only when all keys are found in at least one of those files.
+func envKeyPresent(orgBaseDir, filesDir string, keys ...string) bool {
+	if len(keys) == 0 {
+		return true
+	}
+	// Load root .env (covers vars that cascade from org root).
+	rootEnv := loadEnvVars(orgBaseDir + "/.env")
+	// Load workspace .env.
+	wsEnv := loadEnvVars(orgBaseDir + "/" + filesDir + "/.env")
+	for _, k := range keys {
+		if _, inRoot := rootEnv[k]; !inRoot {
+			if _, inWS := wsEnv[k]; !inWS {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// loadEnvVars reads a .env file and returns keys→values.
+func loadEnvVars(path string) map[string]string {
+	vars := map[string]string{}
+	f, err := os.Open(path)
+	if err != nil {
+		return vars
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			vars[parts[0]] = parts[1]
+		}
+	}
+	return vars
 }
 
 // OrgTemplate is the YAML structure for an org hierarchy.

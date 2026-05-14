@@ -589,7 +589,7 @@ func TestRenderCategoryRoutingYAML_SpecialCharactersEscaped(t *testing.T) {
 // ── Additional coverage: appendYAMLBlock ───────────────────────────
 func TestAppendYAMLBlock_BothEmpty(t *testing.T) {
 	result := appendYAMLBlock(nil, "")
-	assert.Equal(t, "", result)
+	assert.Nil(t, result)
 }
 
 func TestAppendYAMLBlock_ExistingHasNewline(t *testing.T) {
@@ -644,6 +644,11 @@ func TestMergePlugins_ExclusionWithBang(t *testing.T) {
 
 func TestMergePlugins_ExclusionWithDash(t *testing.T) {
 	defaults := []string{"plugin-a", "plugin-b", "plugin-c"}
+	wsPlugins := []string{"-plugin-b"}
+	result := mergePlugins(defaults, wsPlugins)
+	assert.Equal(t, []string{"plugin-a", "plugin-c"}, result)
+}
+
 func TestMergePlugins_ExclusionEmptyTarget(t *testing.T) {
 	defaults := []string{"plugin-a", "plugin-b"}
 	wsPlugins := []string{"!", "-"} // no-op exclusions
@@ -661,6 +666,11 @@ func TestMergePlugins_ExclusionNotInDefaults(t *testing.T) {
 
 func TestMergePlugins_WorkspaceAddsNew(t *testing.T) {
 	defaults := []string{"plugin-a"}
+	wsPlugins := []string{"plugin-b"}
+	result := mergePlugins(defaults, wsPlugins)
+	assert.Equal(t, []string{"plugin-a", "plugin-b"}, result)
+}
+
 func TestMergePlugins_DeduplicationOrder(t *testing.T) {
 	// Defaults first; workspace entries deduplicated.
 	defaults := []string{"plugin-a", "plugin-a", "plugin-b"}

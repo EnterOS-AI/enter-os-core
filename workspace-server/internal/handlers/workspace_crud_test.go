@@ -38,15 +38,15 @@ func setupWorkspaceCrudTest(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 
 func TestState_LegacyWorkspaceNoLiveToken(t *testing.T) {
 	mock, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r.GET("/workspaces/:id/state", h.State)
 
 	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
 	// No live token — legacy workspace, no auth required.
 	// HasAnyLiveToken always runs first (queries workspace_auth_tokens).
-	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM workspace_auth_tokens`).
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM workspace_auth_tokens`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery(`SELECT status FROM workspaces WHERE id = \$1`).
 		WithArgs(wsID).
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("running"))
@@ -76,13 +76,13 @@ func TestState_LegacyWorkspaceNoLiveToken(t *testing.T) {
 
 func TestState_HasLiveTokenMissingAuth(t *testing.T) {
 	mock, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r.GET("/workspaces/:id/state", h.State)
 
 	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
-	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM workspace_auth_tokens`).
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM workspace_auth_tokens`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 
 	req, _ := http.NewRequest("GET", "/workspaces/"+wsID+"/state", nil)
 	// No Authorization header
@@ -96,13 +96,13 @@ func TestState_HasLiveTokenMissingAuth(t *testing.T) {
 
 func TestState_WorkspaceNotFound(t *testing.T) {
 	mock, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r.GET("/workspaces/:id/state", h.State)
 
 	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
-	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM workspace_auth_tokens`).
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM workspace_auth_tokens`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery(`SELECT status FROM workspaces WHERE id = \$1`).
 		WithArgs(wsID).
 		WillReturnError(sql.ErrNoRows)
@@ -126,13 +126,13 @@ func TestState_WorkspaceNotFound(t *testing.T) {
 
 func TestState_WorkspaceSoftDeleted(t *testing.T) {
 	mock, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r.GET("/workspaces/:id/state", h.State)
 
 	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
-	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM workspace_auth_tokens`).
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM workspace_auth_tokens`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery(`SELECT status FROM workspaces WHERE id = \$1`).
 		WithArgs(wsID).
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("removed"))
@@ -159,13 +159,13 @@ func TestState_WorkspaceSoftDeleted(t *testing.T) {
 
 func TestState_QueryError(t *testing.T) {
 	mock, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
+	h := NewWorkspaceHandler(nil, nil, "", "")
 	r.GET("/workspaces/:id/state", h.State)
 
 	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
-	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM workspace_auth_tokens`).
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM workspace_auth_tokens`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery(`SELECT status FROM workspaces WHERE id = \$1`).
 		WithArgs(wsID).
 		WillReturnError(sql.ErrConnDone)
@@ -182,17 +182,17 @@ func TestState_QueryError(t *testing.T) {
 // ---------- Update ----------
 
 func TestUpdate_InvalidUUID(t *testing.T) {
-	_, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
-	r2 := gin.New()
-	r2.PATCH("/workspaces/:id", h.Update)
+	_, _ = setupWorkspaceCrudTest(t)
+	h := NewWorkspaceHandler(nil, nil, "", "")
+	r := gin.New()
+	r.PATCH("/workspaces/:id", h.Update)
 
 	body := map[string]interface{}{"name": "Test"}
 	b, _ := json.Marshal(body)
 	req, _ := http.NewRequest("PATCH", "/workspaces/not-a-uuid", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	r2.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
@@ -200,15 +200,15 @@ func TestUpdate_InvalidUUID(t *testing.T) {
 }
 
 func TestUpdate_InvalidBody(t *testing.T) {
-	_, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
-	r2 := gin.New()
-	r2.PATCH("/workspaces/:id", h.Update)
+	_, _ = setupWorkspaceCrudTest(t)
+	h := NewWorkspaceHandler(nil, nil, "", "")
+	r := gin.New()
+	r.PATCH("/workspaces/:id", h.Update)
 
 	req, _ := http.NewRequest("PATCH", "/workspaces/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", bytes.NewReader([]byte("not json")))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	r2.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", w.Code)
@@ -216,10 +216,10 @@ func TestUpdate_InvalidBody(t *testing.T) {
 }
 
 func TestUpdate_WorkspaceNotFound(t *testing.T) {
-	mock, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
-	r2 := gin.New()
-	r2.PATCH("/workspaces/:id", h.Update)
+	mock, _ := setupWorkspaceCrudTest(t)
+	h := NewWorkspaceHandler(nil, nil, "", "")
+	r := gin.New()
+	r.PATCH("/workspaces/:id", h.Update)
 
 	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
@@ -232,7 +232,7 @@ func TestUpdate_WorkspaceNotFound(t *testing.T) {
 	req, _ := http.NewRequest("PATCH", "/workspaces/"+wsID, bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	r2.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d: %s", w.Code, w.Body.String())
@@ -240,10 +240,10 @@ func TestUpdate_WorkspaceNotFound(t *testing.T) {
 }
 
 func TestUpdate_NameTooLong(t *testing.T) {
-	_, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
-	r2 := gin.New()
-	r2.PATCH("/workspaces/:id", h.Update)
+	_, _ = setupWorkspaceCrudTest(t)
+	h := NewWorkspaceHandler(nil, nil, "", "")
+	r := gin.New()
+	r.PATCH("/workspaces/:id", h.Update)
 
 	longName := make([]byte, 256)
 	for i := range longName {
@@ -254,7 +254,7 @@ func TestUpdate_NameTooLong(t *testing.T) {
 	req, _ := http.NewRequest("PATCH", "/workspaces/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	r2.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for name too long, got %d: %s", w.Code, w.Body.String())
@@ -262,10 +262,10 @@ func TestUpdate_NameTooLong(t *testing.T) {
 }
 
 func TestUpdate_RoleTooLong(t *testing.T) {
-	_, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
-	r2 := gin.New()
-	r2.PATCH("/workspaces/:id", h.Update)
+	_, _ = setupWorkspaceCrudTest(t)
+	h := NewWorkspaceHandler(nil, nil, "", "")
+	r := gin.New()
+	r.PATCH("/workspaces/:id", h.Update)
 
 	longRole := make([]byte, 1001)
 	for i := range longRole {
@@ -276,7 +276,7 @@ func TestUpdate_RoleTooLong(t *testing.T) {
 	req, _ := http.NewRequest("PATCH", "/workspaces/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	r2.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for role too long, got %d: %s", w.Code, w.Body.String())
@@ -284,17 +284,17 @@ func TestUpdate_RoleTooLong(t *testing.T) {
 }
 
 func TestUpdate_NameWithNewline(t *testing.T) {
-	_, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
-	r2 := gin.New()
-	r2.PATCH("/workspaces/:id", h.Update)
+	_, _ = setupWorkspaceCrudTest(t)
+	h := NewWorkspaceHandler(nil, nil, "", "")
+	r := gin.New()
+	r.PATCH("/workspaces/:id", h.Update)
 
 	body := map[string]interface{}{"name": "Name\nwith newline"}
 	b, _ := json.Marshal(body)
 	req, _ := http.NewRequest("PATCH", "/workspaces/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	r2.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for newline in name, got %d: %s", w.Code, w.Body.String())
@@ -302,17 +302,17 @@ func TestUpdate_NameWithNewline(t *testing.T) {
 }
 
 func TestUpdate_NameWithYAMLSpecialChars(t *testing.T) {
-	_, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
-	r2 := gin.New()
-	r2.PATCH("/workspaces/:id", h.Update)
+	_, _ = setupWorkspaceCrudTest(t)
+	h := NewWorkspaceHandler(nil, nil, "", "")
+	r := gin.New()
+	r.PATCH("/workspaces/:id", h.Update)
 
 	body := map[string]interface{}{"name": "Name with [brackets]"}
 	b, _ := json.Marshal(body)
 	req, _ := http.NewRequest("PATCH", "/workspaces/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	r2.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for YAML special chars in name, got %d: %s", w.Code, w.Body.String())
@@ -320,17 +320,31 @@ func TestUpdate_NameWithYAMLSpecialChars(t *testing.T) {
 }
 
 func TestUpdate_WorkspaceDirSystemPath(t *testing.T) {
-	_, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
-	r2 := gin.New()
-	r2.PATCH("/workspaces/:id", h.Update)
+	mock, _ := setupWorkspaceCrudTest(t)
+	h := NewWorkspaceHandler(nil, nil, "", "")
+	r := gin.New()
+	r.PATCH("/workspaces/:id", h.Update)
+
+	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM workspaces WHERE id = \$1\)`).
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectExec(`UPDATE workspaces SET name =`).
+		WithArgs(wsID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE workspaces SET role =`).
+		WithArgs(wsID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE workspaces SET tier =`).
+		WithArgs(wsID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	body := map[string]interface{}{"workspace_dir": "/etc/my-workspace"}
 	b, _ := json.Marshal(body)
-	req, _ := http.NewRequest("PATCH", "/workspaces/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", bytes.NewReader(b))
+	req, _ := http.NewRequest("PATCH", "/workspaces/"+wsID, bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	r2.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for system path workspace_dir, got %d: %s", w.Code, w.Body.String())
@@ -338,17 +352,31 @@ func TestUpdate_WorkspaceDirSystemPath(t *testing.T) {
 }
 
 func TestUpdate_WorkspaceDirTraversal(t *testing.T) {
-	_, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
-	r2 := gin.New()
-	r2.PATCH("/workspaces/:id", h.Update)
+	mock, _ := setupWorkspaceCrudTest(t)
+	h := NewWorkspaceHandler(nil, nil, "", "")
+	r := gin.New()
+	r.PATCH("/workspaces/:id", h.Update)
+
+	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM workspaces WHERE id = \$1\)`).
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectExec(`UPDATE workspaces SET name =`).
+		WithArgs(wsID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE workspaces SET role =`).
+		WithArgs(wsID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE workspaces SET tier =`).
+		WithArgs(wsID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	body := map[string]interface{}{"workspace_dir": "/workspace/../../../etc"}
 	b, _ := json.Marshal(body)
-	req, _ := http.NewRequest("PATCH", "/workspaces/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", bytes.NewReader(b))
+	req, _ := http.NewRequest("PATCH", "/workspaces/"+wsID, bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	r2.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for traversal in workspace_dir, got %d: %s", w.Code, w.Body.String())
@@ -356,17 +384,31 @@ func TestUpdate_WorkspaceDirTraversal(t *testing.T) {
 }
 
 func TestUpdate_WorkspaceDirRelativePath(t *testing.T) {
-	_, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
-	r2 := gin.New()
-	r2.PATCH("/workspaces/:id", h.Update)
+	mock, _ := setupWorkspaceCrudTest(t)
+	h := NewWorkspaceHandler(nil, nil, "", "")
+	r := gin.New()
+	r.PATCH("/workspaces/:id", h.Update)
+
+	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM workspaces WHERE id = \$1\)`).
+		WithArgs(wsID).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectExec(`UPDATE workspaces SET name =`).
+		WithArgs(wsID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE workspaces SET role =`).
+		WithArgs(wsID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE workspaces SET tier =`).
+		WithArgs(wsID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	body := map[string]interface{}{"workspace_dir": "relative/path"}
 	b, _ := json.Marshal(body)
-	req, _ := http.NewRequest("PATCH", "/workspaces/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", bytes.NewReader(b))
+	req, _ := http.NewRequest("PATCH", "/workspaces/"+wsID, bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	r2.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for relative workspace_dir, got %d: %s", w.Code, w.Body.String())
@@ -376,14 +418,14 @@ func TestUpdate_WorkspaceDirRelativePath(t *testing.T) {
 // ---------- Delete ----------
 
 func TestDelete_InvalidUUID(t *testing.T) {
-	_, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
-	r2 := gin.New()
-	r2.DELETE("/workspaces/:id", h.Delete)
+	_, _ = setupWorkspaceCrudTest(t)
+	h := NewWorkspaceHandler(nil, nil, "", "")
+	r := gin.New()
+	r.DELETE("/workspaces/:id", h.Delete)
 
 	req, _ := http.NewRequest("DELETE", "/workspaces/not-a-uuid", nil)
 	w := httptest.NewRecorder()
-	r2.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
@@ -391,10 +433,10 @@ func TestDelete_InvalidUUID(t *testing.T) {
 }
 
 func TestDelete_HasChildrenWithoutConfirm(t *testing.T) {
-	mock, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
-	r2 := gin.New()
-	r2.DELETE("/workspaces/:id", h.Delete)
+	mock, _ := setupWorkspaceCrudTest(t)
+	h := NewWorkspaceHandler(nil, nil, "", "")
+	r := gin.New()
+	r.DELETE("/workspaces/:id", h.Delete)
 
 	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
@@ -406,7 +448,7 @@ func TestDelete_HasChildrenWithoutConfirm(t *testing.T) {
 	req, _ := http.NewRequest("DELETE", "/workspaces/"+wsID, nil)
 	// No ?confirm=true
 	w := httptest.NewRecorder()
-	r2.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusConflict {
 		t.Errorf("expected 409, got %d: %s", w.Code, w.Body.String())
@@ -425,10 +467,10 @@ func TestDelete_HasChildrenWithoutConfirm(t *testing.T) {
 }
 
 func TestDelete_ChildrenCheckQueryError(t *testing.T) {
-	mock, r := setupWorkspaceCrudTest(t)
-	h := NewWorkspaceHandler(nil, nil, nil, nil)
-	r2 := gin.New()
-	r2.DELETE("/workspaces/:id", h.Delete)
+	mock, _ := setupWorkspaceCrudTest(t)
+	h := NewWorkspaceHandler(nil, nil, "", "")
+	r := gin.New()
+	r.DELETE("/workspaces/:id", h.Delete)
 
 	wsID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
@@ -438,7 +480,7 @@ func TestDelete_ChildrenCheckQueryError(t *testing.T) {
 
 	req, _ := http.NewRequest("DELETE", "/workspaces/"+wsID, nil)
 	w := httptest.NewRecorder()
-	r2.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("expected 500, got %d", w.Code)

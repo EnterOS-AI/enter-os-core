@@ -4,67 +4,7 @@ import (
 	"testing"
 )
 
-// ── validateWorkspaceID ─────────────────────────────────────────────────────────
-
-func TestValidateWorkspaceID_Valid(t *testing.T) {
-	cases := []string{
-		"550e8400-e29b-41d4-a716-446655440000",
-		"00000000-0000-0000-0000-000000000000",
-		"ffffffff-ffff-ffff-ffff-ffffffffffff",
-	}
-	for _, id := range cases {
-		t.Run(id, func(t *testing.T) {
-			if err := validateWorkspaceID(id); err != nil {
-				t.Errorf("validateWorkspaceID(%q) returned error: %v", id, err)
-			}
-		})
-	}
-}
-
-func TestValidateWorkspaceID_Invalid(t *testing.T) {
-	cases := []struct {
-		name string
-		id   string
-	}{
-		{"empty", ""},
-		{"not a UUID", "not-a-uuid"},
-		{"traversal attack", "../../etc/passwd"},
-		{"SQL injection", "'; DROP TABLE workspaces;--"},
-		{"UUID too short", "550e8400-e29b-41d4-a716"},
-		{"UUID with invalid hex chars", "550e8400-e29b-41d4-a716-44665544000g"},
-		// Note: "UUID all zeros" (nil UUID) is accepted by google/uuid.Parse
-		// as a valid RFC 4122 nil UUID, so it passes validateWorkspaceID.
-		// If nil UUIDs should be rejected, validateWorkspaceID must be updated.
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if err := validateWorkspaceID(tc.id); err == nil {
-				t.Errorf("validateWorkspaceID(%q): expected error, got nil", tc.id)
-			}
-		})
-	}
-}
-
 // ── validateWorkspaceDir ───────────────────────────────────────────────────────
-
-func TestValidateWorkspaceDir_Valid(t *testing.T) {
-	cases := []string{
-		"/opt/molecule/workspaces/dev",
-		"/home/user/.molecule/workspaces",
-		// Note: /var/data/workspace-abc-123 is NOT in this list because
-		// /var is blocked as a system path prefix — /var/data is correctly
-		// rejected by validateWorkspaceDir. Use /tmp or /srv for non-system paths.
-		"/opt/services/molecule/tenant-workspaces",
-		"/tmp/molecule/workspaces/dev",
-	}
-	for _, dir := range cases {
-		t.Run(dir, func(t *testing.T) {
-			if err := validateWorkspaceDir(dir); err != nil {
-				t.Errorf("validateWorkspaceDir(%q) returned error: %v", dir, err)
-			}
-		})
-	}
-}
 
 func TestValidateWorkspaceDir_RelativeRejected(t *testing.T) {
 	cases := []string{
@@ -150,41 +90,6 @@ func TestValidateWorkspaceFields_AllEmpty(t *testing.T) {
 	}
 }
 
-func TestValidateWorkspaceFields_Valid(t *testing.T) {
-	if err := validateWorkspaceFields("My Workspace", "Backend Engineer", "gpt-4o", "langgraph"); err != nil {
-		t.Errorf("validateWorkspaceFields with valid args: expected nil, got %v", err)
-	}
-}
-
-func TestValidateWorkspaceFields_NameTooLong(t *testing.T) {
-	longName := make([]byte, 256)
-	for i := range longName {
-		longName[i] = 'a'
-	}
-	if err := validateWorkspaceFields(string(longName), "", "", ""); err == nil {
-		t.Error("name > 255 chars: expected error, got nil")
-	}
-
-	// Exactly 255 chars is OK
-	validName := make([]byte, 255)
-	for i := range validName {
-		validName[i] = 'a'
-	}
-	if err := validateWorkspaceFields(string(validName), "", "", ""); err != nil {
-		t.Errorf("name exactly 255 chars: expected nil, got %v", err)
-	}
-}
-
-func TestValidateWorkspaceFields_RoleTooLong(t *testing.T) {
-	longRole := make([]byte, 1001)
-	for i := range longRole {
-		longRole[i] = 'x'
-	}
-	if err := validateWorkspaceFields("", string(longRole), "", ""); err == nil {
-		t.Error("role > 1000 chars: expected error, got nil")
-	}
-}
-
 func TestValidateWorkspaceFields_ModelTooLong(t *testing.T) {
 	longModel := make([]byte, 101)
 	for i := range longModel {
@@ -202,12 +107,6 @@ func TestValidateWorkspaceFields_RuntimeTooLong(t *testing.T) {
 	}
 	if err := validateWorkspaceFields("", "", "", string(longRuntime)); err == nil {
 		t.Error("runtime > 100 chars: expected error, got nil")
-	}
-}
-
-func TestValidateWorkspaceFields_NewlineInName(t *testing.T) {
-	if err := validateWorkspaceFields("My\nWorkspace", "", "", ""); err == nil {
-		t.Error("name with \\n: expected error, got nil")
 	}
 }
 

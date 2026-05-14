@@ -597,10 +597,100 @@ func (h *DelegationHandler) UpdateStatus(c *gin.Context) {
 
 // ListDelegations handles GET /workspaces/:id/delegations
 // Returns recent delegations for a workspace with their status.
+//
+// RFC #2829 PR-1/4 fallback chain: prefer the durable delegations table
+// (new as of #318) for complete status coverage; fall back to
+// activity_logs for pre-migration data or if the ledger table has
+// no rows for this workspace. activity_logs still drives in-flight
+// tracking for workspaces where DELEGATION_LEDGER_WRITE=0 was
+// active during the delegation lifecycle — the union covers both paths.
 func (h *DelegationHandler) ListDelegations(c *gin.Context) {
 	workspaceID := c.Param("id")
 	ctx := c.Request.Context()
 
+	var delegations []map[string]interface{}
+
+	// Attempt durable ledger first (RFC #2829)
+	delegations = h.listDelegationsFromLedger(ctx, workspaceID)
+	if len(delegations) > 0 {
+		c.JSON(http.StatusOK, delegations)
+		return
+	}
+
+	// Fall back to activity_logs (pre-#318 path, or ledger had no rows)
+	delegations = h.listDelegationsFromActivityLogs(ctx, workspaceID)
+	c.JSON(http.StatusOK, delegations)
+}
+
+// listDelegationsFromLedger queries the durable delegations table.
+// Returns nil on error so the caller can fall back to activity_logs.
+func (h *DelegationHandler) listDelegationsFromLedger(ctx context.Context, workspaceID string) []map[string]interface{} {
+	rows, err := db.DB.QueryContext(ctx, `
+		SELECT d.delegation_id, d.caller_id, d.callee_id, d.task_preview,
+		       d.status, d.result_preview, d.error_detail, d.last_heartbeat,
+		       d.deadline, d.created_at, d.updated_at
+		FROM delegations d
+		WHERE d.caller_id = $1
+		ORDER BY d.created_at DESC
+		LIMIT 50
+	`, workspaceID)
+	if err != nil {
+		// Table may not exist yet (pre-migration), or permission issue.
+		// Fall back silently — do not log to avoid noise on every call.
+		return nil
+	}
+	defer rows.Close()
+
+	var result []map[string]interface{}
+	for rows.Next() {
+		var delegationID, callerID, calleeID, taskPreview, status, resultPreview, errorDetail string
+		var lastHeartbeat, deadline, createdAt, updatedAt *time.Time
+		if err := rows.Scan(
+			&delegationID, &callerID, &calleeID, &taskPreview,
+			&status, &resultPreview, &errorDetail, &lastHeartbeat,
+			&deadline, &createdAt, &updatedAt,
+		); err != nil {
+			continue
+		}
+		entry := map[string]interface{}{
+			"delegation_id": delegationID,
+			"source_id":     callerID,
+			"target_id":     calleeID,
+			"summary":       textutil.TruncateBytes(taskPreview, 200),
+			"status":        status,
+			"created_at":    createdAt,
+			"updated_at":    updatedAt,
+			"_ledger":       true, // marker so callers know this row is from the ledger
+		}
+		if resultPreview != "" {
+			entry["response_preview"] = textutil.TruncateBytes(resultPreview, 300)
+		}
+		if errorDetail != "" {
+			entry["error"] = errorDetail
+		}
+		if lastHeartbeat != nil {
+			entry["last_heartbeat"] = lastHeartbeat
+		}
+		if deadline != nil {
+			entry["deadline"] = deadline
+		}
+		result = append(result, entry)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("listDelegationsFromLedger rows.Err: %v", err)
+	}
+
+	if result == nil {
+		return nil
+	}
+	return result
+}
+
+// listDelegationsFromActivityLogs is the legacy path that reconstructs
+// delegation state by folding activity_logs rows by delegation_id.
+// Kept for backward compatibility and for workspaces that never had
+// DELEGATION_LEDGER_WRITE=1 during their delegation lifecycle.
+func (h *DelegationHandler) listDelegationsFromActivityLogs(ctx context.Context, workspaceID string) []map[string]interface{} {
 	rows, err := db.DB.QueryContext(ctx, `
 		SELECT id, activity_type, COALESCE(source_id::text, ''), COALESCE(target_id::text, ''),
 		       COALESCE(summary, ''), COALESCE(status, ''), COALESCE(error_detail, ''),
@@ -613,12 +703,11 @@ func (h *DelegationHandler) ListDelegations(c *gin.Context) {
 		LIMIT 50
 	`, workspaceID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "query failed"})
-		return
+		return []map[string]interface{}{}
 	}
 	defer rows.Close()
 
-	var delegations []map[string]interface{}
+	var result []map[string]interface{}
 	for rows.Next() {
 		var id, actType, sourceID, targetID, summary, status, errorDetail, responseBody, delegationID string
 		var createdAt time.Time
@@ -643,16 +732,16 @@ func (h *DelegationHandler) ListDelegations(c *gin.Context) {
 		if responseBody != "" {
 			entry["response_preview"] = textutil.TruncateBytes(responseBody, 300)
 		}
-		delegations = append(delegations, entry)
+		result = append(result, entry)
 	}
 	if err := rows.Err(); err != nil {
 		log.Printf("ListDelegations scan error: %v", err)
 	}
 
-	if delegations == nil {
-		delegations = []map[string]interface{}{}
+	if result == nil {
+		return []map[string]interface{}{}
 	}
-	c.JSON(http.StatusOK, delegations)
+	return result
 }
 
 // --- helpers ---

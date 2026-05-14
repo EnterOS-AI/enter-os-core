@@ -62,6 +62,11 @@ func resolvePromptRef(inline, fileRef, orgBaseDir, filesDir string) (string, err
 	return string(data), nil
 }
 
+// envVarRx matches ${VAR} and $VAR references where the name starts with
+// [a-zA-Z_] — intentionally excludes bare $ and $1-style digits so
+// "cost $100" stays intact.
+var envVarRx = regexp.MustCompile(`\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}|\$([a-zA-Z_][a-zA-Z0-9_]*)`)
+
 // envVarRefPattern matches actual ${VAR} or $VAR references (not literal $).
 // Used to detect unresolved placeholders without false positives like "$5".
 var envVarRefPattern = regexp.MustCompile(`\$\{?[A-Za-z_][A-Za-z0-9_]*\}?`)
@@ -80,12 +85,30 @@ func hasUnresolvedVarRef(original, expanded string) bool {
 // expandWithEnv expands ${VAR} and $VAR references in s using the env map.
 // Falls back to the platform process env if a var isn't in the map.
 func expandWithEnv(s string, env map[string]string) string {
-	return os.Expand(s, func(key string) string {
-		if v, ok := env[key]; ok {
-			return v
+	result := s
+	for {
+		loc := envVarRx.FindStringIndex(result)
+		if loc == nil {
+			break
 		}
-		return os.Getenv(key)
-	})
+		match := result[loc[0]:loc[1]]
+		var key string
+		if len(match) >= 2 && match[0] == '$' && match[1] == '{' {
+			// ${VAR} form
+			key = match[2 : len(match)-1]
+		} else {
+			// $VAR form
+			key = match[1:]
+		}
+		var replacement string
+		if v, ok := env[key]; ok {
+			replacement = v
+		} else {
+			replacement = os.Getenv(key)
+		}
+		result = result[:loc[0]] + replacement + result[loc[1]:]
+	}
+	return result
 }
 
 // loadWorkspaceEnv reads the org root .env and the workspace-specific .env
