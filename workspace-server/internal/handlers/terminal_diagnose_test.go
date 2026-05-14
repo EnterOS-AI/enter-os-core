@@ -24,6 +24,9 @@ import (
 //   - response is HTTP 200 (the endpoint always returns 200; failure is
 //     in the JSON body so callers don't need branch-on-status)
 func TestHandleDiagnose_RoutesToRemote(t *testing.T) {
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("ssh-keygen not available in PATH:", err)
+	}
 	mock := setupTestDB(t)
 	setupTestRedis(t)
 
@@ -167,6 +170,12 @@ func TestHandleDiagnose_KI005_RejectsCrossWorkspace(t *testing.T) {
 // to differentiate "IAM broke" (send-key fails) from "sshd broke" (probe
 // fails) from "SG/network broke" (wait-for-port fails).
 func TestDiagnoseRemote_StopsAtSSHProbe(t *testing.T) {
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("ssh-keygen not available in PATH:", err)
+	}
+	if _, err := exec.LookPath("nc"); err != nil {
+		t.Skip("nc not available in PATH:", err)
+	}
 	mock := setupTestDB(t)
 	setupTestRedis(t)
 
