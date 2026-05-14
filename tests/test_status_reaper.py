@@ -495,7 +495,7 @@ def test_reap_required_check_pull_request_suffix_never_touched(sr_module, monkey
     }
     counters = sr_module.reap(workflow_map, combined, SHA, dry_run=False)
     assert counters["compensated"] == 0
-    assert counters["preserved_non_push_suffix"] == 1
+    assert counters["preserved_pr_without_push_success"] == 1
     assert calls == []
 
 
@@ -1009,3 +1009,64 @@ def test_reap_continues_on_per_sha_apierror(sr_module, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "::warning::" in captured.out or "::notice::" in captured.out
     assert SHA_A[:10] in captured.out
+
+
+def test_main_soft_skips_when_commit_listing_times_out(sr_module, monkeypatch, capsys):
+    """A transient outage while listing recent commits should not paint main red.
+
+    Per-SHA status read failures are already isolated inside `reap_branch`.
+    The real 2026-05-14 failure was earlier: `/commits?sha=main&limit=30`
+    timed out after all retries, aborting the tick. The next 5-minute tick can
+    retry safely, so `main()` should emit an observable warning and return 0.
+    """
+
+    monkeypatch.setattr(sr_module, "scan_workflows", lambda _: {"workflow-without-push": False})
+
+    def fake_list_recent_commit_shas(*args, **kwargs):
+        raise sr_module.ApiError(
+            "GET /repos/owner/repo/commits failed after 4 attempts: timed out"
+        )
+
+    monkeypatch.setattr(sr_module, "list_recent_commit_shas", fake_list_recent_commit_shas)
+    monkeypatch.setattr(sys, "argv", ["status-reaper.py"])
+
+    assert sr_module.main() == 0
+    captured = capsys.readouterr()
+    assert "::warning::status-reaper skipped this tick" in captured.out
+    assert '"skipped": true' in captured.out
+    assert '"skip_reason": "commit-list-api-error"' in captured.out
+
+
+def test_main_does_not_soft_skip_status_write_failures(sr_module, monkeypatch):
+    """Only commit-list read failures are soft-skipped.
+
+    A compensation write failure means the reaper could not repair a red
+    status. That must still fail the job loudly instead of being mislabeled as
+    a transient commit-list outage.
+    """
+
+    monkeypatch.setattr(sr_module, "scan_workflows", lambda _: {"workflow-without-push": False})
+    monkeypatch.setattr(sr_module, "list_recent_commit_shas", lambda *_args, **_kwargs: [SHA_A])
+    monkeypatch.setattr(
+        sr_module,
+        "get_combined_status",
+        lambda _sha: {
+            "state": "failure",
+            "statuses": [
+                {
+                    "context": "workflow-without-push / job (push)",
+                    "status": "failure",
+                    "description": "stranded class-O red",
+                }
+            ],
+        },
+    )
+
+    def fake_post_compensating_status(*args, **kwargs):
+        raise sr_module.ApiError("POST /statuses failed: 403")
+
+    monkeypatch.setattr(sr_module, "post_compensating_status", fake_post_compensating_status)
+    monkeypatch.setattr(sys, "argv", ["status-reaper.py"])
+
+    with pytest.raises(sr_module.ApiError, match="POST /statuses failed"):
+        sr_module.main()

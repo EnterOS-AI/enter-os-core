@@ -9,19 +9,17 @@ name: redeploy-tenants-on-main
 #   - Workflow-level env.GITHUB_SERVER_URL pinned per
 #     feedback_act_runner_github_server_url.
 #   - `continue-on-error: true` on each job (RFC §1 contract).
-#   - ~~**Gitea workflow_run trigger limitation**~~ FIXED: replaced with
-#     push+paths filter per this PR. Gitea 1.22.6 does not support
-#     `workflow_run` (task #81). The push trigger fires on every
-#     commit to publish-workspace-server-image.yml which is the
-#     same signal (only successful runs commit to main).
+#   - Dropped unsupported `workflow_run` (task #81).
+#   - Later changed to manual-only after publish-workspace-server-image.yml
+#     gained an integrated ordered production deploy job.
 #
 
-# Auto-refresh prod tenant EC2s after every main merge.
+# Manual production tenant redeploy/rollback helper.
 #
-# Why this workflow exists: publish-workspace-server-image builds and
-# pushes a new platform-tenant :<sha> to ECR on every merge to main,
-# but running tenants pulled their image once at boot and never re-pull.
-# Users see stale code indefinitely.
+# Why this workflow is manual-only: publish-workspace-server-image now owns
+# the ordered build -> push -> production auto-deploy sequence in one workflow.
+# A separate push-triggered redeploy workflow races before the new ECR image
+# exists and can paint main red with a false deployment failure.
 #
 # This workflow closes the gap by calling the control-plane admin
 # endpoint that performs a canary-first, batched, health-gated rolling
@@ -34,16 +32,11 @@ name: redeploy-tenants-on-main
 # Gitea suspension migration. The staging-verify.yml promote step now
 # uses the same redeploy-fleet endpoint (fixes the silent-GHCR gap).
 #
-# Runtime ordering:
-#   1. publish-workspace-server-image completes → new :staging-<sha> in ECR.
-#   2. The merge that updates publish-workspace-server-image.yml triggers
-#      this push/path-filtered workflow, which calls redeploy-fleet with
-#      target_tag=staging-<sha>. No CDN propagation wait needed — ECR image
-#      manifest is consistent immediately after push.
-#   3. Calls redeploy-fleet with canary_slug (if set) and a soak
-#      period. Canary proves the image boots; batches follow.
-#   4. Any failure aborts the rollout and leaves older tenants on the
-#      prior image — safer default than half-and-half state.
+# Runtime ordering for automatic deploys now lives in
+# publish-workspace-server-image.yml:
+#   1. build-and-push creates new :staging-<sha> images in ECR.
+#   2. deploy-production waits for required push contexts on that SHA.
+#   3. deploy-production calls redeploy-fleet canary-first.
 #
 # Rollback path: set PROD_MANUAL_REDEPLOY_TARGET_TAG as a repo/org
 # variable or secret, run workflow_dispatch, then unset it after the
@@ -51,21 +44,14 @@ name: redeploy-tenants-on-main
 # re-pulling the pinned image on every tenant.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.gitea/workflows/publish-workspace-server-image.yml'
   workflow_dispatch:
 permissions:
   contents: read
   # No write scopes needed — the workflow hits an external CP endpoint,
   # not the GitHub API.
 
-# Serialize redeploys so two rapid main pushes' redeploys don't overlap
-# and cause confusing per-tenant SSM state. Without this, GitHub's
-# implicit workflow_run queueing would *probably* serialize them, but
-# the explicit block makes the invariant defensible. Mirrors the
-# concurrency block on redeploy-tenants-on-staging.yml for shape parity.
+# Serialize manual redeploys so two operator-triggered rollbacks do not
+# overlap and cause confusing per-tenant SSM state.
 #
 # NOTE: cancel-in-progress: false removed (Rule 7 fix). Gitea 1.22.6
 # cancels queued runs regardless of this setting, so it provides no
@@ -81,18 +67,15 @@ env:
 jobs:
   # bp-exempt: production redeploy is a side-effect workflow, not a merge gate.
   redeploy:
-    # Gitea 1.22.6 does not support workflow_run. This workflow is now
-    # controlled by push/path triggers plus an explicit kill switch.
-    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
     # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
     timeout-minutes: 25
     env:
-      # Rule 9 fix: operational kill switch for auto-triggered deployments.
-      # Set repo variable or secret PROD_AUTO_DEPLOY_DISABLED=true to prevent
-      # this workflow from redeploying. Manual workflow_dispatch bypasses this.
+      # Rule 9 fix: keep the same operational kill switch surface as the
+      # integrated auto-deploy workflow.
       PROD_AUTO_DEPLOY_DISABLED: ${{ vars.PROD_AUTO_DEPLOY_DISABLED || secrets.PROD_AUTO_DEPLOY_DISABLED || '' }}
     steps:
       - name: Kill-switch guard
@@ -114,13 +97,8 @@ jobs:
         #      tag) → used verbatim. Lets ops pin `latest` for emergency
         #      rollback to last canary-verified digest, or pin a specific
         #      `staging-<sha>` to roll back to a known-good build.
-        #   2. Default → `staging-<short_head_sha>`. The just-published
-        #      digest. Bypasses the `:latest` retag path that's currently
-        #      dead (staging-verify soft-skips without canary fleet, so
-        #      the only thing retagging `:latest` today is the manual
-        #      promote-latest.yml — last run 2026-04-28). Auto-trigger
-        #      from the main push uses github.sha; manual
-        #      dispatch with no variable falls through to github.sha.
+        #   2. Default → `staging-<short_head_sha>` for manual reruns from
+        #      the current default-branch SHA.
         env:
           PROD_MANUAL_REDEPLOY_TARGET_TAG: ${{ vars.PROD_MANUAL_REDEPLOY_TARGET_TAG || secrets.PROD_MANUAL_REDEPLOY_TARGET_TAG || '' }}
           HEAD_SHA: ${{ github.sha }}
@@ -274,13 +252,11 @@ jobs:
         # fail the workflow, which is what `ok=true` should have
         # guaranteed all along.
         #
-        # When the redeploy was triggered by workflow_dispatch with a
-        # specific tag (target_tag != "latest"), the expected SHA may
-        # not equal ${{ github.sha }} — in that case we resolve via
-        # GHCR's manifest. For workflow_run (default :latest) the
-        # workflow_run.head_sha is the SHA that just published.
+        # When the redeploy is triggered manually with a specific tag
+        # (target_tag != "latest"), the expected SHA may not equal
+        # ${{ github.sha }}.
         env:
-          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          EXPECTED_SHA: ${{ github.sha }}
           TARGET_TAG: ${{ steps.tag.outputs.target_tag }}
           # Tenant subdomain template — slugs from the response are
           # appended. Production CP issues `<slug>.moleculesai.app`;
