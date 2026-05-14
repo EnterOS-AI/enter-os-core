@@ -36,6 +36,20 @@ interface A2AResponseShape {
   error?: { message?: string };
 }
 
+// Wire shape for GET /workspaces/:id/chat-history (chat_history.go → ChatHistoryResponse).
+interface ApiChatMessage {
+  id: string;
+  role: string; // "user" | "agent" | "system"
+  content: string;
+  timestamp: string;
+  attachments?: Array<{ name: string; uri: string; mimeType?: string; size?: number }>;
+}
+
+interface ChatHistoryResponse {
+  messages: ApiChatMessage[];
+  reached_end: boolean;
+}
+
 const formatTime = (date: Date) =>
   date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
@@ -61,18 +75,14 @@ export function MobileChat({
   // that creates a new [] reference on every store update when the key is
   // absent, causing infinite re-render (React error #185).
   const storedMessages = useCanvasStore((s) => s.agentMessages[agentId]);
-  const [messages, setMessages] = useState<ChatMessage[]>(() =>
-    (storedMessages ?? []).map((m) => ({
-      id: m.id,
-      role: "agent",
-      text: m.content,
-      ts: formatStoredTimestamp(m.timestamp),
-    })),
-  );
+  // Start empty — history is loaded via useEffect below.
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [tab, setTab] = useState<SubTab>("my");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true); // history is loading on mount
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Synchronous re-entry guard. `setSending(true)` schedules a state
   // update but doesn't flush before a second tap can fire send() — a ref
@@ -80,6 +90,9 @@ export function MobileChat({
   // double-send race a stale `sending` lets through.
   const sendInFlightRef = useRef(false);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  // Guard: don't treat the initial store population as a live push.
+  // Set to false after the first render completes.
+  const initDoneRef = useRef(false);
 
   // Auto-grow the textarea: reset height to 'auto' so the scrollHeight
   // shrinks when the user deletes text, then size to scrollHeight up to
@@ -91,6 +104,75 @@ export function MobileChat({
     const next = Math.min(el.scrollHeight, 132); // ~5 lines at 14.5px/1.4
     el.style.height = `${next}px`;
   }, [draft]);
+
+  // Fetch chat history on mount; keep merging live agentMessages while the
+  // panel is open. InitDoneRef prevents the initial store snapshot from
+  // triggering the live-merge path (the store buffer is populated by
+  // ChatTab on desktop, not on mobile — this effect loads history as the
+  // mobile-native path).
+  useEffect(() => {
+    let cancelled = false;
+
+    const mapApiMessage = (m: ApiChatMessage): ChatMessage => ({
+      id: m.id,
+      role: m.role === "user" ? "user" : "agent",
+      text: m.content,
+      ts: formatStoredTimestamp(m.timestamp),
+    });
+
+    const syncLive = () => {
+      const live = useCanvasStore.getState().agentMessages[agentId] ?? [];
+      if (live.length > 0) {
+        setMessages((prev) => {
+          const existingIds = new Set(prev.map((m) => m.id));
+          const newOnes = live
+            .filter((m) => !existingIds.has(m.id))
+            .map((m) => ({
+              id: m.id,
+              role: "agent" as const,
+              text: m.content,
+              ts: formatStoredTimestamp(m.timestamp),
+            }));
+          return newOnes.length > 0 ? [...prev, ...newOnes] : prev;
+        });
+      }
+    };
+
+    const bootstrap = async (): Promise<(() => void) | undefined> => {
+      setLoading(true);
+      setHistoryError(null);
+      try {
+        const res = await api.get<ChatHistoryResponse>(
+          `/workspaces/${agentId}/chat-history?limit=50`,
+        );
+        if (cancelled) return;
+        const initial = (res.messages ?? []).map(mapApiMessage);
+        setMessages(initial);
+        // Mark init done BEFORE marking loading=false so any store push
+        // that arrives in the same tick is treated as live, not init.
+        initDoneRef.current = true;
+        setLoading(false);
+        // Subscribe to live pushes after init is complete.
+        syncLive();
+        const unsubscribe = useCanvasStore.subscribe(syncLive);
+        return unsubscribe; // returned for cleanup
+      } catch (e) {
+        if (cancelled) return;
+        setHistoryError(e instanceof Error ? e.message : "Failed to load chat history");
+        setLoading(false);
+        initDoneRef.current = true;
+        return undefined;
+      }
+    };
+
+    let maybeUnsubscribe: (() => void) | undefined;
+    bootstrap().then((fn) => { maybeUnsubscribe = fn; });
+
+    return () => {
+      cancelled = true;
+      if (maybeUnsubscribe) maybeUnsubscribe();
+    };
+  }, [agentId]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -311,7 +393,61 @@ export function MobileChat({
             Agent Comms — peer-to-peer A2A traffic surfaces in the Comms tab.
           </div>
         )}
-        {tab === "my" && messages.length === 0 && (
+        {tab === "my" && loading && (
+          <div style={{ padding: "20px 4px", textAlign: "center", color: p.text3, fontSize: 13 }}>
+            <div style={{ marginBottom: 6, opacity: 0.6, animation: "spin 1s linear infinite", display: "inline-block", fontSize: 16 }}>⟳</div>
+            <div>Loading chat history…</div>
+          </div>
+        )}
+        {tab === "my" && !loading && historyError && (
+          <div
+            role="alert"
+            style={{
+              padding: "14px 4px",
+              textAlign: "center",
+              color: p.failed,
+              fontSize: 13,
+            }}
+          >
+            <div style={{ marginBottom: 8 }}>Could not load chat history.</div>
+            <button
+              type="button"
+              onClick={() => {
+                setLoading(true);
+                setHistoryError(null);
+                api.get(`/workspaces/${agentId}/chat-history?limit=50`).then(
+                  (res: unknown) => {
+                    const r = res as ChatHistoryResponse;
+                    setMessages((r.messages ?? []).map((m) => ({
+                      id: m.id,
+                      role: m.role === "user" ? "user" : "agent",
+                      text: m.content,
+                      ts: formatStoredTimestamp(m.timestamp),
+                    })));
+                    setLoading(false);
+                    initDoneRef.current = true;
+                  },
+                ).catch((e: unknown) => {
+                  setHistoryError(e instanceof Error ? e.message : "Failed to load");
+                  setLoading(false);
+                  initDoneRef.current = true;
+                });
+              }}
+              style={{
+                padding: "6px 14px",
+                borderRadius: 14,
+                border: `0.5px solid ${p.failed}`,
+                background: "transparent",
+                color: p.failed,
+                fontSize: 12,
+                cursor: "pointer",
+              }}
+            >
+              Retry
+            </button>
+          </div>
+        )}
+        {tab === "my" && !loading && !historyError && messages.length === 0 && (
           <div style={{ padding: "20px 4px", textAlign: "center", color: p.text3, fontSize: 13 }}>
             Send a message to start chatting.
           </div>
