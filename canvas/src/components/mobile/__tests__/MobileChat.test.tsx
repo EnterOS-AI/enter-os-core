@@ -8,7 +8,7 @@
  * NOTE: No @testing-library/jest-dom — use DOM APIs.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, waitFor } from "@testing-library/react";
 import React from "react";
 
 import { MobileChat } from "../MobileChat";
@@ -33,7 +33,12 @@ const mockStoreState = {
 vi.mock("@/store/canvas", () => ({
   useCanvasStore: Object.assign(
     vi.fn((sel) => sel(mockStoreState)),
-    { getState: () => mockStoreState },
+    {
+      getState: () => ({
+        ...mockStoreState,
+        consumeAgentMessages: vi.fn(() => []),
+      }),
+    },
   ),
   summarizeWorkspaceCapabilities: vi.fn((data: Record<string, unknown>) => {
     const agentCard = data.agentCard as Record<string, unknown> | null;
@@ -60,8 +65,12 @@ const { mockApiPost } = vi.hoisted(() => ({
   mockApiPost: vi.fn().mockResolvedValue({ result: { parts: [] } }),
 }));
 
+const { mockApiGet } = vi.hoisted(() => ({
+  mockApiGet: vi.fn().mockResolvedValue({ messages: [] }),
+}));
+
 vi.mock("@/lib/api", () => ({
-  api: { post: mockApiPost },
+  api: { get: mockApiGet, post: mockApiPost },
 }));
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -148,6 +157,7 @@ function renderChat(agentId: string, dark = false) {
 
 beforeEach(() => {
   mockOnBack.mockClear();
+  mockApiGet.mockClear();
   mockStoreState.nodes = [];
   mockStoreState.agentMessages = {};
   mockApiPost.mockClear();
@@ -266,16 +276,19 @@ describe("MobileChat — empty state", () => {
     mockStoreState.nodes = [onlineNode];
   });
 
-  it('shows "Send a message to start chatting." when no messages', () => {
+  it('shows "Send a message to start chatting." when no messages', async () => {
     const { container } = renderChat(mockAgentId);
-    expect(container.textContent ?? "").toContain("Send a message to start chatting.");
+    await waitFor(() =>
+      expect(container.textContent ?? "").toContain("Send a message to start chatting."),
+    );
   });
 
-  it("shows no messages when agentMessages[agentId] is absent (undefined)", () => {
-    // Explicitly set to empty to simulate no stored messages
+  it("shows no messages when agentMessages[agentId] is absent (undefined)", async () => {
     mockStoreState.agentMessages = {};
     const { container } = renderChat(mockAgentId);
-    expect(container.textContent ?? "").toContain("Send a message to start chatting.");
+    await waitFor(() =>
+      expect(container.textContent ?? "").toContain("Send a message to start chatting."),
+    );
   });
 });
 
