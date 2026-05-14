@@ -164,12 +164,12 @@ export function DeleteCascadeConfirmDialog({
             type="button"
             onClick={onConfirm}
             disabled={!checked}
-            // Hover goes DARKER, not lighter — bg-red-500 on white text
-            // drops contrast below AA vs bg-red-700. Same trap fixed in
-            // ConfirmDialog and ApprovalBanner. focus-visible ring matches.
+            // Hover goes DARKER, not lighter — bg-red-600 on white text
+            // drops contrast below AA. Same trap fixed in ConfirmDialog.
+            // focus-visible ring matches the canvas chrome.
             className={`px-3.5 py-1.5 text-[13px] rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-sunken
               ${checked
-                ? "bg-red-600 hover:bg-red-700 text-white cursor-pointer"
+                ? "bg-red-700 hover:bg-red-600 text-white cursor-pointer"
                 : "bg-red-900/30 text-bad/40 cursor-not-allowed"
               }`}
           >
