@@ -107,16 +107,25 @@ jobs:
             echo "scripts=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # Both .github/workflows/ci.yml AND .gitea/workflows/ci.yml count
-          # as "this workflow changed" — either edit should force-run every
-          # downstream job. The Gitea port follows the same shape as the
-          # GitHub original so behavior matches when triggered on either
-          # platform.
-          DIFF=$(git diff --name-only "$BASE" HEAD 2>/dev/null || echo ".gitea/workflows/ci.yml")
-          echo "platform=$(echo "$DIFF" | grep -qE '^workspace-server/|^\.gitea/workflows/ci\.yml$|^\.github/workflows/ci\.yml$' && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          echo "canvas=$(echo "$DIFF" | grep -qE '^canvas/|^\.gitea/workflows/ci\.yml$|^\.github/workflows/ci\.yml$' && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          echo "python=$(echo "$DIFF" | grep -qE '^workspace/|^\.gitea/workflows/ci\.yml$|^\.github/workflows/ci\.yml$' && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          echo "scripts=$(echo "$DIFF" | grep -qE '^tests/e2e/|^scripts/|^infra/scripts/|^\.gitea/workflows/ci\.yml$|^\.github/workflows/ci\.yml$' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          # Workflow-only edits are covered by the workflow lint family
+          # and by this workflow's always-present required jobs. Do not fan
+          # those edits out into Go/Canvas/Python/shellcheck work; the
+          # downstream jobs still emit their required contexts via no-op
+          # steps when their surface flag is false.
+          #
+          # If the diff itself cannot be trusted, fail open by running every
+          # surface instead of silently under-testing the PR.
+          if ! DIFF=$(git diff --name-only "$BASE" HEAD 2>/dev/null); then
+            echo "platform=true" >> "$GITHUB_OUTPUT"
+            echo "canvas=true" >> "$GITHUB_OUTPUT"
+            echo "python=true" >> "$GITHUB_OUTPUT"
+            echo "scripts=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "platform=$(echo "$DIFF" | grep -qE '^workspace-server/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "canvas=$(echo "$DIFF" | grep -qE '^canvas/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "python=$(echo "$DIFF" | grep -qE '^workspace/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "scripts=$(echo "$DIFF" | grep -qE '^tests/e2e/|^scripts/|^infra/scripts/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
   # Platform (Go) — Go build/vet/test/lint + coverage gates. The always-run
   # + per-step gating shape preserves the GitHub-side required-check name
