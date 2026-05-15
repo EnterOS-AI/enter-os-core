@@ -564,14 +564,7 @@ jobs:
     #
     continue-on-error: false
     runs-on: ubuntu-latest
-    timeout-minutes: 1
-    needs:
-      - changes
-      - platform-build
-      - canvas-build
-      - shellcheck
-      - python-lint
-    if: ${{ always() }}
+    timeout-minutes: 45
     steps:
       - name: Wait for required CI contexts
         env:
