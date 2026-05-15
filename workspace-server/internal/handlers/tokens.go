@@ -67,6 +67,9 @@ func (h *TokenHandler) List(c *gin.Context) {
 		}
 		tokens = append(tokens, t)
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("ListTokens rows.Err workspace=%s: %v", workspaceID, err)
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"tokens": tokens,

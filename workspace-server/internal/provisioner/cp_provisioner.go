@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -156,6 +158,11 @@ type cpProvisionRequest struct {
 	Tier        int               `json:"tier"`
 	PlatformURL string            `json:"platform_url"`
 	Env         map[string]string `json:"env"`
+	// ConfigFiles are template + generated config files to write into the
+	// EC2 instance's /configs directory. OFFSEC-010: collected by
+	// collectCPConfigFiles which rejects symlinks and non-regular files
+	// before including them. Serialised as base64 to avoid JSON escaping.
+	ConfigFiles map[string]string `json:"config_files,omitempty"`
 }
 
 type cpProvisionResponse struct {
@@ -179,6 +186,16 @@ func (p *CPProvisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string,
 		}
 		env["ADMIN_TOKEN"] = p.adminToken
 	}
+	// Collect template files and generated configs, with OFFSEC-010 guards:
+	// - Rejects symlinks at the template root (prevents bypass via symlink traversal)
+	// - Skips symlinks during WalkDir (prevents /etc/passwd etc. inclusion)
+	// - Validates all paths are relative and non-escaping
+	// - Caps total size at 12 KiB to prevent payload bloat
+	configFiles, err := collectCPConfigFiles(cfg)
+	if err != nil {
+		return "", fmt.Errorf("cp provisioner: collect config files: %w", err)
+	}
+
 	req := cpProvisionRequest{
 		OrgID:       p.orgID,
 		WorkspaceID: cfg.WorkspaceID,
@@ -186,6 +203,7 @@ func (p *CPProvisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string,
 		Tier:        cfg.Tier,
 		PlatformURL: cfg.PlatformURL,
 		Env:         env,
+		ConfigFiles: configFiles,
 	}
 
 	body, err := json.Marshal(req)
@@ -237,6 +255,94 @@ func (p *CPProvisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string,
 	return result.InstanceID, nil
 }
 
+const cpConfigFilesMaxBytes = 12 << 10
+
+// isCPTemplateConfigFile restricts which files from a template directory are
+// eligible for transport to the control plane. Only config.yaml (the runtime
+// entrypoint config) and files under prompts/ (system prompts) are needed;
+// shipping arbitrary files (e.g. adapter.py, Dockerfile) is both unnecessary
+// and a potential data-exfiltration surface.
+func isCPTemplateConfigFile(name string) bool {
+	name = filepath.ToSlash(filepath.Clean(name))
+	return name == "config.yaml" || strings.HasPrefix(name, "prompts/")
+}
+
+func collectCPConfigFiles(cfg WorkspaceConfig) (map[string]string, error) {
+	files := make(map[string]string)
+	total := 0
+	addFile := func(name string, data []byte) error {
+		name = filepath.ToSlash(filepath.Clean(name))
+		if name == "." || strings.HasPrefix(name, "../") || strings.HasPrefix(name, "/") || strings.Contains(name, "/../") {
+			return fmt.Errorf("invalid config file path %q", name)
+		}
+		total += len(data)
+		if total > cpConfigFilesMaxBytes {
+			return fmt.Errorf("config files exceed %d bytes", cpConfigFilesMaxBytes)
+		}
+		files[name] = base64.StdEncoding.EncodeToString(data)
+		return nil
+	}
+
+	if cfg.TemplatePath != "" {
+		// Reject symlinks on the root itself — WalkDir follows symlinks,
+		// so a symlink TemplatePath that escapes the intended root directory
+		// would bypass the subsequent path-relativization checks below.
+		rootInfo, err := os.Lstat(cfg.TemplatePath)
+		if err != nil {
+			return nil, fmt.Errorf("collectCPConfigFiles: lstat template path: %w", err)
+		}
+		if rootInfo.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("collectCPConfigFiles: template path must not be a symlink")
+		}
+		err = filepath.WalkDir(cfg.TemplatePath, func(path string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			// Skip symlinks — WalkDir follows them by default, which means
+			// a symlink inside the template dir pointing to /etc/passwd
+			// would be traversed even though the resulting relative-path
+			// check would correctly reject it. Defense-in-depth: don't
+			// follow symlinks at all. (OFFSEC-010)
+			if d.Type()&os.ModeSymlink != 0 {
+				return nil
+			}
+			if d.IsDir() {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			if !info.Mode().IsRegular() {
+				return nil
+			}
+			rel, err := filepath.Rel(cfg.TemplatePath, path)
+			if err != nil {
+				return err
+			}
+			if !isCPTemplateConfigFile(rel) {
+				return nil
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			return addFile(rel, data)
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	for name, data := range cfg.ConfigFiles {
+		if err := addFile(name, data); err != nil {
+			return nil, err
+		}
+	}
+	if len(files) == 0 {
+		return nil, nil
+	}
+	return files, nil
+}
 // Stop terminates the workspace's EC2 instance via the control plane.
 //
 // Looks up the actual EC2 instance_id from the workspaces table before
