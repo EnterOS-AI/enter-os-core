@@ -8,14 +8,18 @@ import { getTenantSlug } from "./tenant";
 export const PLATFORM_URL =
   process.env.NEXT_PUBLIC_PLATFORM_URL ?? "http://localhost:8080";
 
-// 15s is long enough for slow CP queries but short enough that a
-// hung backend doesn't leave the UI spinning forever. The abort
-// propagates through AbortController so React components can observe
-// the error and render a retry affordance. Callers that know the
-// endpoint is intentionally slow (org import walks a tree of
-// workspaces with server-side pacing) can pass `timeoutMs` to
-// override.
-const DEFAULT_TIMEOUT_MS = 15_000;
+// 35s is long enough for the slowest server-side path (EIC SSH
+// tunnel for tenant EC2 file operations, bounded server-side by
+// `eicFileOpTimeout = 30 * time.Second` in
+// workspace-server/internal/handlers/template_files_eic.go) so the
+// canvas surfaces the server's real error instead of aborting first
+// with a generic timeout. Shorter values caused "Save & Restart" to
+// time out at the client before the backend returned its 5xx. The
+// abort still propagates through AbortController so React components
+// can render a retry affordance. Callers that know an endpoint is
+// intentionally slow (org import walks a tree of workspaces with
+// server-side pacing) can pass `timeoutMs` to override.
+const DEFAULT_TIMEOUT_MS = 35_000;
 
 export interface RequestOptions {
   timeoutMs?: number;
