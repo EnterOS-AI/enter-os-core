@@ -464,9 +464,9 @@ func TestNotify_PersistsToActivityLogsForReloadRecovery(t *testing.T) {
 	t.Cleanup(func() { db.DB = prevDB; mockDB.Close() })
 
 	// Workspace existence check
-	mock.ExpectQuery(`SELECT name FROM workspaces`).
+	mock.ExpectQuery(`SELECT name, talk_to_user_enabled FROM workspaces`).
 		WithArgs("ws-notify").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("DD"))
+		WillReturnRows(sqlmock.NewRows([]string{"name", "talk_to_user_enabled"}).AddRow("DD", true))
 
 	// Persistence INSERT — verify shape
 	mock.ExpectExec(`INSERT INTO activity_logs`).
@@ -511,9 +511,9 @@ func TestNotify_WithAttachments_PersistsFilePartsForReload(t *testing.T) {
 	db.DB = mockDB
 	t.Cleanup(func() { db.DB = prevDB; mockDB.Close() })
 
-	mock.ExpectQuery(`SELECT name FROM workspaces`).
+	mock.ExpectQuery(`SELECT name, talk_to_user_enabled FROM workspaces`).
 		WithArgs("ws-attach").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("DD"))
+		WillReturnRows(sqlmock.NewRows([]string{"name", "talk_to_user_enabled"}).AddRow("DD", true))
 
 	// Capture the JSONB arg so we can assert on the persisted shape
 	// AFTER the call (must include parts[].kind=file so reload
@@ -640,9 +640,9 @@ func TestNotify_DBFailure_StillBroadcastsAnd200(t *testing.T) {
 	db.DB = mockDB
 	t.Cleanup(func() { db.DB = prevDB; mockDB.Close() })
 
-	mock.ExpectQuery(`SELECT name FROM workspaces`).
+	mock.ExpectQuery(`SELECT name, talk_to_user_enabled FROM workspaces`).
 		WithArgs("ws-x").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("DD"))
+		WillReturnRows(sqlmock.NewRows([]string{"name", "talk_to_user_enabled"}).AddRow("DD", true))
 	mock.ExpectExec(`INSERT INTO activity_logs`).
 		WillReturnError(fmt.Errorf("simulated db hiccup"))
 

@@ -99,6 +99,13 @@ export interface WorkspaceNodeData extends Record<string, unknown> {
    *  @/lib/runtimeProfiles. Lets a slow runtime declare its cold-boot
    *  expectation without a canvas release. */
   provisionTimeoutMs?: number | null;
+  /** When true the workspace may POST /broadcast to send org-wide messages.
+   *  Default false. Toggled by user/admin via PATCH /workspaces/:id/abilities. */
+  broadcastEnabled?: boolean;
+  /** When false the workspace cannot deliver canvas chat messages.
+   *  send_message_to_user / POST /notify return 403 and the canvas
+   *  shows a "not enabled" state with a button to re-enable. Default true. */
+  talkToUserEnabled?: boolean;
 }
 
 export type PanelTab = "details" | "skills" | "chat" | "terminal" | "config" | "schedule" | "channels" | "files" | "memory" | "traces" | "events" | "activity" | "audit";

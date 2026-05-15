@@ -29,6 +29,7 @@ from typing import Callable
 import inbox
 
 from a2a_tools import (
+    tool_broadcast_message,
     tool_chat_history,
     tool_check_task_status,
     tool_commit_memory,
@@ -159,6 +160,11 @@ async def handle_tool_call(name: str, arguments: dict) -> str:
             arguments.get("limit", 20),
             arguments.get("before_ts", ""),
             source_workspace_id=arguments.get("source_workspace_id") or None,
+        )
+    elif name == "broadcast_message":
+        return await tool_broadcast_message(
+            arguments.get("message", ""),
+            workspace_id=arguments.get("workspace_id") or None,
         )
     return f"Unknown tool: {name}"
 

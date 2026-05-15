@@ -51,6 +51,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from a2a_tools import (
+    tool_broadcast_message,
     tool_chat_history,
     tool_check_task_status,
     tool_commit_memory,
@@ -285,6 +286,44 @@ _GET_WORKSPACE_INFO = ToolSpec(
         },
     },
     impl=tool_get_workspace_info,
+    section=A2A_SECTION,
+)
+
+_BROADCAST_MESSAGE = ToolSpec(
+    name="broadcast_message",
+    short=(
+        "Send a message to ALL agent workspaces in the org simultaneously. "
+        "Requires broadcast_enabled=true on this workspace (set by user/admin)."
+    ),
+    when_to_use=(
+        "Use for urgent, org-wide signals: critical status changes, emergency "
+        "stop instructions, coordinated task announcements. Every non-removed "
+        "workspace receives the message in its activity log (poll-mode agents "
+        "see it on their next poll; push-mode canvases get a real-time banner). "
+        "This tool returns an error if broadcast_enabled is false — a user or "
+        "admin must enable it via the workspace abilities settings first."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "message": {
+                "type": "string",
+                "description": (
+                    "The broadcast text. Keep it concise — every agent in the "
+                    "org receives this in their activity feed."
+                ),
+            },
+            "workspace_id": {
+                "type": "string",
+                "description": (
+                    "Optional. Multi-workspace mode: the registered workspace "
+                    "to broadcast from. Single-workspace agents omit this."
+                ),
+            },
+        },
+        "required": ["message"],
+    },
+    impl=tool_broadcast_message,
     section=A2A_SECTION,
 )
 
@@ -603,6 +642,7 @@ TOOLS: list[ToolSpec] = [
     _CHECK_TASK_STATUS,
     _LIST_PEERS,
     _GET_WORKSPACE_INFO,
+    _BROADCAST_MESSAGE,
     _SEND_MESSAGE_TO_USER,
     # Inbox (standalone-only; in-container returns informational error)
     _WAIT_FOR_MESSAGE,

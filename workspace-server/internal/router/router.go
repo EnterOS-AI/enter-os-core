@@ -146,6 +146,9 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		wsAdmin.GET("/workspaces", wh.List)
 		wsAdmin.POST("/workspaces", wh.Create)
 		wsAdmin.DELETE("/workspaces/:id", wh.Delete)
+		// Ability toggles — admin-only so workspace agents cannot self-modify
+		// broadcast_enabled or talk_to_user_enabled.
+		wsAdmin.PATCH("/workspaces/:id/abilities", handlers.PatchAbilities)
 		// Out-of-band bootstrap signal: CP's watcher POSTs here when it
 		// detects "RUNTIME CRASHED" in a workspace EC2 console output,
 		// so the canvas flips to failed in seconds instead of waiting
@@ -200,6 +203,12 @@ func Setup(hub *ws.Hub, broadcaster *events.Broadcaster, prov *provisioner.Provi
 		// Manual hibernate (opt-in, #711) — stops the container and sets status
 		// to 'hibernated'. The workspace auto-wakes on the next A2A message.
 		wsAuth.POST("/hibernate", wh.Hibernate)
+
+		// Broadcast — send a message to all non-removed workspaces in the org.
+		// Requires broadcast_enabled=true on the source workspace (checked
+		// inside the handler). WorkspaceAuth on wsAuth proves token ownership.
+		broadcastH := handlers.NewBroadcastHandler(broadcaster)
+		wsAuth.POST("/broadcast", broadcastH.Broadcast)
 
 		// External-workspace credential lifecycle (issue #319 follow-up to
 		// the Create flow). Both endpoints reject runtime ≠ external with

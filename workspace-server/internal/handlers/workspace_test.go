@@ -29,6 +29,7 @@ func TestWorkspaceGet_Success(t *testing.T) {
 		"parent_id", "active_tasks", "max_concurrent_tasks", "last_error_rate", "last_sample_error",
 		"uptime_seconds", "current_task", "runtime", "workspace_dir", "x", "y", "collapsed",
 		"budget_limit", "monthly_spend",
+		"broadcast_enabled", "talk_to_user_enabled",
 	}
 	mock.ExpectQuery("SELECT w.id, w.name").
 		WithArgs("cccccccc-0001-0000-0000-000000000000").
@@ -36,7 +37,7 @@ func TestWorkspaceGet_Success(t *testing.T) {
 			AddRow("cccccccc-0001-0000-0000-000000000000", "My Agent", "worker", 1, "online", []byte(`{"name":"test"}`),
 				"http://localhost:8001", nil, 2, 1, 0.05, "", 3600, "working", "langgraph",
 				"", 10.0, 20.0, false,
-				nil, 0))
+				nil, 0, false, true))
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -118,6 +119,7 @@ func TestWorkspaceGet_RemovedReturns410(t *testing.T) {
 		"parent_id", "active_tasks", "max_concurrent_tasks", "last_error_rate", "last_sample_error",
 		"uptime_seconds", "current_task", "runtime", "workspace_dir", "x", "y", "collapsed",
 		"budget_limit", "monthly_spend",
+		"broadcast_enabled", "talk_to_user_enabled",
 	}
 	mock.ExpectQuery("SELECT w.id, w.name").
 		WithArgs(id).
@@ -125,7 +127,7 @@ func TestWorkspaceGet_RemovedReturns410(t *testing.T) {
 			AddRow(id, "Old Agent", "worker", 1, string(models.StatusRemoved), []byte(`null`),
 				"", nil, 0, 1, 0.0, "", 0, "", "langgraph",
 				"", 0.0, 0.0, false,
-				nil, 0))
+				nil, 0, false, true))
 	mock.ExpectQuery(`SELECT updated_at FROM workspaces`).
 		WithArgs(id).
 		WillReturnRows(sqlmock.NewRows([]string{"updated_at"}).AddRow(removedAt))
@@ -181,6 +183,7 @@ func TestWorkspaceGet_RemovedReturns410WithNullRemovedAtOnTimestampFetchFailure(
 		"parent_id", "active_tasks", "max_concurrent_tasks", "last_error_rate", "last_sample_error",
 		"uptime_seconds", "current_task", "runtime", "workspace_dir", "x", "y", "collapsed",
 		"budget_limit", "monthly_spend",
+		"broadcast_enabled", "talk_to_user_enabled",
 	}
 	mock.ExpectQuery("SELECT w.id, w.name").
 		WithArgs(id).
@@ -188,7 +191,7 @@ func TestWorkspaceGet_RemovedReturns410WithNullRemovedAtOnTimestampFetchFailure(
 			AddRow(id, "Vanished", "worker", 1, string(models.StatusRemoved), []byte(`null`),
 				"", nil, 0, 1, 0.0, "", 0, "", "langgraph",
 				"", 0.0, 0.0, false,
-				nil, 0))
+				nil, 0, false, true))
 	// Simulate the row vanishing between the two queries.
 	mock.ExpectQuery(`SELECT updated_at FROM workspaces`).
 		WithArgs(id).
@@ -243,6 +246,7 @@ func TestWorkspaceGet_RemovedWithIncludeQueryReturns200(t *testing.T) {
 		"parent_id", "active_tasks", "max_concurrent_tasks", "last_error_rate", "last_sample_error",
 		"uptime_seconds", "current_task", "runtime", "workspace_dir", "x", "y", "collapsed",
 		"budget_limit", "monthly_spend",
+		"broadcast_enabled", "talk_to_user_enabled",
 	}
 	mock.ExpectQuery("SELECT w.id, w.name").
 		WithArgs(id).
@@ -250,7 +254,7 @@ func TestWorkspaceGet_RemovedWithIncludeQueryReturns200(t *testing.T) {
 			AddRow(id, "Audit Agent", "worker", 1, string(models.StatusRemoved), []byte(`null`),
 				"", nil, 0, 1, 0.0, "", 0, "", "langgraph",
 				"", 0.0, 0.0, false,
-				nil, 0))
+				nil, 0, false, true))
 	// last_outbound_at follow-up query (existing path)
 	mock.ExpectQuery(`SELECT last_outbound_at FROM workspaces`).
 		WithArgs(id).
@@ -676,6 +680,7 @@ func TestWorkspaceList_Empty(t *testing.T) {
 			"parent_id", "active_tasks", "last_error_rate", "last_sample_error",
 			"uptime_seconds", "current_task", "runtime", "workspace_dir", "x", "y", "collapsed",
 			"budget_limit", "monthly_spend",
+		"broadcast_enabled", "talk_to_user_enabled",
 		}))
 
 	w := httptest.NewRecorder()
@@ -1379,6 +1384,7 @@ func TestWorkspaceGet_FinancialFieldsStripped(t *testing.T) {
 		"parent_id", "active_tasks", "max_concurrent_tasks", "last_error_rate", "last_sample_error",
 		"uptime_seconds", "current_task", "runtime", "workspace_dir", "x", "y", "collapsed",
 		"budget_limit", "monthly_spend",
+		"broadcast_enabled", "talk_to_user_enabled",
 	}
 	// Populate with non-zero financial values to confirm they are stripped.
 	mock.ExpectQuery("SELECT w.id, w.name").
@@ -1387,7 +1393,7 @@ func TestWorkspaceGet_FinancialFieldsStripped(t *testing.T) {
 			AddRow("cccccccc-0010-0000-0000-000000000000", "Finance Test", "worker", 1, "online", []byte(`{}`),
 				"http://localhost:9001", nil, 0, 1, 0.0, "", 0, "", "langgraph",
 				"", 0.0, 0.0, false,
-				int64(50000), int64(12500))) // budget_limit=500 USD, spend=125 USD
+				int64(50000), int64(12500), false, true)) // budget_limit=500 USD, spend=125 USD
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -1435,6 +1441,7 @@ func TestWorkspaceGet_SensitiveFieldsStripped(t *testing.T) {
 		"parent_id", "active_tasks", "max_concurrent_tasks", "last_error_rate", "last_sample_error",
 		"uptime_seconds", "current_task", "runtime", "workspace_dir", "x", "y", "collapsed",
 		"budget_limit", "monthly_spend",
+		"broadcast_enabled", "talk_to_user_enabled",
 	}
 	mock.ExpectQuery("SELECT w.id, w.name").
 		WithArgs("cccccccc-0955-0000-0000-000000000000").
@@ -1447,7 +1454,7 @@ func TestWorkspaceGet_SensitiveFieldsStripped(t *testing.T) {
 				"langgraph",
 				"/home/user/secret-projects/client-work",
 				0.0, 0.0, false,
-				nil, 0))
+				nil, 0, false, true))
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)

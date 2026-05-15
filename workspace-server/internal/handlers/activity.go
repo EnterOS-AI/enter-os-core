@@ -482,6 +482,13 @@ func (h *ActivityHandler) Notify(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
 			return
 		}
+		if errors.Is(err, ErrTalkToUserDisabled) {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "talk_to_user_disabled",
+				"hint":  "This workspace is not allowed to send messages directly to the user. Forward your update to a parent workspace using delegate_task — they may be able to reach the user.",
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
 	}

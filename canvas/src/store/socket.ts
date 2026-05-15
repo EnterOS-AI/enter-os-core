@@ -299,6 +299,9 @@ export interface WorkspaceData {
    *  `@/lib/runtimeProfiles` when absent (the default behavior for any
    *  template that hasn't yet declared the field). */
   provision_timeout_ms?: number | null;
+  /** Workspace ability flags (migration 20260514). */
+  broadcast_enabled?: boolean;
+  talk_to_user_enabled?: boolean;
 }
 
 let socket: ReconnectingSocket | null = null;

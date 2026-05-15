@@ -962,6 +962,32 @@ function MyChatPanel({ workspaceId, data }: Props) {
           </div>
         </div>
       )}
+      {/* talk_to_user disabled banner — shown when the workspace has
+           talk_to_user_enabled=false. The agent cannot send canvas messages;
+           the user can re-enable the ability from here without opening settings. */}
+      {data.talkToUserEnabled === false && (
+        <div className="flex items-center gap-2 px-3 py-2 bg-surface-sunken border-b border-line/40 shrink-0">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true" className="shrink-0 text-ink-mid">
+            <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1Zm0 10.5a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5ZM8 4a.75.75 0 0 1 .75.75v4a.75.75 0 0 1-1.5 0v-4A.75.75 0 0 1 8 4Z" fill="currentColor"/>
+          </svg>
+          <span className="text-[10px] text-ink-mid flex-1">
+            Agent is not enabled to chat with you.
+          </span>
+          <button
+            onClick={async () => {
+              try {
+                await api.patch(`/workspaces/${workspaceId}/abilities`, { talk_to_user_enabled: true });
+                useCanvasStore.getState().updateNodeData(workspaceId, { talkToUserEnabled: true });
+              } catch {
+                // ignore — user will see no change and can retry
+              }
+            }}
+            className="px-2 py-0.5 text-[10px] font-medium bg-accent/10 hover:bg-accent/20 text-accent rounded border border-accent/30 transition-colors shrink-0"
+          >
+            Enable
+          </button>
+        </div>
+      )}
       {/* Messages */}
       <div ref={containerRef} className="flex-1 overflow-y-auto p-3 space-y-3">
         {loading && (

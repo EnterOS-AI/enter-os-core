@@ -519,6 +519,10 @@ export function buildNodesAndEdges(
         // #2054 — server-declared per-workspace provisioning timeout.
         // Falls through to the runtime profile when null/absent.
         provisionTimeoutMs: ws.provision_timeout_ms ?? null,
+        // Workspace abilities — defaults preserved for old platform versions
+        // that don't yet include these columns in the GET response.
+        broadcastEnabled: ws.broadcast_enabled ?? false,
+        talkToUserEnabled: ws.talk_to_user_enabled ?? true,
       },
     };
     if (hasParent) {
