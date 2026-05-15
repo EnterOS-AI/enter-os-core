@@ -1,153 +1,141 @@
-"""Unit tests for OpenClaw adapter env-var key selection and provider URL routing.
+"""Unit tests for resolve_provider_routing in adapter_base.
 
-The key-selection and URL-routing logic lives inline in OpenClawAdapter.setup()
-(adapter.py lines 84-92).  Since setup() carries heavy subprocess dependencies,
-these tests isolate the selection logic by reproducing the exact Python expressions
-from the adapter source — if the adapter's logic changes, these tests must be kept
-in sync.
-
-Organisation:
-  TestEnvKeyChain          — priority order of the 3 currently supported keys
-  TestProviderUrlMapping   — model-prefix → provider URL dict correctness
-  TestNegativeAndFallback  — no keys set / unsupported keys
-  xfail stubs              — AISTUDIO + QIANFAN documented as not-yet-implemented
+Covers provider routing, URL-override precedence, and the missing-key error path.
+Each adapter defines its own registry; this test file defines one inline that
+mirrors what the openclaw adapter uses.
 """
 from __future__ import annotations
 
-import os
-from unittest.mock import patch
-
 import pytest
 
+from adapter_base import ProviderRegistry, resolve_provider_routing
 
-# ---------------------------------------------------------------------------
-# Helpers — mirror the exact expressions from adapter.py lines 84-92.
-# Must be kept in sync with the adapter source.
-# ---------------------------------------------------------------------------
-
-def _select_key(env: dict) -> str:
-    """Mirror line 84: nested os.environ.get priority chain."""
-    return env.get("OPENAI_API_KEY",
-                   env.get("GROQ_API_KEY",
-                           env.get("OPENROUTER_API_KEY", "")))
-
-
-_PROVIDER_URLS: dict[str, str] = {
-    "openai":     "https://api.openai.com/v1",
-    "groq":       "https://api.groq.com/openai/v1",
-    "openrouter": "https://openrouter.ai/api/v1",
+# Mirror of the registry in openclaw's adapter.py — kept in sync manually.
+PROVIDER_REGISTRY: ProviderRegistry = {
+    "openai":     (("OPENAI_API_KEY",),                     "https://api.openai.com/v1"),
+    "groq":       (("GROQ_API_KEY",),                       "https://api.groq.com/openai/v1"),
+    "openrouter": (("OPENROUTER_API_KEY",),                 "https://openrouter.ai/api/v1"),
+    "qianfan":    (("QIANFAN_API_KEY", "AISTUDIO_API_KEY"), "https://qianfan.baidubce.com/v2"),
+    "minimax":    (("MINIMAX_API_KEY",),                    "https://api.minimaxi.com/v1"),
+    "moonshot":   (("KIMI_API_KEY",),                       "https://api.moonshot.ai/v1"),
 }
 
 
-def _select_url(model: str, runtime_config: dict | None = None) -> str:
-    """Mirror lines 86-92: model-prefix → provider URL with optional override."""
-    prefix = model.split(":")[0] if ":" in model else "openai"
-    return (runtime_config or {}).get(
-        "provider_url",
-        _PROVIDER_URLS.get(prefix, "https://api.openai.com/v1"),
-    )
+class TestProviderRouting:
+
+    def test_openai_key_and_url(self):
+        api_key, base_url, model_id = resolve_provider_routing(
+            "openai:gpt-4o", {"OPENAI_API_KEY": "sk-openai"}, registry=PROVIDER_REGISTRY
+        )
+        assert api_key == "sk-openai"
+        assert base_url == "https://api.openai.com/v1"
+        assert model_id == "gpt-4o"
+
+    def test_groq_key_and_url(self):
+        api_key, base_url, model_id = resolve_provider_routing(
+            "groq:llama-3.3-70b", {"GROQ_API_KEY": "sk-groq"}, registry=PROVIDER_REGISTRY
+        )
+        assert api_key == "sk-groq"
+        assert base_url == "https://api.groq.com/openai/v1"
+        assert model_id == "llama-3.3-70b"
+
+    def test_openrouter_key_and_url(self):
+        api_key, base_url, model_id = resolve_provider_routing(
+            "openrouter:anthropic/claude-sonnet-4-5", {"OPENROUTER_API_KEY": "sk-or"}, registry=PROVIDER_REGISTRY
+        )
+        assert api_key == "sk-or"
+        assert base_url == "https://openrouter.ai/api/v1"
+        assert model_id == "anthropic/claude-sonnet-4-5"
+
+    def test_qianfan_primary_key(self):
+        api_key, _, _ = resolve_provider_routing(
+            "qianfan:ernie-4.5", {"QIANFAN_API_KEY": "sk-qf", "AISTUDIO_API_KEY": "sk-ai"}, registry=PROVIDER_REGISTRY
+        )
+        assert api_key == "sk-qf"
+
+    def test_qianfan_fallback_to_aistudio(self):
+        api_key, base_url, _ = resolve_provider_routing(
+            "qianfan:ernie-4.5", {"AISTUDIO_API_KEY": "sk-ai"}, registry=PROVIDER_REGISTRY
+        )
+        assert api_key == "sk-ai"
+        assert base_url == "https://qianfan.baidubce.com/v2"
+
+    def test_minimax_key_and_url(self):
+        api_key, base_url, model_id = resolve_provider_routing(
+            "minimax:MiniMax-M2.7", {"MINIMAX_API_KEY": "sk-mm"}, registry=PROVIDER_REGISTRY
+        )
+        assert api_key == "sk-mm"
+        assert base_url == "https://api.minimaxi.com/v1"
+        assert model_id == "MiniMax-M2.7"
+
+    def test_moonshot_key_and_url(self):
+        api_key, base_url, model_id = resolve_provider_routing(
+            "moonshot:kimi-k2.5", {"KIMI_API_KEY": "sk-kimi"}, registry=PROVIDER_REGISTRY
+        )
+        assert api_key == "sk-kimi"
+        assert base_url == "https://api.moonshot.ai/v1"
+        assert model_id == "kimi-k2.5"
+
+    def test_bare_model_id_defaults_to_openai(self):
+        api_key, base_url, model_id = resolve_provider_routing(
+            "gpt-4o", {"OPENAI_API_KEY": "sk-openai"}, registry=PROVIDER_REGISTRY
+        )
+        assert base_url == "https://api.openai.com/v1"
+        assert model_id == "gpt-4o"
+
+    def test_unknown_prefix_falls_back_to_openai_url(self):
+        api_key, base_url, model_id = resolve_provider_routing(
+            "custom-shim:my-model", {"OPENAI_API_KEY": "sk-openai"}, registry=PROVIDER_REGISTRY
+        )
+        assert base_url == "https://api.openai.com/v1"
+        assert model_id == "my-model"
 
 
-# ---------------------------------------------------------------------------
-# 1. Env-var key priority chain (3 keys currently in adapter.py)
-# ---------------------------------------------------------------------------
+class TestUrlOverridePrecedence:
 
-class TestEnvKeyChain:
+    def test_env_base_url_beats_registry_default(self):
+        _, base_url, _ = resolve_provider_routing(
+            "minimax:MiniMax-M2.7",
+            {"MINIMAX_API_KEY": "sk-mm", "MINIMAX_BASE_URL": "https://api.minimax.chat/v1"},
+            registry=PROVIDER_REGISTRY,
+        )
+        assert base_url == "https://api.minimax.chat/v1"
 
-    def test_openai_key_selected(self):
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-openai-test"}, clear=True):
-            assert _select_key(os.environ) == "sk-openai-test"
+    def test_runtime_config_provider_url_beats_registry_default(self):
+        _, base_url, _ = resolve_provider_routing(
+            "openai:gpt-4o",
+            {"OPENAI_API_KEY": "sk-openai"},
+            registry=PROVIDER_REGISTRY,
+            runtime_config={"provider_url": "https://proxy.example.com/v1"},
+        )
+        assert base_url == "https://proxy.example.com/v1"
 
-    def test_groq_key_selected_when_openai_absent(self):
-        with patch.dict(os.environ, {"GROQ_API_KEY": "sk-groq-test"}, clear=True):
-            assert _select_key(os.environ) == "sk-groq-test"
-
-    def test_openrouter_key_selected_when_openai_and_groq_absent(self):
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-test"}, clear=True):
-            assert _select_key(os.environ) == "sk-or-test"
-
-    def test_openai_beats_groq_when_both_set(self):
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "openai", "GROQ_API_KEY": "groq"}, clear=True):
-            assert _select_key(os.environ) == "openai"
-
-    def test_groq_beats_openrouter_when_openai_absent(self):
-        with patch.dict(os.environ, {"GROQ_API_KEY": "groq", "OPENROUTER_API_KEY": "or"}, clear=True):
-            assert _select_key(os.environ) == "groq"
-
-
-# ---------------------------------------------------------------------------
-# 2. Model-prefix → provider URL routing
-# ---------------------------------------------------------------------------
-
-class TestProviderUrlMapping:
-
-    def test_openai_prefix_routes_to_openai(self):
-        assert _select_url("openai:gpt-4o") == "https://api.openai.com/v1"
-
-    def test_groq_prefix_routes_to_groq(self):
-        assert _select_url("groq:llama3-70b") == "https://api.groq.com/openai/v1"
-
-    def test_openrouter_prefix_routes_to_openrouter(self):
-        assert _select_url("openrouter:meta-llama/llama-3.3-70b") == "https://openrouter.ai/api/v1"
-
-    def test_runtime_config_override_wins_over_prefix(self):
-        url = _select_url("openai:gpt-4o", {"provider_url": "https://custom.example.com/v1"})
-        assert url == "https://custom.example.com/v1"
-
-    def test_unknown_prefix_falls_back_to_openai(self):
-        assert _select_url("some-unknown-model") == "https://api.openai.com/v1"
+    def test_env_base_url_beats_runtime_config(self):
+        _, base_url, _ = resolve_provider_routing(
+            "openai:gpt-4o",
+            {"OPENAI_API_KEY": "sk-openai", "OPENAI_BASE_URL": "https://env-wins.com/v1"},
+            registry=PROVIDER_REGISTRY,
+            runtime_config={"provider_url": "https://config-loses.com/v1"},
+        )
+        assert base_url == "https://env-wins.com/v1"
 
 
-# ---------------------------------------------------------------------------
-# 3. Negative / fallback cases
-# ---------------------------------------------------------------------------
+class TestMissingKey:
 
-class TestNegativeAndFallback:
+    def test_raises_when_no_key_set(self):
+        with pytest.raises(RuntimeError, match="No API key found for provider 'minimax'"):
+            resolve_provider_routing("minimax:MiniMax-M2.7", {}, registry=PROVIDER_REGISTRY)
 
-    def test_no_keys_returns_empty_string(self):
-        with patch.dict(os.environ, {}, clear=True):
-            assert _select_key(os.environ) == ""
-
-    def test_unsupported_aistudio_key_returns_empty(self):
-        """Documents that AISTUDIO_API_KEY is NOT yet in the adapter's key chain."""
-        with patch.dict(os.environ, {"AISTUDIO_API_KEY": "sk-ai"}, clear=True):
-            assert _select_key(os.environ) == ""
-
-    def test_unsupported_qianfan_key_returns_empty(self):
-        """Documents that QIANFAN_API_KEY is NOT yet in the adapter's key chain."""
-        with patch.dict(os.environ, {"QIANFAN_API_KEY": "sk-qf"}, clear=True):
-            assert _select_key(os.environ) == ""
+    def test_raises_lists_checked_vars_in_message(self):
+        with pytest.raises(RuntimeError, match="MINIMAX_API_KEY"):
+            resolve_provider_routing("minimax:MiniMax-M2.7", {}, registry=PROVIDER_REGISTRY)
 
 
-# ---------------------------------------------------------------------------
-# 4. AISTUDIO + QIANFAN — xfail stubs (not yet implemented in adapter.py)
-#    These fail now; they should be promoted to passing tests once the adapter
-#    adds AISTUDIO_API_KEY and QIANFAN_API_KEY to its key chain and provider_urls.
-# ---------------------------------------------------------------------------
+class TestRegistryCompleteness:
+    """Smoke-check that every provider in the registry has a non-empty entry."""
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AISTUDIO_API_KEY not yet in openclaw adapter env-var chain — "
-        "add to adapter.py line 84 and provider_urls dict with "
-        "URL https://generativelanguage.googleapis.com/v1beta/openai"
-    ),
-)
-def test_aistudio_key_routes_to_aistudio_url():
-    with patch.dict(os.environ, {"AISTUDIO_API_KEY": "sk-ai-test"}, clear=True):
-        assert _select_key(os.environ) == "sk-ai-test"
-    assert _select_url("gemini-2.5-flash") == "https://generativelanguage.googleapis.com/v1beta/openai"
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "QIANFAN_API_KEY not yet in openclaw adapter env-var chain — "
-        "add to adapter.py line 84 and provider_urls dict with "
-        "URL https://qianfan.baidubce.com/v2"
-    ),
-)
-def test_qianfan_key_routes_to_qianfan_url():
-    with patch.dict(os.environ, {"QIANFAN_API_KEY": "sk-qf-test"}, clear=True):
-        assert _select_key(os.environ) == "sk-qf-test"
-    assert _select_url("ernie-4.5") == "https://qianfan.baidubce.com/v2"
+    @pytest.mark.parametrize("prefix", PROVIDER_REGISTRY)
+    def test_all_providers_have_key_vars_and_url(self, prefix):
+        env_vars, base_url = PROVIDER_REGISTRY[prefix]
+        assert env_vars, f"{prefix}: env_vars is empty"
+        assert base_url.startswith("https://"), f"{prefix}: base_url looks wrong: {base_url}"
