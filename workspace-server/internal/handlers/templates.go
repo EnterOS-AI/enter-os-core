@@ -18,11 +18,35 @@ import (
 )
 
 // allowedRoots are the container paths that the Files API can browse.
+//
+// `/agent-home` (added 2026-05-15, internal#425 RFC) is the container's
+// own $HOME — `/root` for openclaw, `/home/agent` for claude-code/hermes
+// — browsed via `docker exec` rather than host-side `find`. The
+// dispatch is stubbed today (returns 501); full implementation lands in
+// Phase 2b of the RFC. The allowedRoots key is added now so the canvas
+// can design its root-selector UI against the final shape and the
+// stub-vs-full transition is server-side only.
 var allowedRoots = map[string]bool{
-	"/configs":   true,
-	"/workspace": true,
-	"/home":      true,
-	"/plugins":   true,
+	"/configs":    true,
+	"/workspace":  true,
+	"/home":       true,
+	"/plugins":    true,
+	"/agent-home": true,
+}
+
+// agentHomeStubMessage is the body returned by every Files API verb
+// when `?root=/agent-home` is requested before Phase 2b lands. Keep the
+// status code 501 (Not Implemented) — the route exists, the verb is
+// understood, but the handler is unimplemented. Distinguishes from
+// 400/404 so a canvas behind a less-current server can render a clean
+// "feature pending" state instead of a generic error.
+const agentHomeStubMessage = "/agent-home not implemented yet (internal#425 RFC Phase 2b — docker-exec backend pending)"
+
+// isAgentHomeStubRequest returns true when the request targets the
+// stubbed /agent-home root. Centralised so every verb in this file
+// short-circuits with the same response shape.
+func isAgentHomeStubRequest(rootPath string) bool {
+	return rootPath == "/agent-home"
 }
 
 // maxUploadFiles limits the number of files in a single import/replace.
@@ -219,7 +243,14 @@ func (h *TemplatesHandler) ListFiles(c *gin.Context) {
 	//   ?depth= — max depth to recurse (default: 1, max: 5)
 	rootPath := c.DefaultQuery("root", "/configs")
 	if !allowedRoots[rootPath] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "root must be one of: /configs, /workspace, /home, /plugins"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "root must be one of: /configs, /workspace, /home, /plugins, /agent-home"})
+		return
+	}
+	// /agent-home dispatch is stubbed pre-Phase-2b. Short-circuit before
+	// the DB lookup + EIC dance so a canvas exercising the new root key
+	// gets a clean 501 instead of a half-effort response.
+	if isAgentHomeStubRequest(rootPath) {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": agentHomeStubMessage})
 		return
 	}
 	subPath := c.DefaultQuery("path", "")
@@ -383,7 +414,11 @@ func (h *TemplatesHandler) ReadFile(c *gin.Context) {
 	ctx := c.Request.Context()
 	rootPath := c.DefaultQuery("root", "/configs")
 	if !allowedRoots[rootPath] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "root must be one of: /configs, /workspace, /home, /plugins"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "root must be one of: /configs, /workspace, /home, /plugins, /agent-home"})
+		return
+	}
+	if isAgentHomeStubRequest(rootPath) {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": agentHomeStubMessage})
 		return
 	}
 
@@ -496,7 +531,11 @@ func (h *TemplatesHandler) WriteFile(c *gin.Context) {
 	ctx := c.Request.Context()
 	rootPath := c.DefaultQuery("root", "/configs")
 	if !allowedRoots[rootPath] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "root must be one of: /configs, /workspace, /home, /plugins"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "root must be one of: /configs, /workspace, /home, /plugins, /agent-home"})
+		return
+	}
+	if isAgentHomeStubRequest(rootPath) {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": agentHomeStubMessage})
 		return
 	}
 	var wsName, instanceID, runtime string
@@ -573,7 +612,11 @@ func (h *TemplatesHandler) DeleteFile(c *gin.Context) {
 	ctx := c.Request.Context()
 	rootPath := c.DefaultQuery("root", "/configs")
 	if !allowedRoots[rootPath] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "root must be one of: /configs, /workspace, /home, /plugins"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "root must be one of: /configs, /workspace, /home, /plugins, /agent-home"})
+		return
+	}
+	if isAgentHomeStubRequest(rootPath) {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": agentHomeStubMessage})
 		return
 	}
 	var wsName, instanceID, runtime string
