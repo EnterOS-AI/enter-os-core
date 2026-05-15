@@ -287,7 +287,7 @@ func TestRenderCategoryRoutingYAML_StableOrdering(t *testing.T) {
 	if ai <= 0 || zi <= 0 || mi <= 0 {
 		t.Fatalf("could not locate all keys in output: %s", out)
 	}
-	if !(ai < mi && mi < zi) {
+	if ai >= mi || mi >= zi {
 		t.Errorf("keys not sorted: alpha=%d middle=%d zebra=%d, output:\n%s", ai, mi, zi, out)
 	}
 }
