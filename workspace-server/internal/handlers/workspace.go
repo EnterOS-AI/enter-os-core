@@ -591,7 +591,7 @@ func scanWorkspaceRow(rows interface {
 	var id, name, role, status, url, sampleError, currentTask, runtime, workspaceDir string
 	var tier, activeTasks, maxConcurrentTasks, uptimeSeconds int
 	var errorRate, x, y float64
-	var collapsed bool
+	var collapsed, broadcastEnabled, talkToUserEnabled bool
 	var parentID *string
 	var agentCard []byte
 	var budgetLimit sql.NullInt64
@@ -600,7 +600,7 @@ func scanWorkspaceRow(rows interface {
 	err := rows.Scan(&id, &name, &role, &tier, &status, &agentCard, &url,
 		&parentID, &activeTasks, &maxConcurrentTasks, &errorRate, &sampleError, &uptimeSeconds,
 		&currentTask, &runtime, &workspaceDir, &x, &y, &collapsed,
-		&budgetLimit, &monthlySpend)
+		&budgetLimit, &monthlySpend, &broadcastEnabled, &talkToUserEnabled)
 	if err != nil {
 		return nil, err
 	}
@@ -624,6 +624,8 @@ func scanWorkspaceRow(rows interface {
 		"x":                    x,
 		"y":                    y,
 		"collapsed":            collapsed,
+		"broadcast_enabled":    broadcastEnabled,
+		"talk_to_user_enabled": talkToUserEnabled,
 	}
 
 	// budget_limit: nil when no limit set, int64 otherwise
@@ -659,7 +661,8 @@ const workspaceListQuery = `
 		   COALESCE(w.current_task, ''), COALESCE(w.runtime, 'langgraph'),
 		   COALESCE(w.workspace_dir, ''),
 		   COALESCE(cl.x, 0), COALESCE(cl.y, 0), COALESCE(cl.collapsed, false),
-		   w.budget_limit, COALESCE(w.monthly_spend, 0)
+		   w.budget_limit, COALESCE(w.monthly_spend, 0),
+		   w.broadcast_enabled, w.talk_to_user_enabled
 	FROM workspaces w
 	LEFT JOIN canvas_layouts cl ON cl.workspace_id = w.id
 	WHERE w.status != 'removed'
@@ -719,7 +722,8 @@ func (h *WorkspaceHandler) Get(c *gin.Context) {
 			   COALESCE(w.current_task, ''), COALESCE(w.runtime, 'langgraph'),
 			   COALESCE(w.workspace_dir, ''),
 			   COALESCE(cl.x, 0), COALESCE(cl.y, 0), COALESCE(cl.collapsed, false),
-			   w.budget_limit, COALESCE(w.monthly_spend, 0)
+			   w.budget_limit, COALESCE(w.monthly_spend, 0),
+			   w.broadcast_enabled, w.talk_to_user_enabled
 		FROM workspaces w
 		LEFT JOIN canvas_layouts cl ON cl.workspace_id = w.id
 		WHERE w.id = $1

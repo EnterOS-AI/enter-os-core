@@ -751,9 +751,9 @@ func TestMCPHandler_SendMessageToUser_DBErrorLogsAndStill200s(t *testing.T) {
 	t.Setenv("MOLECULE_MCP_ALLOW_SEND_MESSAGE", "true")
 	h, mock := newMCPHandler(t)
 
-	mock.ExpectQuery("SELECT name FROM workspaces").
+	mock.ExpectQuery("SELECT name, talk_to_user_enabled FROM workspaces").
 		WithArgs("ws-err").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("CEO Ryan PC"))
+		WillReturnRows(sqlmock.NewRows([]string{"name", "talk_to_user_enabled"}).AddRow("CEO Ryan PC", true))
 
 	// INSERT fails — must NOT abort the tool response.
 	mock.ExpectExec(`INSERT INTO activity_logs.*'a2a_receive'.*'notify'`).
@@ -802,9 +802,9 @@ func TestMCPHandler_SendMessageToUser_ResponseBodyShape(t *testing.T) {
 
 	const userMessage = "Hi there from the agent"
 
-	mock.ExpectQuery("SELECT name FROM workspaces").
+	mock.ExpectQuery("SELECT name, talk_to_user_enabled FROM workspaces").
 		WithArgs("ws-shape").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("CEO Ryan PC"))
+		WillReturnRows(sqlmock.NewRows([]string{"name", "talk_to_user_enabled"}).AddRow("CEO Ryan PC", true))
 
 	// Capture the response_body argument and assert its exact shape.
 	mock.ExpectExec(`INSERT INTO activity_logs.*'a2a_receive'.*'notify'`).
@@ -861,9 +861,9 @@ func TestMCPHandler_SendMessageToUser_PersistsToActivityLog(t *testing.T) {
 	// before it does anything else. Returning a name lets the
 	// broadcast payload populate; the test doesn't assert on the
 	// broadcast (no observable WS in this fake), only on the DB.
-	mock.ExpectQuery("SELECT name FROM workspaces").
+	mock.ExpectQuery("SELECT name, talk_to_user_enabled FROM workspaces").
 		WithArgs("ws-msg").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("CEO Ryan PC"))
+		WillReturnRows(sqlmock.NewRows([]string{"name", "talk_to_user_enabled"}).AddRow("CEO Ryan PC", true))
 
 	// The persistence INSERT — pin the exact shape so a future
 	// refactor that switches columns or drops `method='notify'`

@@ -101,6 +101,50 @@ async def _upload_chat_files(
     return uploaded, None
 
 
+async def tool_broadcast_message(
+    message: str,
+    workspace_id: str | None = None,
+) -> str:
+    """Send a broadcast message to ALL agent workspaces in the org.
+
+    Requires the workspace to have broadcast_enabled=true (set by a user or
+    admin via PATCH /workspaces/:id/abilities). Use for urgent org-wide
+    signals — status changes, critical alerts, coordination instructions.
+    Every non-removed workspace receives the message in its activity log so
+    poll-mode agents pick it up, and push-mode canvases get a real-time
+    BROADCAST_MESSAGE WebSocket event.
+
+    Args:
+        message: The broadcast text. Keep it concise — all agents receive
+            this, so avoid lengthy prose that floods every context.
+        workspace_id: Optional. Which registered workspace to send the
+            broadcast from. Single-workspace agents omit this.
+    """
+    if not message:
+        return "Error: message is required"
+    target_workspace_id = (workspace_id or "").strip() or WORKSPACE_ID
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{PLATFORM_URL}/workspaces/{target_workspace_id}/broadcast",
+                json={"message": message},
+                headers=_auth_headers_for_heartbeat(target_workspace_id),
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                delivered = data.get("delivered", "?")
+                return f"Broadcast sent to {delivered} workspace(s)"
+            if resp.status_code == 403:
+                try:
+                    hint = resp.json().get("hint", "")
+                except Exception:
+                    hint = ""
+                return f"Error: broadcast ability not enabled.{(' ' + hint) if hint else ''}"
+            return f"Error: platform returned {resp.status_code}"
+    except Exception as e:
+        return f"Error sending broadcast: {e}"
+
+
 async def tool_send_message_to_user(
     message: str,
     attachments: list[str] | None = None,
@@ -151,6 +195,20 @@ async def tool_send_message_to_user(
                 if uploaded:
                     return f"Message sent to user with {len(uploaded)} attachment(s)"
                 return "Message sent to user"
+            if resp.status_code == 403:
+                try:
+                    body = resp.json()
+                    if body.get("error") == "talk_to_user_disabled":
+                        hint = body.get("hint", "")
+                        return (
+                            "Error: this workspace is not allowed to send messages "
+                            "directly to the user (talk_to_user is disabled). "
+                            + (hint + " " if hint else "")
+                            + "Use delegate_task to forward your update to a parent "
+                            "or supervisor workspace that can reach the user."
+                        )
+                except Exception:
+                    pass
             return f"Error: platform returned {resp.status_code}"
     except Exception as e:
         return f"Error sending message: {e}"

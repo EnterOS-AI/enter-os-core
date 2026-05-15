@@ -137,6 +137,7 @@ from a2a_tools_delegation import (  # noqa: E402  (import after the from-a2a_cli
 # identically.
 from a2a_tools_messaging import (  # noqa: E402  (import after the top-of-module imports)
     _upload_chat_files,
+    tool_broadcast_message,
     tool_chat_history,
     tool_get_workspace_info,
     tool_list_peers,
