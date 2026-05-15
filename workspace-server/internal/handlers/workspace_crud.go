@@ -149,6 +149,19 @@ func (h *WorkspaceHandler) Update(c *gin.Context) {
 		}
 	}
 
+	// Validate workspace_dir early so invalid paths are rejected before the
+	// existence check (consistent with name/role/runtime validation above).
+	if wsDir, ok := body["workspace_dir"]; ok {
+		if wsDir != nil {
+			if dirStr, isStr := wsDir.(string); isStr && dirStr != "" {
+				if err := validateWorkspaceDir(dirStr); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "invalid workspace directory"})
+					return
+				}
+			}
+		}
+	}
+
 	ctx := c.Request.Context()
 
 	// Auth is fully enforced at the router layer (WorkspaceAuth middleware, #680).
@@ -206,15 +219,8 @@ func (h *WorkspaceHandler) Update(c *gin.Context) {
 	}
 	needsRestart := false
 	if wsDir, ok := body["workspace_dir"]; ok {
-		// Allow null to clear workspace_dir
-		if wsDir != nil {
-			if dirStr, isStr := wsDir.(string); isStr && dirStr != "" {
-				if err := validateWorkspaceDir(dirStr); err != nil {
-					c.JSON(http.StatusBadRequest, gin.H{"error": "invalid workspace directory"})
-					return
-				}
-			}
-		}
+		// ValidateWorkspaceDir was already called above before the existence check;
+		// the UPDATE itself is unconditional.
 		if _, err := db.DB.ExecContext(ctx, `UPDATE workspaces SET workspace_dir = $2, updated_at = now() WHERE id = $1`, id, wsDir); err != nil {
 			log.Printf("Update workspace_dir error for %s: %v", id, err)
 		}

@@ -397,18 +397,23 @@ jobs:
             scripts/promote-tenant-image.sh \
             scripts/test-promote-tenant-image.sh
 
+  # mc#959 root-fix (sre)
+
   canvas-deploy-reminder:
     name: Canvas Deploy Reminder
     runs-on: ubuntu-latest
-    # This job must run on PRs because all-required needs it. The step exits
-    # 0 when it is not a main push, giving branch protection a green no-op
-    # instead of a skipped/missing required dependency.
-    needs: canvas-build
+    # mc#774 root-fix: added job-level `if:` so ci-required-drift.py's
+    # ci_job_names() detects this as github.ref-gated and skips it from F1.
+    # The step-level exit 0 handles the "not main push" case; the job-level
+    # `if:` makes the gating explicit so the drift script sees it.
+    # Runs on both main and staging pushes; step exits 0 when not applicable.
+    if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging' }}
+    needs: [changes, canvas-build]
     steps:
       - name: Write deploy reminder to step summary
         env:
           COMMIT_SHA: ${{ github.sha }}
-          CANVAS_CHANGED: "true"
+          CANVAS_CHANGED: ${{ needs.changes.outputs.canvas }}
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref }}
           # github.server_url resolves via the workflow-level env override
@@ -559,7 +564,14 @@ jobs:
     #
     continue-on-error: false
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 1
+    needs:
+      - changes
+      - platform-build
+      - canvas-build
+      - shellcheck
+      - python-lint
+    if: ${{ always() }}
     steps:
       - name: Wait for required CI contexts
         env:

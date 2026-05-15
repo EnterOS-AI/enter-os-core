@@ -3,8 +3,56 @@
 import logging
 import os
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
+
+# ---------------------------------------------------------------------------
+# Provider routing — type alias + resolver used by individual adapters.
+# Each adapter defines its own ProviderRegistry with the providers it accepts.
+# ---------------------------------------------------------------------------
+
+# Maps prefix → (ordered_auth_env_vars, default_base_url).
+ProviderRegistry = dict[str, tuple[tuple[str, ...], str]]
+
+
+def resolve_provider_routing(
+    model_str: str,
+    env: Mapping[str, str],
+    *,
+    registry: ProviderRegistry,
+    runtime_config: dict[str, Any] | None = None,
+) -> tuple[str, str, str]:
+    """Resolve a ``provider:model`` string to ``(api_key, base_url, bare_model_id)``.
+
+    URL precedence (highest to lowest):
+      1. ``<PREFIX>_BASE_URL`` env var
+      2. ``runtime_config["provider_url"]``
+      3. registry default for the prefix
+
+    Unknown prefixes fall back to OPENAI_API_KEY + api.openai.com.
+    Raises RuntimeError when no API key env var is set for the prefix.
+    """
+    if ":" in model_str:
+        prefix, model_id = model_str.split(":", 1)
+    else:
+        prefix, model_id = "openai", model_str
+
+    env_vars, default_url = registry.get(
+        prefix, (("OPENAI_API_KEY",), "https://api.openai.com/v1")
+    )
+    api_key = next((env[v] for v in env_vars if env.get(v)), "")
+    if not api_key:
+        raise RuntimeError(
+            f"No API key found for provider {prefix!r} "
+            f"(checked: {', '.join(env_vars)}). Set one in workspace secrets."
+        )
+
+    env_url = env.get(f"{prefix.upper()}_BASE_URL", "")
+    config_url = (runtime_config or {}).get("provider_url", "")
+    base_url = env_url or config_url or default_url
+
+    return api_key, base_url, model_id
 
 from a2a.server.agent_execution import AgentExecutor
 

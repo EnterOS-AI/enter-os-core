@@ -336,6 +336,105 @@ func TestStart_TransportFailureSurfaces(t *testing.T) {
 	}
 }
 
+// TestStart_CollectsConfigFiles — verify that collectCPConfigFiles is called and
+// its result is included in the cpProvisionRequest sent to the control plane.
+// Tests the OFFSEC-010 wiring: the function's symlink guards are only effective
+// if the call site actually invokes it.
+func TestStart_CollectsConfigFiles(t *testing.T) {
+	tmpl := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpl, "config.yaml"), []byte("name: test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// adapter.py is within the size limit but is NOT config.yaml or prompts/,
+	// so isCPTemplateConfigFile must exclude it from the transport.
+	if err := os.WriteFile(filepath.Join(tmpl, "adapter.py"), bytes.Repeat([]byte("x"), cpConfigFilesMaxBytes), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotBody cpProvisionRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"instance_id":"i-abc123","state":"pending"}`)
+	}))
+	defer srv.Close()
+
+	p := &CPProvisioner{baseURL: srv.URL, orgID: "org-1", httpClient: srv.Client()}
+	_, err := p.Start(context.Background(), WorkspaceConfig{
+		WorkspaceID:  "ws-1",
+		Runtime:     "python",
+		Tier:         1,
+		PlatformURL:  "http://tenant",
+		TemplatePath: tmpl,
+		ConfigFiles:  map[string][]byte{"generated.json": []byte(`{"key":"value"}`)},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// config.yaml from TemplatePath must be base64-encoded in ConfigFiles
+	if len(gotBody.ConfigFiles) == 0 {
+		t.Fatal("ConfigFiles is empty: collectCPConfigFiles was not called")
+	}
+
+	// Find config.yaml entry and verify it's valid base64 + correct content
+	var foundTemplate, foundGenerated bool
+	for name, encoded := range gotBody.ConfigFiles {
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			t.Errorf("ConfigFiles[%q] is not valid base64: %v", name, err)
+			continue
+		}
+		if name == "config.yaml" && string(decoded) == "name: test\n" {
+			foundTemplate = true
+		}
+		if name == "generated.json" && string(decoded) == `{"key":"value"}` {
+			foundGenerated = true
+		}
+	}
+	if !foundTemplate {
+		t.Errorf("ConfigFiles missing config.yaml from TemplatePath")
+	}
+	if !foundGenerated {
+		t.Errorf("ConfigFiles missing generated.json from ConfigFiles")
+	}
+	// adapter.py must NOT be in ConfigFiles — isCPTemplateConfigFile filters it out
+	for name := range gotBody.ConfigFiles {
+		if name == "adapter.py" {
+			t.Errorf("adapter.py should not be in ConfigFiles — isCPTemplateConfigFile must filter it out")
+		}
+	}
+}
+
+// TestStart_SymlinkTemplatePathError — a symlink TemplatePath should cause
+// collectCPConfigFiles to return an error, which Start must propagate.
+// Without this wiring, OFFSEC-010's root-symlink guard is dead code.
+func TestStart_SymlinkTemplatePathError(t *testing.T) {
+	// Create a temp file and a symlink pointing to it
+	tmp := t.TempDir()
+	realFile := filepath.Join(tmp, "real")
+	if err := os.WriteFile(realFile, []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	symlink := filepath.Join(tmp, "template_link")
+	if err := os.Symlink(realFile, symlink); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &CPProvisioner{baseURL: "http://unused", orgID: "org-1", httpClient: &http.Client{Timeout: time.Second}}
+	_, err := p.Start(context.Background(), WorkspaceConfig{
+		WorkspaceID:  "ws-1",
+		Runtime:     "python",
+		TemplatePath: symlink, // symlink root → OFFSEC-010 guard should fire
+	})
+	if err == nil {
+		t.Fatal("expected error for symlink TemplatePath, got nil")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error should mention symlink, got %q", err.Error())
+	}
+}
+
 // TestStop_SendsBothAuthHeaders — verify #118/#130 compliance on the
 // teardown path. Any call to /cp/workspaces/:id must carry both the
 // platform-wide shared secret AND the per-tenant admin token, or the

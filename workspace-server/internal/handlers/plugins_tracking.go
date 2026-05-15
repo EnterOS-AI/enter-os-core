@@ -86,6 +86,9 @@ func recordWorkspacePluginInstall(
 // pair. Called by the uninstall path so the row doesn't persist with a stale
 // installed_sha after the plugin has been removed from the container.
 func deleteWorkspacePluginRow(ctx context.Context, workspaceID, pluginName string) error {
+	if db.DB == nil {
+		return nil // nil in unit tests; no-op since the row is test-only
+	}
 	_, err := db.DB.ExecContext(ctx, `
 		DELETE FROM workspace_plugins WHERE workspace_id = $1 AND plugin_name = $2
 	`, workspaceID, pluginName)

@@ -8,10 +8,18 @@
  * NOTE: No @testing-library/jest-dom — use DOM APIs.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import React from "react";
 
 import { MobileChat } from "../MobileChat";
+
+// ─── Mock API ─────────────────────────────────────────────────────────────────
+// vi.mock without a factory auto-mocks the module. In tests, we configure
+// api.get / api.post directly (they are vi.fn() from the auto-mock).
+// Tests that need specific behaviour use mockResolvedValueOnce on the
+// auto-mocked functions.
+vi.mock("@/lib/api");
+import { api } from "@/lib/api";
 
 // ─── Mock store ───────────────────────────────────────────────────────────────
 
@@ -28,16 +36,18 @@ const mockStoreState = {
     height?: number;
   }>,
   agentMessages: {} as Record<string, Array<{ id: string; content: string; timestamp: string }>>,
+  consumeAgentMessages: () => [],
 };
 
 vi.mock("@/store/canvas", () => ({
   useCanvasStore: Object.assign(
-    vi.fn((sel) => sel(mockStoreState)),
+    vi.fn((sel?: (state: typeof mockStoreState) => unknown) => {
+      if (sel) return sel(mockStoreState);
+      return mockStoreState;
+    }),
     {
-      getState: () => ({
-        ...mockStoreState,
-        consumeAgentMessages: vi.fn(() => []),
-      }),
+      getState: () => mockStoreState,
+      subscribe: vi.fn(() => vi.fn()),
     },
   ),
   summarizeWorkspaceCapabilities: vi.fn((data: Record<string, unknown>) => {
@@ -57,20 +67,6 @@ vi.mock("@/store/canvas", () => ({
       hasActiveTask: String(data.currentTask ?? "").trim().length > 0,
     };
   }),
-}));
-
-// ─── Mock API ─────────────────────────────────────────────────────────────────
-
-const { mockApiPost } = vi.hoisted(() => ({
-  mockApiPost: vi.fn().mockResolvedValue({ result: { parts: [] } }),
-}));
-
-const { mockApiGet } = vi.hoisted(() => ({
-  mockApiGet: vi.fn().mockResolvedValue({ messages: [] }),
-}));
-
-vi.mock("@/lib/api", () => ({
-  api: { get: mockApiGet, post: mockApiPost },
 }));
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -157,10 +153,17 @@ function renderChat(agentId: string, dark = false) {
 
 beforeEach(() => {
   mockOnBack.mockClear();
-  mockApiGet.mockClear();
   mockStoreState.nodes = [];
   mockStoreState.agentMessages = {};
-  mockApiPost.mockClear();
+  // Set up spies on the real api methods. Tests override these per-call.
+  const getSpy = vi.spyOn(api, "get");
+  const postSpy = vi.spyOn(api, "post");
+  getSpy.mockResolvedValue({ messages: [], reached_end: true });
+  postSpy.mockResolvedValue({ result: { parts: [] } });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 afterEach(() => {
@@ -277,18 +280,26 @@ describe("MobileChat — empty state", () => {
   });
 
   it('shows "Send a message to start chatting." when no messages', async () => {
-    const { container } = renderChat(mockAgentId);
-    await waitFor(() =>
-      expect(container.textContent ?? "").toContain("Send a message to start chatting."),
-    );
+    // History fetch resolves immediately in tests (mockResolvedValue).
+    // act() flushes the microtask queue so the component reaches its
+    // post-load state before we assert.
+    let renderResult: ReturnType<typeof renderChat>;
+    await act(async () => {
+      renderResult = renderChat(mockAgentId);
+    });
+    const { container } = renderResult!;
+    expect(container.textContent ?? "").toContain("Send a message to start chatting.");
   });
 
   it("shows no messages when agentMessages[agentId] is absent (undefined)", async () => {
+    // Explicitly set to empty to simulate no stored messages
     mockStoreState.agentMessages = {};
-    const { container } = renderChat(mockAgentId);
-    await waitFor(() =>
-      expect(container.textContent ?? "").toContain("Send a message to start chatting."),
-    );
+    let renderResult: ReturnType<typeof renderChat>;
+    await act(async () => {
+      renderResult = renderChat(mockAgentId);
+    });
+    const { container } = renderResult!;
+    expect(container.textContent ?? "").toContain("Send a message to start chatting.");
   });
 });
 
@@ -332,5 +343,134 @@ describe("MobileChat — dark mode", () => {
   it("renders without crashing in dark mode", () => {
     const { container } = renderChat(mockAgentId, true);
     expect(container.querySelector('[aria-label="Back"]')).toBeTruthy();
+  });
+});
+
+// ─── Chat history loading ────────────────────────────────────────────────────
+
+describe("MobileChat — chat history", () => {
+  beforeEach(() => {
+    mockStoreState.nodes = [onlineNode];
+  });
+
+  it("calls GET /workspaces/:id/chat-history on mount", async () => {
+    await act(async () => {
+      renderChat(mockAgentId);
+    });
+    expect(api.get).toHaveBeenCalledWith(
+      expect.stringContaining(`/workspaces/${mockAgentId}/chat-history`),
+    );
+  });
+
+  it("shows loading state while history is fetching", () => {
+    // Do NOT await — check the pre-resolve state.
+    const { container } = renderChat(mockAgentId);
+    expect(container.textContent ?? "").toContain("Loading chat history…");
+  });
+
+  it("shows empty state after history resolves with no messages", async () => {
+    // beforeEach already sets api.get to resolve with empty — no override needed.
+    let renderResult: ReturnType<typeof renderChat>;
+    await act(async () => {
+      renderResult = renderChat(mockAgentId);
+    });
+    const { container } = renderResult!;
+    expect(container.textContent ?? "").toContain("Send a message to start chatting.");
+  });
+
+  it("renders messages from history response", async () => {
+    vi.spyOn(api, "get").mockResolvedValueOnce({
+      messages: [
+        {
+          id: "msg-1",
+          role: "user",
+          content: "Hello agent",
+          timestamp: "2026-04-25T10:00:00Z",
+        },
+        {
+          id: "msg-2",
+          role: "agent",
+          content: "Hello back",
+          timestamp: "2026-04-25T10:00:01Z",
+        },
+      ],
+      reached_end: true,
+    });
+    let renderResult: ReturnType<typeof renderChat>;
+    await act(async () => {
+      renderResult = renderChat(mockAgentId);
+    });
+    const { container } = renderResult!;
+    expect(container.textContent ?? "").toContain("Hello agent");
+    expect(container.textContent ?? "").toContain("Hello back");
+  });
+
+  it("maps user role from API correctly", async () => {
+    vi.spyOn(api, "get").mockResolvedValueOnce({
+      messages: [
+        {
+          id: "msg-u",
+          role: "user",
+          content: "user message",
+          timestamp: "2026-04-25T10:00:00Z",
+        },
+      ],
+      reached_end: true,
+    });
+    let renderResult: ReturnType<typeof renderChat>;
+    await act(async () => {
+      renderResult = renderChat(mockAgentId);
+    });
+    // User messages render right-aligned. The text content check is sufficient
+    // to confirm the message appeared.
+    const { container } = renderResult!;
+    expect(container.textContent ?? "").toContain("user message");
+  });
+
+  it("shows error state when history fetch fails", async () => {
+    vi.spyOn(api, "get").mockRejectedValue(new Error("Network error"));
+    let renderResult: ReturnType<typeof renderChat>;
+    await act(async () => {
+      renderResult = renderChat(mockAgentId);
+    });
+    const { container } = renderResult!;
+    expect(container.textContent ?? "").toContain("Could not load chat history.");
+    expect(container.textContent ?? "").toContain("Retry");
+  });
+
+  it("Retry button re-fetches history after error", async () => {
+    // Make the initial mount call fail so the Retry button appears, then
+    // make the retry call succeed so we can verify the full flow.
+    const getSpy = vi.spyOn(api, "get");
+    getSpy
+      .mockRejectedValueOnce(new Error("Network error"))
+      .mockResolvedValueOnce({ messages: [], reached_end: true });
+
+    let renderResult: ReturnType<typeof renderChat>;
+    await act(async () => {
+      renderResult = renderChat(mockAgentId);
+    });
+    const { container } = renderResult!;
+
+    // Error state should be shown with Retry button.
+    expect(container.textContent ?? "").toContain("Could not load chat history.");
+    expect(container.textContent ?? "").toContain("Retry");
+
+    // Click Retry — the button's onClick fires api.get again.
+    // The second mockResolvedValueOnce makes it succeed.
+    const retryBtn = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim() === "Retry",
+    );
+    expect(retryBtn).toBeTruthy();
+    await act(async () => {
+      retryBtn?.click();
+    });
+
+    // waitFor polls until the retry resolves and component re-renders.
+    await waitFor(() => {
+      expect(container.textContent ?? "").toContain("Send a message to start chatting.");
+    });
+    // Initial call + retry = 2.
+    expect(getSpy).toHaveBeenCalledTimes(2);
   });
 });

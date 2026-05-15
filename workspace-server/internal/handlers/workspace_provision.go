@@ -259,7 +259,7 @@ func (h *WorkspaceHandler) buildProvisionerConfig(
 	// present) wins, matching the existing WorkspaceDir precedence.
 	workspacePath := payload.WorkspaceDir
 	workspaceAccess := payload.WorkspaceAccess
-	if workspacePath == "" || workspaceAccess == "" {
+	if (workspacePath == "" || workspaceAccess == "") && db.DB != nil {
 		var dbDir, dbAccess string
 		if err := db.DB.QueryRow(
 			`SELECT COALESCE(workspace_dir, ''), COALESCE(workspace_access, 'none') FROM workspaces WHERE id = $1`,
@@ -873,6 +873,9 @@ func loadWorkspaceSecrets(ctx context.Context, workspaceID string) (map[string]s
 				envVars[k] = string(decrypted)
 			}
 		}
+		if err := globalRows.Err(); err != nil {
+			log.Printf("Provisioner: global_secrets rows.Err workspace=%s: %v", workspaceID, err)
+		}
 	}
 	wsRows, err := db.DB.QueryContext(ctx,
 		`SELECT key, encrypted_value, encryption_version FROM workspace_secrets WHERE workspace_id = $1`, workspaceID)
@@ -890,6 +893,9 @@ func loadWorkspaceSecrets(ctx context.Context, workspaceID string) (map[string]s
 				}
 				envVars[k] = string(decrypted)
 			}
+		}
+		if err := wsRows.Err(); err != nil {
+			log.Printf("Provisioner: workspace_secrets rows.Err workspace=%s: %v", workspaceID, err)
 		}
 	}
 	return envVars, ""

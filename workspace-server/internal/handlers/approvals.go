@@ -116,6 +116,9 @@ func (h *ApprovalsHandler) ListAll(c *gin.Context) {
 			"created_at":     createdAt,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("ListPendingApprovals rows.Err: %v", err)
+	}
 
 	c.JSON(http.StatusOK, approvals)
 }
@@ -154,6 +157,9 @@ func (h *ApprovalsHandler) List(c *gin.Context) {
 			"decided_at": decidedAt,
 			"created_at": createdAt,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("ListApprovals rows.Err workspace=%s: %v", workspaceID, err)
 	}
 
 	c.JSON(http.StatusOK, approvals)

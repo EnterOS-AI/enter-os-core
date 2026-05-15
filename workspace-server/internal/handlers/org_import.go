@@ -952,54 +952,6 @@ type PerWorkspaceUnsatisfied struct {
 
 // collectPerWorkspaceUnsatisfied recursively walks workspaces and returns
 // per-workspace RequiredEnv entries that are not covered by (a) a global
-// secret key or (b) a key present in the workspace's .env file(s) (org root
-// .env + per-workspace <files_dir>/.env). This complements
-// collectOrgEnv + loadConfiguredGlobalSecretKeys, which together only
-// validate global-level RequiredEnv against global_secrets. The .env
-// lookup mirrors the runtime resolution in createWorkspaceTree so that
-// the preflight result matches what the container actually receives at
-// start time.
-func collectPerWorkspaceUnsatisfied(workspaces []OrgWorkspace, orgBaseDir string, globalSecrets map[string]struct{}) []PerWorkspaceUnsatisfied {
-	var out []PerWorkspaceUnsatisfied
-	var walk func([]OrgWorkspace)
-	walk = func(wsList []OrgWorkspace) {
-		for _, ws := range wsList {
-			// Build the set of keys available to this workspace from .env.
-			// This is the same three-source stack that createWorkspaceTree
-			// injects into the container:
-			//   1. Org root .env (parseEnvFile, no filesDir)
-			//   2. Workspace <files_dir>/.env (if filesDir is set)
-			//   3. Persona bootstrap env (MOLECULE_PERSONA_ROOT/<filesDir>/env)
-			// Items 1+2 are on-disk and testable; item 3 is host-only and
-			// skipped here (persona env does NOT satisfy required_env —
-			// it carries identity tokens, not workspace LLM keys).
-			envFromFiles := loadWorkspaceEnv(orgBaseDir, ws.FilesDir)
-			// Convert map[string]string (from .env files) to map[string]struct{}
-			// to match IsSatisfied's signature.
-			envSet := make(map[string]struct{}, len(envFromFiles))
-			for k := range envFromFiles {
-				envSet[k] = struct{}{}
-			}
-			for _, req := range ws.RequiredEnv {
-				if req.IsSatisfied(globalSecrets) {
-					continue // covered by a global secret
-				}
-				if req.IsSatisfied(envSet) {
-					continue // covered by a per-workspace .env file
-				}
-				out = append(out, PerWorkspaceUnsatisfied{
-					Workspace:   ws.Name,
-					FilesDir:    ws.FilesDir,
-					Unsatisfied: req,
-				})
-			}
-			walk(ws.Children)
-		}
-	}
-	walk(workspaces)
-	return out
-}
-
 func loadConfiguredGlobalSecretKeys(ctx context.Context) (map[string]struct{}, error) {
 	rows, err := db.DB.QueryContext(ctx,
 		`SELECT key FROM global_secrets WHERE octet_length(encrypted_value) > 0 LIMIT $1`,

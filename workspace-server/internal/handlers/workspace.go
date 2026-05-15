@@ -74,7 +74,10 @@ type WorkspaceHandler struct {
 	// memory plugin). main.go sets this to plugin.DeleteNamespace
 	// when MEMORY_PLUGIN_URL is configured.
 	namespaceCleanupFn func(ctx context.Context, workspaceID string)
-	asyncWG            sync.WaitGroup
+	// asyncWG tracks goroutines launched by goAsync so tests can wait
+	// for async DB users (restart, provision) before asserting results.
+	// Matches the pattern from main commit 1c3b4ff3.
+	asyncWG sync.WaitGroup
 }
 
 func (h *WorkspaceHandler) goAsync(fn func()) {

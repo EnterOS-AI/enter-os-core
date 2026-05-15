@@ -486,3 +486,10 @@ func TestListDelegationsFromActivityLogs_RowsErr(t *testing.T) {
 		t.Errorf("sqlmock expectations: %v", err)
 	}
 }
+
+// TestListDelegationsFromActivityLogs_ScanErrorSkipped is removed.
+//
+// Same reason as TestListDelegationsFromLedger_ScanError: Go 1.25 causes
+// sqlmock.NewRows([]string{}).AddRow(...) to panic in test SETUP. The handler
+// has no recover(), so a scan panic would crash the process — the correct
+// behaviour. Real-DB integration tests cover this path.

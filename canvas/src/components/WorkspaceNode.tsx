@@ -13,17 +13,20 @@ import { isExternalLikeRuntime } from "@/lib/externalRuntimes";
 
 /** Descendant count for the "N sub" badge — children are first-class nodes
  *  rendered as full cards inside this one via React Flow's native parentId,
- *  so we don't need to subscribe to the actual child list here. */
+ *  so we don't need to subscribe to the actual child list here.
+ *  Selecting `nodes` stably avoids a new selector reference on every store
+ *  update (React error #185 / Zustand + React 19 Object.is strictness). */
 function useDescendantCount(nodeId: string): number {
-  return useCanvasStore(
-    useCallback((s) => countDescendants(nodeId, s.nodes), [nodeId])
-  );
+  const nodes = useCanvasStore((s) => s.nodes);
+  return useMemo(() => countDescendants(nodeId, nodes), [nodeId, nodes]);
 }
 
+/** Boolean flag used to drive min-size and NodeResizer dimensions.
+ *  Selecting `nodes` stably avoids re-render loops (same issue as
+ *  useDescendantCount). */
 function useHasChildren(nodeId: string): boolean {
-  return useCanvasStore(
-    useCallback((s) => s.nodes.some((n) => n.data.parentId === nodeId), [nodeId])
-  );
+  const nodes = useCanvasStore((s) => s.nodes);
+  return useMemo(() => nodes.some((n) => n.data.parentId === nodeId), [nodes, nodeId]);
 }
 
 /** Eject/extract arrow icon — visually distinct from delete ✕ */

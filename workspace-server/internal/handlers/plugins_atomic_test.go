@@ -215,6 +215,9 @@ func TestTarWalk_EmptyDirectory(t *testing.T) {
 	}
 }
 
+// TestTarWalk_NestedDirs is defined in plugins_atomic_tar_test.go to avoid
+// redeclaration. Deeply nested directory walk is tested there.
+
 // TestTarWalk_DirEntryHasTrailingSlash: directory entries must end with '/'
 // per tar format; tar.Header.Typeflag '5' (dir) must produce "name/" not "name".
 func TestTarWalk_DirEntryHasTrailingSlash(t *testing.T) {

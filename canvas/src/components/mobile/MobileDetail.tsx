@@ -2,7 +2,7 @@
 
 // 03 · Agent detail — pills + tabbed content (Overview/Activity/Config/Memory).
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { api } from "@/lib/api";
 import { useCanvasStore } from "@/store/canvas";
@@ -32,7 +32,10 @@ export function MobileDetail({
   onChat: () => void;
 }) {
   const p = usePalette(dark);
-  const node = useCanvasStore((s) => s.nodes.find((n) => n.id === agentId));
+  // Selecting `nodes` stably avoids the `.find()` anti-pattern that
+  // creates a new return value on every store update (React error #185).
+  const nodes = useCanvasStore((s) => s.nodes);
+  const node = useMemo(() => nodes.find((n) => n.id === agentId), [nodes, agentId]);
   const [tab, setTab] = useState<TabId>("overview");
 
   if (!node) {
@@ -211,6 +214,7 @@ export function MobileDetail({
         <button
           type="button"
           onClick={onChat}
+          data-testid="mobile-chat-cta"
           style={{
             width: "100%",
             height: 52,

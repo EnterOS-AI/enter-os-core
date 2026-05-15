@@ -85,6 +85,54 @@ func TestExtractIdempotencyKey_emptyOnMissing(t *testing.T) {
 	}
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// extractExpiresInSeconds
+// ──────────────────────────────────────────────────────────────────────────────
+
+func TestExtractExpiresInSeconds_valid(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"positive int", `{"params":{"expires_in_seconds":30}}`, 30},
+		{"zero", `{"params":{"expires_in_seconds":0}}`, 0},
+		{"large TTL", `{"params":{"expires_in_seconds":3600}}`, 3600},
+		{"nested message — not affected", `{"params":{"message":{"role":"user"},"expires_in_seconds":60}}`, 60},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractExpiresInSeconds([]byte(tc.body)); got != tc.want {
+				t.Errorf("extractExpiresInSeconds = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExtractExpiresInSeconds_invalidOrMissing(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"negative → 0", `{"params":{"expires_in_seconds":-5}}`, 0},
+		{"missing expires_in_seconds", `{"params":{"message":{"role":"user"}}}`, 0},
+		{"no params at all", `{"method":"message/send"}`, 0},
+		{"malformed JSON", `not json`, 0},
+		{"empty body", ``, 0},
+		{"null value", `{"params":{"expires_in_seconds":null}}`, 0},
+		{"string value", `{"params":{"expires_in_seconds":"30"}}`, 0},
+		{"float value", `{"params":{"expires_in_seconds":30.5}}`, 30},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractExpiresInSeconds([]byte(tc.body)); got != tc.want {
+				t.Errorf("extractExpiresInSeconds(%q) = %d, want %d", tc.body, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestExtractDelegationIDFromBody(t *testing.T) {
 	cases := []struct {
 		name string

@@ -158,6 +158,10 @@ type cpProvisionRequest struct {
 	Tier        int               `json:"tier"`
 	PlatformURL string            `json:"platform_url"`
 	Env         map[string]string `json:"env"`
+	// ConfigFiles are template + generated config files to write into the
+	// EC2 instance's /configs directory. OFFSEC-010: collected by
+	// collectCPConfigFiles which rejects symlinks and non-regular files
+	// before including them. Serialised as base64 to avoid JSON escaping.
 	ConfigFiles map[string]string `json:"config_files,omitempty"`
 }
 
@@ -182,6 +186,11 @@ func (p *CPProvisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string,
 		}
 		env["ADMIN_TOKEN"] = p.adminToken
 	}
+	// Collect template files and generated configs, with OFFSEC-010 guards:
+	// - Rejects symlinks at the template root (prevents bypass via symlink traversal)
+	// - Skips symlinks during WalkDir (prevents /etc/passwd etc. inclusion)
+	// - Validates all paths are relative and non-escaping
+	// - Caps total size at 12 KiB to prevent payload bloat
 	configFiles, err := collectCPConfigFiles(cfg)
 	if err != nil {
 		return "", fmt.Errorf("cp provisioner: collect config files: %w", err)
@@ -248,6 +257,11 @@ func (p *CPProvisioner) Start(ctx context.Context, cfg WorkspaceConfig) (string,
 
 const cpConfigFilesMaxBytes = 12 << 10
 
+// isCPTemplateConfigFile restricts which files from a template directory are
+// eligible for transport to the control plane. Only config.yaml (the runtime
+// entrypoint config) and files under prompts/ (system prompts) are needed;
+// shipping arbitrary files (e.g. adapter.py, Dockerfile) is both unnecessary
+// and a potential data-exfiltration surface.
 func isCPTemplateConfigFile(name string) bool {
 	name = filepath.ToSlash(filepath.Clean(name))
 	return name == "config.yaml" || strings.HasPrefix(name, "prompts/")

@@ -64,7 +64,7 @@ func (h *SecretsHandler) List(c *gin.Context) {
 		})
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("List secrets rows.Err: %v", err)
+		log.Printf("List workspace secrets iteration error: %v", err)
 	}
 
 	// 2. Global secrets not overridden at workspace level
@@ -95,7 +95,7 @@ func (h *SecretsHandler) List(c *gin.Context) {
 		})
 	}
 	if err := globalRows.Err(); err != nil {
-		log.Printf("List secrets (global) rows.Err: %v", err)
+		log.Printf("List global secrets iteration error: %v", err)
 	}
 
 	c.JSON(http.StatusOK, secrets)
@@ -181,7 +181,7 @@ func (h *SecretsHandler) Values(c *gin.Context) {
 			}
 		}
 		if err := globalRows.Err(); err != nil {
-			log.Printf("secrets.Values globalRows.Err: %v", err)
+			log.Printf("secrets.Values: global rows iteration error: %v", err)
 		}
 	}
 
@@ -205,7 +205,7 @@ func (h *SecretsHandler) Values(c *gin.Context) {
 			}
 		}
 		if err := wsRows.Err(); err != nil {
-			log.Printf("secrets.Values wsRows.Err: %v", err)
+			log.Printf("secrets.Values: workspace rows iteration error: %v", err)
 		}
 	}
 
@@ -337,7 +337,7 @@ func (h *SecretsHandler) ListGlobal(c *gin.Context) {
 		})
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("ListGlobal rows.Err: %v", err)
+		log.Printf("ListGlobal iteration error: %v", err)
 	}
 	c.JSON(http.StatusOK, secrets)
 }
@@ -416,7 +416,7 @@ func (h *SecretsHandler) restartAllAffectedByGlobalKey(key string) {
 		}
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("restartAllAffectedByGlobalKey rows.Err: %v", err)
+		log.Printf("restartAllAffectedByGlobalKey: iteration error: %v", err)
 	}
 	if len(ids) == 0 {
 		return

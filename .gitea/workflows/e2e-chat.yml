@@ -1,0 +1,273 @@
+name: E2E Chat
+
+# Comprehensive Playwright E2E for the unified chat stack (desktop
+# ChatTab + mobile MobileChat). Runs on every PR that touches canvas,
+# workspace-server, or this workflow file.
+#
+# Architecture:
+#   1. Ephemeral Postgres + Redis (docker, unique container names)
+#   2. workspace-server built from source, started with
+#      MOLECULE_ENV=development (fail-open auth)
+#   3. canvas dev server (npm run dev) on :3000
+#   4. Playwright tests create workspaces via API, point them at an
+#      in-process echo runtime, and exercise the full send/receive
+#      round-trip through the browser.
+#
+# Parallel-safety: same pattern as e2e-api.yml — per-run container names
+# and ephemeral host ports so concurrent jobs on the host-network runner
+# don't collide.
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main, staging]
+
+concurrency:
+  group: e2e-chat-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  # bp-exempt: helper job; real gate is E2E Chat / E2E Chat (pull_request)
+  detect-changes:
+    runs-on: ubuntu-latest
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true
+    outputs:
+      chat: ${{ steps.decide.outputs.chat }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - id: decide
+        run: |
+          BASE="${GITHUB_BASE_REF:-${{ github.event.before }}}"
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ -n "${{ github.event.pull_request.base.sha }}" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          fi
+          if [ -z "$BASE" ] || echo "$BASE" | grep -qE '^0+$'; then
+            echo "chat=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! git cat-file -e "$BASE" 2>/dev/null; then
+            git fetch --depth=1 origin "$BASE" 2>/dev/null || true
+          fi
+          if ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "chat=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BASE" HEAD)
+          if echo "$CHANGED" | grep -qE '^(canvas/|workspace-server/|\.gitea/workflows/e2e-chat\.yml$)'; then
+            echo "chat=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "chat=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # bp-required: pending #1142 — new E2E check; add to branch protection after 3 green runs.
+  e2e-chat:
+    needs: detect-changes
+    name: E2E Chat
+    runs-on: ubuntu-latest
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true
+    timeout-minutes: 15
+    env:
+      PG_CONTAINER: pg-e2e-chat-${{ github.run_id }}-${{ github.run_attempt }}
+      REDIS_CONTAINER: redis-e2e-chat-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: No-op pass (paths filter excluded this commit)
+        if: needs.detect-changes.outputs.chat != 'true'
+        run: |
+          echo "No canvas / workspace-server / workflow changes — E2E Chat gate satisfied without running tests."
+          echo "::notice::E2E Chat no-op pass (paths filter excluded this commit)."
+
+      - if: needs.detect-changes.outputs.chat == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - if: needs.detect-changes.outputs.chat == 'true'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 'stable'
+          cache: true
+          cache-dependency-path: workspace-server/go.sum
+
+      - if: needs.detect-changes.outputs.chat == 'true'
+        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d6f5 # v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: canvas/package-lock.json
+
+      - name: Start Postgres (docker)
+        if: needs.detect-changes.outputs.chat == 'true'
+        run: |
+          docker rm -f "$PG_CONTAINER" 2>/dev/null || true
+          docker run -d --name "$PG_CONTAINER" \
+            -e POSTGRES_USER=dev -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=molecule \
+            -p 0:5432 postgres:16 >/dev/null
+          PG_PORT=$(docker port "$PG_CONTAINER" 5432/tcp | awk -F: '/^0\.0\.0\.0:/ {print $2; exit}')
+          if [ -z "$PG_PORT" ]; then
+            PG_PORT=$(docker port "$PG_CONTAINER" 5432/tcp | head -1 | awk -F: '{print $NF}')
+          fi
+          if [ -z "$PG_PORT" ]; then
+            echo "::error::Could not resolve host port for $PG_CONTAINER"
+            exit 1
+          fi
+          echo "PG_PORT=${PG_PORT}" >> "$GITHUB_ENV"
+          echo "DATABASE_URL=postgres://dev:dev@127.0.0.1:${PG_PORT}/molecule?sslmode=disable" >> "$GITHUB_ENV"
+          echo "E2E_DATABASE_URL=postgres://dev:dev@127.0.0.1:${PG_PORT}/molecule?sslmode=disable" >> "$GITHUB_ENV"
+          for i in $(seq 1 30); do
+            if docker exec "$PG_CONTAINER" pg_isready -U dev >/dev/null 2>&1; then
+              echo "Postgres ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Postgres did not become ready in 30s"
+          exit 1
+
+      - name: Start Redis (docker)
+        if: needs.detect-changes.outputs.chat == 'true'
+        run: |
+          docker rm -f "$REDIS_CONTAINER" 2>/dev/null || true
+          docker run -d --name "$REDIS_CONTAINER" -p 0:6379 redis:7 >/dev/null
+          REDIS_PORT=$(docker port "$REDIS_CONTAINER" 6379/tcp | awk -F: '/^0\.0\.0\.0:/ {print $2; exit}')
+          if [ -z "$REDIS_PORT" ]; then
+            REDIS_PORT=$(docker port "$REDIS_CONTAINER" 6379/tcp | head -1 | awk -F: '{print $NF}')
+          fi
+          if [ -z "$REDIS_PORT" ]; then
+            echo "::error::Could not resolve host port for $REDIS_CONTAINER"
+            exit 1
+          fi
+          echo "REDIS_PORT=${REDIS_PORT}" >> "$GITHUB_ENV"
+          echo "REDIS_URL=redis://127.0.0.1:${REDIS_PORT}" >> "$GITHUB_ENV"
+          for i in $(seq 1 15); do
+            if docker exec "$REDIS_CONTAINER" redis-cli ping 2>/dev/null | grep -q PONG; then
+              echo "Redis ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Redis did not become ready in 15s"
+          exit 1
+
+      - name: Build platform
+        if: needs.detect-changes.outputs.chat == 'true'
+        working-directory: workspace-server
+        run: go build -o platform-server ./cmd/server
+
+      - name: Pick platform port
+        if: needs.detect-changes.outputs.chat == 'true'
+        run: |
+          PLATFORM_PORT=$(python3 - <<'PY'
+          import socket
+          with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+              s.bind(("127.0.0.1", 0))
+              print(s.getsockname()[1])
+          PY
+          )
+          echo "PLATFORM_PORT=${PLATFORM_PORT}" >> "$GITHUB_ENV"
+          echo "E2E_PLATFORM_URL=http://127.0.0.1:${PLATFORM_PORT}" >> "$GITHUB_ENV"
+          echo "Platform host port: ${PLATFORM_PORT}"
+
+      - name: Start platform (background)
+        if: needs.detect-changes.outputs.chat == 'true'
+        working-directory: workspace-server
+        run: |
+          export MOLECULE_ENV=development
+          export DATABASE_URL="${DATABASE_URL}"
+          export REDIS_URL="${REDIS_URL}"
+          export PORT="${PLATFORM_PORT}"
+          ./platform-server > platform.log 2>&1 &
+          echo $! > platform.pid
+
+      - name: Wait for /health
+        if: needs.detect-changes.outputs.chat == 'true'
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf "http://127.0.0.1:${PLATFORM_PORT}/health" > /dev/null; then
+              echo "Platform up after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Platform did not become healthy in 30s"
+          cat workspace-server/platform.log || true
+          exit 1
+
+      - name: Install canvas dependencies
+        if: needs.detect-changes.outputs.chat == 'true'
+        working-directory: canvas
+        run: npm ci
+
+      - name: Install Playwright browsers
+        if: needs.detect-changes.outputs.chat == 'true'
+        working-directory: canvas
+        run: npx playwright install --with-deps chromium
+
+      - name: Start canvas dev server (background)
+        if: needs.detect-changes.outputs.chat == 'true'
+        working-directory: canvas
+        run: |
+          export NEXT_PUBLIC_PLATFORM_URL="http://127.0.0.1:${PLATFORM_PORT}"
+          export NEXT_PUBLIC_WS_URL="ws://127.0.0.1:${PLATFORM_PORT}/ws"
+          npm run dev > canvas.log 2>&1 &
+          echo $! > canvas.pid
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3000 > /dev/null 2>&1; then
+              echo "Canvas up after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Canvas did not start in 30s"
+          cat canvas.log || true
+          exit 1
+
+      - name: Run Playwright E2E tests
+        if: needs.detect-changes.outputs.chat == 'true'
+        working-directory: canvas
+        run: |
+          export E2E_PLATFORM_URL="http://127.0.0.1:${PLATFORM_PORT}"
+          export E2E_DATABASE_URL="${DATABASE_URL}"
+          npx playwright test e2e/chat-desktop.spec.ts e2e/chat-mobile.spec.ts
+
+      - name: Dump platform log on failure
+        if: failure() && needs.detect-changes.outputs.chat == 'true'
+        run: cat workspace-server/platform.log || true
+
+      - name: Dump canvas log on failure
+        if: failure() && needs.detect-changes.outputs.chat == 'true'
+        run: cat canvas/canvas.log || true
+
+      - name: Upload Playwright report
+        if: failure() && needs.detect-changes.outputs.chat == 'true'
+        uses: actions/upload-artifact@v3.2.2
+        with:
+          name: playwright-report-chat
+          path: canvas/playwright-report/
+
+      - name: Stop canvas
+        if: always() && needs.detect-changes.outputs.chat == 'true'
+        run: |
+          if [ -f canvas/canvas.pid ]; then
+            kill "$(cat canvas/canvas.pid)" 2>/dev/null || true
+          fi
+
+      - name: Stop platform
+        if: always() && needs.detect-changes.outputs.chat == 'true'
+        run: |
+          if [ -f workspace-server/platform.pid ]; then
+            kill "$(cat workspace-server/platform.pid)" 2>/dev/null || true
+          fi
+
+      - name: Stop service containers
+        if: always() && needs.detect-changes.outputs.chat == 'true'
+        run: |
+          docker rm -f "$PG_CONTAINER" 2>/dev/null || true
+          docker rm -f "$REDIS_CONTAINER" 2>/dev/null || true

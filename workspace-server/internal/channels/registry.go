@@ -1,5 +1,7 @@
 package channels
 
+import "context"
+
 // Registry of all available channel adapters.
 // To add a new platform: implement ChannelAdapter, register here.
 var adapters = map[string]ChannelAdapter{
@@ -8,6 +10,27 @@ var adapters = map[string]ChannelAdapter{
 	"lark":     &LarkAdapter{},
 	"discord":  &DiscordAdapter{},
 }
+
+// SendAdapter is the subset of ChannelAdapter needed by SendOutbound.
+// Extracted so tests can inject a no-op/mock adapter without hitting real
+// platform APIs (Telegram Bot API, Slack API, etc.).
+type SendAdapter interface {
+	SendMessage(ctx context.Context, config map[string]interface{}, chatID string, text string) error
+}
+
+// getSendAdapter is the production implementation of GetSendAdapter —
+// returns the real registered adapter's SendMessage method.
+func getSendAdapter(channelType string) (SendAdapter, bool) {
+	a, ok := adapters[channelType]
+	if !ok {
+		return nil, false
+	}
+	return a, true
+}
+
+// GetSendAdapter returns the SendAdapter for a channel type.
+// Defaults to the real adapter; overridden by SetTestSendAdapter in tests.
+var GetSendAdapter = getSendAdapter
 
 // GetAdapter returns the adapter for a channel type.
 func GetAdapter(channelType string) (ChannelAdapter, bool) {

@@ -462,6 +462,8 @@ func TestExpandWithEnv_LiteralDollar(t *testing.T) {
 func TestExpandWithEnv_PartiallyPresent(t *testing.T) {
 	env := map[string]string{"SET": "yes"}
 	result := expandWithEnv("${SET} and ${NOT_SET}", env)
+	// ${SET} resolved from env; ${NOT_SET} stays literal (not whole-string ref,
+	// so os.Getenv fallback is NOT used — CWE-78 regression guard).
 	assert.Equal(t, "yes and ${NOT_SET}", result)
 }
 
@@ -626,7 +628,7 @@ func TestRenderCategoryRoutingYAML_SpecialCharactersEscaped(t *testing.T) {
 // ── Additional coverage: appendYAMLBlock ───────────────────────────
 func TestAppendYAMLBlock_BothEmpty(t *testing.T) {
 	result := appendYAMLBlock(nil, "")
-	assert.Nil(t, result)
+	assert.Nil(t, result) // append(nil, []byte("")...) returns nil in Go
 }
 
 func TestAppendYAMLBlock_ExistingHasNewline(t *testing.T) {

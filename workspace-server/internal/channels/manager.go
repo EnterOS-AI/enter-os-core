@@ -402,7 +402,7 @@ func (m *Manager) SendOutbound(ctx context.Context, channelID string, text strin
 		return err
 	}
 
-	adapter, ok := GetAdapter(ch.ChannelType)
+	adapter, ok := GetSendAdapter(ch.ChannelType)
 	if !ok {
 		return fmt.Errorf("no adapter for %s", ch.ChannelType)
 	}

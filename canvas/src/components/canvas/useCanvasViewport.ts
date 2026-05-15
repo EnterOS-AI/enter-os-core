@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useReactFlow } from "@xyflow/react";
 import { useCanvasStore } from "@/store/canvas";
 import { appendClass, removeClass } from "@/store/classNames";
@@ -153,10 +153,17 @@ export function useCanvasViewport() {
   // fit, the user has to manually pan + zoom to find what they just
   // created. Only fires when TRANSITIONING from some-provisioning to
   // zero-provisioning — not on every re-render.
-  const provisioningCount = useCanvasStore(
-    (s) => s.nodes.filter((n) => n.data.status === "provisioning").length,
+  //
+  // Selecting `nodes` stably (array reference) avoids the
+  // `.filter().length` anti-pattern which creates a new number on every
+  // store update and breaks the wasProvisioning/hasProvisioning
+  // transition detection (React error #185 / Zustand + React 19).
+  const nodes = useCanvasStore((s) => s.nodes);
+  const provisioningCount = useMemo(
+    () => nodes.filter((n) => n.data.status === "provisioning").length,
+    [nodes],
   );
-  const nodeCount = useCanvasStore((s) => s.nodes.length);
+  const nodeCount = nodes.length;
 
   useEffect(() => {
     const hasProvisioning = provisioningCount > 0;

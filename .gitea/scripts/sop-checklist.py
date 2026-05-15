@@ -118,17 +118,19 @@ _DIRECTIVE_RE = re.compile(
 def parse_directives(
     comment_body: str,
     numeric_aliases: dict[int, str],
-) -> list[tuple[str, str, str]]:
+) -> tuple[list[tuple[str, str, str]], list]:
     """Extract /sop-ack and /sop-revoke directives from a comment body.
 
-    Returns a list of (kind, canonical_slug, note) tuples where:
-      kind is "sop-ack" or "sop-revoke"
-      canonical_slug is the normalized form (or "" if unparseable)
-      note is the trailing free-text (may be "")
+    Returns (directives, na_directives) where:
+      directives is a list of (kind, canonical_slug, note) tuples
+        kind is "sop-ack" or "sop-revoke"
+        canonical_slug is the normalized form (or "" if unparseable)
+        note is the trailing free-text (may be "")
+      na_directives is reserved for future N/A handling (always [] for now)
     """
     out: list[tuple[str, str, str]] = []
     if not comment_body:
-        return out
+        return out, []
     for m in _DIRECTIVE_RE.finditer(comment_body):
         kind = m.group(1)
         raw_slug = (m.group(2) or "").strip()
@@ -159,7 +161,7 @@ def parse_directives(
         # If we collapsed multi-word slug into kebab and there's a
         # trailing-text group too, append it.
         out.append((kind, canonical, note_from_group))
-    return out
+    return out, []
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +251,8 @@ def compute_ack_state(
         user = (c.get("user") or {}).get("login", "")
         if not user:
             continue
-        for kind, slug, _note in parse_directives(body, numeric_aliases):
+        directives, _na = parse_directives(body, numeric_aliases)
+        for kind, slug, _note in directives:
             if not slug:
                 unparseable_per_user[user] = unparseable_per_user.get(user, 0) + 1
                 continue

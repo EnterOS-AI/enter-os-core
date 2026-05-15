@@ -288,6 +288,7 @@ export function AgentCard({
   return (
     <button
       type="button"
+      data-testid="workspace-card"
       aria-label={`${agent.name}, status: ${agent.status}, tier ${agent.tier}${agent.remote ? ", remote" : ""}`}
       onClick={onClick}
       style={{

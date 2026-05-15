@@ -570,7 +570,7 @@ def test_cli_main_transport_stdio_calls_main(monkeypatch):
 
     monkeypatch.setattr(a2a_mcp_server, "main", fake_main)
     monkeypatch.setattr(a2a_mcp_server.asyncio, "run", _sync_run)
-    monkeypatch.setattr(a2a_mcp_server, "_assert_stdio_is_pipe_compatible", lambda: None)
+    monkeypatch.setattr(a2a_mcp_server, "_warn_if_stdio_not_pipe", lambda: None)
 
     a2a_mcp_server.cli_main(transport="stdio", port=9100)
 
@@ -590,7 +590,7 @@ def test_cli_main_transport_http_calls_run_http_server(monkeypatch):
     monkeypatch.setattr(a2a_mcp_server.asyncio, "run", _sync_run)
     monkeypatch.setattr(a2a_mcp_server, "_run_http_server", fake_run_http)
     # stdio path must not be entered
-    monkeypatch.setattr(a2a_mcp_server, "_assert_stdio_is_pipe_compatible", lambda: None)
+    monkeypatch.setattr(a2a_mcp_server, "_warn_if_stdio_not_pipe", lambda: None)
 
     a2a_mcp_server.cli_main(transport="http", port=9102)
 
@@ -598,21 +598,21 @@ def test_cli_main_transport_http_calls_run_http_server(monkeypatch):
 
 
 def test_cli_main_http_skips_stdio_check(monkeypatch):
-    """When transport=http, _assert_stdio_is_pipe_compatible must NOT be called."""
+    """When transport=http, _warn_if_stdio_not_pipe must NOT be called."""
     import a2a_mcp_server
 
     called = []
 
-    def fake_assert():
-        called.append("assert_called")
+    def fake_warn():
+        called.append("warn_called")
 
     # Patch on the module object directly
-    monkeypatch.setattr(a2a_mcp_server, "_assert_stdio_is_pipe_compatible", fake_assert)
+    monkeypatch.setattr(a2a_mcp_server, "_warn_if_stdio_not_pipe", fake_warn)
     monkeypatch.setattr(a2a_mcp_server.asyncio, "run", lambda fn: None)
 
     a2a_mcp_server.cli_main(transport="http", port=9100)
 
-    assert "assert_called" not in called
+    assert "warn_called" not in called
 
 
 def test_cli_main_default_transport_is_stdio(monkeypatch):
@@ -626,7 +626,7 @@ def test_cli_main_default_transport_is_stdio(monkeypatch):
 
     monkeypatch.setattr(a2a_mcp_server, "main", fake_main)
     monkeypatch.setattr(a2a_mcp_server.asyncio, "run", _sync_run)
-    monkeypatch.setattr(a2a_mcp_server, "_assert_stdio_is_pipe_compatible", lambda: None)
+    monkeypatch.setattr(a2a_mcp_server, "_warn_if_stdio_not_pipe", lambda: None)
 
     a2a_mcp_server.cli_main()  # No args — defaults to stdio
 
@@ -642,7 +642,7 @@ def test_cli_main_main_raises_propagates(monkeypatch):
 
     monkeypatch.setattr(a2a_mcp_server, "main", fake_main)
     monkeypatch.setattr(a2a_mcp_server.asyncio, "run", _sync_run)
-    monkeypatch.setattr(a2a_mcp_server, "_assert_stdio_is_pipe_compatible", lambda: None)
+    monkeypatch.setattr(a2a_mcp_server, "_warn_if_stdio_not_pipe", lambda: None)
 
     with pytest.raises(RuntimeError, match="boom"):
         a2a_mcp_server.cli_main(transport="stdio")

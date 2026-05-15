@@ -344,7 +344,7 @@ function ProviderPickerModal({
   // wrapper's bounds instead of the viewport.
   if (typeof document === "undefined") return null;
 
-  const allSaved = entries.length > 0 && entries.every((e) => e.saved);
+  const allSaved = entries.every((e) => e.saved);
   const anySaving = entries.some((e) => e.saving);
   const runtimeLabel = runtime
     .replace(/[-_]/g, " ")
@@ -616,7 +616,7 @@ function AllKeysModal({
   if (!open) return null;
   if (typeof document === "undefined") return null;
 
-  const allSaved = entries.length > 0 && entries.every((e) => e.saved);
+  const allSaved = entries.every((e) => e.saved);
   const anySaving = entries.some((e) => e.saving);
   const runtimeLabel = runtime
     .replace(/[-_]/g, " ")

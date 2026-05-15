@@ -5,21 +5,21 @@
 // that the desktop ChatTab uses, but with a slimmer surface: no
 // attachments, no A2A topology overlay, no conversation tracing.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
-import { api } from "@/lib/api";
 import { useCanvasStore } from "@/store/canvas";
+import { type ChatAttachment, type ChatMessage, createMessage } from "@/components/tabs/chat/types";
+import {
+  useChatHistory,
+  useChatSend,
+  useChatSocket,
+} from "@/components/tabs/chat/hooks";
 
 import { toMobileAgent } from "./components";
 import { MOBILE_FONT_MONO, MOBILE_FONT_SANS, usePalette } from "./palette";
 import { Icons, StatusDot, TierChip } from "./primitives";
-
-interface ChatMessage {
-  id: string;
-  role: "user" | "agent" | "system";
-  text: string;
-  ts: string;
-}
 
 const formatStoredTimestamp = (iso: string): string => {
   const d = new Date(iso);
@@ -29,15 +29,170 @@ const formatStoredTimestamp = (iso: string): string => {
 
 type SubTab = "my" | "a2a";
 
-interface A2AResponseShape {
-  result?: {
-    parts?: Array<{ kind?: string; text?: string }>;
-  };
-  error?: { message?: string };
-}
+function MarkdownBubble({
+  children,
+  dark,
+  accent,
+}: {
+  children: string;
+  dark: boolean;
+  accent: string;
+}) {
+  const codeBg = dark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)";
+  const codeBlockBg = dark ? "#1a1a1a" : "#f5f5f0";
+  const linkColor = accent;
+  const quoteBorder = dark ? "rgba(255,250,240,0.15)" : "rgba(40,30,20,0.15)";
 
-const formatTime = (date: Date) =>
-  date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        p: ({ children }) => (
+          <div style={{ margin: "2px 0", lineHeight: "inherit" }}>{children}</div>
+        ),
+        a: ({ href, children }) => (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: linkColor, textDecoration: "underline" }}
+          >
+            {children}
+          </a>
+        ),
+        pre: ({ children }) => (
+          <pre
+            style={{
+              background: codeBlockBg,
+              padding: "8px 10px",
+              borderRadius: 8,
+              overflow: "auto",
+              fontSize: 12,
+              lineHeight: 1.5,
+              fontFamily: MOBILE_FONT_MONO,
+              margin: "4px 0",
+            }}
+          >
+            {children}
+          </pre>
+        ),
+        code: ({ children, className }) => {
+          const isBlock = className != null && String(className).length > 0;
+          if (isBlock) {
+            return (
+              <code style={{ fontFamily: MOBILE_FONT_MONO, fontSize: 12 }}>
+                {children}
+              </code>
+            );
+          }
+          return (
+            <code
+              style={{
+                background: codeBg,
+                padding: "1px 4px",
+                borderRadius: 4,
+                fontSize: 13,
+                fontFamily: MOBILE_FONT_MONO,
+              }}
+            >
+              {children}
+            </code>
+          );
+        },
+        ul: ({ children }) => (
+          <ul style={{ margin: "4px 0", paddingLeft: 18, listStyle: "disc" }}>
+            {children}
+          </ul>
+        ),
+        ol: ({ children }) => (
+          <ol style={{ margin: "4px 0", paddingLeft: 18, listStyle: "decimal" }}>
+            {children}
+          </ol>
+        ),
+        li: ({ children }) => <li style={{ margin: "2px 0" }}>{children}</li>,
+        strong: ({ children }) => (
+          <strong style={{ fontWeight: 600 }}>{children}</strong>
+        ),
+        em: ({ children }) => <em style={{ fontStyle: "italic" }}>{children}</em>,
+        h1: ({ children }) => (
+          <div style={{ fontSize: 16, fontWeight: 700, margin: "4px 0" }}>{children}</div>
+        ),
+        h2: ({ children }) => (
+          <div style={{ fontSize: 15, fontWeight: 700, margin: "4px 0" }}>{children}</div>
+        ),
+        h3: ({ children }) => (
+          <div style={{ fontSize: 14, fontWeight: 700, margin: "4px 0" }}>{children}</div>
+        ),
+        h4: ({ children }) => (
+          <div style={{ fontSize: 14, fontWeight: 600, margin: "4px 0" }}>{children}</div>
+        ),
+        h5: ({ children }) => (
+          <div style={{ fontSize: 13, fontWeight: 600, margin: "4px 0" }}>{children}</div>
+        ),
+        h6: ({ children }) => (
+          <div style={{ fontSize: 13, fontWeight: 600, margin: "4px 0" }}>{children}</div>
+        ),
+        blockquote: ({ children }) => (
+          <blockquote
+            style={{
+              borderLeft: `2px solid ${quoteBorder}`,
+              margin: "4px 0",
+              paddingLeft: 8,
+              opacity: 0.85,
+            }}
+          >
+            {children}
+          </blockquote>
+        ),
+        hr: () => (
+          <hr
+            style={{
+              border: "none",
+              borderTop: `0.5px solid ${quoteBorder}`,
+              margin: "6px 0",
+            }}
+          />
+        ),
+        table: ({ children }) => (
+          <table
+            style={{
+              borderCollapse: "collapse",
+              fontSize: 13,
+              margin: "4px 0",
+              width: "100%",
+            }}
+          >
+            {children}
+          </table>
+        ),
+        thead: ({ children }) => <thead style={{ fontWeight: 600 }}>{children}</thead>,
+        th: ({ children }) => (
+          <th
+            style={{
+              border: `0.5px solid ${quoteBorder}`,
+              padding: "4px 6px",
+              textAlign: "left",
+            }}
+          >
+            {children}
+          </th>
+        ),
+        td: ({ children }) => (
+          <td
+            style={{
+              border: `0.5px solid ${quoteBorder}`,
+              padding: "4px 6px",
+            }}
+          >
+            {children}
+          </td>
+        ),
+      }}
+    >
+      {children}
+    </ReactMarkdown>
+  );
+}
 
 export function MobileChat({
   agentId,
@@ -49,21 +204,40 @@ export function MobileChat({
   onBack: () => void;
 }) {
   const p = usePalette(dark);
-  const node = useCanvasStore((s) => s.nodes.find((n) => n.id === agentId));
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const nodes = useCanvasStore((s) => s.nodes);
+  const node = useMemo(() => nodes.find((n) => n.id === agentId), [nodes, agentId]);
   const [draft, setDraft] = useState("");
   const [tab, setTab] = useState<SubTab>("my");
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [historyLoading, setHistoryLoading] = useState(true);
-  const [historyError, setHistoryError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  // Synchronous re-entry guard. `setSending(true)` schedules a state
-  // update but doesn't flush before a second tap can fire send() — a ref
-  // mirrors the desktop ChatTab pattern (sendInFlightRef) and closes the
-  // double-send race a stale `sending` lets through.
-  const sendInFlightRef = useRef(false);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+
+  const {
+    messages,
+    loading: historyLoading,
+    loadError: historyError,
+    loadInitial,
+    appendMessageDeduped,
+  } = useChatHistory(agentId);
+
+  const {
+    sending,
+    uploading,
+    sendMessage,
+    error: sendError,
+    clearError,
+    releaseSendGuards,
+  } = useChatSend(agentId, {
+    getHistoryMessages: () => messages,
+    onUserMessage: appendMessageDeduped,
+    onAgentMessage: appendMessageDeduped,
+  });
+
+  useChatSocket(agentId, {
+    onAgentMessage: appendMessageDeduped,
+    onSendComplete: releaseSendGuards,
+  });
 
   // Auto-grow the textarea: reset height to 'auto' so the scrollHeight
   // shrinks when the user deletes text, then size to scrollHeight up to
@@ -82,73 +256,19 @@ export function MobileChat({
     }
   }, [messages]);
 
-  // Load chat history on mount / agent switch.
-  const loadHistory = useCallback(async () => {
-    setHistoryLoading(true);
-    setHistoryError(null);
-    try {
-      const resp = await api.get<{
-        messages: Array<{
-          id: string;
-          role: string;
-          content: string;
-          timestamp: string;
-        }>;
-      }>(`/workspaces/${agentId}/chat-history?limit=50`);
-      const loaded = (resp.messages ?? []).map((m) => ({
-        id: m.id,
-        role: m.role as "user" | "agent" | "system",
-        text: m.content,
-        ts: formatStoredTimestamp(m.timestamp),
-      }));
-      setMessages(loaded);
-    } catch (e) {
-      setHistoryError(e instanceof Error ? e.message : "Failed to load history");
-    } finally {
-      setHistoryLoading(false);
-    }
-  }, [agentId]);
-
+  // Consume any agent messages that arrived while history was loading.
+  const initialConsumeDoneRef = useRef(false);
   useEffect(() => {
-    let cancelled = false;
-    loadHistory().then(() => {
-      if (cancelled) return;
-      // Consume any agent messages that arrived while history was loading.
-      const consume = useCanvasStore.getState().consumeAgentMessages;
-      const msgs = consume(agentId);
-      if (msgs.length > 0) {
-        setMessages((prev) => [
-          ...prev,
-          ...msgs.map((m) => ({
-            id: m.id,
-            role: "agent" as const,
-            text: m.content,
-            ts: formatStoredTimestamp(m.timestamp),
-          })),
-        ]);
-      }
-    });
-    return () => { cancelled = true; };
-  }, [agentId, loadHistory]);
-
-  // Consume live agent pushes while the panel is mounted.
-  const pendingAgentMsgs = useCanvasStore((s) => s.agentMessages[agentId]);
-  useEffect(() => {
-    if (!pendingAgentMsgs || pendingAgentMsgs.length === 0) return;
+    if (historyLoading || initialConsumeDoneRef.current) return;
+    initialConsumeDoneRef.current = true;
     const consume = useCanvasStore.getState().consumeAgentMessages;
     const msgs = consume(agentId);
-    if (msgs.length > 0) {
-      setMessages((prev) => [
-        ...prev,
-        ...msgs.map((m) => ({
-          id: m.id,
-          role: "agent" as const,
-          text: m.content,
-          ts: formatStoredTimestamp(m.timestamp),
-        })),
-      ]);
+    for (const m of msgs) {
+      appendMessageDeduped(
+        createMessage("agent", m.content, m.attachments),
+      );
     }
-  }, [pendingAgentMsgs, agentId]);
+  }, [historyLoading, agentId, appendMessageDeduped]);
 
   if (!node) {
     return (
@@ -171,58 +291,32 @@ export function MobileChat({
   const a = toMobileAgent(node);
   const reachable = a.status === "online" || a.status === "degraded";
 
+  const onFilesPicked = (fileList: FileList | null) => {
+    if (!fileList) return;
+    const picked = Array.from(fileList);
+    setPendingFiles((prev) => {
+      const keyed = new Set(prev.map((f) => `${f.name}:${f.size}`));
+      return [...prev, ...picked.filter((f) => !keyed.has(`${f.name}:${f.size}`))];
+    });
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const removePendingFile = (index: number) =>
+    setPendingFiles((prev) => prev.filter((_, i) => i !== index));
+
   const send = async () => {
     const text = draft.trim();
-    if (!text || sending || !reachable) return;
-    if (sendInFlightRef.current) return;
-    sendInFlightRef.current = true;
+    if ((!text && pendingFiles.length === 0) || sending || !reachable) return;
+    clearError();
     setDraft("");
-    setError(null);
-    setSending(true);
-    const myMsg: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: "user",
-      text,
-      ts: formatTime(new Date()),
-    };
-    setMessages((m) => [...m, myMsg]);
-
-    try {
-      const res = await api.post<A2AResponseShape>(`/workspaces/${agentId}/a2a`, {
-        method: "message/send",
-        params: {
-          message: {
-            role: "user",
-            messageId: crypto.randomUUID(),
-            parts: [{ kind: "text", text }],
-          },
-        },
-      });
-      const reply =
-        res.result?.parts?.find((part) => part.kind === "text")?.text ?? "";
-      if (reply) {
-        setMessages((m) => [
-          ...m,
-          {
-            id: crypto.randomUUID(),
-            role: "agent",
-            text: reply,
-            ts: formatTime(new Date()),
-          },
-        ]);
-      } else if (res.error?.message) {
-        setError(res.error.message);
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to send");
-    } finally {
-      setSending(false);
-      sendInFlightRef.current = false;
-    }
+    const files = pendingFiles;
+    setPendingFiles([]);
+    await sendMessage(text, files);
   };
 
   return (
     <div
+      data-testid="chat-panel"
       style={{
         height: "100%",
         display: "flex",
@@ -369,8 +463,33 @@ export function MobileChat({
           </div>
         )}
         {tab === "my" && !historyLoading && historyError && messages.length === 0 && (
-          <div style={{ padding: "20px 4px", textAlign: "center", color: p.text3, fontSize: 13 }}>
-            {historyError}
+          <div
+            role="alert"
+            style={{
+              padding: "14px 4px",
+              textAlign: "center",
+              color: p.failed,
+              fontSize: 13,
+            }}
+          >
+            <div style={{ marginBottom: 8 }}>Could not load chat history.</div>
+            <button
+              type="button"
+              onClick={() => {
+                loadInitial();
+              }}
+              style={{
+                padding: "6px 14px",
+                borderRadius: 14,
+                border: `0.5px solid ${p.failed}`,
+                background: "transparent",
+                color: p.failed,
+                fontSize: 12,
+                cursor: "pointer",
+              }}
+            >
+              Retry
+            </button>
           </div>
         )}
         {tab === "my" && !historyLoading && !historyError && messages.length === 0 && (
@@ -402,7 +521,9 @@ export function MobileChat({
                     overflowWrap: "anywhere",
                   }}
                 >
-                  {m.text}
+                  <MarkdownBubble dark={dark} accent={p.accent}>
+                    {m.content}
+                  </MarkdownBubble>
                   <div
                     style={{
                       fontSize: 10,
@@ -411,13 +532,13 @@ export function MobileChat({
                       fontFamily: MOBILE_FONT_MONO,
                     }}
                   >
-                    {m.ts}
+                    {formatStoredTimestamp(m.timestamp)}
                   </div>
                 </div>
               </div>
             );
           })}
-        {error && (
+        {sendError && (
           <div
             role="alert"
             style={{
@@ -429,7 +550,7 @@ export function MobileChat({
               fontSize: 12,
             }}
           >
-            {error}
+            {sendError}
           </div>
         )}
       </div>
@@ -460,6 +581,60 @@ export function MobileChat({
           backdropFilter: "blur(14px)",
         }}
       >
+        {pendingFiles.length > 0 && (
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 6,
+              marginBottom: 8,
+              paddingLeft: 2,
+            }}
+          >
+            {pendingFiles.map((f, i) => (
+              <div
+                key={`${f.name}:${f.size}`}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "3px 8px",
+                  borderRadius: 10,
+                  background: dark ? "#2a2823" : "#ece9e0",
+                  fontSize: 12,
+                  color: p.text2,
+                  maxWidth: "100%",
+                }}
+              >
+                <span
+                  style={{
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {f.name}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => removePendingFile(i)}
+                  aria-label={`Remove ${f.name}`}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    color: p.text3,
+                    cursor: "pointer",
+                    fontSize: 12,
+                    padding: 0,
+                    lineHeight: 1,
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <div
           style={{
             display: "flex",
@@ -471,21 +646,32 @@ export function MobileChat({
             padding: "6px 6px 6px 12px",
           }}
         >
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            style={{ display: "none" }}
+            onChange={(e) => onFilesPicked(e.target.files)}
+            aria-hidden="true"
+          />
           <button
             type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={!reachable || sending || uploading}
             aria-label="Attach"
             style={{
               width: 32,
               height: 32,
               borderRadius: 999,
               border: "none",
-              cursor: "pointer",
+              cursor: reachable && !sending && !uploading ? "pointer" : "not-allowed",
               background: "transparent",
               color: p.text3,
               flexShrink: 0,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
+              opacity: !reachable || sending || uploading ? 0.4 : 1,
             }}
           >
             {Icons.attach({ size: 16 })}
@@ -531,28 +717,32 @@ export function MobileChat({
           <button
             type="button"
             onClick={send}
-            disabled={!draft.trim() || !reachable || sending}
+            disabled={(!draft.trim() && pendingFiles.length === 0) || !reachable || sending || uploading}
             aria-label="Send"
             style={{
               width: 36,
               height: 36,
               borderRadius: 999,
               border: "none",
-              cursor: draft.trim() && !sending ? "pointer" : "not-allowed",
+              cursor: (draft.trim() || pendingFiles.length > 0) && !sending && !uploading ? "pointer" : "not-allowed",
               flexShrink: 0,
               background:
-                draft.trim() && reachable && !sending
+                (draft.trim() || pendingFiles.length > 0) && reachable && !sending && !uploading
                   ? p.accent
                   : dark
                     ? "#2a2823"
                     : "#ece9e0",
-              color: draft.trim() && reachable && !sending ? "#fff" : p.text3,
+              color: (draft.trim() || pendingFiles.length > 0) && reachable && !sending && !uploading ? "#fff" : p.text3,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
             }}
           >
-            {Icons.send({ size: 16 })}
+            {uploading ? (
+              <span style={{ fontSize: 10, fontWeight: 600 }}>↑</span>
+            ) : (
+              Icons.send({ size: 16 })
+            )}
           </button>
         </div>
       </div>

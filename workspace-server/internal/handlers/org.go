@@ -271,6 +271,62 @@ func (e EnvRequirement) IsSatisfied(configured map[string]struct{}) bool {
 	return false
 }
 
+// perWorkspaceUnsatisfied records a single unsatisfied RequiredEnv for a
+// specific workspace during org import preflight.
+type perWorkspaceUnsatisfied struct {
+	Workspace   string
+	FilesDir    string
+	Unsatisfied EnvRequirement
+}
+
+// collectPerWorkspaceUnsatisfied walks the workspace tree and returns every
+// RequiredEnv that is neither in `configured` (global secrets) nor resolvable
+// from the org root or workspace-level .env file. An empty orgBaseDir skips
+// the .env walk so all requirements appear unsatisfied (used by tests to
+// isolate the global-only path).
+func collectPerWorkspaceUnsatisfied(
+	workspaces []OrgWorkspace,
+	orgBaseDir string,
+	configured map[string]struct{},
+) []perWorkspaceUnsatisfied {
+	var result []perWorkspaceUnsatisfied
+	for _, ws := range workspaces {
+		result = append(result, checkWorkspaceRequiredEnv(ws, orgBaseDir, configured)...)
+	}
+	return result
+}
+
+func checkWorkspaceRequiredEnv(
+	ws OrgWorkspace,
+	orgBaseDir string,
+	configured map[string]struct{},
+) []perWorkspaceUnsatisfied {
+	var result []perWorkspaceUnsatisfied
+	// Merge in .env vars from the org root and the workspace-specific dir.
+	// Workspace-level vars override org-root vars, just as loadWorkspaceEnv
+	// implements: org root first, then ws dir on top.
+	if orgBaseDir != "" {
+		wsEnv := loadWorkspaceEnv(orgBaseDir, ws.FilesDir)
+		for k, v := range wsEnv {
+			configured[k] = struct{}{}
+			_ = v // value only used for merging into configured map
+		}
+	}
+	for _, req := range ws.RequiredEnv {
+		if !req.IsSatisfied(configured) {
+			result = append(result, perWorkspaceUnsatisfied{
+				Workspace:   ws.Name,
+				FilesDir:    ws.FilesDir,
+				Unsatisfied: req,
+			})
+		}
+	}
+	for _, child := range ws.Children {
+		result = append(result, checkWorkspaceRequiredEnv(child, orgBaseDir, configured)...)
+	}
+	return result
+}
+
 // UnmarshalYAML accepts either a scalar (string → single) or a map
 // with an `any_of` list (→ group).
 func (e *EnvRequirement) UnmarshalYAML(value *yaml.Node) error {

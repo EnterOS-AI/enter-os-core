@@ -65,7 +65,9 @@ func resolvePromptRef(inline, fileRef, orgBaseDir, filesDir string) (string, err
 
 // envVarRefPattern matches actual ${VAR} or $VAR references (not literal $).
 // Used to detect unresolved placeholders without false positives like "$5".
-var envVarRefPattern = regexp.MustCompile(`\$\{?[A-Za-z_][A-Za-z0-9_]*\}?`)
+// Requires [a-zA-Z_] as the first char after $ so $100 stays literal.
+// Two capture groups: (1) ${VAR} form, (2) $VAR form.
+var envVarRefPattern = regexp.MustCompile(`\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}|\$([a-zA-Z_][a-zA-Z0-9_]*)`)
 
 // hasUnresolvedVarRef returns true if the original string had a ${VAR} or $VAR
 // reference that the expanded string didn't fully replace (i.e. the var was unset).
@@ -132,15 +134,6 @@ func expandWithEnv(s string, env map[string]string) string {
 	return b.String()
 }
 
-
-func isEnvIdentStart(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
-}
-
-func isEnvIdentPart(c byte) bool {
-	return isEnvIdentStart(c) || (c >= '0' && c <= '9')
-}
-
 // expandEnvRef resolves a single variable reference extracted from s.
 //
 // Guards:
@@ -176,6 +169,13 @@ func expandEnvRef(key, ref, whole string, env map[string]string) string {
 	return ref
 }
 
+func isEnvIdentStart(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+
+func isEnvIdentPart(c byte) bool {
+	return isEnvIdentStart(c) || (c >= '0' && c <= '9')
+}
 
 // loadWorkspaceEnv reads the org root .env and the workspace-specific .env .env and the workspace-specific .env
 // (workspace overrides org root). Used by both secret injection and channel
@@ -429,7 +429,11 @@ func resolveInsideRoot(root, userPath string) (string, error) {
 		return "", fmt.Errorf("root abs: %w", err)
 	}
 	joined := filepath.Join(absRoot, userPath)
-	absJoined, err := filepath.Abs(joined)
+	// filepath.Join preserves "." components when root is absolute; clean
+	// them before computing the final absolute path so "./subdir/./file.txt"
+	// resolves to root/subdir/file.txt (not root/./subdir/./file.txt).
+	cleaned := filepath.Clean(joined)
+	absJoined, err := filepath.Abs(cleaned)
 	if err != nil {
 		return "", fmt.Errorf("joined abs: %w", err)
 	}

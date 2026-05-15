@@ -24,16 +24,20 @@ import {
  */
 export function DropTargetBadge() {
   const dragOverNodeId = useCanvasStore((s) => s.dragOverNodeId);
-  const targetName = useCanvasStore((s) => {
-    if (!s.dragOverNodeId) return null;
-    const n = s.nodes.find((nn) => nn.id === s.dragOverNodeId);
+  // Select nodes stably first — deriving targetName and childCount inside
+  // the same selector creates a new return value on every store mutation
+  // even when neither has changed (React error #185 / Zustand Object.is).
+  const nodes = useCanvasStore((s) => s.nodes);
+  const targetName = (() => {
+    if (!dragOverNodeId) return null;
+    const n = nodes.find((nn) => nn.id === dragOverNodeId);
     return (n?.data as WorkspaceNodeData | undefined)?.name ?? null;
-  });
-  const childCount = useCanvasStore((s) =>
-    !s.dragOverNodeId
+  })();
+  const childCount = (() =>
+    !dragOverNodeId
       ? 0
-      : s.nodes.filter((n) => n.parentId === s.dragOverNodeId).length,
-  );
+      : nodes.filter((n) => n.parentId === dragOverNodeId).length
+  )();
   const { getInternalNode, flowToScreenPosition } = useReactFlow();
   if (!dragOverNodeId || !targetName) return null;
   const internal = getInternalNode(dragOverNodeId);

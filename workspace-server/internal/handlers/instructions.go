@@ -248,6 +248,9 @@ func (h *InstructionsHandler) Resolve(c *gin.Context) {
 		b.WriteString(content)
 		b.WriteString("\n\n")
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("ResolveInstructions rows.Err workspace=%s: %v", workspaceID, err)
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"workspace_id": workspaceID,
@@ -258,6 +261,7 @@ func (h *InstructionsHandler) Resolve(c *gin.Context) {
 func scanInstructions(rows interface {
 	Next() bool
 	Scan(dest ...interface{}) error
+	Err() error
 }) []Instruction {
 	var instructions []Instruction
 	for rows.Next() {
@@ -268,6 +272,9 @@ func scanInstructions(rows interface {
 			continue
 		}
 		instructions = append(instructions, inst)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("scanInstructions rows.Err: %v", err)
 	}
 	if instructions == nil {
 		instructions = []Instruction{}
