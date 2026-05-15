@@ -340,6 +340,10 @@ _CLI_A2A_COMMAND_KEYWORDS: dict[str, str | None] = {
     "delegate_task_async": "delegate --async",
     "check_task_status": "status",
     "get_workspace_info": "info",
+    # `broadcast_message` is not exposed via the CLI subprocess interface
+    # today — it's an MCP-first capability. If a2a_cli grows a `broadcast`
+    # subcommand, map it here and the alignment test will gate the change.
+    "broadcast_message": None,
     # `send_message_to_user` is not exposed via the CLI subprocess
     # interface today — it requires a structured `attachments` field
     # that wouldn't survive a positional-arg shell invocation cleanly.

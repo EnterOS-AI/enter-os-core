@@ -54,6 +54,11 @@ import (
 // timeout) surface as wrapped errors and should be treated as 503.
 var ErrWorkspaceNotFound = errors.New("agent_message: workspace not found")
 
+// ErrTalkToUserDisabled is returned when the workspace has
+// talk_to_user_enabled=false. Callers surface HTTP 403 so the Python tool
+// can detect it and suggest forwarding to a parent workspace.
+var ErrTalkToUserDisabled = errors.New("agent_message: talk_to_user disabled")
+
 // AgentMessageAttachment is one file attached to an agent → user
 // message. Identical to handlers.NotifyAttachment in field set; kept
 // distinct so the writer's API doesn't import a handler type with HTTP
@@ -107,15 +112,19 @@ func (w *AgentMessageWriter) Send(
 	// notify call surfaced as "workspace not found" and masked real
 	// incidents in the alert path.
 	var wsName string
+	var talkToUserEnabled bool
 	err := w.db.QueryRowContext(ctx,
-		`SELECT name FROM workspaces WHERE id = $1 AND status != 'removed'`,
+		`SELECT name, talk_to_user_enabled FROM workspaces WHERE id = $1 AND status != 'removed'`,
 		workspaceID,
-	).Scan(&wsName)
+	).Scan(&wsName, &talkToUserEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrWorkspaceNotFound
 	}
 	if err != nil {
 		return fmt.Errorf("agent_message: workspace lookup: %w", err)
+	}
+	if !talkToUserEnabled {
+		return ErrTalkToUserDisabled
 	}
 
 	// 2. Build broadcast payload + WS-emit. Same shape that ChatTab's

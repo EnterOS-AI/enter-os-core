@@ -33,6 +33,7 @@ var wsColumns = []string{
 	"parent_id", "active_tasks", "max_concurrent_tasks", "last_error_rate", "last_sample_error",
 	"uptime_seconds", "current_task", "runtime", "workspace_dir", "x", "y", "collapsed",
 	"budget_limit", "monthly_spend",
+	"broadcast_enabled", "talk_to_user_enabled",
 }
 
 // ==================== GET — financial fields stripped from open endpoint ====================
@@ -52,8 +53,10 @@ func TestWorkspaceBudget_Get_NilLimit(t *testing.T) {
 				[]byte(`{}`), "http://localhost:9001",
 				nil, 0, 1, 0.0, "", 0, "", "langgraph", "",
 				0.0, 0.0, false,
-				nil, // budget_limit NULL
-				0))  // monthly_spend 0
+				nil,   // budget_limit NULL
+				0,     // monthly_spend 0
+				false, // broadcast_enabled
+				true)) // talk_to_user_enabled
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -96,7 +99,8 @@ func TestWorkspaceBudget_Get_WithLimit(t *testing.T) {
 				nil, 0, 1, 0.0, "", 0, "", "langgraph", "",
 				0.0, 0.0, false,
 				int64(500),  // budget_limit = $5.00 in DB
-				int64(123))) // monthly_spend = $1.23 in DB
+				int64(123),  // monthly_spend = $1.23 in DB
+				false, true)) // broadcast_enabled, talk_to_user_enabled
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)

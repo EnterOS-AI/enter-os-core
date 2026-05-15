@@ -36,6 +36,15 @@ type Workspace struct {
 	// to activity_logs, agent reads via GET /activity?since_id=). See
 	// migration 045 + RFC #2339.
 	DeliveryMode       string          `json:"delivery_mode" db:"delivery_mode"`
+	// BroadcastEnabled: when true the workspace may call POST /broadcast to
+	// deliver a message to all non-removed agent workspaces in the org.
+	// Default false — only privileged orchestrators should hold this ability.
+	BroadcastEnabled   bool            `json:"broadcast_enabled" db:"broadcast_enabled"`
+	// TalkToUserEnabled: when false the workspace's send_message_to_user calls
+	// and POST /notify requests are rejected with HTTP 403 so the agent is
+	// forced to route updates through a parent workspace. Default true
+	// (preserves existing behaviour for all workspaces).
+	TalkToUserEnabled  bool            `json:"talk_to_user_enabled" db:"talk_to_user_enabled"`
 	// Canvas layout fields (from JOIN)
 	X         float64 `json:"x"`
 	Y         float64 `json:"y"`

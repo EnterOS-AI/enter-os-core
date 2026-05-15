@@ -88,9 +88,9 @@ func TestAgentMessageWriter_Send_Success_NoAttachments(t *testing.T) {
 	mock := setupTestDB(t)
 	w := NewAgentMessageWriter(db.DB, newTestBroadcaster())
 
-	mock.ExpectQuery("SELECT name FROM workspaces").
+	mock.ExpectQuery("SELECT name, talk_to_user_enabled FROM workspaces").
 		WithArgs("ws-1").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("CEO Ryan PC"))
+		WillReturnRows(sqlmock.NewRows([]string{"name", "talk_to_user_enabled"}).AddRow("CEO Ryan PC", true))
 
 	mock.ExpectExec(`INSERT INTO activity_logs.*'a2a_receive'.*'notify'`).
 		WithArgs(
@@ -116,9 +116,9 @@ func TestAgentMessageWriter_Send_Success_WithAttachments(t *testing.T) {
 	mock := setupTestDB(t)
 	w := NewAgentMessageWriter(db.DB, newTestBroadcaster())
 
-	mock.ExpectQuery("SELECT name FROM workspaces").
+	mock.ExpectQuery("SELECT name, talk_to_user_enabled FROM workspaces").
 		WithArgs("ws-att").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Ryan"))
+		WillReturnRows(sqlmock.NewRows([]string{"name", "talk_to_user_enabled"}).AddRow("Ryan", true))
 
 	mock.ExpectExec(`INSERT INTO activity_logs.*'a2a_receive'.*'notify'`).
 		WithArgs(
@@ -173,9 +173,9 @@ func TestAgentMessageWriter_Send_WorkspaceNotFound(t *testing.T) {
 	emitter := &capturingEmitter{}
 	w := NewAgentMessageWriter(db.DB, emitter)
 
-	mock.ExpectQuery("SELECT name FROM workspaces").
+	mock.ExpectQuery("SELECT name, talk_to_user_enabled FROM workspaces").
 		WithArgs("ws-missing").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}))
+		WillReturnRows(sqlmock.NewRows([]string{"name", "talk_to_user_enabled"}))
 
 	err := w.Send(context.Background(), "ws-missing", "lost in the void", nil)
 	if !errors.Is(err, ErrWorkspaceNotFound) {
@@ -202,9 +202,9 @@ func TestAgentMessageWriter_Send_DBInsertFailureStillReturnsNil(t *testing.T) {
 	mock := setupTestDB(t)
 	w := NewAgentMessageWriter(db.DB, newTestBroadcaster())
 
-	mock.ExpectQuery("SELECT name FROM workspaces").
+	mock.ExpectQuery("SELECT name, talk_to_user_enabled FROM workspaces").
 		WithArgs("ws-dbfail").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("CEO Ryan PC"))
+		WillReturnRows(sqlmock.NewRows([]string{"name", "talk_to_user_enabled"}).AddRow("CEO Ryan PC", true))
 
 	mock.ExpectExec(`INSERT INTO activity_logs`).
 		WillReturnError(errors.New("transient db error"))
@@ -223,9 +223,9 @@ func TestAgentMessageWriter_Send_PreviewTruncation(t *testing.T) {
 	mock := setupTestDB(t)
 	w := NewAgentMessageWriter(db.DB, newTestBroadcaster())
 
-	mock.ExpectQuery("SELECT name FROM workspaces").
+	mock.ExpectQuery("SELECT name, talk_to_user_enabled FROM workspaces").
 		WithArgs("ws-trunc").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Ryan"))
+		WillReturnRows(sqlmock.NewRows([]string{"name", "talk_to_user_enabled"}).AddRow("Ryan", true))
 
 	longMsg := strings.Repeat("x", 200)
 	mock.ExpectExec(`INSERT INTO activity_logs`).
@@ -263,9 +263,9 @@ func TestAgentMessageWriter_Send_BroadcastsAgentMessageEvent(t *testing.T) {
 	emitter := &capturingEmitter{}
 	w := NewAgentMessageWriter(db.DB, emitter)
 
-	mock.ExpectQuery("SELECT name FROM workspaces").
+	mock.ExpectQuery("SELECT name, talk_to_user_enabled FROM workspaces").
 		WithArgs("ws-bc").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Workspace Name"))
+		WillReturnRows(sqlmock.NewRows([]string{"name", "talk_to_user_enabled"}).AddRow("Workspace Name", true))
 	mock.ExpectExec(`INSERT INTO activity_logs`).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -315,7 +315,7 @@ func TestAgentMessageWriter_Send_DBErrorOnLookupReturnsWrapped(t *testing.T) {
 	w := NewAgentMessageWriter(db.DB, newTestBroadcaster())
 
 	transientErr := errors.New("connection refused")
-	mock.ExpectQuery("SELECT name FROM workspaces").
+	mock.ExpectQuery("SELECT name, talk_to_user_enabled FROM workspaces").
 		WithArgs("ws-dbdown").
 		WillReturnError(transientErr)
 
@@ -350,9 +350,9 @@ func TestAgentMessageWriter_Send_NonASCIIMessagePersists(t *testing.T) {
 	// the byte-slice bug.
 	msg := strings.Repeat("你", 200)
 
-	mock.ExpectQuery("SELECT name FROM workspaces").
+	mock.ExpectQuery("SELECT name, talk_to_user_enabled FROM workspaces").
 		WithArgs("ws-cjk").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("CEO Ryan PC"))
+		WillReturnRows(sqlmock.NewRows([]string{"name", "talk_to_user_enabled"}).AddRow("CEO Ryan PC", true))
 
 	mock.ExpectExec(`INSERT INTO activity_logs`).
 		WithArgs(
@@ -395,9 +395,9 @@ func TestAgentMessageWriter_Send_OmitsAttachmentsKeyWhenEmpty(t *testing.T) {
 	emitter := &capturingEmitter{}
 	w := NewAgentMessageWriter(db.DB, emitter)
 
-	mock.ExpectQuery("SELECT name FROM workspaces").
+	mock.ExpectQuery("SELECT name, talk_to_user_enabled FROM workspaces").
 		WithArgs("ws-noatt").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("X"))
+		WillReturnRows(sqlmock.NewRows([]string{"name", "talk_to_user_enabled"}).AddRow("X", true))
 	mock.ExpectExec(`INSERT INTO activity_logs`).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
