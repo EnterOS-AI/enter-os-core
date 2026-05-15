@@ -176,7 +176,7 @@ export function deriveProvidersFromModels(models: ModelSpec[]): string[] {
 // exactly the point of the platform adaptor. The deep `~/.hermes/
 // config.yaml` on the container is a separate runtime-internal file,
 // not this one.
-const RUNTIMES_WITH_OWN_CONFIG = new Set<string>(["external", "kimi", "kimi-cli"]);
+const RUNTIMES_WITH_OWN_CONFIG = new Set<string>(["external", "kimi", "kimi-cli", "openclaw"]);
 
 const FALLBACK_RUNTIME_OPTIONS: RuntimeOption[] = [
   { value: "", label: "LangGraph (default)", models: [], providers: [] },
