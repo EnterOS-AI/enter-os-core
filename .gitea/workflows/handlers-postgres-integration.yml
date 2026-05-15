@@ -86,7 +86,11 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 0
+          # A full-history checkout can exceed the runner's quiet/startup
+          # window before the path filter emits logs. Fetch the common push
+          # case cheaply; the script below fetches the exact BASE SHA if it is
+          # not present in the shallow checkout.
+          fetch-depth: 2
       - id: filter
         # Inline replacement for dorny/paths-filter — see e2e-api.yml.
         run: |

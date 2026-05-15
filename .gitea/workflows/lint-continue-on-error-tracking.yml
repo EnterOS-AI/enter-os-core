@@ -93,7 +93,7 @@ jobs:
   lint:
     name: lint-continue-on-error-tracking
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     # Phase 3 (RFC #219 §1): surface masked defects without blocking
     # PRs. Pre-existing continue-on-error: true directives on main
     # all violate this lint at first — intentional. Flip to false
