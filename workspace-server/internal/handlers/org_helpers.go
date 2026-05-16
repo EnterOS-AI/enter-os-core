@@ -177,7 +177,7 @@ func isEnvIdentPart(c byte) bool {
 	return isEnvIdentStart(c) || (c >= '0' && c <= '9')
 }
 
-// loadWorkspaceEnv reads the org root .env and the workspace-specific .env .env and the workspace-specific .env
+// loadWorkspaceEnv reads the org root .env and the workspace-specific .env
 // (workspace overrides org root). Used by both secret injection and channel
 // config expansion.
 //
