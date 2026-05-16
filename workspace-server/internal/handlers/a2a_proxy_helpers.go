@@ -194,7 +194,12 @@ func (h *WorkspaceHandler) maybeMarkContainerDead(ctx context.Context, workspace
 	}
 	db.ClearWorkspaceKeys(ctx, workspaceID)
 	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceOffline), workspaceID, map[string]interface{}{})
-	go h.RestartByID(workspaceID)
+	// Tracked via goAsync (not bare `go`) so the asyncWG can be drained
+	// before a test swaps the global db.DB. runRestartCycle reads db.DB
+	// before its provisioner gate, so an untracked detached goroutine
+	// races setupTestDB's t.Cleanup db.DB restore. Matches the already-
+	// correct site at a2a_proxy.go:648.
+	h.goAsync(func() { h.RestartByID(workspaceID) })
 	return true
 }
 
@@ -241,7 +246,10 @@ func (h *WorkspaceHandler) preflightContainerHealth(ctx context.Context, workspa
 	}
 	db.ClearWorkspaceKeys(ctx, workspaceID)
 	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventWorkspaceOffline), workspaceID, map[string]interface{}{})
-	go h.RestartByID(workspaceID)
+	// Tracked via goAsync (see maybeMarkContainerDead): preflight's
+	// detached restart must be drainable so it doesn't race the global
+	// db.DB swap in test cleanup.
+	h.goAsync(func() { h.RestartByID(workspaceID) })
 	return &proxyA2AError{
 		Status: http.StatusServiceUnavailable,
 		Response: gin.H{
@@ -262,7 +270,8 @@ func (h *WorkspaceHandler) logA2AFailure(ctx context.Context, workspaceID, calle
 		errWsName = workspaceID
 	}
 	summary := "A2A request to " + errWsName + " failed: " + errMsg
-	go func(parent context.Context) {
+	parent := ctx
+	h.goAsync(func() {
 		logCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), 30*time.Second)
 		defer cancel()
 		LogActivity(logCtx, h.broadcaster, ActivityParams{
@@ -277,7 +286,7 @@ func (h *WorkspaceHandler) logA2AFailure(ctx context.Context, workspaceID, calle
 			Status:       "error",
 			ErrorDetail:  &errMsg,
 		})
-	}(ctx)
+	})
 }
 
 // logA2ASuccess records a successful A2A round-trip and (for canvas-initiated
@@ -298,18 +307,19 @@ func (h *WorkspaceHandler) logA2ASuccess(ctx context.Context, workspaceID, calle
 	// silent workspaces. Only update when callerID is a real workspace (not
 	// canvas, not a system caller) and the target returned 2xx/3xx.
 	if callerID != "" && !isSystemCaller(callerID) && statusCode < 400 {
-		go func() {
+		h.goAsync(func() {
 			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if _, err := db.DB.ExecContext(bgCtx,
 				`UPDATE workspaces SET last_outbound_at = NOW() WHERE id = $1`, callerID); err != nil {
 				log.Printf("last_outbound_at update failed for %s: %v", callerID, err)
 			}
-		}()
+		})
 	}
 	summary := a2aMethod + " → " + wsNameForLog
 	toolTrace := extractToolTrace(respBody)
-	go func(parent context.Context) {
+	parent := ctx
+	h.goAsync(func() {
 		logCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), 30*time.Second)
 		defer cancel()
 		LogActivity(logCtx, h.broadcaster, ActivityParams{
@@ -325,7 +335,7 @@ func (h *WorkspaceHandler) logA2ASuccess(ctx context.Context, workspaceID, calle
 			DurationMs:   &durationMs,
 			Status:       logStatus,
 		})
-	}(ctx)
+	})
 
 	if callerID == "" && statusCode < 400 {
 		h.broadcaster.BroadcastOnly(workspaceID, string(events.EventA2AResponse), map[string]interface{}{
@@ -510,7 +520,8 @@ func (h *WorkspaceHandler) logA2AReceiveQueued(ctx context.Context, workspaceID,
 		wsName = workspaceID
 	}
 	summary := a2aMethod + " → " + wsName + " (queued for poll)"
-	go func(parent context.Context) {
+	parent := ctx
+	h.goAsync(func() {
 		logCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), 30*time.Second)
 		defer cancel()
 		LogActivity(logCtx, h.broadcaster, ActivityParams{
@@ -523,7 +534,7 @@ func (h *WorkspaceHandler) logA2AReceiveQueued(ctx context.Context, workspaceID,
 			RequestBody:  json.RawMessage(body),
 			Status:       "ok",
 		})
-	}(ctx)
+	})
 }
 
 // readUsageMap extracts input_tokens / output_tokens from the "usage" key of m.

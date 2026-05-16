@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,8 +23,39 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// liveTestHandlers tracks every WorkspaceHandler built during the test
+// binary's lifetime so setupTestDB can drain their in-flight goAsync
+// goroutines (notably the detached RestartByID restart cycle, which
+// reads the global db.DB) BEFORE restoring db.DB. Without this drain a
+// fire-and-forget restart goroutine spawned by one test outlives that
+// test and races the db.DB swap in a later test's t.Cleanup — the
+// 0x...d548 data race on platform/internal/db.DB.
+var (
+	liveTestHandlersMu sync.Mutex
+	liveTestHandlers   []*WorkspaceHandler
+)
+
 func init() {
 	gin.SetMode(gin.TestMode)
+	newHandlerHook = func(h *WorkspaceHandler) {
+		liveTestHandlersMu.Lock()
+		liveTestHandlers = append(liveTestHandlers, h)
+		liveTestHandlersMu.Unlock()
+	}
+}
+
+// drainTestAsync waits for every tracked handler's goAsync goroutines to
+// finish. Called from setupTestDB's cleanup before db.DB is restored so
+// no detached restart/provision goroutine is mid-read of db.DB when the
+// pointer is swapped.
+func drainTestAsync() {
+	liveTestHandlersMu.Lock()
+	handlers := make([]*WorkspaceHandler, len(liveTestHandlers))
+	copy(handlers, liveTestHandlers)
+	liveTestHandlersMu.Unlock()
+	for _, h := range handlers {
+		h.waitAsyncForTest()
+	}
 }
 
 // setupTestDB creates a sqlmock DB and assigns it to the global db.DB.
@@ -37,7 +69,16 @@ func setupTestDB(t *testing.T) sqlmock.Sqlmock {
 	}
 	prevDB := db.DB
 	db.DB = mockDB
-	t.Cleanup(func() { db.DB = prevDB; mockDB.Close() })
+	t.Cleanup(func() {
+		// Drain detached async goroutines (e.g. goAsync(RestartByID),
+		// which reads db.DB in runRestartCycle before its provisioner
+		// gate) BEFORE swapping db.DB back. Doing the restore first
+		// would let an in-flight restart goroutine read db.DB while
+		// this line writes it — the data race this guards against.
+		drainTestAsync()
+		db.DB = prevDB
+		mockDB.Close()
+	})
 
 	// Disable SSRF checks for the duration of this test only. Restore
 	// the previous state via t.Cleanup so that TestIsSafeURL_* tests

@@ -237,10 +237,10 @@ func (h *WorkspaceHandler) Restart(c *gin.Context) {
 	// the silent-drop bugs PRs #2811/#2824 closed). RestartWorkspaceAuto
 	// enforces CP-FIRST ordering matching the other dispatchers — see
 	// docs/architecture/backends.md.
-	go func() {
+	h.goAsync(func() {
 		h.RestartWorkspaceAutoOpts(context.Background(), id, templatePath, configFiles, payload, resetClaudeSession)
-	}()
-	go h.sendRestartContext(id, restartData)
+	})
+	h.goAsync(func() { h.sendRestartContext(id, restartData) })
 
 	c.JSON(http.StatusOK, gin.H{"status": "provisioning", "config_dir": configLabel, "reset_session": resetClaudeSession})
 }
@@ -610,7 +610,9 @@ func (h *WorkspaceHandler) runRestartCycle(workspaceID string) {
 	h.provisionWorkspaceAutoSync(workspaceID, "", nil, payload)
 	// sendRestartContext is a one-way notification to the new container; safe
 	// to fire async — the next restart cycle won't depend on it completing.
-	go h.sendRestartContext(workspaceID, restartData)
+	// Tracked via goAsync so the test harness can drain it before the
+	// global db.DB swap (sendRestartContext reads db.DB).
+	h.goAsync(func() { h.sendRestartContext(workspaceID, restartData) })
 }
 
 // Pause handles POST /workspaces/:id/pause

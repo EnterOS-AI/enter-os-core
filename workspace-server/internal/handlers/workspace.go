@@ -80,6 +80,15 @@ type WorkspaceHandler struct {
 	asyncWG sync.WaitGroup
 }
 
+// newHandlerHook, when non-nil, is invoked for every WorkspaceHandler
+// created via NewWorkspaceHandler. It is nil in production (zero cost);
+// the test harness sets it so setupTestDB can drain every handler's
+// in-flight async goroutines before swapping the global db.DB. Without
+// this, a detached restart goroutine (maybeMarkContainerDead ->
+// goAsync(RestartByID) -> runRestartCycle reads db.DB) races the
+// db.DB restore in another test's t.Cleanup.
+var newHandlerHook func(*WorkspaceHandler)
+
 func (h *WorkspaceHandler) goAsync(fn func()) {
 	h.asyncWG.Add(1)
 	go func() {
@@ -107,6 +116,9 @@ func NewWorkspaceHandler(b events.EventEmitter, p *provisioner.Provisioner, plat
 	// "Why is my nil error value not equal to nil?".
 	if p != nil {
 		h.provisioner = p
+	}
+	if newHandlerHook != nil {
+		newHandlerHook(h)
 	}
 	return h
 }
