@@ -175,6 +175,19 @@ jobs:
           echo "E2E_PLATFORM_URL=http://127.0.0.1:${PLATFORM_PORT}" >> "$GITHUB_ENV"
           echo "Platform host port: ${PLATFORM_PORT}"
 
+      - name: Pick canvas port
+        if: needs.detect-changes.outputs.chat == 'true'
+        run: |
+          CANVAS_PORT=$(python3 - <<'PY'
+          import socket
+          with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+              s.bind(("127.0.0.1", 0))
+              print(s.getsockname()[1])
+          PY
+          )
+          echo "CANVAS_PORT=${CANVAS_PORT}" >> "$GITHUB_ENV"
+          echo "Canvas host port: ${CANVAS_PORT}"
+
       - name: Start platform (background)
         if: needs.detect-changes.outputs.chat == 'true'
         working-directory: workspace-server
@@ -183,6 +196,7 @@ jobs:
           export DATABASE_URL="${DATABASE_URL}"
           export REDIS_URL="${REDIS_URL}"
           export PORT="${PLATFORM_PORT}"
+          export CORS_ORIGINS="http://localhost:3000,http://localhost:3001,http://localhost:${CANVAS_PORT},http://127.0.0.1:${CANVAS_PORT}"
           ./platform-server > platform.log 2>&1 &
           echo $! > platform.pid
 
@@ -209,19 +223,6 @@ jobs:
         if: needs.detect-changes.outputs.chat == 'true'
         working-directory: canvas
         run: npx playwright install --with-deps chromium
-
-      - name: Pick canvas port
-        if: needs.detect-changes.outputs.chat == 'true'
-        run: |
-          CANVAS_PORT=$(python3 - <<'PY'
-          import socket
-          with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-              s.bind(("127.0.0.1", 0))
-              print(s.getsockname()[1])
-          PY
-          )
-          echo "CANVAS_PORT=${CANVAS_PORT}" >> "$GITHUB_ENV"
-          echo "Canvas host port: ${CANVAS_PORT}"
 
       - name: Start canvas dev server (background)
         if: needs.detect-changes.outputs.chat == 'true'
