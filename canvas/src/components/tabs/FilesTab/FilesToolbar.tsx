@@ -38,6 +38,15 @@ export function FilesToolbar({
           <option value="/home">/home</option>
           <option value="/workspace">/workspace</option>
           <option value="/plugins">/plugins</option>
+          {/* internal#425 Phase 1+3: container-internal $HOME root.
+              Backend lands the docker-exec dispatch in Phase 2b. Until
+              then the stub returns 501 with a canonical
+              "implementation pending" message — the dropdown renders
+              the option so the canvas affordance is design-frozen
+              even before the backend ships.
+              Runtime-default selection logic in FilesTab.tsx picks
+              this as the initial value for openclaw workspaces. */}
+          <option value="/agent-home">/agent-home</option>
         </select>
         <span className="text-[10px] text-ink-mid">{fileCount} files</span>
       </div>

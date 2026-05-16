@@ -45,11 +45,54 @@ export function FilesTab({ workspaceId, data }: Props) {
   if (data && isExternalLikeRuntime(data.runtime)) {
     return <NotAvailablePanel runtime={data.runtime} />;
   }
-  return <PlatformOwnedFilesTab workspaceId={workspaceId} />;
+  return <PlatformOwnedFilesTab workspaceId={workspaceId} runtime={data?.runtime} />;
 }
 
-function PlatformOwnedFilesTab({ workspaceId }: { workspaceId: string }) {
-  const [root, setRoot] = useState("/configs");
+/** Picks the initial root for the FilesTab dropdown based on the
+ *  workspace's runtime. Decision: per-runtime default (Hongming
+ *  2026-05-15, internal#425 Decisions §2).
+ *
+ *  - openclaw → `/agent-home` (the agent's identity/state — the
+ *    user-facing interesting files for that runtime live in
+ *    `~/.openclaw/` inside the container, which `/agent-home` maps to
+ *    via the Phase 2b docker-exec backend).
+ *  - everything else (claude-code, hermes, external-like, undefined)
+ *    → `/configs` (the legacy default — managed config that flows
+ *    through the per-runtime indirection in
+ *    workspace-server/internal/handlers/template_files_eic.go).
+ *
+ *  When the runtime is undefined (legacy callers that don't thread
+ *  `data` through, or a workspace whose runtime field hasn't loaded
+ *  yet) the default is `/configs` — matches today's behaviour, no
+ *  surprise.
+ *
+ *  Note on `/agent-home` pre-Phase-2b: the backend short-circuits
+ *  with HTTP 501 and the canonical "implementation pending" body.
+ *  The tab renders empty + the error banner explains. This is by
+ *  design — lets us land the canvas UX before the backend ships,
+ *  per the RFC's phased rollout. The 501 is graceful: it doesn't
+ *  poison error toasts or generate "workspace not found" noise.
+ *
+ *  Adding a new runtime that should default to `/agent-home`: add it
+ *  to the agentHomeDefaultRuntimes set below. Adding a runtime that
+ *  should default to a different root: extend this function. */
+const agentHomeDefaultRuntimes = new Set(["openclaw"]);
+
+function defaultRootForRuntime(runtime: string | undefined): string {
+  if (runtime && agentHomeDefaultRuntimes.has(runtime)) {
+    return "/agent-home";
+  }
+  return "/configs";
+}
+
+function PlatformOwnedFilesTab({
+  workspaceId,
+  runtime,
+}: {
+  workspaceId: string;
+  runtime?: string;
+}) {
+  const [root, setRoot] = useState(() => defaultRootForRuntime(runtime));
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState("");
   const [editContent, setEditContent] = useState("");
