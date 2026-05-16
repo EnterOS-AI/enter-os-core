@@ -504,25 +504,49 @@ func lookupDeliveryMode(ctx context.Context, workspaceID string) string {
 // reads in PR 3 — that's how a poll-mode workspace receives inbound A2A
 // without a public URL.
 func (h *WorkspaceHandler) logA2AReceiveQueued(ctx context.Context, workspaceID, callerID string, body []byte, a2aMethod string) {
+	// DATA-LOSS FIX (internal#471 — poll-mode sibling of #1347/internal#470):
+	// this is the ONLY durable write of a poll-mode inbound message,
+	// including a canvas_user message (callerID == "") typed in the canvas
+	// chat. It MUST be SYNCHRONOUS and complete BEFORE the caller returns
+	// the synthetic {status:"queued"} 200 — otherwise the canvas sees the
+	// send acknowledged while the activity_logs row is still racing in a
+	// detached goroutine, and a workspace-server restart / deploy / OOM /
+	// EC2 hibernation between the 200 and the goroutine's commit loses the
+	// user's message permanently (chat-history reads activity_logs, so a
+	// missing row = message gone on reopen). Hongming's tenant is entirely
+	// poll-mode (4 external workspaces, no URL — verified empirically), so
+	// his reported loss is THIS path; #1347 (push-mode, persists AFTER the
+	// poll short-circuit) structurally cannot cover it.
+	//
+	// Mirrors persistUserMessageAtIngest's discipline:
+	//   - context.WithoutCancel: a client disconnect on chat-exit (which
+	//     cancels the inbound request ctx) MUST NOT abort this write.
+	//   - SYNCHRONOUS (no goAsync): the row must be durable before the
+	//     queued 200 is returned to the caller.
+	//   - Best-effort: LogActivity already logs+swallows INSERT errors, so
+	//     a hiccup never blocks or fails the user's send (behavior for
+	//     that one request is never worse than the pre-fix async path).
+	// The post-commit broadcast still fires inside LogActivity; a missed
+	// WebSocket event is not data loss (the durable row is the truth the
+	// canvas re-reads on reopen).
+	insCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+
 	var wsName string
-	db.DB.QueryRowContext(ctx, `SELECT name FROM workspaces WHERE id = $1`, workspaceID).Scan(&wsName)
+	db.DB.QueryRowContext(insCtx, `SELECT name FROM workspaces WHERE id = $1`, workspaceID).Scan(&wsName)
 	if wsName == "" {
 		wsName = workspaceID
 	}
 	summary := a2aMethod + " → " + wsName + " (queued for poll)"
-	h.goAsync(func() {
-		logCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		defer cancel()
-		LogActivity(logCtx, h.broadcaster, ActivityParams{
-			WorkspaceID:  workspaceID,
-			ActivityType: "a2a_receive",
-			SourceID:     nilIfEmpty(callerID),
-			TargetID:     &workspaceID,
-			Method:       &a2aMethod,
-			Summary:      &summary,
-			RequestBody:  json.RawMessage(body),
-			Status:       "ok",
-		})
+	LogActivity(insCtx, h.broadcaster, ActivityParams{
+		WorkspaceID:  workspaceID,
+		ActivityType: "a2a_receive",
+		SourceID:     nilIfEmpty(callerID),
+		TargetID:     &workspaceID,
+		Method:       &a2aMethod,
+		Summary:      &summary,
+		RequestBody:  json.RawMessage(body),
+		Status:       "ok",
 	})
 }
 
