@@ -431,6 +431,34 @@ def _is_self_notify_row(row: dict[str, Any]) -> bool:
     return source_id is None or source_id == ""
 
 
+def _is_self_echo_row(row: dict[str, Any], workspace_id: str) -> bool:
+    """Return True if ``row`` is a self-originated a2a_receive row.
+
+    Internal #469: when a workspace delegates to a target that never picks
+    up the task, ``tool_delegate_task`` calls ``report_activity`` which
+    POSTs to the platform with source_id set to the *sender's* workspace
+    UUID (mandated by spoof-defense in workspace-server's a2a_proxy). The
+    activity API exposes that row under type=a2a_receive, so the inbox
+    poller re-fetches it. Without this guard the row is surfaced as
+    kind='peer_agent' with the workspace's own identity as peer_id —
+    the workspace sees its own delegation-failure echoed back as if a
+    peer had delegated to it.
+
+    The guard mirrors the existing _is_self_notify_row pattern: both
+    skip rows that would otherwise create spurious inbound signal. The
+    long-term fix (making the platform write a distinct activity_type
+    for agent-outbound rows) is tracked separately; this guard stays
+    because it only excludes rows the agent never wants.
+
+    ``workspace_id`` must be non-empty — an empty-string workspace_id
+    (single-workspace legacy path) can never match a UUID source_id, so
+    the predicate is always False there, which is safe.
+    """
+    if not workspace_id:
+        return False
+    return row.get("source_id") == workspace_id
+
+
 def message_from_activity(row: dict[str, Any]) -> InboxMessage:
     """Convert one /activity row into an InboxMessage.
 
@@ -621,6 +649,16 @@ def _poll_once(
             # NB: still call save_cursor for these rows below — we
             # advance past them so the next poll doesn't keep re-seeing
             # the same self-notify on every iteration.
+            last_id = str(row.get("id", "")) or last_id
+            continue
+        if _is_self_echo_row(row, workspace_id):
+            # Internal #469: tool_delegate_task writes its own a2a_receive
+            # row with source_id = this workspace's UUID (spoof-defense).
+            # The poll fetches it back as kind='peer_agent', making the
+            # workspace echo its own delegation-failure as an inbound from
+            # a phantom peer. Skip it — the real delegation-result path
+            # (delegate_result push) is separate and unaffected. Cursor
+            # still advances so the next poll doesn't re-seen this row.
             last_id = str(row.get("id", "")) or last_id
             continue
         message = message_from_activity(row)
