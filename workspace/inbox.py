@@ -453,10 +453,19 @@ def _is_self_echo_row(row: dict[str, Any], workspace_id: str) -> bool:
     ``workspace_id`` must be non-empty — an empty-string workspace_id
     (single-workspace legacy path) can never match a UUID source_id, so
     the predicate is always False there, which is safe.
+
+    RFC #2829 PR-2 note: rows with method="delegate_result" are excluded
+    from the self-echo guard even when source_id matches our workspace_id.
+    The platform may write a delegation-result row with source_id set to
+    our workspace_id (e.g. a self-delegation or edge case in the platform's
+    result-writing path). Such rows must reach the inbox so that
+    message_from_activity can surface them as peer_agent inbound and the
+    runtime receives the delegation result. Silently filtering them as
+    self-echo would break delegation result delivery.
     """
     if not workspace_id:
         return False
-    return row.get("source_id") == workspace_id
+    return row.get("source_id") == workspace_id and row.get("method") != "delegate_result"
 
 
 def message_from_activity(row: dict[str, Any]) -> InboxMessage:

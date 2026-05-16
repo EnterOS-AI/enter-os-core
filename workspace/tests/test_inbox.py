@@ -539,6 +539,17 @@ def test_is_self_echo_row_false_when_source_id_key_absent():
     assert inbox._is_self_echo_row(row, "ws-1") is False
 
 
+def test_is_self_echo_row_false_for_delegate_result():
+    """RFC #2829 PR-2 regression pin: a row with source_id matching our
+    workspace_id but method=delegate_result must NOT be filtered as a
+    self-echo. The platform may write a delegation-result row with our
+    workspace_id as source_id; such rows must reach the inbox so the
+    runtime receives the delegation result. Silently filtering them would
+    break delegate_result delivery."""
+    row = {"source_id": "ws-1", "method": "delegate_result"}
+    assert inbox._is_self_echo_row(row, "ws-1") is False
+
+
 def test_poll_once_skips_self_echo_rows(state: inbox.InboxState):
     """Internal #469 regression pin: a row with source_id matching our
     workspace_id must NOT land in the inbox queue — it is our own
