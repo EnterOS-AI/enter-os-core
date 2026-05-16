@@ -210,16 +210,29 @@ jobs:
         working-directory: canvas
         run: npx playwright install --with-deps chromium
 
+      - name: Pick canvas port
+        if: needs.detect-changes.outputs.chat == 'true'
+        run: |
+          CANVAS_PORT=$(python3 - <<'PY'
+          import socket
+          with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+              s.bind(("127.0.0.1", 0))
+              print(s.getsockname()[1])
+          PY
+          )
+          echo "CANVAS_PORT=${CANVAS_PORT}" >> "$GITHUB_ENV"
+          echo "Canvas host port: ${CANVAS_PORT}"
+
       - name: Start canvas dev server (background)
         if: needs.detect-changes.outputs.chat == 'true'
         working-directory: canvas
         run: |
           export NEXT_PUBLIC_PLATFORM_URL="http://127.0.0.1:${PLATFORM_PORT}"
           export NEXT_PUBLIC_WS_URL="ws://127.0.0.1:${PLATFORM_PORT}/ws"
-          npm run dev > canvas.log 2>&1 &
+          npx next dev --turbopack -p "${CANVAS_PORT}" > canvas.log 2>&1 &
           echo $! > canvas.pid
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:3000 > /dev/null 2>&1; then
+            if curl -sf "http://localhost:${CANVAS_PORT}" > /dev/null 2>&1; then
               echo "Canvas up after ${i}s"
               exit 0
             fi
@@ -235,6 +248,7 @@ jobs:
         run: |
           export E2E_PLATFORM_URL="http://127.0.0.1:${PLATFORM_PORT}"
           export E2E_DATABASE_URL="${DATABASE_URL}"
+          export PLAYWRIGHT_BASE_URL="http://localhost:${CANVAS_PORT}"
           npx playwright test e2e/chat-desktop.spec.ts e2e/chat-mobile.spec.ts
 
       - name: Dump platform log on failure
