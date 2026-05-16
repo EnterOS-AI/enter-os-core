@@ -177,7 +177,7 @@ func expandEnvRef(key, ref, whole string, env map[string]string) string {
 }
 
 
-// loadWorkspaceEnv reads the org root .env and the workspace-specific .env .env and the workspace-specific .env
+// loadWorkspaceEnv reads the org root .env and the workspace-specific .env
 // (workspace overrides org root). Used by both secret injection and channel
 // config expansion.
 //
