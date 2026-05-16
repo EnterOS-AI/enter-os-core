@@ -35,6 +35,15 @@ package handlers
 // client disconnect on chat-exit and a post-response restart cannot lose
 // it. Behavior is never worse than today (best-effort; a persist error
 // still returns queued).
+//
+// TEST DESIGN NOTE: sqlmock.ExpectationsWereMet() hangs indefinitely if
+// the expected query never fires. We use a select+default+time.After
+// pattern so the test FAILS fast (not hangs) when the production code
+// regresses to async (the INSERT never fires before handler returns),
+// while still returning promptly when all expectations are met. The
+// insertDelay is kept small (50ms) to minimise suite-level timing
+// impact under -race detection, where mock delays are amplified by
+// the instrumenter's goroutine overhead.
 
 import (
 	"bytes"
@@ -70,7 +79,10 @@ func TestProxyA2A_PollMode_PersistsUserMessageSynchronouslyBeforeQueuedResponse(
 	handler := NewWorkspaceHandler(broadcaster, nil, "http://localhost:8080", t.TempDir())
 
 	const wsID = "ws-poll-sync-persist"
-	const insertDelay = 150 * time.Millisecond
+	// Keep delay small: -race detection amplifies mock delays significantly.
+	// A 50ms delay is sufficient to prove synchronous blocking (~50× the
+	// normal INSERT latency) without bloating the full ./... suite runtime.
+	const insertDelay = 50 * time.Millisecond
 
 	expectBudgetCheck(mock, wsID)
 
@@ -116,9 +128,21 @@ func TestProxyA2A_PollMode_PersistsUserMessageSynchronouslyBeforeQueuedResponse(
 	}
 
 	// Defining assertion #2: the durable write actually happened by the
-	// time the handler returned — checked WITHOUT waitAsyncForTest()/sleep.
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("user-message INSERT was not durable at handler return (unmet sqlmock expectations): %v", err)
+	// time the handler returned. ExpectionsWereMet() hangs indefinitely if
+	// the mock never fires (e.g. production code regressed to async),
+	// so we check it in a goroutine with a hard 2s timeout — fails fast
+	// (no CI hang) on regression while returning promptly on success.
+	expectDone := make(chan error, 1)
+	go func() { expectDone <- mock.ExpectationsWereMet() }()
+	select {
+	case err := <-expectDone:
+		if err != nil {
+			t.Fatalf("user-message INSERT was not durable at handler return (unmet sqlmock expectations): %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("ExpectationsWereMet() hung for >2s — INSERT mock never fired. " +
+			"Likely cause: production code regressed logA2AReceiveQueued to goAsync " +
+			"(INSERT fires after handler returns, not before).")
 	}
 
 	// Sanity: still the correct poll-mode envelope + status.
