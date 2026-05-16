@@ -189,6 +189,24 @@ const containerNamePrefix = "ws-"
 // (the wiped-DB case after `docker compose down -v`).
 const LabelManaged = "molecule.platform.managed"
 
+// AgentUID / AgentGID are the uid/gid of the unprivileged `agent` user that
+// every workspace template creates and drops to via `gosu agent` before
+// exec'ing the runtime (the a2a_mcp_server runs under this uid). The value is
+// fixed at 1000:1000 across all templates — see:
+//   - workspace-configs-templates/claude-code-default/Dockerfile (`useradd -u 1000 ... agent`)
+//   - workspace-configs-templates/hermes/Dockerfile               (`useradd -u 1000 ... agent`)
+//   - workspace/entrypoint.sh                                     (`exec gosu agent` — "uid 1000")
+//
+// Files the platform injects into /configs AFTER the entrypoint's
+// `chown -R agent:agent /configs` (the post-start #418 re-injection and the
+// pre-start #1877 volume write) must be owned by this uid/gid, otherwise the
+// agent-uid MCP server hits EACCES reading /configs/.auth_token, sends an
+// empty bearer, and the platform 401s on /registry/{id}/peers (list_peers).
+const (
+	AgentUID = 1000
+	AgentGID = 1000
+)
+
 // managedLabels is the canonical label map applied to every workspace
 // container + volume. Pulled out so a future addition (e.g. instance
 // UUID for multi-platform-shared-daemon disambiguation) is one edit.
@@ -862,8 +880,18 @@ func buildTemplateTar(templatePath string) (*bytes.Buffer, error) {
 	return &buf, nil
 }
 
-// WriteFilesToContainer writes in-memory files into /configs in the container.
-func (p *Provisioner) WriteFilesToContainer(ctx context.Context, containerID string, files map[string][]byte) error {
+// buildConfigFilesTar builds the tar stream that WriteFilesToContainer streams
+// into /configs via CopyToContainer. Every entry is stamped Uid/Gid = agent
+// (AgentUID/AgentGID) so the files land agent-owned after extraction. This is
+// the issue #418 post-start re-injection path: it runs AFTER the template
+// entrypoint's `chown -R agent:agent /configs`, so without explicit ownership
+// in the tar header the files extract as root:root (tar Uid/Gid default 0) and
+// the agent-uid MCP server can no longer read /configs/.auth_token (and
+// /configs/.platform_inbound_secret) → empty bearer → list_peers 401.
+//
+// Pulled out as a pure function so the ownership contract is unit-testable
+// without a live Docker daemon (mirrors buildTemplateTar).
+func buildConfigFilesTar(files map[string][]byte) (*bytes.Buffer, error) {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 
@@ -876,8 +904,10 @@ func (p *Provisioner) WriteFilesToContainer(ctx context.Context, containerID str
 				Typeflag: tar.TypeDir,
 				Name:     dir + "/",
 				Mode:     0755,
+				Uid:      AgentUID,
+				Gid:      AgentGID,
 			}); err != nil {
-				return fmt.Errorf("failed to write tar dir header for %s: %w", dir, err)
+				return nil, fmt.Errorf("failed to write tar dir header for %s: %w", dir, err)
 			}
 			createdDirs[dir] = true
 		}
@@ -886,19 +916,30 @@ func (p *Provisioner) WriteFilesToContainer(ctx context.Context, containerID str
 			Name: name,
 			Mode: 0644,
 			Size: int64(len(data)),
+			Uid:  AgentUID,
+			Gid:  AgentGID,
 		}
 		if err := tw.WriteHeader(header); err != nil {
-			return fmt.Errorf("failed to write tar header for %s: %w", name, err)
+			return nil, fmt.Errorf("failed to write tar header for %s: %w", name, err)
 		}
 		if _, err := tw.Write(data); err != nil {
-			return fmt.Errorf("failed to write tar data for %s: %w", name, err)
+			return nil, fmt.Errorf("failed to write tar data for %s: %w", name, err)
 		}
 	}
 	if err := tw.Close(); err != nil {
-		return fmt.Errorf("failed to close tar writer: %w", err)
+		return nil, fmt.Errorf("failed to close tar writer: %w", err)
 	}
+	return &buf, nil
+}
 
-	return p.cli.CopyToContainer(ctx, containerID, "/configs", &buf, container.CopyToContainerOptions{})
+// WriteFilesToContainer writes in-memory files into /configs in the container,
+// agent-owned (see buildConfigFilesTar).
+func (p *Provisioner) WriteFilesToContainer(ctx context.Context, containerID string, files map[string][]byte) error {
+	buf, err := buildConfigFilesTar(files)
+	if err != nil {
+		return err
+	}
+	return p.cli.CopyToContainer(ctx, containerID, "/configs", buf, container.CopyToContainerOptions{})
 }
 
 // CopyToContainer exposes CopyToContainer from the Docker client for use by other packages.
@@ -988,13 +1029,28 @@ func (p *Provisioner) ReadFromVolume(ctx context.Context, volumeName, filePath s
 	return clean, nil
 }
 
+// writeAuthTokenVolumeCmd is the shell command the throwaway alpine container
+// runs to seed /vol/.auth_token. alpine runs it as root, so without the
+// explicit `chown 1000:1000` the file stays root:root after the template
+// entrypoint's `chown -R agent:agent /configs` has already run — the agent-uid
+// (AgentUID) MCP server then gets EACCES reading it → empty bearer →
+// list_peers 401. Pulled out as a pure function so the ownership contract is
+// unit-testable without a live Docker daemon. Issue #1877.
+func writeAuthTokenVolumeCmd() string {
+	return fmt.Sprintf(
+		"mkdir -p /vol && printf '%%s' $TOKEN > /vol/.auth_token && chmod 0600 /vol/.auth_token && chown %d:%d /vol/.auth_token",
+		AgentUID, AgentGID,
+	)
+}
+
 // WriteAuthTokenToVolume writes the workspace auth token into the config volume
 // BEFORE the container starts, eliminating the token-injection race window where
 // a restarted container could read a stale token from /configs/.auth_token before
 // WriteFilesToContainer writes the new one. Issue #1877.
 //
 // Uses a throwaway alpine container to write directly to the named volume,
-// bypassing the container lifecycle entirely.
+// bypassing the container lifecycle entirely. The written file is chowned to
+// the agent uid/gid (see writeAuthTokenVolumeCmd).
 func (p *Provisioner) WriteAuthTokenToVolume(ctx context.Context, workspaceID, token string) error {
 	if p == nil || p.cli == nil {
 		return ErrNoBackend
@@ -1002,7 +1058,7 @@ func (p *Provisioner) WriteAuthTokenToVolume(ctx context.Context, workspaceID, t
 	volName := ConfigVolumeName(workspaceID)
 	resp, err := p.cli.ContainerCreate(ctx, &container.Config{
 		Image: "alpine",
-		Cmd:   []string{"sh", "-c", "mkdir -p /vol && printf '%s' $TOKEN > /vol/.auth_token && chmod 0600 /vol/.auth_token"},
+		Cmd:   []string{"sh", "-c", writeAuthTokenVolumeCmd()},
 		Env:   []string{"TOKEN=" + token},
 	}, &container.HostConfig{
 		Binds: []string{volName + ":/vol"},
