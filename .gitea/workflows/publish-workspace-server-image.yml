@@ -54,7 +54,14 @@ env:
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest
+    # Dedicated publish/release lane (internal#462 / #394 / #399). This
+    # is a post-merge ship job (on: push:main) — it must NOT FIFO-compete
+    # with PR required-CI on the shared pool (PR#1350's prod image build
+    # was delayed ~25min this way). The `publish` label resolves ONLY to
+    # the reserved molecule-runner-publish-* sub-pool (config.publish.yaml,
+    # OUTSIDE the managed 1..20 range) so a merged fix's image build
+    # starts immediately while PR-CI keeps the general pool.
+    runs-on: publish
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -181,7 +188,9 @@ jobs:
     name: Production auto-deploy
     needs: build-and-push
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-latest
+    # Publish/release lane (internal#462) — production deploy of a merged
+    # fix; reserved capacity, never queued behind PR-CI.
+    runs-on: publish
     timeout-minutes: 75
     env:
       CP_URL: ${{ vars.PROD_CP_URL || 'https://api.moleculesai.app' }}

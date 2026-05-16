@@ -68,7 +68,10 @@ jobs:
   # bp-exempt: production redeploy is a side-effect workflow, not a merge gate.
   redeploy:
     if: ${{ github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
+    # Dedicated publish/release lane (internal#462 / #394 / #399).
+    # Production tenant redeploy — a deploy action, reserved capacity so
+    # it never queues behind PR-CI. `publish` -> molecule-runner-publish-*.
+    runs-on: publish
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
     # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true

@@ -49,13 +49,17 @@ jobs:
   # bp-exempt: post-merge image publication side effect; CI / all-required gates source changes.
   build-and-push:
     name: Build & push canvas image
-    # REVERTED (infra/revert-docker-runner-label): `runs-on: ubuntu-latest` restored.
-    # The `docker` label is not registered on any act_runner. `runs-on: [ubuntu-latest, docker]`
-    # causes jobs to queue indefinitely with zero eligible runners — strictly worse than the
-    # pre-#599 coin-flip (50% success rate). Once the `docker` label is registered on
-    # ≥2 runners, re-apply the fix from #599 (infra/docker-runner-label).
-    # See issue #576 + infra-lead pulse ~00:30Z.
-    runs-on: ubuntu-latest
+    # Dedicated publish/release lane (internal#462 / #394 / #399). Ship
+    # path (on: push:main, canvas/**) — reserved capacity so a merged
+    # canvas fix's image build never FIFO-queues behind PR required-CI.
+    # The `publish` label resolves ONLY to the molecule-runner-publish-*
+    # sub-pool (config.publish.yaml). HARD DEPENDENCY: this MUST land
+    # AFTER the publish-lane runners are registered/advertising `publish`
+    # — the earlier #599 `docker` label attempt queued indefinitely with
+    # zero eligible runners precisely because the label was targeted
+    # before any runner advertised it (see #576). The lane is registered
+    # in this rollout (internal#462) so the precondition holds.
+    runs-on: publish
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
     # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true

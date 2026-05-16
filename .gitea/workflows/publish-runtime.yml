@@ -66,7 +66,10 @@ concurrency:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    # Dedicated publish/release lane (internal#462 / #394 / #399). Ship
+    # path (on: push tag runtime-v*) — reserved capacity, never FIFO
+    # behind PR-CI. `publish` resolves only to molecule-runner-publish-*.
+    runs-on: publish
     outputs:
       version: ${{ steps.version.outputs.version }}
       wheel_sha256: ${{ steps.wheel_hash.outputs.wheel_sha256 }}
@@ -166,7 +169,9 @@ jobs:
 
   cascade:
     needs: publish
-    runs-on: ubuntu-latest
+    # Publish/release lane (internal#462) — downstream of the runtime
+    # publish ship job; keep it on the reserved lane too.
+    runs-on: publish
     steps:
       - name: Wait for PyPI to propagate the new version
         env:
