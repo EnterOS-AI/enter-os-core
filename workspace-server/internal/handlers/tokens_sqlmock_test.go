@@ -41,6 +41,15 @@ import (
 
 func init() { gin.SetMode(gin.TestMode) }
 
+// Workspace IDs are validated as UUIDs up front (tokens.go validWorkspaceID),
+// so handler tests must pass syntactically valid UUIDs. Fixed values keep
+// sqlmock WithArgs assertions deterministic.
+const (
+	wsUUID1 = "11111111-1111-1111-1111-111111111111"
+	wsUUID2 = "22222222-2222-2222-2222-222222222222"
+	wsUUID3 = "33333333-3333-3333-3333-333333333333"
+)
+
 // withMockDB swaps `db.DB` for a sqlmock and returns the mock plus a
 // restore func. Tests use this in place of setupTokenTestDB which
 // skips on a missing real DB.
@@ -81,13 +90,13 @@ func TestTokenHandler_List_HappyPath(t *testing.T) {
 	created := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	last := created.Add(time.Hour)
 	mock.ExpectQuery(`SELECT id, prefix, created_at, last_used_at\s+FROM workspace_auth_tokens`).
-		WithArgs("ws-1", 50, 0).
+		WithArgs(wsUUID1, 50, 0).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "prefix", "created_at", "last_used_at"}).
 			AddRow("tok-1", "abc12345", created, last).
 			AddRow("tok-2", "def67890", created, nil))
 
 	w := makeReq(t, NewTokenHandler().List, "GET",
-		"/workspaces/ws-1/tokens", gin.Params{{Key: "id", Value: "ws-1"}})
+		"/workspaces/ws-1/tokens", gin.Params{{Key: "id", Value: wsUUID1}})
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
@@ -121,7 +130,7 @@ func TestTokenHandler_List_EmptyResult(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id", "prefix", "created_at", "last_used_at"}))
 
 	w := makeReq(t, NewTokenHandler().List, "GET",
-		"/workspaces/ws-2/tokens", gin.Params{{Key: "id", Value: "ws-2"}})
+		"/workspaces/ws-2/tokens", gin.Params{{Key: "id", Value: wsUUID2}})
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 on empty list, got %d", w.Code)
@@ -146,7 +155,7 @@ func TestTokenHandler_List_QueryError(t *testing.T) {
 		WillReturnError(errors.New("connection refused"))
 
 	w := makeReq(t, NewTokenHandler().List, "GET",
-		"/workspaces/ws-3/tokens", gin.Params{{Key: "id", Value: "ws-3"}})
+		"/workspaces/ws-3/tokens", gin.Params{{Key: "id", Value: wsUUID3}})
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("query error must surface as 500, got %d", w.Code)
@@ -158,13 +167,13 @@ func TestTokenHandler_List_RespectsLimit(t *testing.T) {
 	defer cleanup()
 
 	mock.ExpectQuery(`SELECT id, prefix, created_at, last_used_at`).
-		WithArgs("ws-1", 10, 5).
+		WithArgs(wsUUID1, 10, 5).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "prefix", "created_at", "last_used_at"}))
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/workspaces/ws-1/tokens?limit=10&offset=5", nil)
-	c.Params = gin.Params{{Key: "id", Value: "ws-1"}}
+	c.Params = gin.Params{{Key: "id", Value: wsUUID1}}
 	NewTokenHandler().List(c)
 
 	if w.Code != http.StatusOK {
@@ -186,7 +195,7 @@ func TestTokenHandler_List_ScanError(t *testing.T) {
 			AddRow("tok-1", "abc", "not-a-timestamp", nil))
 
 	w := makeReq(t, NewTokenHandler().List, "GET",
-		"/workspaces/ws-1/tokens", gin.Params{{Key: "id", Value: "ws-1"}})
+		"/workspaces/ws-1/tokens", gin.Params{{Key: "id", Value: wsUUID1}})
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("scan error must surface as 500, got %d: %s", w.Code, w.Body.String())
@@ -201,11 +210,11 @@ func TestTokenHandler_Create_RateLimited(t *testing.T) {
 
 	// Count query returns 50 (== max) → 429.
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM workspace_auth_tokens`).
-		WithArgs("ws-1").
+		WithArgs(wsUUID1).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(50))
 
 	w := makeReq(t, NewTokenHandler().Create, "POST",
-		"/workspaces/ws-1/tokens", gin.Params{{Key: "id", Value: "ws-1"}})
+		"/workspaces/ws-1/tokens", gin.Params{{Key: "id", Value: wsUUID1}})
 
 	if w.Code != http.StatusTooManyRequests {
 		t.Errorf("max active tokens should 429, got %d", w.Code)
@@ -225,7 +234,7 @@ func TestTokenHandler_Create_IssueFails(t *testing.T) {
 		WillReturnError(errors.New("disk full"))
 
 	w := makeReq(t, NewTokenHandler().Create, "POST",
-		"/workspaces/ws-1/tokens", gin.Params{{Key: "id", Value: "ws-1"}})
+		"/workspaces/ws-1/tokens", gin.Params{{Key: "id", Value: wsUUID1}})
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("IssueToken DB error must 500, got %d", w.Code)
@@ -242,7 +251,7 @@ func TestTokenHandler_Create_HappyPath(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	w := makeReq(t, NewTokenHandler().Create, "POST",
-		"/workspaces/ws-1/tokens", gin.Params{{Key: "id", Value: "ws-1"}})
+		"/workspaces/ws-1/tokens", gin.Params{{Key: "id", Value: wsUUID1}})
 
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
@@ -257,7 +266,7 @@ func TestTokenHandler_Create_HappyPath(t *testing.T) {
 	if body.AuthToken == "" {
 		t.Errorf("auth_token must be present and non-empty in response")
 	}
-	if body.WorkspaceID != "ws-1" {
+	if body.WorkspaceID != wsUUID1 {
 		t.Errorf("workspace_id mismatch: %q", body.WorkspaceID)
 	}
 }
@@ -269,12 +278,12 @@ func TestTokenHandler_Revoke_HappyPath(t *testing.T) {
 	defer cleanup()
 
 	mock.ExpectExec(`UPDATE workspace_auth_tokens\s+SET revoked_at = now\(\)`).
-		WithArgs("tok-1", "ws-1").
+		WithArgs("tok-1", wsUUID1).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	w := makeReq(t, NewTokenHandler().Revoke, "DELETE",
 		"/workspaces/ws-1/tokens/tok-1", gin.Params{
-			{Key: "id", Value: "ws-1"},
+			{Key: "id", Value: wsUUID1},
 			{Key: "tokenId", Value: "tok-1"},
 		})
 
@@ -289,12 +298,12 @@ func TestTokenHandler_Revoke_NotFound(t *testing.T) {
 
 	// 0 rows affected → token not found OR already revoked.
 	mock.ExpectExec(`UPDATE workspace_auth_tokens`).
-		WithArgs("tok-ghost", "ws-1").
+		WithArgs("tok-ghost", wsUUID1).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
 	w := makeReq(t, NewTokenHandler().Revoke, "DELETE",
 		"/workspaces/ws-1/tokens/tok-ghost", gin.Params{
-			{Key: "id", Value: "ws-1"},
+			{Key: "id", Value: wsUUID1},
 			{Key: "tokenId", Value: "tok-ghost"},
 		})
 
@@ -312,12 +321,65 @@ func TestTokenHandler_Revoke_DBError(t *testing.T) {
 
 	w := makeReq(t, NewTokenHandler().Revoke, "DELETE",
 		"/workspaces/ws-1/tokens/tok-1", gin.Params{
-			{Key: "id", Value: "ws-1"},
+			{Key: "id", Value: wsUUID1},
 			{Key: "tokenId", Value: "tok-1"},
 		})
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("DB error must 500, got %d", w.Code)
+	}
+}
+
+// ---- UUID validation (regression: "global" sentinel 500) ------------
+
+// The canvas Settings → Workspace Tokens tab sent the literal sentinel
+// "global" as the workspace id when no node was selected. workspace_id
+// is a `uuid` column, so the query raised
+// `invalid input syntax for type uuid: "global"` which leaked as an
+// opaque 500. List/Create/Revoke now reject any non-UUID id with a
+// clean 400 before touching the DB. No DB expectation is set on the
+// mock — a DB hit would fail ExpectationsWereMet, proving short-circuit.
+func TestTokenHandler_RejectsNonUUIDWorkspaceID(t *testing.T) {
+	h := NewTokenHandler()
+	cases := []struct {
+		name   string
+		run    func(c *gin.Context)
+		method string
+		params gin.Params
+	}{
+		{"List", h.List, "GET", gin.Params{{Key: "id", Value: "global"}}},
+		{"Create", h.Create, "POST", gin.Params{{Key: "id", Value: "global"}}},
+		{"Revoke", h.Revoke, "DELETE", gin.Params{
+			{Key: "id", Value: "global"},
+			{Key: "tokenId", Value: "tok-1"},
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock, cleanup := withMockDB(t)
+			defer cleanup()
+
+			w := makeReq(t, tc.run, tc.method,
+				"/workspaces/global/tokens", tc.params)
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("%s with non-UUID id must 400, got %d: %s",
+					tc.name, w.Code, w.Body.String())
+			}
+			var body struct {
+				Error string `json:"error"`
+			}
+			_ = json.Unmarshal(w.Body.Bytes(), &body)
+			if body.Error != "invalid workspace id" {
+				t.Errorf("%s: want error=%q, got %q",
+					tc.name, "invalid workspace id", body.Error)
+			}
+			// No query/exec was expected → if the handler hit the DB
+			// this fails, proving the guard short-circuits before SQL.
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("%s leaked a DB call past the uuid guard: %v", tc.name, err)
+			}
+		})
 	}
 }
 
