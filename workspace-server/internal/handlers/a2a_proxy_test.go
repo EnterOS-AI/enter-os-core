@@ -2228,12 +2228,18 @@ func TestProxyA2A_PushMode_NoShortCircuit(t *testing.T) {
 	}
 }
 
-// TestProxyA2A_PollMode_FailsClosedToPush verifies the safety contract:
-// a DB error reading delivery_mode must default to push (the existing
-// behavior), NOT poll. Failing to push means a poll-mode workspace
-// briefly attempts a real dispatch — visible failure (502 / SSRF
-// rejection / restart cascade), not a silent drop into activity_logs
-// where the agent might never look. Loud > silent, recoverable > lost.
+// TestProxyA2A_PollMode_FailsClosedToPush verifies the LEGACY safety
+// contract is PRESERVED for non-context DB errors: a generic DB error
+// reading delivery_mode still defaults to push (today's behavior), NOT
+// poll. Failing to push means a poll-mode workspace briefly attempts a
+// real dispatch — visible failure (502 / SSRF rejection / restart
+// cascade), not a silent drop into activity_logs where the agent might
+// never look. Loud > silent, recoverable > lost.
+//
+// internal#497 narrows the fail-closed change to *context* errors only
+// (the actual ce2db75f regression vector); generic DB errors keep this
+// long-standing fail-open-to-push contract. The ctx-error fail-closed is
+// covered by TestLookupDeliveryMode_ContextCanceled_FailsClosed.
 func TestProxyA2A_PollMode_FailsClosedToPush(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t) // empty Redis — forces resolveAgentURL DB lookup
@@ -2244,7 +2250,8 @@ func TestProxyA2A_PollMode_FailsClosedToPush(t *testing.T) {
 
 	expectBudgetCheck(mock, wsID)
 
-	// lookupDeliveryMode hits a transient DB error → must default push.
+	// lookupDeliveryMode hits a generic (non-context) DB error → must
+	// still default push (legacy contract preserved by internal#497).
 	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
 		WithArgs(wsID).
 		WillReturnError(sql.ErrConnDone)
@@ -2268,12 +2275,43 @@ func TestProxyA2A_PollMode_FailsClosedToPush(t *testing.T) {
 		var resp map[string]interface{}
 		_ = json.Unmarshal(w.Body.Bytes(), &resp)
 		if resp["status"] == "queued" {
-			t.Errorf("DB error on delivery_mode lookup silently queued the request — must fail-closed-to-push, got body: %s", w.Body.String())
+			t.Errorf("generic DB error on delivery_mode lookup silently queued the request — must fail-open-to-push, got body: %s", w.Body.String())
 		}
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// TestLookupDeliveryMode_ContextCanceled_FailsClosed is the internal#497
+// regression test for the SECONDARY defect. It pins the exact invariant
+// that hid the ce2db75f regression for 5 days: when the delivery_mode read
+// fails because the context was cancelled (precisely what happened in the
+// detached delegation goroutine running on a returned request context),
+// lookupDeliveryMode MUST return an error and MUST NOT silently return
+// "push". Returning push there is what skipped the poll-mode short-circuit
+// and silently dropped 100% of poll-mode peer deliveries.
+//
+// A pre-cancelled context makes QueryRowContext fail with
+// context.Canceled deterministically — no DB rows are mocked because the
+// query never reaches a result.
+func TestLookupDeliveryMode_ContextCanceled_FailsClosed(t *testing.T) {
+	mock := setupTestDB(t)
+	// The query fails on the cancelled ctx before matching; provide a
+	// permissive expectation so sqlmock doesn't complain about the attempt.
+	mock.ExpectQuery("SELECT delivery_mode FROM workspaces WHERE id").
+		WillReturnError(context.Canceled)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // simulate the HTTP handler having returned (request ctx dead)
+
+	mode, err := lookupDeliveryMode(ctx, "ws-poll-peer")
+	if err == nil {
+		t.Fatalf("internal#497 regression: lookupDeliveryMode swallowed a context error and returned mode=%q with nil err — this is the exact 5-day silent-misrouting vector", mode)
+	}
+	if mode == models.DeliveryModePush {
+		t.Errorf("internal#497 regression: context error must NOT default to push (got mode=%q)", mode)
 	}
 }
 

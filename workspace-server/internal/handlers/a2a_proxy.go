@@ -399,7 +399,21 @@ func (h *WorkspaceHandler) proxyA2ARequest(ctx context.Context, workspaceID stri
 	// (no Do(), no maybeMarkContainerDead). The response is a synthetic
 	// {status:"queued"} envelope so the caller (canvas, another workspace)
 	// knows delivery is acknowledged but pending consumption.
-	if lookupDeliveryMode(ctx, workspaceID) == models.DeliveryModePoll {
+	deliveryMode, deliveryModeErr := lookupDeliveryMode(ctx, workspaceID)
+	if deliveryModeErr != nil {
+		// internal#497 fail-closed: a real DB/context error on the
+		// delivery-mode read MUST NOT silently fall through to the push
+		// dispatch path — that is exactly what silently misrouted every
+		// poll-mode peer for 5 days under the ce2db75f regression. Surface
+		// a structured error so the delegation is marked failed (loud +
+		// retryable) instead of dispatched to the wrong path.
+		log.Printf("ProxyA2A: delivery-mode lookup failed for %s: %v — failing closed", workspaceID, deliveryModeErr)
+		return 0, nil, &proxyA2AError{
+			Status:   http.StatusServiceUnavailable,
+			Response: gin.H{"error": "delivery-mode lookup failed; refusing to dispatch to avoid silent misrouting"},
+		}
+	}
+	if deliveryMode == models.DeliveryModePoll {
 		if logActivity {
 			h.logA2AReceiveQueued(ctx, workspaceID, callerID, body, a2aMethod)
 		}

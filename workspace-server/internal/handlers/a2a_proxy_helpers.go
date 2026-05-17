@@ -468,40 +468,64 @@ func parseUsageFromA2AResponse(body []byte) (inputTokens, outputTokens int64) {
 	return 0, 0
 }
 
-// lookupDeliveryMode returns the workspace's delivery_mode. On any DB
-// error or missing row it returns DeliveryModePush — the fail-closed
-// default. "Closed" here means "fall back to today's behavior (synchronous
-// dispatch)" rather than "fall back to drop the request silently into
-// activity_logs where the agent might never see it." A poll-mode workspace
-// that briefly reads as push will get its A2A request dispatched to the
-// stored URL (or a 502 if no URL); a push-mode workspace that briefly
-// reads as poll would get its request silently queued with no dispatch.
-// The first failure is loud + recoverable; the second is silent.
+// lookupDeliveryMode returns the workspace's delivery_mode.
+//
+// internal#497 / RFC#497 fail-closed (SURGICAL scope): the *specific*
+// failure mode that hid the ce2db75f regression for 5 days is now
+// propagated instead of silently swallowed — a CONTEXT error
+// (context.Canceled / context.DeadlineExceeded). Under ce2db75f the
+// detached delegation goroutine ran on a cancelled request context, every
+// `SELECT delivery_mode` failed `context canceled`, this function returned
+// push, the poll-mode short-circuit in proxyA2ARequest was skipped, and
+// poll-mode peers (e.g. an operator laptop on molecule-mcp-claude-channel)
+// silently never got their a2a_receive inbox row. A transient,
+// systematic-once-triggered context cancellation became permanent
+// invisible misrouting. Returning that error lets the caller fail loud
+// (mark the delegation failed) instead of mis-dispatching.
+//
+// Scope is deliberately narrow: only ctx errors propagate. Other DB
+// errors retain the long-standing documented "fall back to push (today's
+// synchronous behavior)" contract — that path is loud + recoverable
+// (502 / SSRF reject / restart), unlike the silent poll-mode drop, and
+// the surrounding proxy (incl. the sibling checkWorkspaceBudget) is
+// intentionally built around that fail-open-to-push behavior. Widening
+// further is an RFC#497 follow-up, not part of this P0 fix.
+//
+// A genuinely *absent* configuration is NOT an error and still resolves to
+// push (the safe synchronous default): sql.ErrNoRows, a NULL/empty column,
+// or an unrecognised value all return (push, nil).
 //
 // The function is intentionally lookup-only — it never mutates the row.
 // The register handler (registry.go) is the only writer for delivery_mode.
 //
 // See #2339 PR 1 for the column + register-flow side; this is the
 // proxy-side read used for the short-circuit in proxyA2ARequest.
-func lookupDeliveryMode(ctx context.Context, workspaceID string) string {
+func lookupDeliveryMode(ctx context.Context, workspaceID string) (string, error) {
 	var mode sql.NullString
 	err := db.DB.QueryRowContext(ctx,
 		`SELECT delivery_mode FROM workspaces WHERE id = $1`, workspaceID,
 	).Scan(&mode)
 	if err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			log.Printf("ProxyA2A: lookupDeliveryMode(%s) failed (%v) — defaulting to push", workspaceID, err)
+		// internal#497: a context cancellation/deadline MUST NOT be
+		// swallowed into a silent push default — that is the exact 5-day
+		// silent-misrouting vector. Propagate so the caller fails closed.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("ProxyA2A: lookupDeliveryMode(%s) context error (%v) — failing closed (NOT defaulting to push)", workspaceID, err)
+			return "", err
 		}
-		return models.DeliveryModePush
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("ProxyA2A: lookupDeliveryMode(%s) failed (%v) — defaulting to push (non-ctx DB error; legacy fail-open-to-push contract)", workspaceID, err)
+		}
+		return models.DeliveryModePush, nil
 	}
 	if !mode.Valid || mode.String == "" {
-		return models.DeliveryModePush
+		return models.DeliveryModePush, nil
 	}
 	if !models.IsValidDeliveryMode(mode.String) {
 		log.Printf("ProxyA2A: workspace %s has invalid delivery_mode=%q — defaulting to push", workspaceID, mode.String)
-		return models.DeliveryModePush
+		return models.DeliveryModePush, nil
 	}
-	return mode.String
+	return mode.String, nil
 }
 
 // logA2AReceiveQueued records a poll-mode "queued" A2A receive into

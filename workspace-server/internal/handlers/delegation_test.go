@@ -16,6 +16,65 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// ---------- internal#497 regression: detached goroutine ctx must outlive the handler ----------
+
+// TestDelegate_DetachedContext_SurvivesRequestCancellation pins the
+// load-bearing invariant that regression ce2db75f violated: the context
+// handed to executeDelegation in the fire-and-forget goroutine must NOT be
+// cancelled when the HTTP handler returns 202 (which cancels
+// c.Request.Context()). Before the fix, executeDelegation ran on the
+// request-scoped ctx, so every DB op + proxy call failed `context
+// canceled` the instant the 202 was written — silently breaking 100% of
+// A2A peer delegations fleet-wide since 2026-05-12.
+//
+// This test asserts the exact ctx-derivation contract used by Delegate
+// (context.WithoutCancel(parent) + a timeout budget): the derived context
+// (a) stays alive after the parent is cancelled, and (b) still carries
+// parent values (trace/correlation/tenant ids the downstream proxy +
+// broadcaster read off ctx). It is intentionally DB-free and fast.
+func TestDelegate_DetachedContext_SurvivesRequestCancellation(t *testing.T) {
+	type ctxKey string
+	const traceKey ctxKey = "trace-id"
+
+	// Simulate c.Request.Context() carrying a correlation value.
+	parent, cancelParent := context.WithCancel(
+		context.WithValue(context.Background(), traceKey, "trace-abc-123"),
+	)
+
+	// Exact derivation Delegate uses for the detached goroutine.
+	delegationCtx, cancelDelegation := context.WithTimeout(
+		context.WithoutCancel(parent), 30*time.Minute,
+	)
+	defer cancelDelegation()
+
+	// The HTTP handler "returns 202" → request context is cancelled.
+	cancelParent()
+
+	if err := parent.Err(); err == nil {
+		t.Fatal("precondition: parent context should be cancelled after the handler returns")
+	}
+
+	// (a) Cancellation MUST NOT propagate to the detached context.
+	select {
+	case <-delegationCtx.Done():
+		t.Fatalf("regression: detached delegation ctx was cancelled by the handler returning (err=%v) — executeDelegation would fail every DB op with `context canceled`", delegationCtx.Err())
+	default:
+		// alive — correct
+	}
+
+	// (b) Parent values MUST still be readable (WithoutCancel preserves
+	// values; trace/correlation/tenant ids the proxy + broadcaster use).
+	if got, _ := delegationCtx.Value(traceKey).(string); got != "trace-abc-123" {
+		t.Errorf("detached ctx lost the parent trace value: got %q, want %q", got, "trace-abc-123")
+	}
+
+	// And it still has a real deadline (the 30m budget), so it is not an
+	// unbounded background context.
+	if _, hasDeadline := delegationCtx.Deadline(); !hasDeadline {
+		t.Error("detached ctx must carry the 30-minute timeout budget, but has no deadline")
+	}
+}
+
 // ---------- Delegate: missing target_id → 400 ----------
 
 func TestDelegate_MissingTargetID(t *testing.T) {

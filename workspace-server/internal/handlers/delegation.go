@@ -162,8 +162,32 @@ func (h *DelegationHandler) Delegate(c *gin.Context) {
 		},
 	})
 
-	// Fire-and-forget: send A2A in background goroutine
-	go h.executeDelegation(ctx, sourceID, body.TargetID, delegationID, a2aBody)
+	// Fire-and-forget: send A2A in a background goroutine.
+	//
+	// internal#497 — the goroutine MUST NOT inherit the HTTP request's
+	// cancellation. `ctx` here is c.Request.Context(); the handler returns
+	// 202 a few lines below, which cancels that context immediately. Before
+	// this fix (regression ce2db75f) executeDelegation ran on the
+	// request-scoped ctx, so every DB op + proxy call in the detached
+	// goroutine failed `context canceled` the instant the 202 was written.
+	// That silently broke 100% of A2A peer delegations fleet-wide since
+	// 2026-05-12 (poll-mode peers never got their a2a_receive inbox row;
+	// lookupDeliveryMode swallowed the ctx error and defaulted to push).
+	//
+	// context.WithoutCancel detaches cancellation/deadline while PRESERVING
+	// all context values (trace/correlation/tenant ids that proxyA2ARequest
+	// and the broadcaster read off ctx) — this is the established pattern in
+	// this package (a2a_proxy.go:850, a2a_proxy_helpers.go:525,
+	// registry.go:822). The 30-minute ceiling matches the prior internal
+	// budget executeDelegation used before ce2db75f and the proxy's own
+	// absolute agent-dispatch ceiling (a2a_proxy.go forwardCtx).
+	delegationCtx, cancelDelegation := context.WithTimeout(
+		context.WithoutCancel(ctx), 30*time.Minute,
+	)
+	go func() {
+		defer cancelDelegation()
+		h.executeDelegation(delegationCtx, sourceID, body.TargetID, delegationID, a2aBody)
+	}()
 
 	// Broadcast event so canvas shows delegation in real-time
 	h.broadcaster.RecordAndBroadcast(ctx, string(events.EventDelegationSent), sourceID, map[string]interface{}{
