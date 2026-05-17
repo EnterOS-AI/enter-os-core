@@ -28,7 +28,19 @@ const mockValidateSecret = vi.fn();
 
 vi.mock("@/lib/api/secrets", () => ({
   validateSecret: (...args: unknown[]) => mockValidateSecret(...args),
+  ApiError: class ApiError extends Error {
+    status: number;
+    constructor(status: number, message: string) {
+      super(message);
+      this.name = "ApiError";
+      this.status = status;
+    }
+  },
 }));
+
+// Re-import the mocked ApiError so test cases construct the same class the
+// component's `instanceof` check sees.
+import { ApiError } from "@/lib/api/secrets";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -201,8 +213,27 @@ describe("TestConnectionButton — failure path", () => {
 });
 
 describe("TestConnectionButton — catch path", () => {
-  it("shows 'Connection timed out' on network error", async () => {
-    mockValidateSecret.mockRejectedValue(new Error("timeout"));
+  it("does NOT claim a timeout when the validate endpoint 404s (regression: internal#492)", async () => {
+    // The validate route is unimplemented on the server and returns a fast
+    // 404. Before the fix this rendered the misleading hardcoded string
+    // "Connection timed out. Service may be down." It must instead state
+    // honestly that validation isn't available and the key was not tested.
+    mockValidateSecret.mockRejectedValue(new ApiError(404, "Not Found"));
+    render(
+      <TestConnectionButton provider="anthropic" secretValue="sk-ant-xxx" />,
+    );
+    fireEvent.click(document.querySelector('button[type="button"]')!);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(document.body.textContent).not.toContain("Connection timed out");
+    expect(document.body.textContent).not.toContain("Service may be down");
+    expect(document.body.textContent).toContain("not available");
+    expect(document.body.textContent).toContain("not tested");
+  });
+
+  it("reports a non-404 server error with its status, not a timeout", async () => {
+    mockValidateSecret.mockRejectedValue(new ApiError(500, "Internal Server Error"));
     render(
       <TestConnectionButton provider="github" secretValue="ghp_xxx" />,
     );
@@ -210,7 +241,20 @@ describe("TestConnectionButton — catch path", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(document.body.textContent).toContain("Connection timed out");
+    expect(document.body.textContent).toContain("500");
+    expect(document.body.textContent).not.toContain("Connection timed out");
+  });
+
+  it("shows a connectivity message on a genuine network error", async () => {
+    mockValidateSecret.mockRejectedValue(new Error("network down"));
+    render(
+      <TestConnectionButton provider="github" secretValue="ghp_xxx" />,
+    );
+    fireEvent.click(document.querySelector('button[type="button"]')!);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(document.body.textContent).toContain("Could not reach the validation service");
   });
 
   it("calls onResult(false) on network error", async () => {

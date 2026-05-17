@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type { TestConnectionState, SecretGroup } from '@/types/secrets';
-import { validateSecret } from '@/lib/api/secrets';
+import { validateSecret, ApiError } from '@/lib/api/secrets';
 
 interface TestConnectionButtonProps {
   provider: SecretGroup;
@@ -55,9 +55,23 @@ export function TestConnectionButton({
       }
       onResult?.(result.valid);
       resetTimerRef.current = setTimeout(() => setState('idle'), RESET_DELAYS[nextState]!);
-    } catch {
+    } catch (err) {
+      // Distinguish a real failure shape rather than always claiming a
+      // timeout. A reachable server that answered with an HTTP status
+      // (ApiError) did NOT time out — most commonly the validation route
+      // is not available (404/501), which must not masquerade as
+      // "service down". Only an actual thrown network/abort error is a
+      // connectivity failure.
       setState('failure');
-      setErrorDetail('Connection timed out. Service may be down.');
+      if (err instanceof ApiError) {
+        setErrorDetail(
+          err.status === 404 || err.status === 501
+            ? 'Key validation is not available for this service yet. The key was not tested.'
+            : `Could not verify key (server returned ${err.status}). Saving is unaffected.`,
+        );
+      } else {
+        setErrorDetail('Could not reach the validation service. Check your connection and try again.');
+      }
       onResult?.(false);
       resetTimerRef.current = setTimeout(() => setState('idle'), RESET_DELAYS.failure);
     }

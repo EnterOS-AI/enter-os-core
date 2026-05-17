@@ -11,13 +11,21 @@ import { render, screen, fireEvent, cleanup, act } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TestConnectionButton } from "../ui/TestConnectionButton";
 import type { SecretGroup } from "@/types/secrets";
-import { validateSecret } from "@/lib/api/secrets";
+import { validateSecret, ApiError } from "@/lib/api/secrets";
 
 // ─── Mock validateSecret ──────────────────────────────────────────────────────
 // vi.mock is hoisted, so validateSecret (imported above) refers to the mocked
 // namespace value once vi.mock runs. Use vi.mocked() to access it in tests.
 vi.mock("@/lib/api/secrets", () => ({
   validateSecret: vi.fn(),
+  ApiError: class ApiError extends Error {
+    status: number;
+    constructor(status: number, message: string) {
+      super(message);
+      this.name = "ApiError";
+      this.status = status;
+    }
+  },
 }));
 
 // SecretGroup is a string literal type: 'github' | 'anthropic' | 'openrouter' | 'custom'
@@ -102,7 +110,7 @@ describe("TestConnectionButton — state machine", () => {
     expect(screen.getByText("Permission denied")).toBeTruthy();
   });
 
-  it("shows generic error message on unexpected exception", async () => {
+  it("shows a connectivity message on a genuine network exception", async () => {
     vi.mocked(validateSecret).mockRejectedValue(new Error("timeout"));
     render(<TestConnectionButton provider={toGroup("anthropic")} secretValue="sk-..." />);
 
@@ -110,8 +118,23 @@ describe("TestConnectionButton — state machine", () => {
     await act(async () => { /* flush */ });
 
     expect(screen.getByRole("alert")).toBeTruthy();
-    // The error detail is hardcoded to "Connection timed out. Service may be down."
-    expect(document.body.querySelector('[role="alert"]')?.textContent).toMatch(/timed out/i);
+    // A real thrown network error → honest connectivity message (not a
+    // fabricated "service down"); see internal#492.
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toMatch(
+      /could not reach the validation service/i,
+    );
+  });
+
+  it("does not claim a timeout when the validate endpoint 404s (internal#492)", async () => {
+    vi.mocked(validateSecret).mockRejectedValue(new ApiError(404, "Not Found"));
+    render(<TestConnectionButton provider={toGroup("anthropic")} secretValue="sk-..." />);
+
+    fireEvent.click(screen.getByRole("button"));
+    await act(async () => { /* flush */ });
+
+    const alert = document.body.querySelector('[role="alert"]')?.textContent ?? "";
+    expect(alert).not.toMatch(/timed out/i);
+    expect(alert).toMatch(/not available/i);
   });
 });
 
