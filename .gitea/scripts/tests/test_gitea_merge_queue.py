@@ -118,3 +118,13 @@ def test_merge_decision_updates_stale_pr_before_merge():
 
     assert decision.ready is False
     assert decision.action == "update"
+
+
+def test_MergePermissionError_inherits_from_ApiError():
+    assert issubclass(mq.MergePermissionError, mq.ApiError)
+
+
+def test_MergePermissionError_message_preserved():
+    exc = mq.MergePermissionError("POST /merge -> HTTP 405: User not allowed")
+    assert "405" in str(exc)
+    assert "User not allowed" in str(exc)

@@ -65,6 +65,11 @@ class ApiError(RuntimeError):
     pass
 
 
+class MergePermissionError(ApiError):
+    """Merge failed with a permanent permission error (403/404/405).
+    The queue should skip this PR and move to the next one."""
+
+
 @dataclasses.dataclass(frozen=True)
 class MergeDecision:
     ready: bool
@@ -338,7 +343,16 @@ def merge_pull(pr_number: int, *, dry_run: bool) -> None:
     print(f"::notice::merging PR #{pr_number}")
     if dry_run:
         return
-    api("POST", f"/repos/{OWNER}/{NAME}/pulls/{pr_number}/merge", body=payload, expect_json=False)
+    try:
+        api("POST", f"/repos/{OWNER}/{NAME}/pulls/{pr_number}/merge", body=payload, expect_json=False)
+    except ApiError as exc:
+        # Re-raise permission-like errors so process_once can skip this PR.
+        # 403 = no push access, 404 = repo/pr not found, 405 = not allowed.
+        msg = str(exc)
+        for code in ("403", "404", "405"):
+            if code in msg:
+                raise MergePermissionError(msg) from exc
+        raise  # re-raise other ApiErrors unchanged
 
 
 def process_once(*, dry_run: bool = False) -> int:
@@ -407,7 +421,25 @@ def process_once(*, dry_run: bool = False) -> int:
                 "deferring to next tick"
             )
             return 0
-        merge_pull(pr_number, dry_run=dry_run)
+        try:
+            merge_pull(pr_number, dry_run=dry_run)
+        except MergePermissionError as exc:
+            # Permanent merge failure (HTTP 403/404/405). Post a comment so
+            # maintainers know why, then return 0 so this tick is done.
+            # The PR stays in the queue; future ticks can retry after the
+            # permission issue is resolved.
+            sys.stderr.write(f"::error::merge permission error for PR #{pr_number}: {exc}\n")
+            post_comment(
+                pr_number,
+                (
+                    "merge-queue: merge failed with HTTP 405 'User not allowed to merge PR'. "
+                    "No available token has Can-merge permission on this repo. "
+                    "Fix: grant Can-merge to a token, or add a maintain/admin collaborator. "
+                    "Skipping to next queued PR on next tick."
+                ),
+                dry_run=dry_run,
+            )
+            return 0
         return 0
     return 0
 
