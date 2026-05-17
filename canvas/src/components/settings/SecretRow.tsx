@@ -3,15 +3,23 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import type { Secret, SecretGroup } from '@/types/secrets';
 import { useSecretsStore } from '@/stores/secrets-store';
 import { StatusBadge } from '@/components/ui/StatusBadge';
-import { RevealToggle } from '@/components/ui/RevealToggle';
 import { KeyValueField } from '@/components/ui/KeyValueField';
 import { ValidationHint } from '@/components/ui/ValidationHint';
 import { TestConnectionButton } from '@/components/ui/TestConnectionButton';
 import { validateSecretValue } from '@/lib/validation/secret-formats';
 import { SERVICES } from '@/lib/services';
 
-const AUTO_HIDE_MS = 30_000;
 const VALIDATION_DEBOUNCE_MS = 400;
+
+// Secret values are write-only from the browser: the server List endpoint
+// "Never exposes values", there is no per-secret decrypt route, and the
+// only decrypted path (GET /secrets/values) is bulk + token-gated for
+// remote agents. The old eye/RevealToggle was a dead affordance — it
+// flipped its own icon but could never reveal anything, which read as
+// "this doesn't work" (esp. once clicked → eye-with-slash). We show an
+// honest static indicator instead; rotation is via Edit.
+const WRITE_ONLY_TITLE =
+  'Value is write-only and cannot be revealed — use Edit to replace/rotate it';
 
 interface SecretRowProps {
   secret: Secret;
@@ -31,28 +39,12 @@ export function SecretRow({ secret, workspaceId }: SecretRowProps) {
   const setSecretStatus = useSecretsStore((s) => s.setSecretStatus);
 
   const isEditing = editingKey === secret.name;
-  const [revealed, setRevealed] = useState(false);
   const [editValue, setEditValue] = useState('');
   const [validationError, setValidationError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const editBtnRef = useRef<HTMLButtonElement>(null);
-  const revealTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-
-  // Auto-hide revealed value after 30s
-  useEffect(() => {
-    if (revealed) {
-      clearTimeout(revealTimerRef.current);
-      revealTimerRef.current = setTimeout(() => setRevealed(false), AUTO_HIDE_MS);
-      return () => clearTimeout(revealTimerRef.current);
-    }
-  }, [revealed]);
-
-  // Reset revealed state when panel closes (session-only)
-  useEffect(() => {
-    return () => setRevealed(false);
-  }, []);
 
   // Debounced validation
   useEffect(() => {
@@ -133,11 +125,15 @@ export function SecretRow({ secret, workspaceId }: SecretRowProps) {
           {secret.masked_value}
         </span>
         <div className="secret-row__actions">
-          <RevealToggle
-            revealed={revealed}
-            onToggle={() => setRevealed((r) => !r)}
-            label={`Toggle reveal ${secret.name}`}
-          />
+          <span
+            data-testid="write-only-indicator"
+            className="secret-row__write-only"
+            role="img"
+            aria-label={`${secret.name} value is write-only and cannot be revealed; use Edit to replace it`}
+            title={WRITE_ONLY_TITLE}
+          >
+            🔒
+          </span>
           <StatusBadge status={secret.status} />
           <button
             type="button"

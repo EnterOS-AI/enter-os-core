@@ -138,12 +138,52 @@ describe("SecretRow — display mode", () => {
     expect(document.querySelector('[role="row"]')).toBeTruthy();
   });
 
-  it("has Reveal, Copy, Edit, Delete buttons", () => {
+  it("has Copy, Edit, Delete buttons", () => {
     render(<SecretRow secret={GITHUB_SECRET} workspaceId="ws-1" />);
-    expect(screen.getByTestId("reveal-toggle")).toBeTruthy();
     expect(screen.getByRole("button", { name: /copy/i })).toBeTruthy();
     expect(screen.getByRole("button", { name: /edit/i })).toBeTruthy();
     expect(screen.getByRole("button", { name: /delete/i })).toBeTruthy();
+  });
+
+  // Regression: the reveal/eye control was a dead affordance. Clicking it
+  // flipped its own icon (eye → eye-with-slash) but never revealed the value,
+  // because secret values are write-only from the browser (server List
+  // "Never exposes values"; there is no per-secret decrypt endpoint and the
+  // client has no plaintext-fetch function). The honest fix removes the
+  // toggle and shows a static "write-only / cannot be revealed" indicator.
+  // See internal tracking issue + internal#210/#211.
+  it("does NOT render a reveal/eye toggle (values are write-only)", () => {
+    render(<SecretRow secret={GITHUB_SECRET} workspaceId="ws-1" />);
+    expect(screen.queryByTestId("reveal-toggle")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /toggle reveal/i }),
+    ).toBeNull();
+  });
+
+  it("shows a write-only indicator explaining the value cannot be revealed", () => {
+    render(<SecretRow secret={ANTHROPIC_SECRET} workspaceId="ws-1" />);
+    const indicator = screen.getByTestId("write-only-indicator");
+    expect(indicator).toBeTruthy();
+    // Affordance must be honest: explain it cannot be revealed and that
+    // Edit is the rotate path. It must not be a clickable button.
+    const title = indicator.getAttribute("title") ?? "";
+    expect(title.toLowerCase()).toMatch(/write-only|cannot be revealed/);
+    expect(indicator.tagName).not.toBe("BUTTON");
+  });
+
+  it("write-only indicator is present for the Anthropic/OAuth-token row too", () => {
+    // The reported bug singled out CLAUDE_CODE_OAUTH_TOKEN (anthropic group);
+    // the fix is group-agnostic — every row gets the same honest affordance.
+    const OAUTH_SECRET = {
+      name: "CLAUDE_CODE_OAUTH_TOKEN",
+      masked_value: "••••••••••••••••9d2a",
+      group: "anthropic" as const,
+      status: "unverified" as const,
+      updated_at: "2024-01-04",
+    };
+    render(<SecretRow secret={OAUTH_SECRET} workspaceId="ws-1" />);
+    expect(screen.queryByTestId("reveal-toggle")).toBeNull();
+    expect(screen.getByTestId("write-only-indicator")).toBeTruthy();
   });
 
   it("shows invalid status correctly", () => {
