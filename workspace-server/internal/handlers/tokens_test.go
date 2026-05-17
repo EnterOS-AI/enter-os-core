@@ -11,6 +11,7 @@ import (
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/wsauth"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 func init() { gin.SetMode(gin.TestMode) }
@@ -167,11 +168,14 @@ func TestTokenHandler_RevokeWrongWorkspace(t *testing.T) {
 
 	h := NewTokenHandler()
 
-	// Try to revoke with a different workspace ID — should 404
+	// Try to revoke with a different (valid-UUID) workspace ID that does
+	// not own the token — should 404. A valid UUID is required so this
+	// exercises the ownership branch, not the up-front uuid-shape 400.
+	otherWS := uuid.NewString()
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Params = gin.Params{{Key: "id", Value: "wrong-workspace-id"}, {Key: "tokenId", Value: tokenID}}
-	c.Request = httptest.NewRequest("DELETE", "/workspaces/wrong/tokens/"+tokenID, nil)
+	c.Params = gin.Params{{Key: "id", Value: otherWS}, {Key: "tokenId", Value: tokenID}}
+	c.Request = httptest.NewRequest("DELETE", "/workspaces/"+otherWS+"/tokens/"+tokenID, nil)
 	h.Revoke(c)
 
 	if w.Code != http.StatusNotFound {

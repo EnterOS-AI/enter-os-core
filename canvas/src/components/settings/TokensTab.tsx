@@ -16,7 +16,40 @@ interface TokensTabProps {
   workspaceId: string;
 }
 
+// The settings panel passes the literal sentinel "global" when no canvas
+// node is selected. Workspace tokens are inherently per-workspace — there
+// is no /workspaces/global/tokens endpoint (querying the uuid column with
+// "global" 500s on Postgres). The org-wide equivalent lives in the
+// separate "Org API Keys" tab. Mirrors the sentinel-awareness that
+// api/secrets.ts already has (workspaceId === 'global' → /settings/secrets).
+const GLOBAL_WORKSPACE_ID = 'global';
+
 export function TokensTab({ workspaceId }: TokensTabProps) {
+  if (workspaceId === GLOBAL_WORKSPACE_ID) {
+    return (
+      <div className="p-4 space-y-4">
+        <div>
+          <h3 className="text-sm font-semibold text-ink">API Tokens</h3>
+          <p className="text-[10px] text-ink-mid mt-0.5">
+            Bearer tokens for authenticating API calls to this workspace.
+          </p>
+        </div>
+        <div className="text-center py-6">
+          <p className="text-xs text-ink-mid">Select a workspace node first</p>
+          <p className="text-[10px] text-ink-mid mt-1">
+            Workspace tokens are scoped to a single workspace. Select a node
+            on the canvas to manage its tokens, or use the{' '}
+            <span className="text-accent font-medium">Org API Keys</span> tab
+            for org-wide API keys.
+          </p>
+        </div>
+      </div>
+    );
+  }
+  return <WorkspaceTokensTab workspaceId={workspaceId} />;
+}
+
+function WorkspaceTokensTab({ workspaceId }: TokensTabProps) {
   const [tokens, setTokens] = useState<Token[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);

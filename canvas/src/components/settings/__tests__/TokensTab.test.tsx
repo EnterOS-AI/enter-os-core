@@ -302,3 +302,35 @@ describe("TokensTab — error", () => {
     expect(document.querySelector('[role="status"]')).toBeNull();
   });
 });
+
+// ─── "global" sentinel (no node selected) ────────────────────────────────────
+//
+// Regression: SettingsPanel passes the literal "global" when no canvas
+// node is selected. workspace tokens are per-workspace and there is no
+// /workspaces/global/tokens endpoint — calling it 500'd
+// ("invalid input syntax for type uuid: global"). The tab must NOT call
+// the API in that state and must point the user at the Org API Keys tab.
+describe("TokensTab — global sentinel (no node selected)", () => {
+  beforeEach(() => {
+    mockApiGet.mockReset();
+    mockApiPost.mockReset();
+    mockApiGet.mockRejectedValue(new Error("should not be called"));
+  });
+
+  it("does not call the API and shows a pointer to Org API Keys", async () => {
+    render(<TokensTab workspaceId="global" />);
+    await flush();
+    expect(mockApiGet).not.toHaveBeenCalled();
+    expect(mockApiPost).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Select a workspace node");
+    expect(document.body.textContent).toContain("Org API Keys");
+    // No error banner, no scary 500 surfacing.
+    expect(document.querySelector(".text-bad")).toBeNull();
+  });
+
+  it("has no create button in the global state", async () => {
+    render(<TokensTab workspaceId="global" />);
+    await flush();
+    expect(document.body.textContent).not.toContain("New Token");
+  });
+});
