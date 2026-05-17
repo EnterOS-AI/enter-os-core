@@ -162,6 +162,7 @@ jobs:
             exit 1
           fi
           python -m twine upload \
+            --verbose \
             --repository pypi \
             --username __token__ \
             --password "$PYPI_TOKEN" \
