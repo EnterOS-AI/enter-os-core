@@ -89,6 +89,7 @@ on:
 permissions:
   contents: read
   pull-requests: read
+  secrets: read
 
 jobs:
   # bp-exempt: PR review bot signal; required merge state is enforced by CI / all-required.

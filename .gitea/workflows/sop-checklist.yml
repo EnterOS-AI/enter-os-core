@@ -84,11 +84,8 @@ on:
 permissions:
   contents: read
   pull-requests: read
-  # NOTE: `statuses: write` is the GitHub-Actions name for POST /statuses.
-  # Gitea 1.22.6 may not gate on this permission key (it just checks the
-  # token), but listing it explicitly documents intent for the next
-  # platform-version upgrade.
   statuses: write
+  secrets: read
 
 jobs:
   all-items-acked:
