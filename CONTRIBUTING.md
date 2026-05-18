@@ -57,24 +57,24 @@ See `CLAUDE.md` for a full list of environment variables and their purposes.
 
 This repo is scoped to **code** (canvas, workspace, workspace-server, related
 infra). Public content (blog posts, marketing copy, OG images, SEO briefs,
-DevRel demos) lives in [`Molecule-AI/docs`](https://git.moleculesai.app/molecule-ai/docs).
+DevRel demos) lives in [`molecule-ai/docs`](https://git.moleculesai.app/molecule-ai/docs).
 The `Block forbidden paths` CI gate fails any PR that writes to `marketing/`
-or other removed paths — open against `Molecule-AI/docs` instead.
+or other removed paths — open against `molecule-ai/docs` instead.
 
 | Content type | Target |
 |---|---|
-| Blog posts | `Molecule-AI/docs` → `content/blog/<YYYY-MM-DD-slug>/` |
-| Doc pages | `Molecule-AI/docs` → `content/docs/` |
-| Marketing copy / PMM positioning | `Molecule-AI/docs` → `marketing/` |
-| OG images, visual assets | `Molecule-AI/docs` → `app/` or `marketing/` |
-| SEO briefs | `Molecule-AI/docs` → `marketing/` |
-| DevRel demos (runnable code) | Standalone repo under `Molecule-AI/`, OR embedded in `Molecule-AI/docs` |
+| Blog posts | `molecule-ai/docs` → `content/blog/<YYYY-MM-DD-slug>/` |
+| Doc pages | `molecule-ai/docs` → `content/docs/` |
+| Marketing copy / PMM positioning | `molecule-ai/docs` → `marketing/` |
+| OG images, visual assets | `molecule-ai/docs` → `app/` or `marketing/` |
+| SEO briefs | `molecule-ai/docs` → `marketing/` |
+| DevRel demos (runnable code) | Standalone repo under `molecule-ai/`, OR embedded in `molecule-ai/docs` |
 | Launch checklists, internal tracking | GitHub Issues — **not** committed files |
 | Engineering docs (`docs/adr/`, `docs/architecture/`, `docs/incidents/`) | This repo (internal, not published) |
 | Live product pages (e.g. `canvas/src/app/pricing/page.tsx`) | This repo (these are app code, not marketing copy) |
 
 If a PR fails the `Block forbidden paths` check, the contents belong in
-`Molecule-AI/docs`. No CI drag, no Canvas E2E, content lands in minutes.
+`molecule-ai/docs`. No CI drag, no Canvas E2E, content lands in minutes.
 
 ## Development Workflow
 
@@ -190,9 +190,9 @@ Runs the full regression suite against a fixture HTTP server. No network access 
 Code in this repo lands in molecule-core. Some related runtime artifacts
 live in their own repos:
 
-- [`Molecule-AI/molecule-ai-workspace-runtime`](https://git.moleculesai.app/molecule-ai/molecule-ai-workspace-runtime) — Python adapter SDK (`molecule_runtime`) that runs inside containerized Molecule workspaces. Bridges Claude Code SDK / hermes / langgraph / etc. → A2A queue.
-- [`Molecule-AI/molecule-sdk-python`](https://git.moleculesai.app/molecule-ai/molecule-sdk-python) — `A2AServer` + `RemoteAgentClient` for external agents that register over the public `/registry/register` flow.
-- [`Molecule-AI/molecule-mcp-claude-channel`](https://git.moleculesai.app/molecule-ai/molecule-mcp-claude-channel) — Claude Code channel plugin. Bridges A2A traffic into a running Claude Code session via MCP `notifications/claude/channel`. Polling-based (no tunnel required); install with `claude --channels plugin:molecule@Molecule-AI/molecule-mcp-claude-channel`.
+- [`molecule-ai/molecule-ai-workspace-runtime`](https://git.moleculesai.app/molecule-ai/molecule-ai-workspace-runtime) — Python adapter SDK (`molecule_runtime`) that runs inside containerized Molecule workspaces. Bridges Claude Code SDK / hermes / langgraph / etc. → A2A queue.
+- [`molecule-ai/molecule-sdk-python`](https://git.moleculesai.app/molecule-ai/molecule-sdk-python) — `A2AServer` + `RemoteAgentClient` for external agents that register over the public `/registry/register` flow.
+- [`molecule-ai/molecule-mcp-claude-channel`](https://git.moleculesai.app/molecule-ai/molecule-mcp-claude-channel) — Claude Code channel plugin. Bridges A2A traffic into a running Claude Code session via MCP `notifications/claude/channel`. Polling-based (no tunnel required); install inside Claude Code via `/plugin marketplace add https://git.moleculesai.app/molecule-ai/molecule-mcp-claude-channel.git` → `/plugin install molecule@molecule-channel`, then launch with `claude --dangerously-load-development-channels --channels plugin:molecule@molecule-channel`.
 
 When extending the **A2A surface** in molecule-core (`workspace-server/internal/handlers/a2a_proxy.go` etc.), consider whether the change has a downstream impact on the runtime SDK or the channel plugin — they're versioned independently but share the wire shape.
 
