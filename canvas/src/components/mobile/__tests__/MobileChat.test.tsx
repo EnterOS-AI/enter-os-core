@@ -21,6 +21,14 @@ import { MobileChat } from "../MobileChat";
 vi.mock("@/lib/api");
 import { api } from "@/lib/api";
 
+// AgentCommsPanel (mounted by the Agent Comms sub-tab, #231) subscribes
+// to the global socket via useSocketEvent. Stub it to a no-op so the
+// panel mounts without the real ReconnectingSocket — the parity tests
+// only assert the panel renders (vs the old static placeholder).
+vi.mock("@/hooks/useSocketEvent", () => ({
+  useSocketEvent: vi.fn(),
+}));
+
 // ─── Mock store ───────────────────────────────────────────────────────────────
 
 const mockAgentId = "ws-chat-test";
@@ -155,6 +163,12 @@ beforeEach(() => {
   mockOnBack.mockClear();
   mockStoreState.nodes = [];
   mockStoreState.agentMessages = {};
+  // jsdom doesn't implement scrollIntoView. The Agent Comms tab now
+  // mounts AgentCommsPanel (#231), which scrolls its feed to bottom on
+  // arrival; a no-op stub keeps the panel from throwing under jsdom
+  // (same stub AgentCommsPanel's own render test installs).
+  Element.prototype.scrollIntoView =
+    vi.fn() as unknown as Element["scrollIntoView"];
   // Set up spies on the real api methods. Tests override these per-call.
   const getSpy = vi.spyOn(api, "get");
   const postSpy = vi.spyOn(api, "post");
@@ -472,5 +486,148 @@ describe("MobileChat — chat history", () => {
     });
     // Initial call + retry = 2.
     expect(getSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ─── #232 · Attachment render parity with desktop ChatTab ────────────────────
+//
+// Regression for the CTO-reported mobile bug: MobileChat used to render
+// only m.content (no attachment surface), so files sent/received in a
+// conversation were invisible on mobile while desktop showed them. The
+// fix routes m.attachments through the same AttachmentPreview the
+// desktop ChatTab bubble uses.
+
+describe("MobileChat — attachment render parity (#232)", () => {
+  beforeEach(() => {
+    mockStoreState.nodes = [onlineNode];
+  });
+
+  it("renders an attachment from a history message via AttachmentPreview", async () => {
+    const getSpy = vi.spyOn(api, "get");
+    // useChatHistory reads { messages, reached_end }.
+    getSpy.mockResolvedValueOnce({
+      messages: [
+        {
+          id: "m-att-1",
+          role: "agent",
+          content: "Here is the report",
+          attachments: [
+            {
+              name: "report.csv",
+              uri: "workspace://out/report.csv",
+              mimeType: "text/csv",
+              size: 2048,
+            },
+          ],
+          timestamp: new Date().toISOString(),
+        },
+      ],
+      reached_end: true,
+    });
+
+    let rr: ReturnType<typeof renderChat>;
+    await act(async () => {
+      rr = renderChat(mockAgentId);
+    });
+    const { container } = rr!;
+
+    // A non-image attachment renders the AttachmentChip download button
+    // with title="Download <name>" — same component the desktop bubble
+    // dispatches through AttachmentPreview.
+    await waitFor(() => {
+      const chip = container.querySelector('[title="Download report.csv"]');
+      expect(chip).toBeTruthy();
+    });
+    expect(container.textContent ?? "").toContain("report.csv");
+  });
+});
+
+// ─── #231 · Agent Comms (A2A/peer) render parity with desktop ChatTab ────────
+//
+// Regression for the CTO-reported mobile bug: the Agent Comms sub-tab
+// rendered a static placeholder string ("peer-to-peer A2A traffic
+// surfaces in the Comms tab") instead of the real feed. The fix mounts
+// the same AgentCommsPanel the desktop ChatTab agent-comms tabpanel
+// uses, so peer/A2A + delegation activity is visible on mobile.
+
+describe("MobileChat — Agent Comms render parity (#231)", () => {
+  beforeEach(() => {
+    mockStoreState.nodes = [onlineNode];
+  });
+
+  it("mounts AgentCommsPanel on the Agent Comms tab (not the old placeholder)", async () => {
+    const getSpy = vi.spyOn(api, "get");
+    // 1st GET: useChatHistory (My Chat) on mount.
+    getSpy.mockResolvedValueOnce({ messages: [], reached_end: true });
+    // 2nd GET: AgentCommsPanel's activity load when the tab is shown.
+    // Empty list → panel renders its own empty state, which still
+    // proves AgentCommsPanel mounted (vs. the removed placeholder).
+    getSpy.mockResolvedValueOnce([]);
+
+    let rr: ReturnType<typeof renderChat>;
+    await act(async () => {
+      rr = renderChat(mockAgentId);
+    });
+    const { container } = rr!;
+
+    const commsTab = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim() === "Agent Comms",
+    );
+    expect(commsTab).toBeTruthy();
+    await act(async () => {
+      commsTab!.click();
+    });
+
+    await waitFor(() => {
+      const text = container.textContent ?? "";
+      // The panel's empty state — proves AgentCommsPanel mounted.
+      expect(text).toContain("No agent-to-agent communications yet.");
+    });
+    // The old hard-coded placeholder must be gone.
+    expect(container.textContent ?? "").not.toContain(
+      "peer-to-peer A2A traffic surfaces in the Comms tab",
+    );
+    // The panel hit its activity endpoint.
+    expect(getSpy).toHaveBeenCalledWith(
+      expect.stringContaining(`/workspaces/${mockAgentId}/activity`),
+    );
+  });
+
+  it("renders a peer message on the Agent Comms tab", async () => {
+    const getSpy = vi.spyOn(api, "get");
+    getSpy.mockResolvedValueOnce({ messages: [], reached_end: true });
+    // a2a_receive from a peer → AgentCommsPanel.toCommMessage maps it
+    // to an inbound bubble with the request text.
+    getSpy.mockResolvedValueOnce([
+      {
+        id: "act-1",
+        activity_type: "a2a_receive",
+        source_id: "peer-ws-uuid",
+        target_id: mockAgentId,
+        method: "message/send",
+        summary: "peer asked something",
+        request_body: { task: "Please review PR 42" },
+        response_body: null,
+        status: "ok",
+        created_at: new Date().toISOString(),
+      },
+    ]);
+
+    let rr: ReturnType<typeof renderChat>;
+    await act(async () => {
+      rr = renderChat(mockAgentId);
+    });
+    const { container } = rr!;
+
+    const commsTab = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim() === "Agent Comms",
+    );
+    await act(async () => {
+      commsTab!.click();
+    });
+
+    await waitFor(() => {
+      expect(container.textContent ?? "").toContain("Please review PR 42");
+    });
   });
 });

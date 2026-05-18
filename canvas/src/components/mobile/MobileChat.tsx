@@ -2,8 +2,11 @@
 
 // 04 · Chat — message thread + composer + sub-tabs.
 // Wired to the same /workspaces/:id/a2a (method message/send) endpoint
-// that the desktop ChatTab uses, but with a slimmer surface: no
-// attachments, no A2A topology overlay, no conversation tracing.
+// that the desktop ChatTab uses. Render parity with desktop ChatTab is
+// achieved by reusing its renderers rather than forking a reduced
+// mobile path: the Agent Comms sub-tab mounts the same AgentCommsPanel,
+// and message attachments route through the same AttachmentPreview
+// dispatch the desktop My-Chat bubble uses (#231/#232).
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -16,6 +19,9 @@ import {
   useChatSend,
   useChatSocket,
 } from "@/components/tabs/chat/hooks";
+import { AgentCommsPanel } from "@/components/tabs/chat/AgentCommsPanel";
+import { AttachmentPreview } from "@/components/tabs/chat/AttachmentPreview";
+import { downloadChatFile } from "@/components/tabs/chat/uploads";
 
 import { toMobileAgent } from "./components";
 import { MOBILE_FONT_MONO, MOBILE_FONT_SANS, usePalette } from "./palette";
@@ -304,6 +310,17 @@ export function MobileChat({
   const removePendingFile = (index: number) =>
     setPendingFiles((prev) => prev.filter((_, i) => i !== index));
 
+  // Route attachment downloads through the same authenticated helper
+  // the desktop ChatTab uses (downloadChatFile) so platform-scheme
+  // URIs get a real Blob with auth headers instead of about:blank.
+  const downloadAttachment = (att: ChatAttachment) => {
+    downloadChatFile(agentId, att).catch(() => {
+      // AttachmentPreview's own error affordance covers the in-bubble
+      // failure state; matches ChatTab's behaviour of not double-
+      // reporting a download failure.
+    });
+  };
+
   const send = async () => {
     const text = draft.trim();
     if ((!text && pendingFiles.length === 0) || sending || !reachable) return;
@@ -433,7 +450,19 @@ export function MobileChat({
         </div>
       </div>
 
+      {/* Agent Comms — reuse the desktop AgentCommsPanel verbatim so
+          mobile renders the identical peer/A2A + delegation feed
+          (history GET + live socket events) instead of a placeholder
+          (#231). The panel owns its own scroll/load/error/empty
+          states, matching ChatTab's agent-comms tabpanel. */}
+      {tab === "a2a" && (
+        <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
+          <AgentCommsPanel workspaceId={agentId} />
+        </div>
+      )}
+
       {/* Messages */}
+      {tab === "my" && (
       <div
         ref={scrollRef}
         style={{
@@ -445,18 +474,6 @@ export function MobileChat({
           gap: 8,
         }}
       >
-        {tab === "a2a" && (
-          <div
-            style={{
-              padding: "20px 4px",
-              textAlign: "center",
-              color: p.text3,
-              fontSize: 13,
-            }}
-          >
-            Agent Comms — peer-to-peer A2A traffic surfaces in the Comms tab.
-          </div>
-        )}
         {tab === "my" && historyLoading && (
           <div style={{ padding: "20px 4px", textAlign: "center", color: p.text3, fontSize: 13 }}>
             Loading chat history…
@@ -521,9 +538,31 @@ export function MobileChat({
                     overflowWrap: "anywhere",
                   }}
                 >
-                  <MarkdownBubble dark={dark} accent={p.accent}>
-                    {m.content}
-                  </MarkdownBubble>
+                  {m.content && (
+                    <MarkdownBubble dark={dark} accent={p.accent}>
+                      {m.content}
+                    </MarkdownBubble>
+                  )}
+                  {m.attachments && m.attachments.length > 0 && (
+                    <div
+                      style={{
+                        display: "flex",
+                        flexWrap: "wrap",
+                        gap: 4,
+                        marginTop: m.content ? 6 : 0,
+                      }}
+                    >
+                      {m.attachments.map((att, i) => (
+                        <AttachmentPreview
+                          key={`${m.id}-${i}`}
+                          workspaceId={agentId}
+                          attachment={att}
+                          onDownload={downloadAttachment}
+                          tone={mine ? "user" : "agent"}
+                        />
+                      ))}
+                    </div>
+                  )}
                   <div
                     style={{
                       fontSize: 10,
@@ -554,7 +593,13 @@ export function MobileChat({
           </div>
         )}
       </div>
+      )}
 
+      {/* Footer ID + composer belong to My Chat only. The Agent Comms
+          tab is a read-only peer/A2A feed (parity with desktop
+          ChatTab, where the agent-comms tabpanel has no composer). */}
+      {tab === "my" && (
+      <>
       {/* Footer ID */}
       <div
         style={{
@@ -746,6 +791,8 @@ export function MobileChat({
           </button>
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 }
