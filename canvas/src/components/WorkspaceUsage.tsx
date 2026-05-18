@@ -71,7 +71,7 @@ export function WorkspaceUsage({ workspaceId }: WorkspaceUsageProps) {
             <SkeletonRow />
           </>
         ) : error ? (
-          <p className="text-xs text-bad" data-testid="usage-error">
+          <p role="alert" aria-live="assertive" className="text-xs text-bad" data-testid="usage-error">
             {error}
           </p>
         ) : metrics ? (

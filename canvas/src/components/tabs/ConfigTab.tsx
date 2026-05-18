@@ -995,7 +995,7 @@ export function ConfigTab({ workspaceId }: Props) {
       )}
 
       {error && (
-        <div className="mx-3 mb-2 px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-bad">{error}</div>
+        <div role="alert" aria-live="assertive" className="mx-3 mb-2 px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-bad">{error}</div>
       )}
       {!error && RUNTIMES_WITH_OWN_CONFIG.has(config.runtime || "") && (
         <div className="mx-3 mb-2 px-3 py-1.5 bg-surface-sunken/50 border border-line rounded text-xs text-ink-mid">

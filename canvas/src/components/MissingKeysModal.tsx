@@ -459,7 +459,7 @@ function ProviderPickerModal({
                 )}
 
                 {entry.error && (
-                  <div className="mt-1.5 text-[10px] text-bad">{entry.error}</div>
+                  <div role="alert" aria-live="assertive" className="mt-1.5 text-[10px] text-bad">{entry.error}</div>
                 )}
               </div>
             ))}
@@ -718,7 +718,7 @@ function AllKeysModal({
           ))}
 
           {globalError && (
-            <div className="px-3 py-2 bg-red-950/40 border border-red-800/50 rounded-lg text-[11px] text-bad">
+            <div role="alert" aria-live="assertive" className="px-3 py-2 bg-red-950/40 border border-red-800/50 rounded-lg text-[11px] text-bad">
               {globalError}
             </div>
           )}

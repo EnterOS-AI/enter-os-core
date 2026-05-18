@@ -275,7 +275,7 @@ export function ScheduleTab({ workspaceId }: Props) {
               Enabled
             </label>
           </div>
-          {error && <div className="text-[10px] text-bad">{error}</div>}
+          {error && <div role="alert" aria-live="assertive" className="text-[10px] text-bad">{error}</div>}
           <div className="flex gap-2">
             <button
               type="button"
