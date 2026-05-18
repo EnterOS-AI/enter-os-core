@@ -157,7 +157,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
               </select>
             </Field>
             {saveError && (
-              <div className="px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-bad">
+              <div role="alert" aria-live="assertive" className="px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-bad">
                 {saveError}
               </div>
             )}
@@ -203,7 +203,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
             {isRestartable && (
               <div className="pt-2">
                 {restartError && (
-                  <div className="mb-2 px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-bad">
+                  <div role="alert" aria-live="assertive" className="mb-2 px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-bad">
                     {restartError}
                   </div>
                 )}
@@ -307,7 +307,7 @@ export function DetailsTab({ workspaceId, data }: Props) {
       {/* Delete */}
       <Section title="Danger Zone">
         {deleteError && (
-          <div className="mb-2 px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-bad">
+          <div role="alert" aria-live="assertive" className="mb-2 px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-bad">
             {deleteError}
           </div>
         )}
