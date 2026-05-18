@@ -109,6 +109,130 @@ function AgentCardSection({ workspaceId }: { workspaceId: string }) {
   );
 }
 
+// --- Agent Abilities Section ---
+//
+// Always-visible on/off controls for the two workspace-level ability flags
+// (broadcast_enabled, talk_to_user_enabled). Both are mutated through the
+// same admin endpoint the ChatTab recovery banner already uses
+// (PATCH /workspaces/:id/abilities) and reflected into the canvas store node
+// data (broadcastEnabled / talkToUserEnabled) so every surface that reads
+// useCanvasStore.nodes stays consistent without a full re-hydrate.
+//
+// Before this section there was NO canvas control for either flag: the
+// backend was fully wired (workspace_abilities.go / workspace_broadcast.go /
+// agent_message_writer.go, see commit 29b4bffb + internal#510/#511) but the
+// only frontend affordance was the ChatTab recovery banner, which renders
+// solely when talk_to_user_enabled===false and so is invisible under the
+// TRUE default and never existed at all for broadcast.
+function AgentAbilitiesSection({ workspaceId }: { workspaceId: string }) {
+  // Read the live ability flags off the canvas store node — the platform
+  // event stream hydrates these (canvas-topology.ts maps the workspace row's
+  // broadcast_enabled/talk_to_user_enabled onto node data), so this stays in
+  // sync with the recovery banner and avoids a duplicate GET. Mirrors the
+  // store-read pattern used by AgentCardSection above.
+  const node = useCanvasStore((s) =>
+    s.nodes?.find?.((n) => n.id === workspaceId),
+  );
+  // Defaults match the backend column defaults + canvas-topology mapping:
+  // broadcast_enabled defaults FALSE, talk_to_user_enabled defaults TRUE.
+  const broadcastEnabled = node?.data.broadcastEnabled ?? false;
+  const talkToUserEnabled = node?.data.talkToUserEnabled ?? true;
+
+  // Track an in-flight PATCH per field so a double-click can't fire two
+  // racing writes, and surface a one-line error if the server rejects.
+  const [pending, setPending] = useState<null | "broadcast" | "talk">(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const patchAbility = async (
+    which: "broadcast" | "talk",
+    body: { broadcast_enabled: boolean } | { talk_to_user_enabled: boolean },
+    optimistic: Partial<{ broadcastEnabled: boolean; talkToUserEnabled: boolean }>,
+  ) => {
+    setError(null);
+    setPending(which);
+    // Optimistic store update — the toggle flips immediately; on failure we
+    // roll back to the server-truth value the store last held.
+    const prev = {
+      broadcastEnabled,
+      talkToUserEnabled,
+    };
+    useCanvasStore.getState().updateNodeData(workspaceId, optimistic);
+    try {
+      await api.patch(`/workspaces/${workspaceId}/abilities`, body);
+    } catch (e) {
+      // Roll back the optimistic change to last-known server truth.
+      useCanvasStore.getState().updateNodeData(workspaceId, {
+        broadcastEnabled: prev.broadcastEnabled,
+        talkToUserEnabled: prev.talkToUserEnabled,
+      });
+      setError(
+        e instanceof Error ? e.message : "Failed to update ability — try again",
+      );
+    } finally {
+      setPending(null);
+    }
+  };
+
+  return (
+    <Section title="Agent Abilities">
+      <p className="text-[10px] text-ink-mid px-1 pb-1">
+        Workspace-level permissions for this agent. Changes apply immediately
+        (no restart required).
+      </p>
+      <div className="space-y-2">
+        <div>
+          <Toggle
+            label="Talk to user"
+            checked={talkToUserEnabled}
+            onChange={(v) =>
+              pending
+                ? undefined
+                : patchAbility(
+                    "talk",
+                    { talk_to_user_enabled: v },
+                    { talkToUserEnabled: v },
+                  )
+            }
+          />
+          <p className="text-[10px] text-ink-mid mt-0.5 ml-6">
+            When off, the agent&apos;s <code className="font-mono">send_message_to_user</code>{" "}
+            and <code className="font-mono">POST /notify</code> calls are
+            rejected (403) — it must route updates through a parent workspace.
+          </p>
+        </div>
+        <div>
+          <Toggle
+            label="Broadcast to peers"
+            checked={broadcastEnabled}
+            onChange={(v) =>
+              pending
+                ? undefined
+                : patchAbility(
+                    "broadcast",
+                    { broadcast_enabled: v },
+                    { broadcastEnabled: v },
+                  )
+            }
+          />
+          <p className="text-[10px] text-ink-mid mt-0.5 ml-6">
+            When on, the agent may <code className="font-mono">POST /broadcast</code>{" "}
+            to message all non-removed agent workspaces in the org. Off by
+            default — only privileged orchestrators should hold this.
+          </p>
+        </div>
+      </div>
+      {pending && (
+        <div className="mt-2 text-[10px] text-ink-mid">Saving…</div>
+      )}
+      {error && (
+        <div className="mt-2 px-2 py-1 bg-red-900/30 border border-red-800 rounded text-[10px] text-bad">
+          {error}
+        </div>
+      )}
+    </Section>
+  );
+}
+
 // --- Main ConfigTab ---
 
 interface ModelSpec {
@@ -884,6 +1008,8 @@ export function ConfigTab({ workspaceId }: Props) {
               </div>
             )}
           </Section>
+
+          <AgentAbilitiesSection workspaceId={workspaceId} />
 
           {/* Claude Settings — shown for claude-code runtime or claude/anthropic model names */}
           {(config.runtime === "claude-code" ||
