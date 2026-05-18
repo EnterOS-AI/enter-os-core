@@ -92,6 +92,7 @@ export function MobileMe({
                     border: on ? `2px solid ${p.text}` : "2px solid transparent",
                     boxShadow: on ? `0 0 0 2px ${p.bg} inset` : "none",
                   }}
+                  className="focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-100 dark:focus-visible:ring-offset-zinc-900"
                 />
               );
             })}
@@ -184,6 +185,7 @@ function SegmentedRow({
               fontSize: 13,
               fontWeight: 600,
             }}
+            className="focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-100 dark:focus-visible:ring-offset-zinc-900"
           >
             {o.label}
           </button>
