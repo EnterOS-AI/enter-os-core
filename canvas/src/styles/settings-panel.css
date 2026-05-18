@@ -649,6 +649,10 @@
   border-radius: 6px;
   cursor: pointer;
 }
+.delete-dialog__cancel-btn:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
 
 .delete-dialog__confirm-btn {
   background: var(--status-invalid);
@@ -657,6 +661,10 @@
   padding: 8px 16px;
   border-radius: 6px;
   cursor: pointer;
+}
+.delete-dialog__confirm-btn:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
 }
 
 .delete-dialog__confirm-btn:disabled { opacity: 0.4; cursor: not-allowed; }

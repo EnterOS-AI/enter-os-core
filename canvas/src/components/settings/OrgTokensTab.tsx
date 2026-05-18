@@ -160,14 +160,14 @@ export function OrgTokensTab() {
             </code>
             <button
               onClick={handleCopy}
-              className="shrink-0 px-2 py-1.5 bg-emerald-800/40 hover:bg-emerald-700/50 border border-emerald-700/40 rounded text-[10px] text-good transition-colors"
+              className="shrink-0 px-2 py-1.5 bg-emerald-800/40 hover:bg-emerald-700/50 border border-emerald-700/40 rounded text-[10px] text-good transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
             >
               {copied ? 'Copied' : 'Copy'}
             </button>
           </div>
           <button
             onClick={() => setNewToken(null)}
-            className="text-[9px] text-good/60 hover:text-good transition-colors"
+            className="text-[9px] text-good/60 hover:text-good transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
           >
             Dismiss
           </button>
@@ -219,7 +219,7 @@ export function OrgTokensTab() {
               </div>
               <button
                 onClick={() => setRevokeTarget(t)}
-                className="text-[10px] text-bad/70 hover:text-bad transition-colors px-2 py-1 shrink-0"
+                className="text-[10px] text-bad/70 hover:text-bad transition-colors px-2 py-1 shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-1"
               >
                 Revoke
               </button>
