@@ -63,7 +63,7 @@ class MockWebSocket {
 (globalThis as unknown as Record<string, unknown>).WebSocket = MockWebSocket;
 
 // Now import the socket module (uses globalThis.WebSocket at call time)
-import { connectSocket, disconnectSocket } from "../socket";
+import { connectSocket, disconnectSocket, wakeSocket } from "../socket";
 import { useCanvasStore } from "../canvas";
 
 // ---------------------------------------------------------------------------
@@ -414,5 +414,86 @@ describe("RehydrateDedup", () => {
     d.beginFetch();
     // Now a second fetch is in flight; further calls block again
     expect(d.shouldSkip(2_700)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// wakeSocket() — visibility-wake reconnect (regression #223 / #228)
+// ---------------------------------------------------------------------------
+//
+// Mobile browsers (iOS Safari, Chrome on Android in deep-sleep) silently
+// drop the WebSocket when the tab is backgrounded; the in-page onclose
+// fires very late or never. Without a visibility wake, the canvas stays
+// frozen until the user manually refreshes.
+//
+// The real wiring lives at module level: connectSocket installs a
+// visibilitychange/pageshow listener that calls wake() on foreground.
+// We can't dispatch DOM events here because the suite runs under the
+// `node` test environment (no `document`/`window` — see canvas/vitest
+// .config.ts). Instead we test wake() directly through the wakeSocket
+// public export, which is the same code path the listener invokes.
+
+describe("wakeSocket → reconnect (#223 / #228 — mobile visibility wake)", () => {
+  it("wake on a healthy OPEN socket does not create a new WebSocket", () => {
+    connectSocket();
+    const ws = getLastWS();
+    ws.triggerOpen();
+    // OPEN === 1. wake() should take the healthy-no-op branch.
+    (ws as unknown as { readyState: number }).readyState = 1;
+    const before = MockWebSocket.instances.length;
+    wakeSocket();
+    expect(MockWebSocket.instances.length).toBe(before);
+  });
+
+  it("wake on a CLOSED socket creates a new WebSocket (the actual #223 fix)", () => {
+    connectSocket();
+    const ws = getLastWS();
+    ws.triggerOpen();
+    // CLOSED === 3. Simulates the OS killing the socket while the tab
+    // was backgrounded. We deliberately don't fire triggerClose() —
+    // the whole point of #223 is that mobile browsers don't fire
+    // onclose when they kill the WS, so reconnect never schedules.
+    (ws as unknown as { readyState: number }).readyState = 3;
+    const before = MockWebSocket.instances.length;
+    wakeSocket();
+    expect(MockWebSocket.instances.length).toBe(before + 1);
+  });
+
+  it("wake while CONNECTING (readyState=0) does not pile another handshake", () => {
+    connectSocket();
+    const ws = getLastWS();
+    // CONNECTING === 0 — a handshake is already in flight.
+    (ws as unknown as { readyState: number }).readyState = 0;
+    const before = MockWebSocket.instances.length;
+    wakeSocket();
+    expect(MockWebSocket.instances.length).toBe(before);
+  });
+
+  it("wake cancels any pending backoff reconnect", () => {
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+    connectSocket();
+    const ws = getLastWS();
+    ws.triggerOpen();
+    // Drop the socket — onclose schedules a backoff reconnect.
+    ws.triggerClose();
+    // Now wake the page. wake() should pre-empt the backoff so the
+    // user sees the canvas come back immediately, not after the
+    // exponential delay window.
+    (ws as unknown as { readyState: number }).readyState = 3;
+    clearTimeoutSpy.mockClear();
+    wakeSocket();
+    expect(clearTimeoutSpy).toHaveBeenCalled();
+    clearTimeoutSpy.mockRestore();
+  });
+
+  it("wake after disconnectSocket is a no-op (no zombie reconnect)", () => {
+    connectSocket();
+    const ws = getLastWS();
+    ws.triggerOpen();
+    disconnectSocket();
+    const before = MockWebSocket.instances.length;
+    // Singleton is null now — wake() should silently do nothing.
+    expect(() => wakeSocket()).not.toThrow();
+    expect(MockWebSocket.instances.length).toBe(before);
   });
 });

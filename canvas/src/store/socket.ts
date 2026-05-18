@@ -268,6 +268,46 @@ class ReconnectingSocket {
     }
     useCanvasStore.getState().setWsStatus("disconnected");
   }
+
+  /** Force a reconnect attempt now, skipping the backoff window.
+   *  Used by the visibilitychange / pageshow handler: when a mobile
+   *  browser backgrounds the tab, the OS silently kills the WebSocket
+   *  but the in-page onclose either fires very late or never fires at
+   *  all (iOS Safari, Chrome on Android in deep-sleep). Once the user
+   *  brings the tab back, the canvas needs to reconnect within human
+   *  perception — not on whatever backoff delay was last scheduled,
+   *  which can be up to 30s. (#223 / #228)
+   *
+   *  Idempotent: if the socket is already OPEN we leave it alone; the
+   *  WebSocket is still healthy and a reconnect would just churn. */
+  wake() {
+    if (this.disposed) return;
+    // OPEN === 1. Use the numeric literal so we don't have to import
+    // WebSocket type values; the runtime constant is well-defined.
+    if (this.ws && this.ws.readyState === 1) {
+      // Healthy. Run a rehydrate to catch any events we may have missed
+      // while the tab was backgrounded — the OS does deliver some
+      // packets late, but it can also drop them, and the dedup gate
+      // collapses this with any subsequent health-check rehydrate.
+      void this.rehydrate();
+      return;
+    }
+    // CONNECTING === 0 means a handshake is already in flight. Don't
+    // pile another one on; the existing attempt or its onclose-driven
+    // reconnect will resolve.
+    if (this.ws && this.ws.readyState === 0) return;
+    // Otherwise (CLOSING, CLOSED, or null) we're in limbo. Cancel any
+    // pending backoff and reconnect now.
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    // Reset attempt counter so the *next* failure (if any) starts from
+    // a short delay again — we just had a real user interaction, not
+    // an unattended-tab failure cascade.
+    this.attempt = 0;
+    this.connect();
+  }
 }
 
 export interface WorkspaceData {
@@ -306,11 +346,49 @@ export interface WorkspaceData {
 
 let socket: ReconnectingSocket | null = null;
 
+/** visibilitychange / pageshow handler. Mobile browsers (iOS Safari,
+ *  Chrome on Android in deep-sleep) silently drop the WebSocket when
+ *  the tab is backgrounded — the in-page `onclose` fires very late or
+ *  never. Without this listener, the canvas appears frozen after the
+ *  user backgrounds the PWA and returns to it: status events, agent
+ *  messages, and cross-device chat broadcast don't arrive until a
+ *  manual refresh (#223 / #228).
+ *
+ *  Both events are wired: `visibilitychange` covers tab-switch on a
+ *  live page; `pageshow` covers Safari's bfcache restore, where the
+ *  page comes back from cache without firing visibilitychange. */
+function onPageWake() {
+  // document is undefined in SSR; the listener never installs there,
+  // but defensively guard anyway in case this code is run via a test
+  // harness that doesn't shim it.
+  if (typeof document !== "undefined" && document.hidden) return;
+  socket?.wake();
+}
+let visibilityHandlerInstalled = false;
+function installVisibilityHandler() {
+  if (visibilityHandlerInstalled) return;
+  if (typeof document === "undefined" || typeof window === "undefined") return;
+  document.addEventListener("visibilitychange", onPageWake);
+  // `pageshow` with `event.persisted === true` is the bfcache restore
+  // signal — relevant on iOS Safari. We don't need to inspect
+  // `persisted` because waking an OPEN socket is a no-op.
+  window.addEventListener("pageshow", onPageWake);
+  visibilityHandlerInstalled = true;
+}
+function uninstallVisibilityHandler() {
+  if (!visibilityHandlerInstalled) return;
+  if (typeof document === "undefined" || typeof window === "undefined") return;
+  document.removeEventListener("visibilitychange", onPageWake);
+  window.removeEventListener("pageshow", onPageWake);
+  visibilityHandlerInstalled = false;
+}
+
 export function connectSocket() {
   if (!socket) {
     socket = new ReconnectingSocket(WS_URL);
   }
   socket.connect();
+  installVisibilityHandler();
 }
 
 export function disconnectSocket() {
@@ -318,4 +396,14 @@ export function disconnectSocket() {
     socket.disconnect();
     socket = null;
   }
+  uninstallVisibilityHandler();
+}
+
+/** Manually trigger the visibility-wake path. Exported so the test suite
+ *  can exercise `ReconnectingSocket.wake()` without depending on a
+ *  jsdom DOM (the rest of this file's tests run under the node env).
+ *  Real-world callers don't need this — the visibility/pageshow listener
+ *  drives it. */
+export function wakeSocket() {
+  socket?.wake();
 }
