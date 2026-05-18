@@ -546,7 +546,7 @@ func (h *WorkspaceHandler) Create(c *gin.Context) {
 			// shape. Adding a new snippet means adding it once there;
 			// all three callers pick it up automatically.
 			resp["connection"] = BuildExternalConnectionPayload(
-				externalPlatformURL(c), id, connectionToken,
+				externalPlatformURL(c), id, payload.Name, connectionToken,
 			)
 		}
 		c.JSON(http.StatusCreated, resp)
