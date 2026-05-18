@@ -33,7 +33,7 @@ export function PendingAttachmentPill({
       <button
         onClick={onRemove}
         aria-label={`Remove ${file.name}`}
-        className="ml-0.5 text-ink-mid hover:text-ink transition-colors shrink-0"
+        className="ml-0.5 text-ink-mid hover:text-ink transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-1"
       >
         <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
@@ -62,8 +62,9 @@ export function AttachmentChip({
   return (
     <button
       onClick={() => onDownload(attachment)}
+      aria-label={`Download ${attachment.name}`}
       title={`Download ${attachment.name}`}
-      className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] transition-colors max-w-full ${toneClasses}`}
+      className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] transition-colors max-w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-1 ${toneClasses}`}
     >
       <FileGlyph className="shrink-0 opacity-70" />
       <span className="truncate">{attachment.name}</span>

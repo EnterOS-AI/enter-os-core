@@ -405,7 +405,7 @@ export function AgentCommsPanel({ workspaceId }: { workspaceId: string }) {
         </p>
         <button
           onClick={loadInitial}
-          className="text-[10px] px-2 py-0.5 rounded bg-red-800/40 text-bad hover:bg-red-700/50 transition-colors"
+          className="text-[10px] px-2 py-0.5 rounded bg-red-800/40 text-bad hover:bg-red-700/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/60 focus-visible:ring-offset-1"
         >
           Retry
         </button>
@@ -610,7 +610,7 @@ function PeerTabButton({
       aria-selected={active}
       tabIndex={active ? 0 : -1}
       onClick={onClick}
-      className={`shrink-0 px-3 py-1.5 text-[10px] font-medium transition-colors whitespace-nowrap ${
+      className={`shrink-0 px-3 py-1.5 text-[10px] font-medium transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/60 focus-visible:ring-offset-1 ${
         active
           ? "border-b-2 border-cyan-500 text-cyan-200"
           : "border-b-2 border-transparent text-ink-mid hover:text-ink-mid"
