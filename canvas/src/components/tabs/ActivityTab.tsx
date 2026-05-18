@@ -185,7 +185,7 @@ export function ActivityTab({ workspaceId }: Props) {
       {/* Activity list */}
       <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
         {loading && activities.length === 0 && (
-          <div className="text-xs text-ink-mid text-center py-8">Loading activity...</div>
+          <div role="status" aria-live="polite" className="text-xs text-ink-mid text-center py-8">Loading activity...</div>
         )}
 
         {error && (

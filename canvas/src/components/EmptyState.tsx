@@ -105,7 +105,7 @@ export function EmptyState() {
 
         {/* Template grid */}
         {loading ? (
-          <div className="flex items-center justify-center gap-2 text-xs text-ink-mid py-4">
+          <div role="status" aria-live="polite" className="flex items-center justify-center gap-2 text-xs text-ink-mid py-4">
             <Spinner />
             Loading templates...
           </div>

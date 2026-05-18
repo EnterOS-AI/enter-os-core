@@ -416,6 +416,8 @@ function DetailActivity({ workspaceId, dark }: { workspaceId: string; dark: bool
   if (items === null) {
     return (
       <div
+        role="status"
+        aria-live="polite"
         style={{
           background: p.surface,
           borderRadius: 16,

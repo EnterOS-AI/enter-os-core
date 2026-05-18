@@ -251,11 +251,11 @@ export function MobileComms({ dark }: { dark: boolean }) {
 
       <div style={{ padding: "0 14px", display: "flex", flexDirection: "column", gap: 8 }}>
         {loading && items.length === 0 ? (
-          <div style={{ padding: "30px 4px", textAlign: "center", color: p.text3, fontSize: 13 }}>
+          <div role="status" aria-live="polite" style={{ padding: "30px 4px", textAlign: "center", color: p.text3, fontSize: 13 }}>
             Loading recent comms…
           </div>
         ) : filtered.length === 0 ? (
-          <div style={{ padding: "30px 4px", textAlign: "center", color: p.text3, fontSize: 13 }}>
+          <div role="status" aria-live="polite" style={{ padding: "30px 4px", textAlign: "center", color: p.text3, fontSize: 13 }}>
             No A2A traffic yet.
           </div>
         ) : (

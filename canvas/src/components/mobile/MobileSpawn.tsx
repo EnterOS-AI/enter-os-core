@@ -170,6 +170,8 @@ export function MobileSpawn({ dark, onClose }: { dark: boolean; onClose: () => v
         <div style={{ padding: "0 14px" }}>
           {loadingTemplates ? (
             <div
+              role="status"
+              aria-live="polite"
               style={{
                 padding: "24px 8px",
                 textAlign: "center",
