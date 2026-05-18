@@ -82,7 +82,7 @@ export function EventsTab({ workspaceId }: Props) {
       </div>
 
       {error && (
-        <div className="px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-bad">
+        <div role="alert" aria-live="assertive" className="px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-bad">
           {error}
         </div>
       )}
