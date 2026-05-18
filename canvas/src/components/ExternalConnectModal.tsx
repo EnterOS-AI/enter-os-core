@@ -263,10 +263,11 @@ export function ExternalConnectModal({ info, onClose }: Props) {
               targets are stable. Hidden panels use aria-hidden so screen
               readers skip them; active panel uses role=tabpanel with
               aria-labelledby pointing to the tab button. */}
-          <div className="mt-3">
+          <div className="mt-3" data-testid="snippet-panels">
             {/* Claude Code tab */}
             <div
               id="panel-claude"
+              data-testid="panel-claude"
               role="tabpanel"
               aria-labelledby="tab-claude"
               hidden={tab !== "claude" || !filledChannel}
@@ -285,6 +286,7 @@ export function ExternalConnectModal({ info, onClose }: Props) {
             {/* Python SDK tab */}
             <div
               id="panel-python"
+              data-testid="panel-python"
               role="tabpanel"
               aria-labelledby="tab-python"
               hidden={tab !== "python"}
@@ -301,6 +303,7 @@ export function ExternalConnectModal({ info, onClose }: Props) {
             {/* curl tab */}
             <div
               id="panel-curl"
+              data-testid="panel-curl"
               role="tabpanel"
               aria-labelledby="tab-curl"
               hidden={tab !== "curl"}
@@ -317,6 +320,7 @@ export function ExternalConnectModal({ info, onClose }: Props) {
             {/* Universal MCP tab */}
             <div
               id="panel-mcp"
+              data-testid="panel-mcp"
               role="tabpanel"
               aria-labelledby="tab-mcp"
               hidden={tab !== "mcp" || !filledUniversalMcp}
@@ -335,6 +339,7 @@ export function ExternalConnectModal({ info, onClose }: Props) {
             {/* Hermes tab */}
             <div
               id="panel-hermes"
+              data-testid="panel-hermes"
               role="tabpanel"
               aria-labelledby="tab-hermes"
               hidden={tab !== "hermes" || !filledHermes}
@@ -353,6 +358,7 @@ export function ExternalConnectModal({ info, onClose }: Props) {
             {/* Codex tab */}
             <div
               id="panel-codex"
+              data-testid="panel-codex"
               role="tabpanel"
               aria-labelledby="tab-codex"
               hidden={tab !== "codex" || !filledCodex}
@@ -371,6 +377,7 @@ export function ExternalConnectModal({ info, onClose }: Props) {
             {/* OpenClaw tab */}
             <div
               id="panel-openclaw"
+              data-testid="panel-openclaw"
               role="tabpanel"
               aria-labelledby="tab-openclaw"
               hidden={tab !== "openclaw" || !filledOpenClaw}
@@ -389,6 +396,7 @@ export function ExternalConnectModal({ info, onClose }: Props) {
             {/* Kimi tab */}
             <div
               id="panel-kimi"
+              data-testid="panel-kimi"
               role="tabpanel"
               aria-labelledby="tab-kimi"
               hidden={tab !== "kimi" || !filledKimi}
@@ -407,6 +415,7 @@ export function ExternalConnectModal({ info, onClose }: Props) {
             {/* Fields tab */}
             <div
               id="panel-fields"
+              data-testid="panel-fields"
               role="tabpanel"
               aria-labelledby="tab-fields"
               hidden={tab !== "fields"}
