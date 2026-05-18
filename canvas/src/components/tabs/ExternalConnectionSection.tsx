@@ -102,7 +102,7 @@ export function ExternalConnectionSection({ workspaceId }: Props) {
       </div>
 
       {error && (
-        <div className="mt-2 px-2 py-1 bg-red-900/30 border border-red-800 rounded text-[10px] text-bad">
+        <div role="alert" aria-live="assertive" className="mt-2 px-2 py-1 bg-red-900/30 border border-red-800 rounded text-[10px] text-bad">
           {error}
         </div>
       )}
