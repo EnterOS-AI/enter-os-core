@@ -52,7 +52,7 @@ func (h *WorkspaceHandler) RotateExternalCredentials(c *gin.Context) {
 	}
 	ctx := c.Request.Context()
 
-	runtime, err := lookupWorkspaceRuntime(ctx, db.DB, id)
+	runtime, name, err := lookupWorkspaceRuntimeAndName(ctx, db.DB, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
 		return
@@ -108,7 +108,7 @@ func (h *WorkspaceHandler) RotateExternalCredentials(c *gin.Context) {
 
 	platformURL := externalPlatformURL(c)
 	c.JSON(http.StatusOK, gin.H{
-		"connection": BuildExternalConnectionPayload(platformURL, id, tok),
+		"connection": BuildExternalConnectionPayload(platformURL, id, name, tok),
 	})
 }
 
@@ -129,7 +129,7 @@ func (h *WorkspaceHandler) GetExternalConnection(c *gin.Context) {
 	}
 	ctx := c.Request.Context()
 
-	runtime, err := lookupWorkspaceRuntime(ctx, db.DB, id)
+	runtime, name, err := lookupWorkspaceRuntimeAndName(ctx, db.DB, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
 		return
@@ -149,16 +149,20 @@ func (h *WorkspaceHandler) GetExternalConnection(c *gin.Context) {
 
 	platformURL := externalPlatformURL(c)
 	c.JSON(http.StatusOK, gin.H{
-		"connection": BuildExternalConnectionPayload(platformURL, id, ""),
+		"connection": BuildExternalConnectionPayload(platformURL, id, name, ""),
 	})
 }
 
-// lookupWorkspaceRuntime returns the workspace's runtime field. Wrapped
-// for readability + so tests can mock the single SELECT.
-func lookupWorkspaceRuntime(ctx context.Context, handle *sql.DB, id string) (string, error) {
-	var runtime string
-	err := handle.QueryRowContext(ctx, `
-		SELECT COALESCE(runtime, '') FROM workspaces WHERE id = $1
-	`, id).Scan(&runtime)
-	return runtime, err
+// lookupWorkspaceRuntimeAndName returns runtime + name in one round-trip.
+// Wrapped for readability + so tests can mock the single SELECT.
+// Used by rotate / re-show paths: runtime gates the external-only check;
+// name feeds the per-workspace MCP server slug in BuildExternalConnectionPayload
+// (so the Universal MCP snippet uses a stable per-workspace name instead
+// of overwriting prior `claude mcp add molecule` entries).
+// Returns sql.ErrNoRows when the workspace doesn't exist.
+func lookupWorkspaceRuntimeAndName(ctx context.Context, handle *sql.DB, id string) (runtime, name string, err error) {
+	err = handle.QueryRowContext(ctx, `
+		SELECT COALESCE(runtime, ''), COALESCE(name, '') FROM workspaces WHERE id = $1
+	`, id).Scan(&runtime, &name)
+	return runtime, name, err
 }

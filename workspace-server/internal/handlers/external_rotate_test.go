@@ -35,9 +35,9 @@ func TestRotateExternalCredentials_HappyPath(t *testing.T) {
 	wh := NewWorkspaceHandler(newTestBroadcaster(), nil, "http://localhost:8080", t.TempDir())
 
 	// 1. Runtime lookup
-	mock.ExpectQuery(`SELECT COALESCE\(runtime, ''\) FROM workspaces WHERE id = \$1`).
+	mock.ExpectQuery(`SELECT COALESCE\(runtime, ''\), COALESCE\(name, ''\) FROM workspaces WHERE id = \$1`).
 		WithArgs("ws-ext").
-		WillReturnRows(sqlmock.NewRows([]string{"runtime"}).AddRow("external"))
+		WillReturnRows(sqlmock.NewRows([]string{"runtime", "name"}).AddRow("external", "test-ws"))
 
 	// 2. Revoke all live tokens
 	mock.ExpectExec(`UPDATE workspace_auth_tokens`).
@@ -98,9 +98,9 @@ func TestRotateExternalCredentials_RejectsNonExternal(t *testing.T) {
 	setupTestRedis(t)
 	wh := NewWorkspaceHandler(newTestBroadcaster(), nil, "http://localhost:8080", t.TempDir())
 
-	mock.ExpectQuery(`SELECT COALESCE\(runtime, ''\) FROM workspaces WHERE id = \$1`).
+	mock.ExpectQuery(`SELECT COALESCE\(runtime, ''\), COALESCE\(name, ''\) FROM workspaces WHERE id = \$1`).
 		WithArgs("ws-hermes").
-		WillReturnRows(sqlmock.NewRows([]string{"runtime"}).AddRow("hermes"))
+		WillReturnRows(sqlmock.NewRows([]string{"runtime", "name"}).AddRow("hermes", "test-ws"))
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -129,9 +129,9 @@ func TestRotateExternalCredentials_NotFound(t *testing.T) {
 	setupTestRedis(t)
 	wh := NewWorkspaceHandler(newTestBroadcaster(), nil, "http://localhost:8080", t.TempDir())
 
-	mock.ExpectQuery(`SELECT COALESCE\(runtime, ''\) FROM workspaces WHERE id = \$1`).
+	mock.ExpectQuery(`SELECT COALESCE\(runtime, ''\), COALESCE\(name, ''\) FROM workspaces WHERE id = \$1`).
 		WithArgs("ws-missing").
-		WillReturnRows(sqlmock.NewRows([]string{"runtime"})) // no rows
+		WillReturnRows(sqlmock.NewRows([]string{"runtime", "name"})) // no rows
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -172,9 +172,9 @@ func TestGetExternalConnection_HappyPathReturnsBlankToken(t *testing.T) {
 	setupTestRedis(t)
 	wh := NewWorkspaceHandler(newTestBroadcaster(), nil, "http://localhost:8080", t.TempDir())
 
-	mock.ExpectQuery(`SELECT COALESCE\(runtime, ''\) FROM workspaces WHERE id = \$1`).
+	mock.ExpectQuery(`SELECT COALESCE\(runtime, ''\), COALESCE\(name, ''\) FROM workspaces WHERE id = \$1`).
 		WithArgs("ws-ext").
-		WillReturnRows(sqlmock.NewRows([]string{"runtime"}).AddRow("external"))
+		WillReturnRows(sqlmock.NewRows([]string{"runtime", "name"}).AddRow("external", "test-ws"))
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -211,9 +211,9 @@ func TestGetExternalConnection_RejectsNonExternal(t *testing.T) {
 	setupTestRedis(t)
 	wh := NewWorkspaceHandler(newTestBroadcaster(), nil, "http://localhost:8080", t.TempDir())
 
-	mock.ExpectQuery(`SELECT COALESCE\(runtime, ''\) FROM workspaces WHERE id = \$1`).
+	mock.ExpectQuery(`SELECT COALESCE\(runtime, ''\), COALESCE\(name, ''\) FROM workspaces WHERE id = \$1`).
 		WithArgs("ws-claude").
-		WillReturnRows(sqlmock.NewRows([]string{"runtime"}).AddRow("claude-code"))
+		WillReturnRows(sqlmock.NewRows([]string{"runtime", "name"}).AddRow("claude-code", "test-ws"))
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -233,9 +233,9 @@ func TestGetExternalConnection_NotFound(t *testing.T) {
 	setupTestRedis(t)
 	wh := NewWorkspaceHandler(newTestBroadcaster(), nil, "http://localhost:8080", t.TempDir())
 
-	mock.ExpectQuery(`SELECT COALESCE\(runtime, ''\) FROM workspaces WHERE id = \$1`).
+	mock.ExpectQuery(`SELECT COALESCE\(runtime, ''\), COALESCE\(name, ''\) FROM workspaces WHERE id = \$1`).
 		WithArgs("ws-missing").
-		WillReturnRows(sqlmock.NewRows([]string{"runtime"}))
+		WillReturnRows(sqlmock.NewRows([]string{"runtime", "name"}))
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -253,7 +253,7 @@ func TestGetExternalConnection_NotFound(t *testing.T) {
 // ---------- BuildExternalConnectionPayload (pure helper) ----------
 
 func TestBuildExternalConnectionPayload_StampsPlaceholders(t *testing.T) {
-	got := BuildExternalConnectionPayload("https://platform.test", "ws-7", "tok-abc")
+	got := BuildExternalConnectionPayload("https://platform.test", "ws-7", "my-bot", "tok-abc")
 
 	if got["workspace_id"] != "ws-7" {
 		t.Errorf("workspace_id: %v", got["workspace_id"])
@@ -266,6 +266,18 @@ func TestBuildExternalConnectionPayload_StampsPlaceholders(t *testing.T) {
 	}
 	if got["registry_endpoint"] != "https://platform.test/registry/register" {
 		t.Errorf("registry_endpoint: %v", got["registry_endpoint"])
+	}
+	// Universal MCP snippet must contain a workspace-specific server
+	// name derived from the workspace name. Without this each new
+	// `claude mcp add` would overwrite the previous entry in the user's
+	// ~/.claude.json (servers are keyed by name) — collapsing
+	// multi-workspace use into one slot. See mcpServerNameForWorkspace.
+	mcp, _ := got["universal_mcp_snippet"].(string)
+	if !strings.Contains(mcp, "claude mcp add molecule-my-bot ") {
+		t.Errorf("universal_mcp_snippet missing per-workspace server name 'molecule-my-bot':\n%s", mcp)
+	}
+	if strings.Contains(mcp, "{{MCP_SERVER_NAME}}") {
+		t.Errorf("universal_mcp_snippet still contains literal {{MCP_SERVER_NAME}}")
 	}
 	// {{PLATFORM_URL}} + {{WORKSPACE_ID}} placeholders must be substituted
 	// out of every snippet — if any snippet still contains a literal
@@ -292,7 +304,7 @@ func TestBuildExternalConnectionPayload_TrimsTrailingSlash(t *testing.T) {
 	// being concatenated into endpoint paths — otherwise the operator
 	// gets `https://platform.test//registry/register` (double slash) which
 	// some servers reject as a redirect target.
-	got := BuildExternalConnectionPayload("https://platform.test/", "ws-7", "")
+	got := BuildExternalConnectionPayload("https://platform.test/", "ws-7", "", "")
 	if got["platform_url"] != "https://platform.test" {
 		t.Errorf("platform_url: trailing slash not trimmed; got %v", got["platform_url"])
 	}
@@ -304,8 +316,48 @@ func TestBuildExternalConnectionPayload_TrimsTrailingSlash(t *testing.T) {
 func TestBuildExternalConnectionPayload_BlankAuthTokenIsAllowed(t *testing.T) {
 	// Re-show path: auth_token="" is the contract; the modal masks the
 	// field and labels it "rotate to reveal a new token".
-	got := BuildExternalConnectionPayload("https://platform.test", "ws-7", "")
+	got := BuildExternalConnectionPayload("https://platform.test", "ws-7", "", "")
 	if got["auth_token"] != "" {
 		t.Errorf("blank token must propagate as \"\"; got %v", got["auth_token"])
+	}
+}
+
+// TestBuildExternalConnectionPayload_McpServerNameUniquePerWorkspace
+// pins the multi-workspace install contract: two distinct workspaces
+// must produce two distinct `claude mcp add` server-name lines, or
+// installing the second one will overwrite the first entry in the
+// user's ~/.claude.json (servers are keyed by name) — collapsing
+// multi-workspace use into a single per-session slot, which is the
+// "this is per-session" UX the CTO observed 2026-05-18.
+func TestBuildExternalConnectionPayload_McpServerNameUniquePerWorkspace(t *testing.T) {
+	cases := []struct {
+		name        string
+		workspaceID string
+		wsName      string
+		wantAddLine string // must appear in universal_mcp_snippet
+	}{
+		{"plain name", "id-a", "my-bot", "claude mcp add molecule-my-bot "},
+		{"name with spaces + caps", "id-b", "My Bot 1", "claude mcp add molecule-my-bot-1 "},
+		// Symbol/punctuation collapses to single hyphens and trims.
+		{"name with symbols", "id-c", "--Foo!!Bar--", "claude mcp add molecule-foo-bar "},
+		// Empty name falls back to the first 8 chars of the (de-hyphenated)
+		// workspace UUID — keeps the snippet unique per workspace even
+		// when callers (rotate/re-show pre-name-lookup) pass "".
+		{"empty name, uuid id", "12345678-aaaa-bbbb-cccc-deadbeef0000", "", "claude mcp add molecule-12345678 "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := BuildExternalConnectionPayload("https://p.test", tc.workspaceID, tc.wsName, "tok")
+			mcp, _ := got["universal_mcp_snippet"].(string)
+			if !strings.Contains(mcp, tc.wantAddLine) {
+				t.Errorf("missing %q in universal_mcp_snippet:\n%s", tc.wantAddLine, mcp)
+			}
+			// Belt + suspenders: never the bare fixed `molecule` name —
+			// that was the bug. (Match with trailing space so the
+			// "molecule-…" form passes.)
+			if strings.Contains(mcp, "claude mcp add molecule ") {
+				t.Errorf("snippet regressed to fixed `claude mcp add molecule `; got:\n%s", mcp)
+			}
+		})
 	}
 }

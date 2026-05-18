@@ -24,17 +24,30 @@ import (
 
 // BuildExternalConnectionPayload assembles the gin.H payload that the
 // canvas's ExternalConnectModal consumes. Pure data — caller owns DB
-// reads (workspace_id) and token minting (auth_token).
+// reads (workspace_id, workspace_name) and token minting (auth_token).
 //
 // authToken may be empty for the read-only "show instructions again"
 // path; the modal masks the field in that case rather than displaying
 // an empty string.
-func BuildExternalConnectionPayload(platformURL, workspaceID, authToken string) gin.H {
+//
+// workspaceName feeds the per-workspace MCP server-name in the snippets
+// that wire molecule-mcp into an external Claude Code (or other
+// MCP-stdio) client. Without a unique server name a second
+// `claude mcp add molecule` call REPLACES the first entry, collapsing
+// multi-workspace use into a single per-session slot — see
+// mcpServerNameForWorkspace below. May be empty (re-show / rotate paths
+// that don't plumb the name); the helper falls back to the workspace
+// ID's short prefix so the snippet is always unique.
+func BuildExternalConnectionPayload(platformURL, workspaceID, workspaceName, authToken string) gin.H {
 	pURL := strings.TrimSuffix(platformURL, "/")
+	mcpName := mcpServerNameForWorkspace(workspaceID, workspaceName)
 	stamp := func(tmpl string) string {
 		return strings.ReplaceAll(
-			strings.ReplaceAll(tmpl, "{{PLATFORM_URL}}", pURL),
-			"{{WORKSPACE_ID}}", workspaceID,
+			strings.ReplaceAll(
+				strings.ReplaceAll(tmpl, "{{PLATFORM_URL}}", pURL),
+				"{{WORKSPACE_ID}}", workspaceID,
+			),
+			"{{MCP_SERVER_NAME}}", mcpName,
 		)
 	}
 	return gin.H{
@@ -75,6 +88,81 @@ func externalPlatformURL(c *gin.Context) string {
 		host = xh
 	}
 	return scheme + "://" + host
+}
+
+// mcpServerNameForWorkspace derives the unique MCP server name used in
+// the Universal MCP snippet's `claude mcp add <name> -- ...` line.
+//
+// Why per-workspace, not a fixed "molecule": `claude mcp add` keys
+// entries by name in ~/.claude.json, so re-running with the same name
+// silently REPLACES the previous entry. A single external Claude Code
+// session that connects to N molecule workspaces must therefore use N
+// distinct server names — otherwise the second install collapses the
+// first, and the user experiences "MCP is per-session". MCP itself
+// supports many servers per session; the install-snippet name was the
+// only thing standing in the way.
+//
+// Pattern: "molecule-<slug>" where slug comes from the workspace name
+// (lowercased, non-alphanumeric → hyphen, collapsed, trimmed, <=24
+// chars). Falls back to the workspace ID's first 8 chars when the name
+// is empty or slugifies to nothing — both produce a deterministic,
+// Claude-Code-name-safe (alphanumeric + hyphens, no spaces / dots /
+// slashes) identifier that disambiguates per-workspace.
+//
+// Two workspaces with identical names still produce identical slugs by
+// design — the user picked them to look the same. The
+// `claude mcp add` step will overwrite the older one in that case;
+// the workaround is to rename one, then re-run. Documented in the
+// snippet header so users aren't surprised.
+func mcpServerNameForWorkspace(workspaceID, workspaceName string) string {
+	const fallbackIDPrefixLen = 8
+	const maxSlugLen = 24
+	slug := slugifyForMcpName(workspaceName, maxSlugLen)
+	if slug == "" {
+		id := strings.ReplaceAll(workspaceID, "-", "")
+		if len(id) > fallbackIDPrefixLen {
+			id = id[:fallbackIDPrefixLen]
+		}
+		slug = id
+	}
+	if slug == "" {
+		// Defensive: empty workspaceID at this layer means the caller
+		// is misusing the API; we still return a usable (non-colliding
+		// in the common case) constant rather than producing "molecule-"
+		// which Claude Code would reject.
+		return "molecule"
+	}
+	return "molecule-" + slug
+}
+
+// slugifyForMcpName lowercases, replaces non-[a-z0-9] runs with a single
+// '-', trims leading/trailing '-', and truncates to maxLen. Returns ""
+// if nothing usable remains. Pure helper; no allocations beyond the
+// builder.
+func slugifyForMcpName(s string, maxLen int) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	lastHyphen := true // suppress leading hyphens
+	for _, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r + ('a' - 'A'))
+			lastHyphen = false
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			lastHyphen = false
+		default:
+			if !lastHyphen {
+				b.WriteByte('-')
+				lastHyphen = true
+			}
+		}
+	}
+	out := strings.TrimRight(b.String(), "-")
+	if len(out) > maxLen {
+		out = strings.TrimRight(out[:maxLen], "-")
+	}
+	return out
 }
 
 // externalCurlTemplate — zero-dependency register snippet. Placeholders:
@@ -216,6 +304,14 @@ const externalUniversalMcpTemplate = `# Universal MCP — standalone register + 
 # for any MCP-aware runtime (Claude Code, hermes, codex, etc.).
 # Pair with the Claude Code or Python SDK tab if your runtime needs
 # inbound A2A delivery (canvas messages → agent conversation turns).
+#
+# Multi-workspace: MCP supports many servers per Claude Code session.
+# This snippet uses a workspace-specific server name ({{MCP_SERVER_NAME}})
+# so installing for a second workspace ADDS another entry instead of
+# overwriting the first — run the snippet from each workspace's modal
+# in turn and ` + "`claude mcp list`" + ` will show all of them. If two
+# workspaces have the same name, slugs collide and the second install
+# overwrites the first; rename one workspace to disambiguate.
 
 # Requires Python >= 3.11. On 3.10 or older pip says
 # "Could not find a version that satisfies the requirement
@@ -224,11 +320,14 @@ const externalUniversalMcpTemplate = `# Universal MCP — standalone register + 
 # Upgrade the interpreter (brew install python@3.12 / apt install
 # python3.12 / etc.) or use a 3.11+ venv.
 
-# 1. Install the workspace runtime wheel:
+# 1. Install the workspace runtime wheel (once per machine — safe to
+#    re-run; subsequent workspaces share the same wheel):
 pip install molecule-ai-workspace-runtime
 
 # 2. Wire molecule-mcp into your agent's MCP config. Claude Code:
-claude mcp add molecule -s user -- env \
+#    NOTE the server name is workspace-specific ("{{MCP_SERVER_NAME}}") so
+#    multiple molecule workspaces co-exist in one Claude Code session.
+claude mcp add {{MCP_SERVER_NAME}} -s user -- env \
   WORKSPACE_ID={{WORKSPACE_ID}} \
   PLATFORM_URL={{PLATFORM_URL}} \
   MOLECULE_WORKSPACE_TOKEN="<paste from create response>" \
@@ -249,8 +348,11 @@ claude mcp add molecule -s user -- env \
 #   Documentation: https://doc.moleculesai.app/docs/guides/mcp-server-setup
 #   Common errors:
 #     • "Tools not appearing in your agent" — run ` + "`claude mcp list`" + ` (or
-#       your runtime's equivalent) and confirm the molecule entry. If
-#       missing, re-run the ` + "`claude mcp add`" + ` line above.
+#       your runtime's equivalent) and confirm the {{MCP_SERVER_NAME}} entry.
+#       If missing, re-run the ` + "`claude mcp add`" + ` line above.
+#     • "Connecting a second workspace overwrote the first" — re-check that
+#       the server name in the line above is {{MCP_SERVER_NAME}} (not a bare
+#       "molecule"); each workspace's modal generates a distinct name.
 #     • "ConnectionRefused / DNS error on first call" — PLATFORM_URL must
 #       include the scheme (https://) and have NO trailing slash. Verify
 #       with: curl ${PLATFORM_URL}/healthz
