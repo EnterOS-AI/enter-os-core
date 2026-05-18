@@ -206,6 +206,29 @@ CANDIDATES=$(jq -r --arg author "$PR_AUTHOR" --arg head "$PR_HEAD_SHA" "$JQ_FILT
 debug "candidate non-author approvers: $(echo "$CANDIDATES" | tr '\n' ' ')"
 
 if [ -z "$CANDIDATES" ]; then
+  # --- Guardrail (internal#503): explain the most common false
+  # "no candidates" red. Gitea's review event enum is EXACTLY
+  # APPROVED/REQUEST_CHANGES/COMMENT/PENDING. A wrong value ("APPROVE",
+  # lowercase, ...) is silently accepted (HTTP 200) and stored as
+  # state=PENDING. A correctly-started draft review has an EMPTY body;
+  # a NON-empty body + state==PENDING by a non-author == an intended
+  # verdict mis-filed by a wrong event string. Surface it actionably.
+  # This does NOT change the gate result (still fail-closed below) — it
+  # only converts a mystery red into a named, self-fixing error.
+  MISFILED_FILTER='.[]
+    | select(.state == "PENDING")
+    | select(.dismissed != true)
+    | select(.user.login != $author)
+    | select(((.body // "") | gsub("^\\s+|\\s+$";"") | length) > 0)
+    | "\(.id)\t\(.user.login)"'
+  MISFILED=$(jq -r --arg author "$PR_AUTHOR" "$MISFILED_FILTER" "$REVIEWS_JSON" 2>/dev/null || true)
+  if [ -n "$MISFILED" ]; then
+    echo "::error::${TEAM}-review: non-author review(s) were SUBMITTED but stored as PENDING — almost certainly the wrong Gitea review event string (internal#503)."
+    echo "::error::Gitea accepts ONLY the exact enum APPROVED / REQUEST_CHANGES / COMMENT. 'APPROVE' or lowercase is silently (HTTP 200) filed as PENDING and is invisible to this gate."
+    printf '%s\n' "$MISFILED" | while IFS="$(printf '\t')" read -r _rid _rl; do
+      [ -n "${_rid:-}" ] && echo "::error::  review id=${_rid} by '${_rl}': RE-SUBMIT via POST ${API}/repos/${OWNER}/${NAME}/pulls/${PR_NUMBER}/reviews with {\"event\":\"APPROVED\"} (correct enum) — do NOT edit the DB."
+    done
+  fi
   echo "::error::${TEAM}-review awaiting non-author APPROVE from ${TEAM} team (no candidates yet)"
   exit 1
 fi
