@@ -83,11 +83,12 @@ export function MobileDetail({
             type="button"
             onClick={onBack}
             aria-label="Back"
+            className="focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-100 dark:focus-visible:ring-offset-zinc-900"
             style={iconButtonStyle(p, dark)}
           >
             {Icons.back({ size: 18 })}
           </button>
-          <button type="button" aria-label="More" style={iconButtonStyle(p, dark)}>
+          <button type="button" aria-label="More" className="focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-100 dark:focus-visible:ring-offset-zinc-900" style={iconButtonStyle(p, dark)}>
             {Icons.more({ size: 18 })}
           </button>
         </div>
@@ -183,6 +184,7 @@ export function MobileDetail({
               key={t.id}
               type="button"
               onClick={() => setTab(t.id)}
+              className="focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-100 dark:focus-visible:ring-offset-zinc-900"
               style={{
                 padding: "8px 14px",
                 borderRadius: 999,
@@ -215,6 +217,7 @@ export function MobileDetail({
           type="button"
           onClick={onChat}
           data-testid="mobile-chat-cta"
+          className="focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-100 dark:focus-visible:ring-offset-zinc-900"
           style={{
             width: "100%",
             height: 52,

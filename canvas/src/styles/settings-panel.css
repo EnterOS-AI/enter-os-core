@@ -584,6 +584,10 @@
 .secrets-tab__refresh-btn:hover {
   background: #1e40af;
 }
+.secrets-tab__refresh-btn:focus-visible {
+  outline: 2px solid #1d4ed8;
+  outline-offset: 2px;
+}
 
 .secrets-tab__no-results {
   text-align: center;

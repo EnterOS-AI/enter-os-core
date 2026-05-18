@@ -131,7 +131,9 @@ describe("ExternalConnectModal — tab switching", () => {
   it("switches to the Python SDK tab and shows the snippet with stamped token", () => {
     renderAndFlush(defaultInfo);
     fireEvent.click(screen.getByRole("tab", { name: /python sdk/i }));
-    const preEl = document.querySelector("pre");
+    // Query within the python panel so we get the right pre (not the first in DOM).
+    const pythonPanel = document.querySelector("[data-testid='panel-python']");
+    const preEl = pythonPanel?.querySelector("pre");
     expect(preEl?.textContent).toContain("AUTH_TOKEN");
     // The placeholder is replaced with the real auth token
     expect(preEl?.textContent).toContain("secret-auth-token-abc");
@@ -140,7 +142,9 @@ describe("ExternalConnectModal — tab switching", () => {
   it("switches to the curl tab and shows the snippet with stamped token", () => {
     renderAndFlush(defaultInfo);
     fireEvent.click(screen.getByRole("tab", { name: /curl/i }));
-    const preEl = document.querySelector("pre");
+    // Query within the curl panel so we get the right pre (not the first in DOM).
+    const curlPanel = document.querySelector("[data-testid='panel-curl']");
+    const preEl = curlPanel?.querySelector("pre");
     expect(preEl?.textContent).toContain("curl");
     expect(preEl?.textContent).toContain("secret-auth-token-abc");
   });
@@ -148,9 +152,11 @@ describe("ExternalConnectModal — tab switching", () => {
   it("switches to the Fields tab and shows raw values", () => {
     renderAndFlush(defaultInfo);
     fireEvent.click(screen.getByRole("tab", { name: /fields/i }));
-    expect(screen.getByText("ws-123")).toBeTruthy();
-    expect(screen.getByText("https://app.example.com")).toBeTruthy();
-    expect(screen.getByText("secret-auth-token-abc")).toBeTruthy();
+    // Query within the fields panel for specific values.
+    const fieldsPanel = document.querySelector("[data-testid='panel-fields']");
+    expect(fieldsPanel?.textContent).toContain("ws-123");
+    expect(fieldsPanel?.textContent).toContain("https://app.example.com");
+    expect(fieldsPanel?.textContent).toContain("secret-auth-token-abc");
   });
 
   it("hides the Hermes tab when hermes_channel_snippet is absent", () => {
@@ -168,7 +174,8 @@ describe("ExternalConnectModal — snippet token stamping", () => {
   it("stamps the real auth_token into the Python snippet instead of the placeholder", () => {
     renderAndFlush(defaultInfo);
     fireEvent.click(screen.getByRole("tab", { name: /python sdk/i }));
-    const preEl = document.querySelector("pre");
+    const pythonPanel = document.querySelector("[data-testid='panel-python']");
+    const preEl = pythonPanel?.querySelector("pre");
     expect(preEl?.textContent).not.toContain("<paste from create response>");
     expect(preEl?.textContent).toContain("secret-auth-token-abc");
   });
@@ -176,7 +183,8 @@ describe("ExternalConnectModal — snippet token stamping", () => {
   it("stamps the real auth_token into the curl snippet", () => {
     renderAndFlush(defaultInfo);
     fireEvent.click(screen.getByRole("tab", { name: /curl/i }));
-    const preEl = document.querySelector("pre");
+    const curlPanel = document.querySelector("[data-testid='panel-curl']");
+    const preEl = curlPanel?.querySelector("pre");
     // curl template uses WORKSPACE_AUTH_TOKEN placeholder, not the generic one
     expect(preEl?.textContent).toContain("secret-auth-token-abc");
   });
@@ -184,7 +192,8 @@ describe("ExternalConnectModal — snippet token stamping", () => {
   it("stamps the real auth_token into the Universal MCP snippet", () => {
     renderAndFlush(defaultInfo);
     // Default tab is Universal MCP
-    const preEl = document.querySelector("pre");
+    const mcpPanel = document.querySelector("[data-testid='panel-mcp']");
+    const preEl = mcpPanel?.querySelector("pre");
     expect(preEl?.textContent).toContain("secret-auth-token-abc");
     expect(preEl?.textContent).not.toContain("<paste from create response>");
   });
@@ -193,8 +202,10 @@ describe("ExternalConnectModal — snippet token stamping", () => {
 describe("ExternalConnectModal — copy functionality", () => {
   it("calls navigator.clipboard.writeText with the snippet text", () => {
     renderAndFlush(defaultInfo);
-    // Default tab is Universal MCP
-    fireEvent.click(screen.getByRole("button", { name: /^copy$/i }));
+    // Default tab is Universal MCP — query the copy button within the mcp panel.
+    const mcpPanel = document.querySelector("[data-testid='panel-mcp']");
+    const copyBtn = mcpPanel?.querySelector("button");
+    if (copyBtn) fireEvent.click(copyBtn);
     expect(clipboardWriteText).toHaveBeenCalledWith(
       expect.stringContaining("secret-auth-token-abc"),
     );
@@ -227,7 +238,8 @@ describe("ExternalConnectModal — missing optional fields", () => {
     };
     renderAndFlush(minimalInfo);
     fireEvent.click(screen.getByRole("tab", { name: /fields/i }));
-    expect(screen.getByText("(missing)")).toBeTruthy();
+    const fieldsPanel = document.querySelector("[data-testid='panel-fields']");
+    expect(fieldsPanel?.textContent).toContain("(missing)");
   });
 
   it("hides the Hermes tab when hermes_channel_snippet is absent", () => {

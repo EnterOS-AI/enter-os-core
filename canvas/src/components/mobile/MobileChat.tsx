@@ -356,6 +356,7 @@ export function MobileChat({
             type="button"
             onClick={onBack}
             aria-label="Back"
+            className="focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-100 dark:focus-visible:ring-offset-zinc-900"
             style={{
               width: 36,
               height: 36,
@@ -402,6 +403,7 @@ export function MobileChat({
           <button
             type="button"
             aria-label="More"
+            className="focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-100 dark:focus-visible:ring-offset-zinc-900"
             style={{
               width: 36,
               height: 36,
@@ -432,6 +434,7 @@ export function MobileChat({
                 key={t.id}
                 type="button"
                 onClick={() => setTab(t.id)}
+                className="focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-100 dark:focus-visible:ring-offset-zinc-900"
                 style={{
                   padding: "4px 0 8px",
                   border: "none",
@@ -495,6 +498,8 @@ export function MobileChat({
               onClick={() => {
                 loadInitial();
               }}
+              aria-label="Retry loading chat history"
+              className="focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
               style={{
                 padding: "6px 14px",
                 borderRadius: 14,
@@ -664,6 +669,7 @@ export function MobileChat({
                   type="button"
                   onClick={() => removePendingFile(i)}
                   aria-label={`Remove ${f.name}`}
+                  className="focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-100 dark:focus-visible:ring-offset-zinc-900"
                   style={{
                     border: "none",
                     background: "transparent",
@@ -704,6 +710,7 @@ export function MobileChat({
             onClick={() => fileInputRef.current?.click()}
             disabled={!reachable || sending || uploading}
             aria-label="Attach"
+            className="focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-100 dark:focus-visible:ring-offset-zinc-900"
             style={{
               width: 32,
               height: 32,
@@ -725,6 +732,7 @@ export function MobileChat({
             ref={composerRef}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
+            aria-label="Message"
             onKeyDown={(e) => {
               // Enter sends; Shift+Enter inserts a newline. Skip when the
               // IME is composing — pressing Enter to commit a Chinese/
@@ -764,12 +772,13 @@ export function MobileChat({
             onClick={send}
             disabled={(!draft.trim() && pendingFiles.length === 0) || !reachable || sending || uploading}
             aria-label="Send"
+            className="focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-100 dark:focus-visible:ring-offset-zinc-900"
             style={{
               width: 36,
               height: 36,
               borderRadius: 999,
               border: "none",
-              cursor: (draft.trim() || pendingFiles.length > 0) && !sending && !uploading ? "pointer" : "not-allowed",
+              cursor: (draft.trim() || pendingFiles.length === 0) && !sending && !uploading ? "pointer" : "not-allowed",
               flexShrink: 0,
               background:
                 (draft.trim() || pendingFiles.length > 0) && reachable && !sending && !uploading

@@ -133,6 +133,7 @@ export function TabBar({
             aria-label={t.label}
             onClick={() => onChange(t.id)}
             onKeyDown={(e) => handleKeyDown(e, idx)}
+            className="focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-100 dark:focus-visible:ring-offset-zinc-900"
             style={{
               background: "none",
               border: "none",
@@ -291,6 +292,7 @@ export function AgentCard({
       data-testid="workspace-card"
       aria-label={`${agent.name}, status: ${agent.status}, tier ${agent.tier}${agent.remote ? ", remote" : ""}`}
       onClick={onClick}
+      className="focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-100 dark:focus-visible:ring-offset-zinc-900"
       style={{
         display: "block",
         width: "100%",
@@ -444,6 +446,7 @@ export function FilterChips({
             type="button"
             aria-checked={on}
             onClick={() => onChange(o.id)}
+            className="focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-100 dark:focus-visible:ring-offset-zinc-900"
             style={{
               display: "inline-flex",
               alignItems: "center",

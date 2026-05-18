@@ -200,6 +200,7 @@ export function MobileHome({
           justifyContent: "center",
           boxShadow: "0 8px 24px rgba(40,30,20,0.25), 0 2px 6px rgba(40,30,20,0.15)",
         }}
+        className="focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-100 dark:focus-visible:ring-offset-zinc-900"
       >
         {Icons.plus({ size: 22 })}
       </button>

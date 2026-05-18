@@ -440,6 +440,7 @@ function ProviderPickerModal({
                       onChange={(e) => updateEntry(index, { value: e.target.value.trimStart() })}
                       placeholder={entry.key.includes("API_KEY") ? "sk-..." : "Enter value"}
                       type="password"
+                      aria-label={`Value for ${entry.key}`}
                       ref={index === 0 ? firstInputRef : undefined}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && entry.value.trim()) {
@@ -694,6 +695,7 @@ function AllKeysModal({
                     onChange={(e) => updateEntry(index, { value: e.target.value.trimStart() })}
                     placeholder={entry.key.includes("API_KEY") ? "sk-..." : "Enter value"}
                     type="password"
+                    aria-label={`Value for ${entry.key}`}
                     autoFocus={index === 0}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" && entry.value.trim()) {

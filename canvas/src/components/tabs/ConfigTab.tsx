@@ -225,7 +225,7 @@ function AgentAbilitiesSection({ workspaceId }: { workspaceId: string }) {
         <div className="mt-2 text-[10px] text-ink-mid">Saving…</div>
       )}
       {error && (
-        <div className="mt-2 px-2 py-1 bg-red-900/30 border border-red-800 rounded text-[10px] text-bad">
+        <div role="alert" aria-live="assertive" className="mt-2 px-2 py-1 bg-red-900/30 border border-red-800 rounded text-[10px] text-bad">
           {error}
         </div>
       )}
@@ -919,6 +919,7 @@ export function ConfigTab({ workspaceId }: Props) {
                   <label className="text-[10px] text-ink-mid block mb-1">Model</label>
                   <input
                     type="text"
+                    aria-label="Model"
                     value={currentModelId}
                     onChange={(e) => {
                       const v = e.target.value;

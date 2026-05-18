@@ -351,8 +351,10 @@ export function SecretsSection({ workspaceId, requiredEnv }: { workspaceId: stri
           {showAdd ? (
             <div className="bg-surface-card/50 rounded p-2 space-y-1.5 border border-line/50">
               <input value={newKey} onChange={(e) => setNewKey(e.target.value.toUpperCase())} placeholder="KEY_NAME"
+                aria-label="Secret key name"
                 className="w-full bg-surface-sunken border border-line rounded px-2 py-1 text-[10px] font-mono text-ink focus:outline-none focus:border-accent" />
               <input value={newValue} onChange={(e) => setNewValue(e.target.value)} placeholder="Value" type="password"
+                aria-label="Secret value"
                 className="w-full bg-surface-sunken border border-line rounded px-2 py-1 text-[10px] text-ink focus:outline-none focus:border-accent" />
               <div className="flex gap-2">
                 <button type="button" onClick={() => { if (newKey && newValue) handleSave(newKey, newValue); }} disabled={!newKey || !newValue}

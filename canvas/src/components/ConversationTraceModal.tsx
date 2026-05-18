@@ -133,13 +133,13 @@ export function ConversationTraceModal({ open, workspaceId: _workspaceId, onClos
             {/* Timeline */}
             <div className="flex-1 overflow-y-auto px-5 py-4">
               {loading && (
-                <div className="text-xs text-ink-mid text-center py-8">
+                <div role="status" aria-live="polite" className="text-xs text-ink-mid text-center py-8">
                   Loading trace from all workspaces...
                 </div>
               )}
 
               {!loading && entries.length === 0 && (
-                <div className="text-xs text-ink-mid text-center py-8">
+                <div role="status" aria-live="polite" className="text-xs text-ink-mid text-center py-8">
                   No activity found
                 </div>
               )}

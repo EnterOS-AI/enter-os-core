@@ -231,6 +231,7 @@ export function MobileComms({ dark }: { dark: boolean }) {
                 fontSize: 13,
                 fontWeight: 500,
               }}
+              className="focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-100 dark:focus-visible:ring-offset-zinc-900"
             >
               {o.label}
               <span

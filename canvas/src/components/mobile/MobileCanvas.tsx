@@ -223,6 +223,7 @@ export function MobileCanvas({
             textTransform: "uppercase",
             fontWeight: 600,
           }}
+          className="focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-100 dark:focus-visible:ring-offset-zinc-900"
         >
           Reset
         </button>

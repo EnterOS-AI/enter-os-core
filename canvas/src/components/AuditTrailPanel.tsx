@@ -132,7 +132,7 @@ export function AuditTrailPanel({ workspaceId }: Props) {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-32">
+      <div role="status" aria-live="polite" className="flex items-center justify-center h-32">
         <span className="text-xs text-ink-mid">Loading audit trail…</span>
       </div>
     );
