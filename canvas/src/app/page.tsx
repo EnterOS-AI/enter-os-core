@@ -103,7 +103,7 @@ export default function Home() {
                 setHydrationError(null);
                 window.location.reload();
               }}
-              className="px-4 py-2 bg-accent-strong hover:bg-accent text-white rounded-md text-sm"
+              className="px-4 py-2 bg-accent-strong hover:bg-accent text-white rounded-md text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
             >
               Retry
             </button>
@@ -115,7 +115,9 @@ export default function Home() {
 
   return (
     <>
-      <Canvas />
+      <main aria-label="Agent canvas">
+        <Canvas />
+      </main>
       <Legend />
       <CommunicationOverlay />
       {hydrationError && (
@@ -134,7 +136,7 @@ export default function Home() {
               setHydrationError(null);
               window.location.reload();
             }}
-            className="px-4 py-2 bg-accent-strong hover:bg-accent text-white rounded-md text-sm"
+            className="px-4 py-2 bg-accent-strong hover:bg-accent text-white rounded-md text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
           >
             Retry
           </button>
@@ -176,7 +178,7 @@ brew services start redis`}</pre>
       </p>
       <button
         onClick={() => window.location.reload()}
-        className="px-4 py-2 bg-accent-strong hover:bg-accent text-white rounded-md text-sm mt-2"
+        className="px-4 py-2 bg-accent-strong hover:bg-accent text-white rounded-md text-sm mt-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
       >
         Reload
       </button>
