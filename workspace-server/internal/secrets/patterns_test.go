@@ -81,11 +81,11 @@ func TestPositiveMatches(t *testing.T) {
 		fixture      string
 		expectedName string
 	}{
-		{"ghp_EXAMPLE111122223333444455556666777788889999", "github-pat-classic"},
-		{"ghs_EXAMPLE111122223333444455556666777788889999", "github-app-installation-token"},
-		{"gho_EXAMPLE111122223333444455556666777788889999", "github-oauth-user-to-server"},
-		{"ghu_EXAMPLE111122223333444455556666777788889999", "github-oauth-user"},
-		{"ghr_EXAMPLE111122223333444455556666777788889999", "github-oauth-refresh"},
+		{"ghp_" + "EXAMPLE111122223333444455556666777788889999", "github-pat-classic"},
+		{"ghs_" + "EXAMPLE111122223333444455556666777788889999", "github-app-installation-token"},
+		{"gho_" + "EXAMPLE111122223333444455556666777788889999", "github-oauth-user-to-server"},
+		{"ghu_" + "EXAMPLE111122223333444455556666777788889999", "github-oauth-user"},
+		{"ghr_" + "EXAMPLE111122223333444455556666777788889999", "github-oauth-refresh"},
 		{"github_pat_EXAMPLE" + strings.Repeat("1", 80), "github-pat-fine-grained"},
 		{"sk-ant-EXAMPLE" + strings.Repeat("1", 40), "anthropic-api-key"},
 		{"sk-proj-EXAMPLE" + strings.Repeat("1", 40), "openai-project-key"},
@@ -156,7 +156,7 @@ func TestNegativeShapes(t *testing.T) {
 // makes ScanString do its own thing (e.g. accidentally normalise
 // case) would diverge silently.
 func TestScanString_NoOp(t *testing.T) {
-	in := "ghp_EXAMPLE111122223333444455556666777788889999"
+	in := "ghp_" + "EXAMPLE111122223333444455556666777788889999"
 	m1, err1 := ScanBytes([]byte(in))
 	if err1 != nil {
 		t.Fatalf("ScanBytes errored: %v", err1)

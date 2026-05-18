@@ -104,7 +104,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Compute next version from PyPI latest
+      - name: Compute next version from PyPI latest and existing tags
         id: bump
         run: |
           set -eu
@@ -112,9 +112,24 @@ jobs:
             | python -c "import sys,json; print(json.load(sys.stdin)['info']['version'])")
           MAJOR=$(echo "$LATEST" | cut -d. -f1)
           MINOR=$(echo "$LATEST" | cut -d. -f2)
-          PATCH=$(echo "$LATEST" | cut -d. -f3)
-          VERSION="${MAJOR}.${MINOR}.$((PATCH+1))"
-          echo "PyPI latest=$LATEST -> next=$VERSION"
+          TAG_LATEST=$(git tag --list "runtime-v${MAJOR}.${MINOR}.*" \
+            | sed -E 's/^runtime-v//' \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V \
+            | tail -1 || true)
+          VERSION=$(PYPI_LATEST="$LATEST" TAG_LATEST="$TAG_LATEST" python - <<'PY'
+          import os
+
+          def parse(v):
+              return tuple(int(part) for part in v.split("."))
+
+          pypi = os.environ["PYPI_LATEST"]
+          tag = os.environ.get("TAG_LATEST") or pypi
+          base = max(parse(pypi), parse(tag))
+          print(f"{base[0]}.{base[1]}.{base[2] + 1}")
+          PY
+          )
+          echo "PyPI latest=$LATEST, latest runtime tag=${TAG_LATEST:-none} -> next=$VERSION"
           if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "::error::computed version $VERSION does not match PEP 440 X.Y.Z"
             exit 1
