@@ -919,6 +919,7 @@ export function ConfigTab({ workspaceId }: Props) {
                   <label className="text-[10px] text-ink-mid block mb-1">Model</label>
                   <input
                     type="text"
+                    aria-label="Model"
                     value={currentModelId}
                     onChange={(e) => {
                       const v = e.target.value;
