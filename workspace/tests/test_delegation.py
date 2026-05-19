@@ -148,6 +148,41 @@ class TestRBAC:
         assert "RBAC" in result["error"]
 
 
+class TestSelfDelegationGuard:
+    """Task #190 / #193 — delegate_task_async must reject delegation to the
+    caller's own workspace BEFORE scheduling the background task. Otherwise
+    the platform A2A round-trip times out against our own held run lock, the
+    failure is logged with source_id=our workspace UUID, and the inbox
+    poller surfaces the row as a peer_agent message from ourselves."""
+
+    @pytest.mark.asyncio
+    async def test_async_path_rejects_self_workspace(self, delegation_mocks):
+        mod, *_ = delegation_mocks
+        # WORKSPACE_ID was set to "ws-self" by the fixture's monkeypatch.
+        # The module reads it at import time → reload-equivalent comparison.
+        mod.WORKSPACE_ID = "ws-self"
+
+        result = await _invoke(mod, workspace_id="ws-self")
+
+        assert result["success"] is False
+        assert "self-delegation" in result["error"].lower()
+        # No background task should have been scheduled.
+        assert len(mod._background_tasks) == 0
+
+    @pytest.mark.asyncio
+    async def test_async_path_allows_different_workspace(self, delegation_mocks):
+        """Guard does NOT short-circuit a real peer target."""
+        mod, *_ = delegation_mocks
+        mod.WORKSPACE_ID = "ws-self"
+        _, mock_cls = _make_mock_client()
+
+        with patch("httpx.AsyncClient", mock_cls):
+            result = await _invoke(mod, workspace_id="ws-peer")
+
+        assert result["success"] is True
+        assert result["status"] == "delegated"
+
+
 class TestAsyncDelegation:
 
     @pytest.mark.asyncio

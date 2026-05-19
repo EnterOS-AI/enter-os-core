@@ -412,6 +412,28 @@ async def delegate_task_async(
     """
     task_id = str(uuid.uuid4())
 
+    # Task #190 / #193 — Self-delegation guard (async path). Even on the
+    # async path that returns a task_id immediately, _execute_delegation
+    # eventually fires the A2A POST back to our own URL, which times out
+    # against our own held run lock, gets recorded with source_id=our
+    # workspace UUID, and surfaces in the inbox as a peer_agent message
+    # from ourselves (#190). Reject before scheduling the background task
+    # so no peer_agent echo can be generated. Sibling guards:
+    #   - workspace-server/internal/handlers/delegation.go (Go API gate)
+    #   - workspace/a2a_tools_delegation.py (MCP sync + async paths)
+    #   - workspace/builtin_tools/a2a_tools.py (framework-agnostic sync)
+    if WORKSPACE_ID and workspace_id == WORKSPACE_ID:
+        log_event(event_type="delegation", action="delegate", resource=workspace_id,
+                  outcome="rejected_self_delegation", trace_id=task_id)
+        return {
+            "success": False,
+            "error": (
+                "self-delegation rejected: cannot delegate_task_async to your "
+                "own workspace (would time out and echo back as a peer_agent "
+                "message from yourself — #190)"
+            ),
+        }
+
     # RBAC check
     roles, custom_perms = get_workspace_roles()
     if not check_permission("delegate", roles, custom_perms):

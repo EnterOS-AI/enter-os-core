@@ -325,3 +325,58 @@ class TestGetPeersSummary:
 
         result = await mod.get_peers_summary()
         assert result == "No peers available."
+
+
+# ---------------------------------------------------------------------------
+# Self-delegation guard (Task #190 / #193)
+# ---------------------------------------------------------------------------
+
+class TestSelfDelegationGuard:
+    """delegate_task to your own workspace UUID must be rejected BEFORE any
+    discovery / proxy hop. Otherwise the request round-trips back to us,
+    deadlocks on the run lock, times out, and surfaces in the inbox as a
+    peer_agent message from our own workspace (the documented #190 self-echo
+    bug)."""
+
+    async def test_delegate_task_rejects_self(self, monkeypatch):
+        mod = _load_a2a_tools(monkeypatch, workspace_id="ws-self-abc")
+
+        calls = []
+
+        class TrappingClient:
+            def __init__(self, timeout): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): pass
+            async def get(self, *a, **kw):
+                calls.append(("get", a, kw))
+                raise AssertionError("guard must reject before discover")
+            async def post(self, *a, **kw):
+                calls.append(("post", a, kw))
+                raise AssertionError("guard must reject before proxy POST")
+
+        monkeypatch.setattr(mod.httpx, "AsyncClient", TrappingClient)
+
+        result = await mod.delegate_task("ws-self-abc", "do a thing")
+        assert "self-delegation" in result.lower()
+        assert not calls, "no HTTP call should be made for self-delegation"
+
+    async def test_delegate_task_allows_real_peer(self, monkeypatch):
+        """Guard is strictly equality on WORKSPACE_ID — a different target
+        passes through to the normal discover/proxy path."""
+        mod = _load_a2a_tools(monkeypatch, workspace_id="ws-self-abc")
+
+        class FakeClient:
+            def __init__(self, timeout): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): pass
+            async def get(self, url, headers=None):
+                return _FakeResponse(200, {"url": "http://target.test/a2a"})
+            async def post(self, url, json=None, headers=None):
+                return _FakeResponse(200, {
+                    "result": {"parts": [{"kind": "text", "text": "ok"}]}
+                })
+
+        monkeypatch.setattr(mod.httpx, "AsyncClient", FakeClient)
+
+        result = await mod.delegate_task("ws-DIFFERENT-xyz", "do a thing")
+        assert "self-delegation" not in result.lower()

@@ -34,6 +34,28 @@ async def list_peers() -> list[dict]:
 
 async def delegate_task(workspace_id: str, task: str) -> str:
     """Send a task to a peer workspace via A2A and return the response text."""
+    # Task #190 / #193 — Self-delegation guard. Without this, a workspace
+    # delegating to its own UUID round-trips through the platform proxy back
+    # into the sender; the synchronous handler waits on the same lock the
+    # caller holds, the request times out, and the platform writes an
+    # a2a_receive activity row with source_id=our own workspace UUID. The
+    # inbox poller then surfaces that row as kind="peer_agent" and the agent
+    # sees the timeout echoed back as a peer instructing it (#190).
+    #
+    # The sibling guards live in:
+    #   - workspace-server/internal/handlers/delegation.go (Go API gate)
+    #   - workspace/a2a_tools_delegation.py (MCP path guard)
+    # This module is the framework-agnostic adapter surface used by adapters
+    # that don't go through a2a_tools_delegation.py — it needs its own guard.
+    if WORKSPACE_ID and workspace_id == WORKSPACE_ID:
+        return (
+            "Error: self-delegation rejected (cannot delegate_task to your own "
+            "workspace). There is no peer who is also you — the platform proxy "
+            "would deadlock and the timeout would echo back as a peer_agent "
+            "message from yourself (#190). Do the work directly, or use "
+            "commit_memory / send_message_to_user instead."
+        )
+
     async with httpx.AsyncClient(timeout=120.0) as client:
         # Discover target URL
         try:

@@ -131,6 +131,36 @@ def test_message_from_activity_peer_agent():
     assert msg.to_dict()["kind"] == "peer_agent"
 
 
+def test_message_from_activity_delegate_result_distinct_kind():
+    """Task #190 / #193 — pushDelegationResultToInbox (RFC #2829 PR-2) writes
+    rows with method='delegate_result' and source_id=our own workspace UUID
+    so the caller's wait_for_message can surface delegation completions or
+    failures. Without an explicit kind override, to_dict() would classify
+    those rows as kind='peer_agent' (peer_id non-empty) and the agent would
+    treat its OWN delegation timeout as a peer instructing it — the #190
+    self-echo bug. Classify these rows as kind='delegation_result' so they
+    are recognizable as structured delegation outcomes."""
+    row = {
+        "id": "act-90",
+        "source_id": "ws-self-abc",  # same as our workspace
+        "method": "delegate_result",
+        "summary": "Delegation failed",
+        "response_body": {"text": "polling timeout", "delegation_id": "d-1"},
+        "created_at": "2026-05-18T00:00:00Z",
+    }
+    msg = inbox.message_from_activity(row)
+    payload = msg.to_dict()
+    assert payload["kind"] == "delegation_result", (
+        f"delegate_result rows must surface as kind='delegation_result', "
+        f"not peer_agent (got {payload['kind']!r})"
+    )
+    # Method preserved for downstream consumers that key off it.
+    assert payload["method"] == "delegate_result"
+    # peer_id is still set on the dataclass for back-compat dispatch — the
+    # distinguishing signal is the kind field.
+    assert msg.peer_id == "ws-self-abc"
+
+
 def test_message_from_activity_handles_string_request_body():
     row = {
         "id": "act-3",

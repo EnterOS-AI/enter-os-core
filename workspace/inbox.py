@@ -102,11 +102,34 @@ class InboxMessage:
     arrival_workspace_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
+        # Task #190 / #193 — Distinguish delegation-result rows from peer-agent
+        # messages. The platform's pushDelegationResultToInbox (RFC #2829 PR-2)
+        # writes activity_type='a2a_receive' with method='delegate_result' and
+        # source_id=our own workspace UUID, so the caller's inbox poller can
+        # surface delegation completions/failures via wait_for_message. But
+        # the default to_dict derives kind="peer_agent" purely from peer_id
+        # being non-empty — which makes a synchronous-delegation timeout, or
+        # a cross-workspace ProxyA2A failure, appear to the agent as a NEW
+        # peer_agent message from our own workspace UUID (#190 self-echo).
+        #
+        # Explicitly classify rows with method='delegate_result' as
+        # kind='delegation_result' regardless of peer_id, so:
+        #   1. wait_for_message gives the original caller a structured
+        #      delegation result (not a fake peer instruction).
+        #   2. Agents reading the envelope don't mistake the row for a
+        #      peer instructing them — preventing the #190 reply-via-
+        #      delegate_task-to-self loop.
+        if self.method == "delegate_result":
+            kind = "delegation_result"
+        elif self.peer_id:
+            kind = "peer_agent"
+        else:
+            kind = "canvas_user"
         d = {
             "activity_id": self.activity_id,
             "text": self.text,
             "peer_id": self.peer_id,
-            "kind": "peer_agent" if self.peer_id else "canvas_user",
+            "kind": kind,
             "method": self.method,
             "created_at": self.created_at,
         }
