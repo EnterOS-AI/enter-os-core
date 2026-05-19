@@ -8,6 +8,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
@@ -39,11 +40,56 @@ type restartState struct {
 	mu      sync.Mutex
 	running bool // true while a restart cycle is in flight
 	pending bool // set by any caller that arrived during the in-flight cycle
+	// restartStartedAt records the wall-clock when the most recent cycle
+	// flipped running=true. Used by the self-fire debounce (internal#544,
+	// the ws-server self-fire restart feedback loop seen in prod-Reviewer/
+	// Researcher 2026-05-19 ~00:05Z 4x reprov thrash): any RestartByID
+	// arriving within restartDebounceWindow of this timestamp is silently
+	// dropped so a probe firing during the EC2-pending window can't
+	// re-trigger a fresh full cycle on the just-launched instance.
+	restartStartedAt time.Time
 }
 
 // restartStates is a per-workspace map of *restartState. Each workspace gets
 // its own entry so unrelated workspaces don't serialize on each other.
 var restartStates sync.Map // map[workspaceID]*restartState
+
+// restartDebounceWindow is the silent-drop window for successive RestartByID
+// calls. Sized to cover the typical EC2 pending → online interval (20-30s)
+// with a margin so a probe firing during the just-after-online but still-
+// flaky heartbeat window also gets dropped. Bigger than that would block
+// legitimate "Restart failed, retry" recoveries; smaller would let the
+// 4x thrash class through. Package-level so tests can shrink it.
+var restartDebounceWindow = 60 * time.Second
+
+// restartByIDDropCounter is incremented every time RestartByID drops a call
+// inside the debounce window. Exposed as a package-level atomic counter so
+// (a) tests can assert the drop fired, (b) ops can grep logs for the drop
+// log line + the counter snapshot in a future /admin/metrics endpoint.
+// Not a Prometheus metric because the platform doesn't pull metrics from
+// workspace-server yet — that's a separate RFC.
+var restartByIDDropCounter atomic.Uint64
+
+// isRestarting reports whether a restart cycle is currently in flight for
+// the workspace. Callers that have their own "container looks dead" probe
+// MUST consult this before triggering a restart, because during the
+// 20-30s EC2-pending window the workspace's url='' and IsRunning()=false
+// looks identical to a dead container — and any restart-triggering probe
+// (maybeMarkContainerDead from canvas /delegations poll, or the trailing
+// restart-context probe at the end of runRestartCycle) will set
+// pending=true and the outer coalesceRestart loop will drain by running
+// ANOTHER full cycle, ec2_stopped of the just-booted instance →
+// re-provision. That's the self-fire loop closed by this gate.
+func isRestarting(workspaceID string) bool {
+	sv, ok := restartStates.Load(workspaceID)
+	if !ok {
+		return false
+	}
+	state := sv.(*restartState)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.running
+}
 
 // isParentPaused checks if any ancestor of the workspace is paused.
 func isParentPaused(ctx context.Context, workspaceID string) (bool, string) {
@@ -376,7 +422,43 @@ func (h *WorkspaceHandler) RestartByID(workspaceID string) {
 	if !h.HasProvisioner() {
 		return
 	}
+	// Self-fire debounce: drop (not coalesce) successive RestartByID calls
+	// within restartDebounceWindow of the most recent cycle's start. This
+	// is the load-bearing protection against the 4x reprov thrash class —
+	// coalesceRestart's pending-flag would otherwise drain by running
+	// ANOTHER full cycle of stop+provision on the just-launched EC2 (still
+	// in the pending state), which is the self-fire we're closing.
+	//
+	// Only applies to RestartByID (programmatic — secrets handler,
+	// maybeMarkContainerDead, preflightContainerHealth). The HTTP Restart
+	// handler in workspace_restart.go's Restart() bypasses this path and
+	// calls RestartWorkspaceAutoOpts directly, so user-initiated restart
+	// clicks are unaffected.
+	if shouldDebounceRestart(workspaceID) {
+		restartByIDDropCounter.Add(1)
+		log.Printf("RestartByID: %s — dropped (within %s self-fire debounce window; total dropped=%d)",
+			workspaceID, restartDebounceWindow, restartByIDDropCounter.Load())
+		return
+	}
 	coalesceRestart(workspaceID, func() { h.runRestartCycle(workspaceID) })
+}
+
+// shouldDebounceRestart reports whether the most recent cycle for this
+// workspace started within restartDebounceWindow. Read-only on
+// restartState; the actual restartStartedAt stamp is written in
+// coalesceRestart when running flips false→true.
+func shouldDebounceRestart(workspaceID string) bool {
+	sv, ok := restartStates.Load(workspaceID)
+	if !ok {
+		return false
+	}
+	state := sv.(*restartState)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.restartStartedAt.IsZero() {
+		return false
+	}
+	return time.Since(state.restartStartedAt) < restartDebounceWindow
 }
 
 // coalesceRestart implements the pending-flag gate around an arbitrary cycle
@@ -398,6 +480,12 @@ func coalesceRestart(workspaceID string, cycle func()) {
 		return
 	}
 	state.running = true
+	// Stamp the start time so the RestartByID debounce can drop any
+	// self-fire probe that hits within restartDebounceWindow. Only the
+	// false→true edge stamps; the drain-loop's inner cycles re-use the
+	// same start (they're effectively one "restart event" from the
+	// debounce's POV).
+	state.restartStartedAt = time.Now()
 	state.mu.Unlock()
 
 	// Always clear running on exit — including panic — so a panicking

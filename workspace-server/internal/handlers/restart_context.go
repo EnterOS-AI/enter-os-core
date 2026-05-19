@@ -180,6 +180,42 @@ func waitForWorkspaceOnline(ctx context.Context, workspaceID string, timeout tim
 	return false
 }
 
+// waitForFreshHeartbeat polls until the workspace has BOTH a non-empty
+// url AND a last_heartbeat_at strictly after restartStartTs (i.e. the
+// heartbeat we observe is NEW, not the stale pre-restart one carried
+// across through the row update). Returns false on timeout or DB error.
+//
+// This is the Layer 2 gate for the 2026-05-19 ws-server self-fire restart
+// loop fix. status='online' can flip while url='' is still in place (the
+// status update happens in /registry/register; url is set at the same
+// time but the read here may see a transient interleaving) and pre-fix
+// the trailing restart-context probe could fire against a half-registered
+// row, triggering the upstream-502 → maybeMarkContainerDead → self-fire
+// chain we're closing. The url + heartbeat-freshness check is the
+// strict, correlated end-state assertion that says "the new container is
+// actually addressable" — not just "some heartbeat happened".
+func waitForFreshHeartbeat(ctx context.Context, workspaceID string, restartStartTs time.Time, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		var url sql.NullString
+		var lastHB sql.NullTime
+		err := db.DB.QueryRowContext(ctx,
+			`SELECT url, last_heartbeat_at FROM workspaces WHERE id = $1`, workspaceID,
+		).Scan(&url, &lastHB)
+		if err == nil &&
+			url.Valid && url.String != "" &&
+			lastHB.Valid && lastHB.Time.After(restartStartTs) {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(restartContextOnlinePollInterval):
+		}
+	}
+	return false
+}
+
 // buildRestartA2APayload wraps the rendered context string in the
 // JSON-RPC 2.0 / A2A message/send shape that the proxy already knows
 // how to normalize. Returns the marshalled body ready for ProxyA2ARequest.
@@ -218,6 +254,22 @@ func (h *WorkspaceHandler) sendRestartContext(workspaceID string, data restartCo
 
 	if !waitForWorkspaceOnline(ctx, workspaceID, restartContextOnlineTimeout) {
 		log.Printf("restart-context: workspace %s did not come online within %s — dropping context message", workspaceID, restartContextOnlineTimeout)
+		return
+	}
+	// Self-fire guard (Layer 2 of the 2026-05-19 ws-server self-fire fix):
+	// status='online' alone is not enough to safely fire the trailing
+	// ProxyA2ARequest. The workspace must also have:
+	//   - url != ''                            (the new container's URL has been registered)
+	//   - last_heartbeat_at > data.RestartAt   (the heartbeat we're seeing is NEW, not stale)
+	// Without those, ProxyA2ARequest can fail with a connect error or
+	// upstream 502, hit handleA2ADispatchError → maybeMarkContainerDead →
+	// RestartByID → self-fire. The Layer 1 isRestarting gate already
+	// covers that, but this is a belt-and-suspenders so the probe never
+	// even tries until the new container is actually addressable. Best-
+	// effort: if the DB read errors out we proceed (preserves the legacy
+	// behaviour of "online means online").
+	if !waitForFreshHeartbeat(ctx, workspaceID, data.RestartAt, restartContextOnlineTimeout) {
+		log.Printf("restart-context: workspace %s online but no fresh heartbeat or empty url — dropping context message (self-fire guard)", workspaceID)
 		return
 	}
 

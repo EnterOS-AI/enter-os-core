@@ -168,6 +168,21 @@ func (h *WorkspaceHandler) maybeMarkContainerDead(ctx context.Context, workspace
 	if !h.HasProvisioner() {
 		return false
 	}
+	// Restart-aware short-circuit: during the 20-30s EC2-pending window of
+	// an in-flight restart, the workspace's url='' and IsRunning() returns
+	// false → looks indistinguishable from a dead container. Pre-fix this
+	// fired a fresh RestartByID for the just-launched instance, which
+	// coalesceRestart's pending-flag drained by running ANOTHER full
+	// stop+provision cycle (= ec2_stopped of the still-pending instance
+	// → re-provision). That's the 4x reprov thrash class. Skip the
+	// container-dead path while a restart is in flight; the in-flight
+	// restart's own provisionWorkspaceAutoSync will surface a real failure
+	// (markProvisionFailed) if the new container never comes up. Issue
+	// internal#544.
+	if isRestarting(workspaceID) {
+		log.Printf("ProxyA2A: maybeMarkContainerDead skipped for %s — restart already in flight (self-fire guard)", workspaceID)
+		return false
+	}
 
 	var running bool
 	var inspectErr error
@@ -223,6 +238,18 @@ func (h *WorkspaceHandler) maybeMarkContainerDead(ctx context.Context, workspace
 // shape post-EC2-replace (see molecule-controlplane#20 incident
 // 2026-05-07) where the reconciler hasn't respawned the agent yet.
 func (h *WorkspaceHandler) preflightContainerHealth(ctx context.Context, workspaceID string) *proxyA2AError {
+	// Restart-aware short-circuit (mirror of maybeMarkContainerDead): if a
+	// restart cycle is in flight for this workspace, do not run the
+	// IsRunning probe — it would observe the EC2-pending state as "not
+	// running" and trigger RestartByID for an already-restarting workspace,
+	// closing the self-fire loop. Returning nil lets the optimistic
+	// forward proceed; the upstream Do() call will fail with a connection
+	// error or 502, and the *post-restart* reactive path can decide what
+	// to do once the cycle has actually completed. Issue internal#544.
+	if isRestarting(workspaceID) {
+		log.Printf("ProxyA2A preflight: %s — skipped, restart already in flight (self-fire guard)", workspaceID)
+		return nil
+	}
 	running, err := h.provisioner.IsRunning(ctx, workspaceID)
 	if err != nil {
 		// Transient daemon error. Provisioner.IsRunning returns (true, err)
