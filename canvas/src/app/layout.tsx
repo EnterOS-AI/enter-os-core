@@ -27,9 +27,78 @@ import {
   themeBootScript,
 } from "@/lib/theme-cookie";
 
+// Marketing-launch SEO (mc#1486). Canonical apex is app.moleculesai.app —
+// tenant subdomains (<slug>.moleculesai.app) reuse the same Next.js build
+// but are gated behind auth (AuthGate redirects anonymous → /cp/auth/login)
+// and are de-indexed in robots.ts. The metadata here applies to the
+// public marketing surface served from the apex host.
+//
+// Override per-route by exporting a page-level `metadata`/`generateMetadata`
+// — Next.js merges page metadata over layout metadata using
+// `title.template` for "<page> | Molecule AI" composition.
+const SITE_URL =
+  process.env.NEXT_PUBLIC_SITE_URL ?? "https://app.moleculesai.app";
+
 export const metadata: Metadata = {
-  title: "Molecule AI",
-  description: "AI Org Chart Canvas",
+  metadataBase: new URL(SITE_URL),
+  title: {
+    default: "Molecule AI — the AI org chart canvas",
+    template: "%s | Molecule AI",
+  },
+  description:
+    "Molecule AI is an org-chart canvas for AI agent teams. Wire Claude Code, Codex, Hermes, and OpenClaw agents into a governed multi-agent workspace with credit metering, audit, and one-click runtime provisioning.",
+  applicationName: "Molecule AI",
+  keywords: [
+    "AI agents",
+    "multi-agent",
+    "agent orchestration",
+    "AI org chart",
+    "Claude Code",
+    "Codex",
+    "MCP",
+    "agent governance",
+    "A2A",
+    "agent runtime",
+  ],
+  authors: [{ name: "Molecule AI" }],
+  creator: "Molecule AI",
+  publisher: "Molecule AI",
+  alternates: { canonical: "/" },
+  // OG + Twitter images come from the file-convention sibling
+  // `opengraph-image.tsx` — Next.js auto-attaches them to og:image
+  // and twitter:image when present at the segment root. We keep the
+  // text fields here so they win over per-page metadata when a page
+  // doesn't override them. `images: []` as the structural fallback
+  // for hosts that won't follow the file convention; the real URL
+  // is injected by Next.js at build time from opengraph-image.tsx.
+  openGraph: {
+    type: "website",
+    siteName: "Molecule AI",
+    url: SITE_URL,
+    title: "Molecule AI — the AI org chart canvas",
+    description:
+      "Wire Claude Code, Codex, Hermes, and OpenClaw agents into a governed multi-agent workspace. Credit metering, audit, and one-click runtime provisioning.",
+    locale: "en_US",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Molecule AI — the AI org chart canvas",
+    description:
+      "Wire Claude Code, Codex, Hermes, and OpenClaw agents into a governed multi-agent workspace.",
+  },
+  icons: {
+    icon: "/molecule-icon.png",
+    apple: "/molecule-icon.png",
+  },
+  // robots.ts owns the per-route allow/disallow contract; this is the
+  // header-level fallback for routes the crawler reaches before
+  // robots.txt resolves. Default = index public marketing routes;
+  // app/auth/api/orgs are noindex'd by robots.ts.
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: { index: true, follow: true, "max-image-preview": "large" },
+  },
 };
 
 export default async function RootLayout({
@@ -93,6 +162,75 @@ export default async function RootLayout({
         <script
           nonce={nonce}
           dangerouslySetInnerHTML={{ __html: themeBootScript }}
+        />
+        {/*
+         * JSON-LD structured data (mc#1486). Two graph nodes:
+         *
+         *   - Organization: surfaces the brand to Google Knowledge
+         *     Graph + Bing entity index. URL+logo+sameAs are the
+         *     minimum recommended set for new brands without a
+         *     Wikipedia page.
+         *
+         *   - WebSite: enables the sitelinks search box and tells
+         *     crawlers the canonical site URL when the same content
+         *     is reachable via multiple subdomains (apex + tenant).
+         *
+         * Type-application/ld+json runs synchronously without
+         * executing JS, so 'strict-dynamic' isn't required — we still
+         * carry the nonce because production CSP's default-src 'self'
+         * applies to any <script> element. The "type" attribute is
+         * what keeps the browser from running the body as JS, but
+         * CSP nonces are gated on the element not the type, so we
+         * include the nonce too.
+         */}
+        <script
+          type="application/ld+json"
+          nonce={nonce}
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify({
+              "@context": "https://schema.org",
+              "@graph": [
+                {
+                  "@type": "Organization",
+                  "@id": `${SITE_URL}#organization`,
+                  name: "Molecule AI",
+                  url: SITE_URL,
+                  logo: `${SITE_URL}/molecule-icon.png`,
+                  sameAs: [
+                    "https://github.com/molecule-ai",
+                    "https://x.com/moleculeai",
+                  ],
+                },
+                {
+                  "@type": "WebSite",
+                  "@id": `${SITE_URL}#website`,
+                  url: SITE_URL,
+                  name: "Molecule AI",
+                  publisher: { "@id": `${SITE_URL}#organization` },
+                  inLanguage: "en-US",
+                },
+                {
+                  "@type": "SoftwareApplication",
+                  "@id": `${SITE_URL}#software`,
+                  name: "Molecule AI",
+                  applicationCategory: "DeveloperApplication",
+                  operatingSystem: "Web",
+                  description:
+                    "Org-chart canvas for AI agent teams with credit metering, audit, and one-click runtime provisioning.",
+                  url: SITE_URL,
+                  offers: {
+                    "@type": "AggregateOffer",
+                    priceCurrency: "USD",
+                    lowPrice: "0",
+                    highPrice: "99",
+                    offerCount: "3",
+                    url: `${SITE_URL}/pricing`,
+                  },
+                  publisher: { "@id": `${SITE_URL}#organization` },
+                },
+              ],
+            }),
+          }}
         />
       </head>
       <body className={`bg-surface text-ink ${interFont.variable} ${monoFont.variable}`}>
