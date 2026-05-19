@@ -297,6 +297,203 @@ func TestPrepareProvisionContext_ParentIDInjection(t *testing.T) {
 
 func ptrStr(s string) *string { return &s }
 
+// TestPrepareProvisionContext_InjectsGitHTTPCredsFromPersonaToken pins
+// the end-to-end wiring of the durable-git-auth fix: when a workspace
+// is provisioned with a slug-form role matching a persona dir at
+// $MOLECULE_PERSONA_ROOT/<role>/token, the prepared envVars MUST
+// carry GIT_HTTP_USERNAME / GIT_HTTP_PASSWORD (+ GITEA_USER / GITEA_TOKEN
+// fallback) so the in-container askpass helper has something to emit
+// on git's auth challenge.
+//
+// Pre-fix shape (Dev-A/Dev-B live-verified 2026-05-18 ~23:55Z): the
+// askpass binary + GIT_ASKPASS env were already wired
+// (template-claude-code#30 + mc#1525), but GIT_HTTP_USERNAME and
+// GIT_HTTP_PASSWORD were absent from the container env → askpass
+// returned empty → git rc=128 "Authentication failed" in <500ms.
+// This test fails without applyAgentGitHTTPCreds wired into
+// prepareProvisionContext and proves the prod-team path is closed.
+func TestPrepareProvisionContext_InjectsGitHTTPCredsFromPersonaToken(t *testing.T) {
+	// Stage a persona dir matching the prod-team shape per
+	// reference_prod_team_infisical_identities — a flat dir per role
+	// with a single mode-600 `token` file.
+	root := t.TempDir()
+	for _, role := range []string{"agent-dev-a", "agent-dev-b"} {
+		roleDir := filepath.Join(root, role)
+		if err := os.MkdirAll(roleDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// Token value pinned to a recognizable string so we can
+		// assert exact propagation. Real bootstrap-kit files end in
+		// \n; the helper must trim that.
+		if err := os.WriteFile(filepath.Join(roleDir, "token"),
+			[]byte("token-for-"+role+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("MOLECULE_PERSONA_ROOT", root)
+
+	cases := []struct {
+		name          string
+		role          string
+		expectInject  bool
+		expectUser    string
+		expectPass    string
+	}{
+		{
+			name:         "Dev-A slug role → persona token injected as GIT_HTTP_USERNAME/PASSWORD",
+			role:         "agent-dev-a",
+			expectInject: true,
+			expectUser:   "agent-dev-a",
+			expectPass:   "token-for-agent-dev-a",
+		},
+		{
+			name:         "Dev-B slug role → persona token injected",
+			role:         "agent-dev-b",
+			expectInject: true,
+			expectUser:   "agent-dev-b",
+			expectPass:   "token-for-agent-dev-b",
+		},
+		{
+			name:         "descriptive multi-word role → silent no-op (no persona dir lookup)",
+			role:         "Frontend Engineer",
+			expectInject: false,
+		},
+		{
+			name:         "unknown slug role with no persona dir → silent no-op",
+			role:         "agent-nonexistent",
+			expectInject: false,
+		},
+		{
+			name:         "empty role → silent no-op",
+			role:         "",
+			expectInject: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := setupTestDB(t)
+			mock.ExpectQuery(`SELECT key, encrypted_value, encryption_version FROM global_secrets`).
+				WillReturnRows(sqlmock.NewRows([]string{"key", "encrypted_value", "encryption_version"}))
+			mock.ExpectQuery(`SELECT key, encrypted_value, encryption_version FROM workspace_secrets`).
+				WithArgs("ws-prod-team").
+				WillReturnRows(sqlmock.NewRows([]string{"key", "encrypted_value", "encryption_version"}))
+
+			handler := NewWorkspaceHandler(&captureBroadcaster{}, nil, "http://localhost:8080", t.TempDir())
+			payload := models.CreateWorkspacePayload{
+				Name: "Dev-A",
+				Role: tc.role,
+				Tier: 1,
+			}
+			prepared, abort := handler.prepareProvisionContext(
+				context.Background(), "ws-prod-team", "/nonexistent", nil, payload, false)
+			if abort != nil {
+				t.Fatalf("unexpected abort: %s", abort.Msg)
+			}
+
+			gotUser, hasUser := prepared.EnvVars["GIT_HTTP_USERNAME"]
+			gotPass, hasPass := prepared.EnvVars["GIT_HTTP_PASSWORD"]
+
+			if tc.expectInject {
+				if !hasUser || gotUser != tc.expectUser {
+					t.Errorf("GIT_HTTP_USERNAME: got %q (present=%v), want %q",
+						gotUser, hasUser, tc.expectUser)
+				}
+				if !hasPass || gotPass != tc.expectPass {
+					t.Errorf("GIT_HTTP_PASSWORD: got %q (present=%v), want %q",
+						gotPass, hasPass, tc.expectPass)
+				}
+				// Fallback pair should ALSO be set so askpass's
+				// GITEA_USER/GITEA_TOKEN fallback chain works
+				// (GITEA_TOKEN will then be stripped at
+				// buildContainerEnv per forensic #145, but
+				// GITEA_USER survives — see provisioner_test.go
+				// "persona-file path" subtest).
+				if prepared.EnvVars["GITEA_USER"] != tc.expectUser {
+					t.Errorf("GITEA_USER fallback: got %q, want %q",
+						prepared.EnvVars["GITEA_USER"], tc.expectUser)
+				}
+				if prepared.EnvVars["GITEA_TOKEN"] != tc.expectPass {
+					t.Errorf("GITEA_TOKEN fallback: got %q, want %q",
+						prepared.EnvVars["GITEA_TOKEN"], tc.expectPass)
+				}
+			} else {
+				if hasUser {
+					t.Errorf("GIT_HTTP_USERNAME should NOT be set for role %q; got %q",
+						tc.role, gotUser)
+				}
+				if hasPass {
+					t.Errorf("GIT_HTTP_PASSWORD should NOT be set for role %q; got %q",
+						tc.role, gotPass)
+				}
+			}
+
+			// applyAgentGitIdentity always wires GIT_ASKPASS when
+			// payload.Name is non-empty — sanity check that the new
+			// wiring didn't accidentally bypass the existing askpass
+			// env-set (the helper without env = nothing to emit).
+			if prepared.EnvVars["GIT_ASKPASS"] != "/usr/local/bin/molecule-askpass" {
+				t.Errorf("GIT_ASKPASS should remain wired by applyAgentGitIdentity; got %q",
+					prepared.EnvVars["GIT_ASKPASS"])
+			}
+		})
+	}
+}
+
+// TestPrepareProvisionContext_WorkspaceSecretWinsOverPersonaToken pins
+// the precedence contract: an operator-supplied workspace_secret named
+// GIT_HTTP_USERNAME / GIT_HTTP_PASSWORD (loaded by loadWorkspaceSecrets
+// BEFORE applyAgentGitHTTPCreds runs) must beat the persona-file
+// default. This is the standard escape hatch — if an operator needs a
+// per-workspace override (e.g. a workspace-scoped Gitea token with
+// narrower repo access than the persona's), the secrets API still
+// works.
+func TestPrepareProvisionContext_WorkspaceSecretWinsOverPersonaToken(t *testing.T) {
+	root := t.TempDir()
+	roleDir := filepath.Join(root, "agent-dev-a")
+	if err := os.MkdirAll(roleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(roleDir, "token"),
+		[]byte("persona-file-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MOLECULE_PERSONA_ROOT", root)
+
+	mock := setupTestDB(t)
+	mock.ExpectQuery(`SELECT key, encrypted_value, encryption_version FROM global_secrets`).
+		WillReturnRows(sqlmock.NewRows([]string{"key", "encrypted_value", "encryption_version"}))
+	// Workspace secret pre-populates GIT_HTTP_USERNAME / GIT_HTTP_PASSWORD —
+	// these come from loadWorkspaceSecrets which runs before applyAgentGitHTTPCreds.
+	// encryption_version=0 means raw bytes (crypto disabled in test).
+	mock.ExpectQuery(`SELECT key, encrypted_value, encryption_version FROM workspace_secrets`).
+		WithArgs("ws-prod-team").
+		WillReturnRows(sqlmock.NewRows([]string{"key", "encrypted_value", "encryption_version"}).
+			AddRow("GIT_HTTP_USERNAME", []byte("operator-override-user"), 0).
+			AddRow("GIT_HTTP_PASSWORD", []byte("operator-override-pass"), 0))
+
+	handler := NewWorkspaceHandler(&captureBroadcaster{}, nil, "http://localhost:8080", t.TempDir())
+	payload := models.CreateWorkspacePayload{
+		Name: "Dev-A",
+		Role: "agent-dev-a",
+		Tier: 1,
+	}
+	prepared, abort := handler.prepareProvisionContext(
+		context.Background(), "ws-prod-team", "/nonexistent", nil, payload, false)
+	if abort != nil {
+		t.Fatalf("unexpected abort: %s", abort.Msg)
+	}
+
+	if prepared.EnvVars["GIT_HTTP_USERNAME"] != "operator-override-user" {
+		t.Errorf("operator override lost — GIT_HTTP_USERNAME: got %q, want %q",
+			prepared.EnvVars["GIT_HTTP_USERNAME"], "operator-override-user")
+	}
+	if prepared.EnvVars["GIT_HTTP_PASSWORD"] != "operator-override-pass" {
+		t.Errorf("operator override lost — GIT_HTTP_PASSWORD: got %q, want %q",
+			prepared.EnvVars["GIT_HTTP_PASSWORD"], "operator-override-pass")
+	}
+}
+
 // TestReadOrLazyHealInboundSecret pins the four branches of the
 // shared lazy-heal helper directly. Each call site (chat_files,
 // registry) has its own integration test, but those go through the

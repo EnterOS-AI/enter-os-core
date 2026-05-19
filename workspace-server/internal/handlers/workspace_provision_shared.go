@@ -131,6 +131,26 @@ func (h *WorkspaceHandler) prepareProvisionContext(
 	// Per-agent git identity (#1957) — must run after secret loads so
 	// a workspace_secret named GIT_AUTHOR_NAME can override.
 	applyAgentGitIdentity(envVars, payload.Name)
+	// Per-agent git HTTP credential injection — bridges the gap that
+	// PR template-claude-code#30 + mc#1525 left open: the askpass binary
+	// + GIT_ASKPASS env are wired in-image, but until now no code path
+	// in workspace-server actually read the persona's git token from
+	// the operator-host bootstrap dir and exported it as
+	// GIT_HTTP_USERNAME / GIT_HTTP_PASSWORD. Without this, the askpass
+	// helper invokes with an empty password env and git fails the
+	// auth challenge in ~500ms (live-verified for Dev-A/Dev-B
+	// 2026-05-18 ~23:55Z).
+	//
+	// Runs AFTER applyAgentGitIdentity so workspace_secrets named
+	// GIT_HTTP_USERNAME / GIT_HTTP_PASSWORD (operator-supplied,
+	// loaded earlier by loadWorkspaceSecrets) win over the
+	// persona-file default. Uses payload.Role as the persona key —
+	// this matches the slug-form convention agent-dev-a /
+	// agent-dev-b / agent-pm. Descriptive multi-word roles
+	// ("Frontend Engineer") take the silent-no-op branch and
+	// continue to rely on workspace_secrets / org-import persona-env
+	// merge for their git auth.
+	applyAgentGitHTTPCreds(envVars, payload.Role)
 	applyRuntimeModelEnv(envVars, payload.Runtime, payload.Model)
 	if payload.Role != "" {
 		envVars["MOLECULE_AGENT_ROLE"] = payload.Role
