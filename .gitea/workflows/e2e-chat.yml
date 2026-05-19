@@ -33,7 +33,13 @@ env:
 jobs:
   # bp-exempt: helper job; real gate is E2E Chat / E2E Chat (pull_request)
   detect-changes:
-    runs-on: ubuntu-latest
+    # mc#1529 follow-on: pin to `docker-host` (Linux operator-host
+    # runners). The bare `ubuntu-latest` label is also advertised by
+    # hongming-pc-runner-* (Windows act_runner v1.0.3) where the
+    # docker.sock-bound steps below fail. Mirror of mc#1543
+    # (handlers-postgres-integration). See internal#512 for the class
+    # defect.
+    runs-on: docker-host
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
     # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
@@ -71,7 +77,9 @@ jobs:
   e2e-chat:
     needs: detect-changes
     name: E2E Chat
-    runs-on: ubuntu-latest
+    # mc#1529 follow-on: docker run/exec for postgres + redis containers.
+    # Must land on operator-host Linux (docker-host).
+    runs-on: docker-host
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
     # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true

@@ -1,0 +1,159 @@
+name: lint-required-workflows-docker-host-pinned
+
+# Fail-closed lint that catches workflows touching docker.sock without
+# pinning `runs-on:` to a Linux-only label.
+#
+# Class defect (internal#512 + mc#1529 + today's oc#81/82/83 + autogen#8):
+# the `ubuntu-latest` label is advertised by BOTH the Linux operator-host
+# runners (molecule-runner-*) AND the Windows act_runner v1.0.3 on
+# hongming-pc-runner-*. Job placement is non-deterministic. When a docker-
+# bound job lands on a Windows runner, `docker run`/`docker login`/
+# `docker compose` fail with platform-specific errors ("protocol not
+# available", "cannot exec", etc.) — placement-dependent, not transient.
+#
+# This lint enforces the convention: any workflow whose YAML body
+# contains a docker exec (`docker run|build|buildx|compose|pull|push|
+# exec|tag|login|cp|inspect|ps` OR `docker/build-push-action|docker/
+# login-action|docker/setup-buildx`) MUST pin every job's `runs-on:` to
+# one of:
+#   - docker-host  (general docker.sock work — molecule-runner-*)
+#   - publish      (image build/push — molecule-runner-publish-*)
+#
+# Comments and heredoc/markdown bodies that merely MENTION docker are
+# excluded by the detection rule (see scan.py below).
+#
+# Per `feedback_never_skip_ci`: this is fail-closed (exit 1 on miss).
+
+on:
+  pull_request:
+    paths:
+      - '.gitea/workflows/**'
+      - '.github/workflows/**'
+  push:
+    branches: [main, staging]
+    paths:
+      - '.gitea/workflows/**'
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  lint-docker-host-pin:
+    name: Lint docker-host pin on docker-touching workflows
+    runs-on: docker-host
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Scan workflows for docker-bound jobs missing docker-host/publish pin
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+
+          # Docker-step detection: real exec, not just word-mention in comments.
+          # We strip comment-only lines, then look for the docker subcommand
+          # tokens at word-boundary, OR uses: docker/* actions.
+          DOCKER_EXEC = re.compile(
+              r'(?<!\w)docker\s+(run|build|buildx|compose|pull|push|exec|tag|login|cp|inspect|ps)\b'
+          )
+          DOCKER_ACTION = re.compile(
+              r'uses:\s*docker/(build-push-action|login-action|setup-buildx-action|setup-qemu-action)'
+          )
+          # Detect a job header line like `  myjob:` (2-space indent) AND its runs-on.
+          JOB_HEADER = re.compile(r'^( {2})([a-zA-Z0-9_-]+):\s*$')
+          RUNS_ON    = re.compile(r'^( {4})runs-on:\s*(.+?)\s*$')
+
+          ALLOWED_LABELS = {'docker-host', 'publish'}
+
+          fails = []
+          warnings = []
+
+          roots = []
+          for root in ('.gitea/workflows', '.github/workflows'):
+              if os.path.isdir(root):
+                  roots.append(root)
+
+          for root in roots:
+              for fn in sorted(os.listdir(root)):
+                  if not (fn.endswith('.yml') or fn.endswith('.yaml')):
+                      continue
+                  path = os.path.join(root, fn)
+                  with open(path) as f:
+                      raw_lines = f.readlines()
+
+                  # Strip pure-comment lines for docker-exec detection so that
+                  # documentation comments don't trigger the lint.
+                  scan_text = ''.join(
+                      l for l in raw_lines
+                      if not re.match(r'^\s*#', l)
+                  )
+
+                  has_docker = bool(DOCKER_EXEC.search(scan_text)) or bool(DOCKER_ACTION.search(scan_text))
+                  if not has_docker:
+                      continue
+
+                  # Parse job headers + their runs-on. Simple line scan; relies on
+                  # 2-space job indent + 4-space runs-on indent under `jobs:`.
+                  jobs = []
+                  current = None
+                  in_jobs = False
+                  for i, line in enumerate(raw_lines, 1):
+                      if re.match(r'^jobs:\s*$', line):
+                          in_jobs = True
+                          continue
+                      if not in_jobs:
+                          continue
+                      mh = JOB_HEADER.match(line)
+                      if mh:
+                          if current:
+                              jobs.append(current)
+                          current = {'name': mh.group(2), 'line': i, 'runs_on': None}
+                          continue
+                      mr = RUNS_ON.match(line)
+                      if mr and current and current['runs_on'] is None:
+                          current['runs_on'] = mr.group(2).strip()
+                  if current:
+                      jobs.append(current)
+
+                  for j in jobs:
+                      ro = j['runs_on']
+                      if ro is None:
+                          # Reusable workflow caller (`uses:` instead of `runs-on:`) —
+                          # skip; rule enforced in the called workflow.
+                          continue
+                      # Strip surrounding [ ] and quotes.
+                      ro_norm = ro.strip('[]').strip().strip('"\'')
+                      # Multi-label "[a, b]" — split.
+                      labels = [t.strip().strip('"\'') for t in ro_norm.split(',') if t.strip()]
+                      if any(lbl in ALLOWED_LABELS for lbl in labels):
+                          continue
+                      # Allow caller-supplied label expression `${{ ... }}` — caller
+                      # is responsible.
+                      if any('${{' in lbl for lbl in labels):
+                          continue
+                      fails.append(
+                          f"{path}:{j['line']}: job `{j['name']}` uses docker but runs-on={ro!r} "
+                          f"(must be one of {sorted(ALLOWED_LABELS)})"
+                      )
+
+          if fails:
+              print("FAIL: docker-bound jobs missing docker-host/publish pin:")
+              for f in fails:
+                  print(f"  - {f}")
+              print()
+              print("Why this rule exists (internal#512 + mc#1529):")
+              print("  Bare `ubuntu-latest` is advertised by BOTH Linux operator-host")
+              print("  runners AND Windows hongming-pc-runner-* (act_runner v1.0.3).")
+              print("  Docker-bound jobs that land on Windows fail non-deterministically.")
+              print("  Pin to `docker-host` (general) or `publish` (image build/push).")
+              sys.exit(1)
+
+          print("OK: all docker-bound jobs are pinned to docker-host or publish.")
+          PY
