@@ -149,8 +149,28 @@ async def ingest_handler(request: Request) -> JSONResponse:
     try:
         form = await request.form(max_files=64, max_fields=32)
     except Exception as exc:  # multipart parse error
-        logger.warning("internal_chat_uploads: multipart parse failed: %s", exc)
-        return JSONResponse({"error": "failed to parse multipart form"}, status_code=400)
+        # Surface exc.class + str(exc) to the caller. Prior behavior returned
+        # only the opaque {"error": "failed to parse multipart form"}, which
+        # took ~25 min to root-cause in forensic a78762a0 (Hermes workspace
+        # PDF upload, 2026-05-19) — the underlying cause was a MISSING
+        # python-multipart dep, surfaced as an AssertionError from Starlette's
+        # parser. Surfacing exception class + detail in the 400 body would
+        # have cut that to ~10 min. Per feedback_surface_actionable_failure_
+        # reason_to_user (CTO 2026-05-17): user-facing failures MUST tell the
+        # user WHY. Top-level "error" key is preserved for backwards-compat
+        # with existing canvas / alert rules.
+        logger.warning(
+            "internal_chat_uploads: multipart parse failed: %s: %s",
+            type(exc).__name__, exc,
+        )
+        return JSONResponse(
+            {
+                "error": "failed to parse multipart form",
+                "exception": type(exc).__name__,
+                "detail": str(exc),
+            },
+            status_code=400,
+        )
 
     # Starlette's FormData allows multiple values per key — `files` may
     # appear multiple times for batched uploads. getlist returns them
