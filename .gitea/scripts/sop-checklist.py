@@ -268,6 +268,7 @@ def compute_ack_state(
     items_by_slug: dict[str, dict[str, Any]],
     numeric_aliases: dict[int, str],
     team_membership_probe: "callable[[str, list[str]], list[str]]",
+    high_risk: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Compute per-item ack state.
 
@@ -330,11 +331,16 @@ def compute_ack_state(
     for slug, candidates in pending_team_check.items():
         if not candidates:
             continue
-        required = items_by_slug[slug]["required_teams"]
+        # Risk-class-aware required-teams resolution (RFC#450 Option C):
+        # high-risk PRs use `required_teams_high_risk` (when set on the
+        # item); default class uses `required_teams`. The probe closure
+        # is built with the same high_risk flag so the two reads are
+        # always consistent (both sites share `resolve_required_teams`).
+        required = resolve_required_teams(items_by_slug[slug], high_risk)
         approved = team_membership_probe(slug, candidates)  # returns subset
         rejected_not_in_team[slug] = [u for u in candidates if u not in approved]
         ackers_per_slug[slug] = approved
-        # Stash required teams for description rendering.
+        # Stash resolved teams for description rendering.
         items_by_slug[slug]["_required_resolved"] = required
 
     return {
@@ -765,6 +771,42 @@ def get_tier_mode(pr: dict[str, Any], cfg: dict[str, Any]) -> str:
     return default_mode
 
 
+def is_high_risk(pr: dict[str, Any], cfg: dict[str, Any]) -> bool:
+    """Return True when the PR is high-risk per RFC#450 Option C.
+
+    A PR is high-risk when ANY of:
+      - it carries the `tier:high` label (mechanically strictest tier), or
+      - it carries any label listed in cfg.high_risk_labels.
+
+    High-risk PRs use `required_teams_high_risk` (when set on an item)
+    instead of the default `required_teams`. Items without
+    `required_teams_high_risk` are unaffected (the default applies).
+
+    Governance fix for internal#442 — closes the inconsistency between
+    sop-tier-check (tier-aware) and sop-checklist (was tier-blind).
+    """
+    label_set = {(l.get("name") or "") for l in (pr.get("labels") or [])}
+    if "tier:high" in label_set:
+        return True
+    high_risk_labels = set(cfg.get("high_risk_labels") or [])
+    return bool(label_set & high_risk_labels)
+
+
+def resolve_required_teams(item: dict[str, Any], high_risk: bool) -> list[str]:
+    """Pick the active required_teams list for an item.
+
+    When high_risk is True AND the item declares a non-empty
+    `required_teams_high_risk`, return that. Else fall back to
+    `required_teams`. Keeping this in one helper means the gate's
+    decision shape stays single-sited even as items grow.
+    """
+    if high_risk:
+        elevated = item.get("required_teams_high_risk") or []
+        if elevated:
+            return list(elevated)
+    return list(item.get("required_teams") or [])
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--owner", required=True)
@@ -825,6 +867,12 @@ def main(argv: list[str] | None = None) -> int:
 
     comments = client.get_issue_comments(args.owner, args.repo, args.pr)
 
+    # High-risk classification (RFC#450 Option C, governance fix for
+    # internal#442). Computed ONCE per PR — used by both the probe
+    # closure and compute_ack_state so the elevation decision is
+    # single-sited.
+    high_risk = is_high_risk(pr, cfg)
+
     # Build team-membership probe closure that caches results per
     # (user, team-id) so a user acking multiple items only triggers
     # one membership lookup per team.
@@ -832,7 +880,7 @@ def main(argv: list[str] | None = None) -> int:
 
     def probe(slug: str, users: list[str]) -> list[str]:
         item = items_by_slug[slug]
-        team_names: list[str] = item["required_teams"]
+        team_names: list[str] = resolve_required_teams(item, high_risk)
         # Resolve names → ids. NOTE: orgs/{org}/teams/search may not be
         # available — fall back to the list endpoint.
         team_ids: list[int] = []
@@ -877,7 +925,9 @@ def main(argv: list[str] | None = None) -> int:
                     # may still find membership in another team.
         return approved
 
-    ack_state = compute_ack_state(comments, author, items_by_slug, numeric_aliases, probe)
+    ack_state = compute_ack_state(
+        comments, author, items_by_slug, numeric_aliases, probe, high_risk=high_risk
+    )
     body_state = {it["slug"]: section_marker_present(body, it["pr_section_marker"]) for it in items}
 
     state, description = render_status(items, ack_state, body_state)
@@ -890,7 +940,10 @@ def main(argv: list[str] | None = None) -> int:
         description = f"[info tier:low] {description}"
 
     # Diagnostics to job log.
-    print(f"::notice::PR #{args.pr} author={author} head={head_sha[:7]} mode={mode}")
+    print(
+        f"::notice::PR #{args.pr} author={author} head={head_sha[:7]} "
+        f"mode={mode} risk_class={'high' if high_risk else 'default'}"
+    )
     for it in items:
         slug = it["slug"]
         ackers = ack_state[slug]["ackers"]

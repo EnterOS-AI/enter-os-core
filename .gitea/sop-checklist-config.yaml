@@ -50,6 +50,34 @@ tier_failure_mode:
   "tier:low": soft
 default_mode: hard  # used when no tier:* label is present
 
+# High-risk class (RFC#450 Option C, governance-fix for internal#442).
+#
+# A PR is "high-risk" when ANY of the listed labels are applied OR when
+# the PR has `tier:high` (mechanically the strictest existing tier).
+# High-risk items use `required_teams_high_risk` (when present on the
+# item); non-high-risk items use the default `required_teams`.
+#
+# This closes the inconsistency that the SOP charter already mandates
+# `tier:high → ceo only` for the sibling `sop-tier-check` gate; the
+# sop-checklist's `root-cause` and `no-backwards-compat` items now
+# follow the same risk-classed two-eyes shape:
+#   - Default class (tier:low/medium, not high-risk): a non-author
+#     engineers/managers/ceo ack satisfies the item — 25+ live
+#     identities, no dependency on a dead/inactive senior persona
+#     token.
+#   - High-risk class (tier:high OR any high_risk_label): still
+#     requires a non-author ceo ack (durable human team).
+#
+# Tightening: add labels to high_risk_labels.
+# Loosening: remove labels.
+high_risk_labels:
+  - "risk:high"
+  - "area:security"
+  - "area:schema"
+  - "area:fleet-image"
+  - "area:identity"
+  - "area:gate-meta"
+
 items:
   - slug: comprehensive-testing
     numeric_alias: 1
@@ -78,11 +106,15 @@ items:
   - slug: root-cause
     numeric_alias: 4
     pr_section_marker: "Root-cause not symptom"
-    required_teams: [managers, ceo]
+    required_teams: [engineers, managers, ceo]
+    required_teams_high_risk: [ceo]
     description: >-
-      One-sentence root-cause statement. Ack from managers tier
-      (team-leads) or ceo. Senior judgment required to attest
-      root-cause-versus-symptom.
+      One-sentence root-cause statement. Default class: non-author
+      engineers/managers/ceo ack suffices (engineers can attest
+      root-cause-vs-symptom for routine fixes). High-risk class
+      (see `high_risk_labels`): non-author ceo ack required —
+      senior judgment for irreversible/security/identity/gate
+      changes. Closes internal#442 + tracks RFC#450.
 
   - slug: five-axis-review
     numeric_alias: 5
@@ -95,10 +127,14 @@ items:
   - slug: no-backwards-compat
     numeric_alias: 6
     pr_section_marker: "No backwards-compat shim / dead code added"
-    required_teams: [managers, ceo]
+    required_teams: [engineers, managers, ceo]
+    required_teams_high_risk: [ceo]
     description: >-
-      Yes/no + justification if no. Senior ack required because
-      backward-compat shims are how dead-code accretes.
+      Yes/no + justification if no. Default class: non-author
+      engineers/managers/ceo ack suffices. High-risk class
+      (see `high_risk_labels`): non-author ceo ack required —
+      senior judgment for shim-versus-real-fix on irreversible
+      surfaces. Closes internal#442 + tracks RFC#450.
 
   - slug: memory-consulted
     numeric_alias: 7

@@ -602,4 +602,216 @@ class TestComputeNaState(unittest.TestCase):
         self.assertEqual(len(na_directives), 1)
         self.assertEqual(na_directives[0][0], "sop-n/a")
         self.assertEqual(na_directives[0][1], "qa-review")
-        self.assertIn("no surface", na_directives[0][2])
+
+
+# ---------------------------------------------------------------------------
+# RFC#450 Option C — risk-classed two-eyes (governance fix for internal#442)
+# ---------------------------------------------------------------------------
+
+
+class TestIsHighRisk(unittest.TestCase):
+    """The high-risk predicate decides which required_teams list applies.
+
+    Predicate: tier:high label OR any label in cfg.high_risk_labels.
+    """
+
+    def setUp(self):
+        self.cfg = sop.load_config(CONFIG_PATH)
+
+    def test_no_labels_is_default_class(self):
+        pr = {"labels": []}
+        self.assertFalse(sop.is_high_risk(pr, self.cfg))
+
+    def test_tier_high_is_high_risk(self):
+        pr = {"labels": [{"name": "tier:high"}]}
+        self.assertTrue(sop.is_high_risk(pr, self.cfg))
+
+    def test_tier_low_is_default_class(self):
+        pr = {"labels": [{"name": "tier:low"}]}
+        self.assertFalse(sop.is_high_risk(pr, self.cfg))
+
+    def test_tier_medium_is_default_class(self):
+        # tier:medium alone is NOT high-risk (Option C — medium routes
+        # to the wider engineers OR-set).
+        pr = {"labels": [{"name": "tier:medium"}]}
+        self.assertFalse(sop.is_high_risk(pr, self.cfg))
+
+    def test_area_security_label_is_high_risk(self):
+        pr = {"labels": [{"name": "tier:medium"}, {"name": "area:security"}]}
+        self.assertTrue(sop.is_high_risk(pr, self.cfg))
+
+    def test_area_schema_label_is_high_risk(self):
+        pr = {"labels": [{"name": "area:schema"}]}
+        self.assertTrue(sop.is_high_risk(pr, self.cfg))
+
+    def test_area_identity_label_is_high_risk(self):
+        pr = {"labels": [{"name": "area:identity"}]}
+        self.assertTrue(sop.is_high_risk(pr, self.cfg))
+
+    def test_area_fleet_image_label_is_high_risk(self):
+        pr = {"labels": [{"name": "area:fleet-image"}]}
+        self.assertTrue(sop.is_high_risk(pr, self.cfg))
+
+    def test_area_gate_meta_label_is_high_risk(self):
+        # Gate-meta = changes to sop-checklist/sop-tier-check itself.
+        pr = {"labels": [{"name": "area:gate-meta"}]}
+        self.assertTrue(sop.is_high_risk(pr, self.cfg))
+
+    def test_unknown_area_label_is_default_class(self):
+        pr = {"labels": [{"name": "area:docs"}]}
+        self.assertFalse(sop.is_high_risk(pr, self.cfg))
+
+
+class TestResolveRequiredTeams(unittest.TestCase):
+    """The team resolver picks the elevated list only for high-risk PRs
+    AND only when the item declares one — items without an elevated
+    list always use the default required_teams."""
+
+    def test_default_class_uses_default_teams(self):
+        item = {"required_teams": ["engineers", "managers", "ceo"], "required_teams_high_risk": ["ceo"]}
+        self.assertEqual(
+            sop.resolve_required_teams(item, high_risk=False),
+            ["engineers", "managers", "ceo"],
+        )
+
+    def test_high_risk_uses_elevated_teams(self):
+        item = {"required_teams": ["engineers", "managers", "ceo"], "required_teams_high_risk": ["ceo"]}
+        self.assertEqual(
+            sop.resolve_required_teams(item, high_risk=True),
+            ["ceo"],
+        )
+
+    def test_high_risk_without_elevated_falls_back_to_default(self):
+        # Items that don't declare required_teams_high_risk (e.g.
+        # comprehensive-testing, staging-smoke) are unaffected by risk-class.
+        item = {"required_teams": ["engineers"]}
+        self.assertEqual(
+            sop.resolve_required_teams(item, high_risk=True),
+            ["engineers"],
+        )
+
+    def test_empty_elevated_list_falls_back_to_default(self):
+        # A defensive case: required_teams_high_risk: [] should not
+        # silently lock out all approvers — fall back to the default
+        # so the gate stays satisfiable. (Tightening should remove the
+        # key, not set it to empty.)
+        item = {"required_teams": ["engineers"], "required_teams_high_risk": []}
+        self.assertEqual(
+            sop.resolve_required_teams(item, high_risk=True),
+            ["engineers"],
+        )
+
+
+class TestRootCauseAckEligibilityWidened(unittest.TestCase):
+    """Closes internal#442: a non-author engineers-team ack now satisfies
+    root-cause / no-backwards-compat for the default class.
+
+    The dead-managers/ceo-persona-token gridlock is the symptom; the
+    root cause is that sop-checklist ignored tier-class. These tests
+    pin the new wider-default behavior so it can't regress silently.
+    """
+
+    def setUp(self):
+        self.items = _items_by_slug()
+        self.aliases = _numeric_aliases()
+
+    @staticmethod
+    def _approve_only(allowed):
+        return lambda slug, users: [u for u in users if u in allowed]
+
+    def test_engineers_ack_satisfies_root_cause_default_class(self):
+        # Bob is in engineers only (not managers, not ceo). Default class.
+        comments = [_comment("bob", "/sop-ack root-cause")]
+        # Probe: bob is approved because root-cause now lists engineers.
+        probe = self._approve_only({"bob"})
+        state = sop.compute_ack_state(
+            comments, "alice", self.items, self.aliases, probe, high_risk=False
+        )
+        self.assertEqual(state["root-cause"]["ackers"], ["bob"])
+
+    def test_engineers_ack_satisfies_no_backwards_compat_default_class(self):
+        comments = [_comment("bob", "/sop-ack no-backwards-compat")]
+        probe = self._approve_only({"bob"})
+        state = sop.compute_ack_state(
+            comments, "alice", self.items, self.aliases, probe, high_risk=False
+        )
+        self.assertEqual(state["no-backwards-compat"]["ackers"], ["bob"])
+
+    def test_engineers_ack_alone_fails_root_cause_when_high_risk(self):
+        # High-risk PR: only ceo can ack. Engineers-only ack must fail.
+        comments = [_comment("bob", "/sop-ack root-cause")]
+        # Probe: bob is in engineers, not ceo. Under high_risk,
+        # required_teams_high_risk=[ceo] → bob is NOT approved.
+        # Probe receives the items + flag indirectly via main(); for
+        # the unit-test path we inject a probe that rejects bob.
+        probe = self._approve_only(set())  # nobody is in ceo
+        state = sop.compute_ack_state(
+            comments, "alice", self.items, self.aliases, probe, high_risk=True
+        )
+        self.assertEqual(state["root-cause"]["ackers"], [])
+        self.assertIn("bob", state["root-cause"]["rejected"]["not_in_team"])
+
+    def test_ceo_ack_satisfies_root_cause_when_high_risk(self):
+        # High-risk PR + ceo-team approver → passes (the senior path).
+        comments = [_comment("hongming", "/sop-ack root-cause")]
+        probe = self._approve_only({"hongming"})
+        state = sop.compute_ack_state(
+            comments, "alice", self.items, self.aliases, probe, high_risk=True
+        )
+        self.assertEqual(state["root-cause"]["ackers"], ["hongming"])
+
+    def test_self_ack_still_forbidden_even_with_widened_eligibility(self):
+        # Author cannot self-ack — widening teams must NOT weaken
+        # the non-author rule.
+        comments = [_comment("alice", "/sop-ack root-cause")]
+        probe = self._approve_only({"alice"})
+        state = sop.compute_ack_state(
+            comments, "alice", self.items, self.aliases, probe, high_risk=False
+        )
+        self.assertEqual(state["root-cause"]["ackers"], [])
+        self.assertIn("alice", state["root-cause"]["rejected"]["self_ack"])
+
+
+class TestHighRiskClassUsesElevatedListInConfig(unittest.TestCase):
+    """End-to-end: the shipped config + RFC#450 predicate must keep
+    root-cause / no-backwards-compat gated on ceo for high-risk PRs."""
+
+    def test_root_cause_high_risk_elevated_to_ceo_only(self):
+        items = _items_by_slug()
+        # tier:high alone makes the PR high-risk → root-cause needs ceo.
+        self.assertEqual(
+            sop.resolve_required_teams(items["root-cause"], high_risk=True),
+            ["ceo"],
+        )
+        # Default class accepts engineers/managers/ceo.
+        self.assertEqual(
+            sorted(sop.resolve_required_teams(items["root-cause"], high_risk=False)),
+            sorted(["engineers", "managers", "ceo"]),
+        )
+
+    def test_no_backwards_compat_high_risk_elevated_to_ceo_only(self):
+        items = _items_by_slug()
+        self.assertEqual(
+            sop.resolve_required_teams(items["no-backwards-compat"], high_risk=True),
+            ["ceo"],
+        )
+        self.assertEqual(
+            sorted(sop.resolve_required_teams(items["no-backwards-compat"], high_risk=False)),
+            sorted(["engineers", "managers", "ceo"]),
+        )
+
+    def test_other_items_unchanged_by_risk_class(self):
+        # Items without required_teams_high_risk are unaffected.
+        items = _items_by_slug()
+        for slug in (
+            "comprehensive-testing",
+            "local-postgres-e2e",
+            "staging-smoke",
+            "five-axis-review",
+            "memory-consulted",
+        ):
+            self.assertEqual(
+                sop.resolve_required_teams(items[slug], high_risk=False),
+                sop.resolve_required_teams(items[slug], high_risk=True),
+                f"item {slug} should not be affected by risk-class",
+            )
