@@ -67,9 +67,23 @@ export function useChatSocket(
             const own = (targetId || msg.workspace_id) === workspaceId;
             if (own) {
               callbacksRef.current.onSendComplete?.();
-              callbacksRef.current.onSendError?.(
-                "Agent error (Exception) — see workspace logs for details.",
-              );
+              // internal#212 — surface the actionable, secret-safe
+              // failure reason (provider HTTP status + error code +
+              // human-readable message) the ws-server now puts on
+              // ACTIVITY_LOGGED.error_detail. The old hardcoded
+              // "Agent error (Exception) — see workspace logs for
+              // details." is the fallback only — it pointed at a
+              // workspace-logs tab that doesn't exist, telling the
+              // user nothing they could act on.
+              //
+              // Graceful degradation: older ws-server builds don't
+              // include error_detail, so the legacy boilerplate is
+              // still the floor (never silently swallow).
+              const detail = (p.error_detail as string) || "";
+              const reason = detail
+                ? detail
+                : "Agent error (Exception) — see workspace logs for details.";
+              callbacksRef.current.onSendError?.(reason);
             }
           }
         } else if (type === "a2a_send") {
