@@ -299,3 +299,46 @@ def test_symlink_at_target_is_refused(client: TestClient, chat_uploads_dir: Path
     assert r.status_code == 500, r.text
     # Sentinel content unchanged — the symlink wasn't followed.
     assert sentinel.read_bytes() == b"original"
+
+
+# Pins the diagnostic shape of the 400 returned when multipart parsing
+# fails. Prior to forensic a78762a0 (Hermes workspace PDF upload 2026-05-19),
+# the response was {"error": "failed to parse multipart form"} only — opaque
+# to the caller, requiring ~25 min of triage to root-cause a missing
+# python-multipart dep. Surfacing exception class + str(exc) makes the
+# failure self-diagnosing (would've shortened that to ~10 min). Per
+# feedback_surface_actionable_failure_reason_to_user (CTO 2026-05-17):
+# user-facing failures MUST tell the user WHY.
+def test_malformed_multipart_returns_exception_class_and_detail(
+    client: TestClient,
+):
+    """Send a multipart-shaped body whose boundary in the header does
+    NOT match the boundary in the body — Starlette's parser raises a
+    MultiPartException, which our handler must surface as exception
+    class + detail in the 400 JSON response.
+    """
+    # Header claims boundary "outer" but body uses "different".
+    bad_body = (
+        b"--different\r\n"
+        b'Content-Disposition: form-data; name="files"; filename="a.txt"\r\n'
+        b"Content-Type: text/plain\r\n\r\n"
+        b"hello\r\n"
+        b"--different--\r\n"
+    )
+    r = client.post(
+        "/internal/chat/uploads/ingest",
+        data=bad_body,
+        headers={
+            "Authorization": "Bearer test-secret",
+            "Content-Type": "multipart/form-data; boundary=outer",
+        },
+    )
+    assert r.status_code == 400, r.text
+    body = r.json()
+    # Backwards-compatible top-level error keeps existing canvas /
+    # alert rules matching.
+    assert body.get("error") == "failed to parse multipart form"
+    # New diagnostic fields — caller can now see the exception class +
+    # detail without SSM access to the workspace stderr.
+    assert "exception" in body and isinstance(body["exception"], str) and body["exception"]
+    assert "detail" in body and isinstance(body["detail"], str)
