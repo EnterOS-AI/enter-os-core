@@ -88,17 +88,6 @@ jobs:
                   with open(path) as f:
                       raw_lines = f.readlines()
 
-                  # Strip pure-comment lines for docker-exec detection so that
-                  # documentation comments don't trigger the lint.
-                  scan_text = ''.join(
-                      l for l in raw_lines
-                      if not re.match(r'^\s*#', l)
-                  )
-
-                  has_docker = bool(DOCKER_EXEC.search(scan_text)) or bool(DOCKER_ACTION.search(scan_text))
-                  if not has_docker:
-                      continue
-
                   # Parse job headers + their runs-on. Simple line scan; relies on
                   # 2-space job indent + 4-space runs-on indent under `jobs:`.
                   jobs = []
@@ -113,8 +102,9 @@ jobs:
                       mh = JOB_HEADER.match(line)
                       if mh:
                           if current:
+                              current['end'] = i - 1
                               jobs.append(current)
-                          current = {'name': mh.group(2), 'line': i, 'runs_on': None}
+                          current = {'name': mh.group(2), 'line': i, 'end': len(raw_lines), 'runs_on': None}
                           continue
                       mr = RUNS_ON.match(line)
                       if mr and current and current['runs_on'] is None:
@@ -123,6 +113,18 @@ jobs:
                       jobs.append(current)
 
                   for j in jobs:
+                      # Strip pure-comment lines for docker-exec detection so
+                      # documentation comments don't trigger the lint. Scan the
+                      # current job body only: a workflow may contain one
+                      # docker-bound job and several harmless metadata jobs.
+                      job_lines = raw_lines[j['line'] - 1:j['end']]
+                      scan_text = ''.join(
+                          l for l in job_lines
+                          if not re.match(r'^\s*#', l)
+                      )
+                      has_docker = bool(DOCKER_EXEC.search(scan_text)) or bool(DOCKER_ACTION.search(scan_text))
+                      if not has_docker:
+                          continue
                       ro = j['runs_on']
                       if ro is None:
                           # Reusable workflow caller (`uses:` instead of `runs-on:`) —
@@ -134,9 +136,11 @@ jobs:
                       labels = [t.strip().strip('"\'') for t in ro_norm.split(',') if t.strip()]
                       if any(lbl in ALLOWED_LABELS for lbl in labels):
                           continue
-                      # Allow caller-supplied label expression `${{ ... }}` — caller
-                      # is responsible.
-                      if any('${{' in lbl for lbl in labels):
+                      # Allow caller-supplied label expressions; spell the
+                      # marker indirectly so Gitea's expression parser does
+                      # not try to parse this Python heredoc.
+                      expression_marker = '$' + '{{'
+                      if any(expression_marker in lbl for lbl in labels):
                           continue
                       fails.append(
                           f"{path}:{j['line']}: job `{j['name']}` uses docker but runs-on={ro!r} "

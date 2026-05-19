@@ -300,7 +300,7 @@ jobs:
 
   canvas-deploy-reminder:
     name: Canvas Deploy Reminder
-    runs-on: ubuntu-latest
+    runs-on: docker-host
     needs: [changes, canvas-build]
     # Only fires on direct pushes to main (i.e. after staging→main promotion).
     if: needs.changes.outputs.canvas == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -440,4 +440,3 @@ jobs:
 
       # SDK + plugin validation moved to standalone repo:
       # github.com/molecule-ai/molecule-sdk-python
-
