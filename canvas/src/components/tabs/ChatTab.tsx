@@ -10,6 +10,7 @@ import { downloadChatFile, isPlatformAttachment } from "./chat/uploads";
 import { PendingAttachmentPill } from "./chat/AttachmentViews";
 import { AttachmentPreview } from "./chat/AttachmentPreview";
 import { AgentCommsPanel } from "./chat/AgentCommsPanel";
+import { ChatErrorBanner } from "./chat/ChatErrorBanner";
 import { appendActivityLine } from "./chat/activityLog";
 import { runtimeDisplayName } from "@/lib/runtime-names";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -592,22 +593,19 @@ function MyChatPanel({ workspaceId, data }: Props) {
         <div ref={bottomRef} />
       </div>
 
-      {/* Error banner */}
-      {displayError && (
-        <div className="px-3 py-2 bg-red-900/20 border-t border-red-800/30">
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] text-red-300">{displayError}</span>
-            {!isOnline && (
-              <button
-                onClick={() => setConfirmRestart(true)}
-                className="text-[11px] px-2 py-0.5 bg-red-800 text-red-200 rounded hover:bg-red-700"
-              >
-                Restart
-              </button>
-            )}
-          </div>
-        </div>
-      )}
+      {/* Error banner — internal#212: surfaces the secret-safe
+          actionable failure reason that ws-server places on
+          ACTIVITY_LOGGED.error_detail (propagated via
+          useChatSocket → onSendError → setError) and offers a
+          "View activity log" affordance that navigates the user to
+          the Activity tab where the full row lives. The previous
+          inline JSX hardcoded "see workspace logs for details" with
+          no link — there is no separate Logs tab. */}
+      <ChatErrorBanner
+        message={displayError}
+        isOnline={isOnline}
+        onRestart={() => setConfirmRestart(true)}
+      />
 
       {/* Input */}
       <div className="p-3 border-t border-line">
