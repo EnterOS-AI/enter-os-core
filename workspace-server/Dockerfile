@@ -22,8 +22,19 @@ RUN go mod download
 COPY workspace-server/ .
 # GIT_SHA mirror of Dockerfile.tenant — see that file for the rationale.
 ARG GIT_SHA=dev
+# Build flags (RFC#563):
+#   -trimpath           strip absolute build-host paths from the binary
+#                       (also slightly improves reproducibility)
+#   -ldflags "-s -w"    omit symbol table (-s) and DWARF debug info (-w)
+#   -X ...GitSHA=...    preserved — /buildinfo still returns the SHA at
+#                       runtime. -s removes the symbol *table* but not
+#                       -X-injected string vars (they're written into
+#                       static data, not into the symtab).
+# Empirical local measurement: ~29% smaller (87→61MB) for /platform.
+# Mirrors the pattern already in molecule-controlplane/Dockerfile.
 RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags "-X github.com/Molecule-AI/molecule-monorepo/platform/internal/buildinfo.GitSHA=${GIT_SHA}" \
+    -trimpath \
+    -ldflags "-s -w -X github.com/Molecule-AI/molecule-monorepo/platform/internal/buildinfo.GitSHA=${GIT_SHA}" \
     -o /platform ./cmd/server
 # Bundle the built-in memory-plugin-postgres binary so an operator can
 # activate Memory v2 by setting MEMORY_V2_CUTOVER=true + (default)
@@ -31,7 +42,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # binary in the background; main /platform talks to it over loopback.
 # Stays inert until the operator flips the cutover env var.
 RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags "-X github.com/Molecule-AI/molecule-monorepo/platform/internal/buildinfo.GitSHA=${GIT_SHA}" \
+    -trimpath \
+    -ldflags "-s -w -X github.com/Molecule-AI/molecule-monorepo/platform/internal/buildinfo.GitSHA=${GIT_SHA}" \
     -o /memory-plugin ./cmd/memory-plugin-postgres
 
 FROM alpine:3.20@sha256:c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e
