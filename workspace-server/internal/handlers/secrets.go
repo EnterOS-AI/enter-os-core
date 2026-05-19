@@ -518,11 +518,24 @@ func (h *SecretsHandler) GetModel(c *gin.Context) {
 	workspaceID := c.Param("id")
 	ctx := c.Request.Context()
 
-	// Check if MODEL_PROVIDER secret exists
+	// Check if MODEL secret exists.
+	//
+	// Historical note: this row was named MODEL_PROVIDER pre-2026-05-19
+	// (see ab12af50 + a7e8892 root-cause analysis). The column name
+	// MODEL_PROVIDER was misleading — it never held a provider slug,
+	// only the picked model id (e.g. "minimax/MiniMax-M2.7"). The
+	// misnomer caused workspace-server's applyRuntimeModelEnv to
+	// overwrite a legitimate persona-env MODEL with whatever literal
+	// string lived in MODEL_PROVIDER (often "minimax" or "claude-code"
+	// — not a valid model id), wedging adapters at SDK initialize.
+	// CP-side slot-separation (cp#213 + cp#220) already corrected the
+	// CP-side analogue; this is the workspace-server companion. A
+	// migration in 20260519000000_workspace_secrets_model_provider_rename.up.sql
+	// moves any legacy rows to the new key on rollout.
 	var modelBytes []byte
 	var modelVersion int
 	err := db.DB.QueryRowContext(ctx,
-		`SELECT encrypted_value, encryption_version FROM workspace_secrets WHERE workspace_id = $1 AND key = 'MODEL_PROVIDER'`,
+		`SELECT encrypted_value, encryption_version FROM workspace_secrets WHERE workspace_id = $1 AND key = 'MODEL'`,
 		workspaceID).Scan(&modelBytes, &modelVersion)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusOK, gin.H{"model": "", "source": "default"})
@@ -542,18 +555,23 @@ func (h *SecretsHandler) GetModel(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"model": string(decrypted), "source": "workspace_secrets"})
 }
 
-// setModelSecret writes (or clears, when value=="") the MODEL_PROVIDER
-// workspace secret. Extracted from SetModel so non-handler call sites
-// (notably WorkspaceHandler.Create — first-deploy path that persists the
+// setModelSecret writes (or clears, when value=="") the MODEL workspace
+// secret. Extracted from SetModel so non-handler call sites (notably
+// WorkspaceHandler.Create — first-deploy path that persists the
 // canvas-selected model so applyRuntimeModelEnv's restart fallback finds
 // it) can reuse the encryption + upsert logic without inlining the SQL.
+//
+// The row was previously keyed MODEL_PROVIDER (misnomer — it never held
+// a provider, only a model id). Renamed to MODEL on 2026-05-19; the
+// 20260519000000_workspace_secrets_model_provider_rename migration moves
+// any legacy rows on rollout.
 //
 // Returns nil on success. Caller is responsible for any restart trigger;
 // the gin handler re-adds that after a successful write.
 func setModelSecret(ctx context.Context, workspaceID, model string) error {
 	if model == "" {
 		_, err := db.DB.ExecContext(ctx,
-			`DELETE FROM workspace_secrets WHERE workspace_id = $1 AND key = 'MODEL_PROVIDER'`,
+			`DELETE FROM workspace_secrets WHERE workspace_id = $1 AND key = 'MODEL'`,
 			workspaceID)
 		return err
 	}
@@ -564,7 +582,7 @@ func setModelSecret(ctx context.Context, workspaceID, model string) error {
 	version := crypto.CurrentEncryptionVersion()
 	_, err = db.DB.ExecContext(ctx, `
 		INSERT INTO workspace_secrets (workspace_id, key, encrypted_value, encryption_version)
-		VALUES ($1, 'MODEL_PROVIDER', $2, $3)
+		VALUES ($1, 'MODEL', $2, $3)
 		ON CONFLICT (workspace_id, key) DO UPDATE
 			SET encrypted_value = $2, encryption_version = $3, updated_at = now()
 	`, workspaceID, encrypted, version)
@@ -572,7 +590,7 @@ func setModelSecret(ctx context.Context, workspaceID, model string) error {
 }
 
 // SetModel handles PUT /workspaces/:id/model — writes the model slug
-// into workspace_secrets as MODEL_PROVIDER (the key GetModel reads).
+// into workspace_secrets as MODEL (the key GetModel reads).
 // For hermes, the value is a hermes-native slug like "minimax/MiniMax-M2.7";
 // for langgraph it's the legacy "provider:model" form. Either way it's just
 // an opaque string the runtime interprets on its next start.

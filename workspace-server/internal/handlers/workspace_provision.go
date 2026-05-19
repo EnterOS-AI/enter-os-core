@@ -786,27 +786,32 @@ func applyRuntimeModelEnv(envVars map[string]string, runtime, model string) {
 	// Resolution order (priority high → low):
 	//   1. payload.Model (caller passed the canvas-picked model id verbatim)
 	//   2. envVars["MOLECULE_MODEL"]  (the canonical, unambiguous name)
-	//   3. envVars["MODEL"]  (workspace_secret persisted by /org/import via
-	//      the persona env file — MODEL=MiniMax-M2.7-highspeed etc.)
-	//   4. envVars["MODEL_PROVIDER"] (legacy + misleadingly named: it carries
-	//      a *model id*, never the provider — that's LLM_PROVIDER. Historically
-	//      set by canvas Save+Restart's PUT /model; the post-2026-05-08
-	//      persona-env convention sometimes (mis)set it to a provider slug
-	//      ("minimax") or a runtime name ("claude-code"), neither a valid
-	//      model id — see internal#226. Only fires when the better-named
-	//      vars are absent.)
+	//   3. envVars["MODEL"]  (workspace_secret — written by SetModel /
+	//      WorkspaceHandler.Create / persona env file; the only correct
+	//      home for a picked model id).
 	//
-	// Pre-fix bug: this function unconditionally OVERWROTE envVars["MODEL"]
-	// with the MODEL_PROVIDER slug (when payload.Model was empty), wiping
-	// the operator's explicit per-persona MODEL secret on every restart.
-	// Symptom: a workspace whose persona env said
-	// MODEL=MiniMax-M2.7-highspeed booted fine on first /org/import (the
-	// envVars map was populated direct from the env file), then on the
-	// next Restart the workspace_secrets-derived MODEL got clobbered by
-	// MODEL_PROVIDER="minimax" — the literal slug, not a valid model id —
-	// and the workspace template's adapter routed to providers[0]
-	// (anthropic-oauth) and wedged at SDK initialize. Caught 2026-05-08
-	// during Phase 4 verification of template-claude-code PR #9.
+	// Pre-fix bug (2026-05-08): this function used to consult
+	// envVars["MODEL_PROVIDER"] as a fourth fallback AND unconditionally
+	// overwrite envVars["MODEL"] with that slug when payload.Model was
+	// empty. The MODEL_PROVIDER key was misleadingly named — it carried
+	// a model id, never a provider — and the persona-env convention
+	// sometimes (mis)set it to a provider slug ("minimax") or a runtime
+	// name ("claude-code"), neither a valid model id. Symptom: a
+	// workspace whose persona env said MODEL=MiniMax-M2.7-highspeed
+	// booted fine on first /org/import, then on the next Restart the
+	// workspace_secrets-derived MODEL got clobbered by
+	// MODEL_PROVIDER="minimax" — the literal slug, not a valid model
+	// id — and the workspace template's adapter routed to providers[0]
+	// (anthropic-oauth) and wedged at SDK initialize.
+	//
+	// The 2026-05-19 follow-up fix (this commit) renamed the
+	// workspace_secrets row MODEL_PROVIDER → MODEL (root cause: the
+	// misleading column name; see secrets.go + the
+	// 20260519000000_workspace_secrets_model_provider_rename migration)
+	// and drops the MODEL_PROVIDER fallback here so the fallback chain
+	// can no longer confuse a provider slug for a model id. CP-side
+	// slot-separation (cp#213 + cp#220) merged the analogous fix on
+	// the CP side; this is the workspace-server companion.
 	if model == "" {
 		model = envVars["MOLECULE_MODEL"]
 	}
@@ -814,23 +819,24 @@ func applyRuntimeModelEnv(envVars map[string]string, runtime, model string) {
 		model = envVars["MODEL"]
 	}
 	if model == "" {
-		model = envVars["MODEL_PROVIDER"]
-	}
-	if model == "" {
 		return
 	}
 
 	// Canonical model env vars — molecule-runtime's workspace/config.py
 	// resolves the picked model as MOLECULE_MODEL > MODEL > (legacy)
-	// MODEL_PROVIDER (#280). Export both new names so adapters can read
-	// either; MODEL stays for backwards compat with everything that
-	// already reads os.environ["MODEL"] (the claude-code adapter does,
-	// since #194). Without this, the user's canvas selection is silently
-	// dropped on every templated provision — confirmed via crash-loop
-	// diagnosis on 2026-05-02 where MiniMax picks booted with model=sonnet
-	// (template default) and demanded CLAUDE_CODE_OAUTH_TOKEN. Set these
-	// FIRST so the per-runtime branches below can layer on additional
-	// vendor-specific names without fighting over the canonical one.
+	// MODEL_PROVIDER (#280; the legacy env-var fallback in the Python
+	// runtime is independent of the workspace_secrets row rename — it
+	// still reads the env var for back-compat with already-running
+	// images, but workspace-server no longer emits it). Export both new
+	// names so adapters can read either; MODEL stays for backwards
+	// compat with everything that already reads os.environ["MODEL"]
+	// (the claude-code adapter does, since #194). Without this, the
+	// user's canvas selection is silently dropped on every templated
+	// provision — confirmed via crash-loop diagnosis on 2026-05-02
+	// where MiniMax picks booted with model=sonnet (template default)
+	// and demanded CLAUDE_CODE_OAUTH_TOKEN. Set these FIRST so the
+	// per-runtime branches below can layer on additional vendor-
+	// specific names without fighting over the canonical one.
 	envVars["MOLECULE_MODEL"] = model
 	envVars["MODEL"] = model
 

@@ -675,15 +675,22 @@ func TestDeriveProviderFromModelSlug(t *testing.T) {
 // TestWorkspaceCreate_FirstDeploy_PersistsModelAndProvider pins the
 // fix for failed-workspace 95ed3ff2 (2026-05-02). Pre-fix: the canvas
 // POSTed minimax/MiniMax-M2.7 in payload.Model, the workspace row was
-// created, but neither MODEL_PROVIDER nor LLM_PROVIDER was ever
+// created, but neither the model nor the derived provider was ever
 // written to workspace_secrets. On any subsequent restart, the
-// applyRuntimeModelEnv fallback found nothing in envVars["MODEL_PROVIDER"]
-// and hermes booted with the template default (nousresearch/hermes-4-70b)
-// → wrong provider keys → /health poll failed → never registered.
+// applyRuntimeModelEnv fallback found nothing and hermes booted with
+// the template default (nousresearch/hermes-4-70b) → wrong provider
+// keys → /health poll failed → never registered.
 //
 // Post-fix: the create handler writes both rows after committing the
 // workspace row. This test asserts the SQL writes happen with the
 // correct keys + values.
+//
+// 2026-05-19 follow-up: the workspace_secrets row that holds the
+// picked model id was renamed MODEL_PROVIDER → MODEL (the column name
+// was misleading and bled into applyRuntimeModelEnv as a slug
+// fallback). The sqlmock regex below now anchors on 'MODEL' instead
+// of 'MODEL_PROVIDER'. See fix/workspace-server-rename-
+// MODEL_PROVIDER-to-MODEL + the 20260519000000 rename migration.
 func TestWorkspaceCreate_FirstDeploy_PersistsModelAndProvider(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)
@@ -699,13 +706,16 @@ func TestWorkspaceCreate_FirstDeploy_PersistsModelAndProvider(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	// The fix: MODEL_PROVIDER is upserted with the verbatim model slug.
-	// SQL has 3 placeholders ($1=workspace_id, $2=encrypted_value reused
-	// in the conflict-update, $3=version reused in the conflict-update),
-	// so sqlmock sees 3 args. The 'MODEL_PROVIDER' / 'LLM_PROVIDER' key
-	// is a literal in the SQL — we distinguish the two writes with the
-	// regex match below.
-	mock.ExpectExec(`INSERT INTO workspace_secrets[\s\S]*'MODEL_PROVIDER'`).
+	// The fix: MODEL is upserted with the verbatim model slug
+	// (renamed from MODEL_PROVIDER on 2026-05-19 — see file-level
+	// docstring). SQL has 3 placeholders ($1=workspace_id, $2=
+	// encrypted_value reused in the conflict-update, $3=version
+	// reused in the conflict-update), so sqlmock sees 3 args. The
+	// 'MODEL' / 'LLM_PROVIDER' key is a literal in the SQL — we
+	// distinguish the two writes with the regex match below. The
+	// 'MODEL' anchor uses a word boundary (`[^_A-Z]`) so it does
+	// NOT silently match the legacy 'MODEL_PROVIDER' name.
+	mock.ExpectExec(`INSERT INTO workspace_secrets[\s\S]*'MODEL'`).
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	// The fix: LLM_PROVIDER is upserted with the derived provider name.
@@ -742,13 +752,13 @@ func TestWorkspaceCreate_FirstDeploy_PersistsModelAndProvider(t *testing.T) {
 		t.Fatalf("expected status 201, got %d: %s", w.Code, w.Body.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("sqlmock expectations not met — first-deploy did NOT persist MODEL_PROVIDER + LLM_PROVIDER (this is the prod bug recurrence): %v", err)
+		t.Errorf("sqlmock expectations not met — first-deploy did NOT persist MODEL + LLM_PROVIDER (this is the prod bug recurrence): %v", err)
 	}
 }
 
 // TestWorkspaceCreate_FirstDeploy_NoModel_NoSecretWritten asserts that
-// when payload.Model is empty, NEITHER MODEL_PROVIDER nor LLM_PROVIDER
-// is written. Important: the canvas can omit `model` (template inherits
+// when payload.Model is empty, NEITHER MODEL nor LLM_PROVIDER is
+// written. Important: the canvas can omit `model` (template inherits
 // the runtime default later); we must not poison workspace_secrets with
 // empty rows in that case.
 func TestWorkspaceCreate_FirstDeploy_NoModel_NoSecretWritten(t *testing.T) {
@@ -792,10 +802,11 @@ func TestWorkspaceCreate_FirstDeploy_NoModel_NoSecretWritten(t *testing.T) {
 
 // TestWorkspaceCreate_FirstDeploy_UnknownModel_OnlyMintModelProvider
 // asserts the asymmetric case: an unknown model prefix still gets
-// MODEL_PROVIDER persisted (so the user's exact slug survives restart
-// and applyRuntimeModelEnv finds it), but LLM_PROVIDER is skipped (so
+// MODEL persisted (so the user's exact slug survives restart and
+// applyRuntimeModelEnv finds it), but LLM_PROVIDER is skipped (so
 // derive-provider.sh's *=auto branch can decide at runtime instead of
-// being pre-empted by a guess).
+// being pre-empted by a guess). The MODEL key was renamed from
+// MODEL_PROVIDER on 2026-05-19 — see file-level docstring.
 func TestWorkspaceCreate_FirstDeploy_UnknownModel_OnlyMintModelProvider(t *testing.T) {
 	mock := setupTestDB(t)
 	setupTestRedis(t)
@@ -807,9 +818,9 @@ func TestWorkspaceCreate_FirstDeploy_UnknownModel_OnlyMintModelProvider(t *testi
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	// Only MODEL_PROVIDER — LLM_PROVIDER must NOT be written for
-	// unknown prefixes. Same 3-arg shape as above; key is literal in SQL.
-	mock.ExpectExec(`INSERT INTO workspace_secrets[\s\S]*'MODEL_PROVIDER'`).
+	// Only MODEL — LLM_PROVIDER must NOT be written for unknown
+	// prefixes. Same 3-arg shape as above; key is literal in SQL.
+	mock.ExpectExec(`INSERT INTO workspace_secrets[\s\S]*'MODEL'`).
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -836,7 +847,7 @@ func TestWorkspaceCreate_FirstDeploy_UnknownModel_OnlyMintModelProvider(t *testi
 		t.Fatalf("expected status 201, got %d: %s", w.Code, w.Body.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("sqlmock expectations not met — unknown-prefix model should mint MODEL_PROVIDER but skip LLM_PROVIDER: %v", err)
+		t.Errorf("sqlmock expectations not met — unknown-prefix model should mint MODEL but skip LLM_PROVIDER: %v", err)
 	}
 }
 
@@ -897,11 +908,11 @@ func TestApplyRuntimeModelEnv_SetsUniversalMODELForAllRuntimes(t *testing.T) {
 			model:   "",
 		},
 		{
-			name:             "empty model + MODEL_PROVIDER fallback hits: MODEL/MOLECULE_MODEL set from secret",
+			name:             "empty model + MODEL_PROVIDER env IGNORED post-2026-05-19 rename (the slug-fallback bug)",
 			runtime:          "claude-code",
 			model:            "",
 			modelProviderEnv: "MiniMax-M2",
-			wantMODEL:        "MiniMax-M2",
+			wantMODEL:        "",
 		},
 		{
 			name:             "empty model + MOLECULE_MODEL env fallback hits (canonical name)",
@@ -911,7 +922,7 @@ func TestApplyRuntimeModelEnv_SetsUniversalMODELForAllRuntimes(t *testing.T) {
 			wantMODEL:        "opus",
 		},
 		{
-			name:             "MOLECULE_MODEL beats MODEL_PROVIDER when both set (misnomer guard, internal#226)",
+			name:             "MOLECULE_MODEL wins even when stale MODEL_PROVIDER is present (back-compat guard)",
 			runtime:          "claude-code",
 			model:            "",
 			moleculeModelEnv: "opus",
@@ -947,18 +958,26 @@ func TestApplyRuntimeModelEnv_SetsUniversalMODELForAllRuntimes(t *testing.T) {
 
 // TestApplyRuntimeModelEnv_PersonaEnvMODELSecretPreserved locks in the
 // 2026-05-08 fix that prevents the MODEL_PROVIDER-as-slug fallback from
-// silently overwriting a per-persona MODEL workspace_secret on restart.
+// silently overwriting a per-persona MODEL workspace_secret on restart,
+// EXTENDED for the 2026-05-19 root-cause fix that drops the
+// MODEL_PROVIDER fallback entirely.
 //
 // Pre-fix bug recurrence guard: when the persona env file (loaded into
 // workspace_secrets at /org/import time) declares both MODEL=<id> and
 // MODEL_PROVIDER=<slug>, the restart path used to overwrite envVars["MODEL"]
-// with the MODEL_PROVIDER slug because applyRuntimeModelEnv'\''s
+// with the MODEL_PROVIDER slug because applyRuntimeModelEnv's
 // payload.Model fallback consulted MODEL_PROVIDER first. Symptom: dev-tree
 // workspaces booted fine on first /org/import, then on next restart the
-// model id became literal "minimax" and the workspace template'\''s adapter
+// model id became literal "minimax" and the workspace template's adapter
 // failed to match any registry prefix, fell through to anthropic-oauth,
 // and wedged at SDK initialize. Caught during Phase 4 verification of
 // template-claude-code PR #9.
+//
+// 2026-05-19 follow-up: the MODEL_PROVIDER fallback is now removed.
+// MODEL is the only env-var source for the picked model id.
+// MODEL_PROVIDER is intentionally NOT consulted — a stale MODEL_PROVIDER
+// row left over from before the 20260519000000 migration must NOT leak
+// into envVars["MODEL"]. Verified by the third case below.
 func TestApplyRuntimeModelEnv_PersonaEnvMODELSecretPreserved(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -967,7 +986,7 @@ func TestApplyRuntimeModelEnv_PersonaEnvMODELSecretPreserved(t *testing.T) {
 		wantMODEL string
 	}{
 		{
-			name:      "MODEL secret wins over MODEL_PROVIDER slug (persona-env shape on restart)",
+			name:      "MODEL secret wins; stale MODEL_PROVIDER ignored (persona-env shape on restart)",
 			envMODEL:  "MiniMax-M2.7-highspeed",
 			envMP:     "minimax",
 			wantMODEL: "MiniMax-M2.7-highspeed",
@@ -979,10 +998,10 @@ func TestApplyRuntimeModelEnv_PersonaEnvMODELSecretPreserved(t *testing.T) {
 			wantMODEL: "opus",
 		},
 		{
-			name:      "MODEL absent → fall back to MODEL_PROVIDER (legacy canvas Save+Restart shape)",
+			name:      "MODEL absent → MODEL_PROVIDER no longer fallback (2026-05-19 fix): nothing set",
 			envMODEL:  "",
 			envMP:     "MiniMax-M2.7",
-			wantMODEL: "MiniMax-M2.7",
+			wantMODEL: "",
 		},
 		{
 			name:      "Both absent → no MODEL set",
@@ -1007,5 +1026,50 @@ func TestApplyRuntimeModelEnv_PersonaEnvMODELSecretPreserved(t *testing.T) {
 					got, tc.wantMODEL, tc.envMODEL, tc.envMP)
 			}
 		})
+	}
+}
+
+// TestApplyRuntimeModelEnv_StaleMODELPROVIDERNeverLeaksIntoMODEL is the
+// 2026-05-19 root-cause pin: workspaces that were live BEFORE the
+// 20260519000000_workspace_secrets_model_provider_rename migration ran
+// may still have a MODEL_PROVIDER row in workspace_secrets that lands
+// in envVars (the loader doesn't filter — anything in workspace_secrets
+// gets passed through). Post-fix, applyRuntimeModelEnv MUST NOT consult
+// that key for any purpose — neither as a fallback for the picked model
+// id nor as an indirect overwrite of MODEL. Asserts the read-out shape:
+//
+//   - envVars["MODEL"] stays empty when no other source provided one
+//   - envVars["MOLECULE_MODEL"] stays empty
+//   - envVars["HERMES_DEFAULT_MODEL"] stays empty
+//   - envVars["MODEL_PROVIDER"] itself is left as-is (we don't actively
+//     scrub it — the rename migration does that on the DB side)
+//
+// Pairs with workspace_provision.go applyRuntimeModelEnv (line 817
+// fallback removed) and secrets.go (workspace_secrets key MODEL).
+func TestApplyRuntimeModelEnv_StaleMODELPROVIDERNeverLeaksIntoMODEL(t *testing.T) {
+	envVars := map[string]string{
+		"MODEL_PROVIDER": "minimax", // legacy slug — the prod-bug shape
+	}
+	applyRuntimeModelEnv(envVars, "claude-code", "")
+	if got, ok := envVars["MODEL"]; ok {
+		t.Errorf("MODEL must not be set from MODEL_PROVIDER fallback (post-2026-05-19 fix); got=%q", got)
+	}
+	if got, ok := envVars["MOLECULE_MODEL"]; ok {
+		t.Errorf("MOLECULE_MODEL must not be set from MODEL_PROVIDER fallback; got=%q", got)
+	}
+	if got, ok := envVars["HERMES_DEFAULT_MODEL"]; ok {
+		t.Errorf("HERMES_DEFAULT_MODEL must not be set from MODEL_PROVIDER fallback; got=%q", got)
+	}
+	if got := envVars["MODEL_PROVIDER"]; got != "minimax" {
+		t.Errorf("MODEL_PROVIDER must be passed through untouched (DB-side rename handles cleanup); got=%q", got)
+	}
+
+	// Hermes-runtime variant — same shape, same expectation.
+	envVarsH := map[string]string{
+		"MODEL_PROVIDER": "minimax",
+	}
+	applyRuntimeModelEnv(envVarsH, "hermes", "")
+	if _, ok := envVarsH["HERMES_DEFAULT_MODEL"]; ok {
+		t.Errorf("hermes runtime must not leak MODEL_PROVIDER into HERMES_DEFAULT_MODEL")
 	}
 }

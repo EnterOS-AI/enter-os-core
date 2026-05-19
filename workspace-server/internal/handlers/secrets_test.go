@@ -479,8 +479,10 @@ func TestSecretsGetModel_Default(t *testing.T) {
 	setupTestRedis(t)
 	handler := NewSecretsHandler(nil)
 
-	// No MODEL_PROVIDER secret
-	mock.ExpectQuery("SELECT encrypted_value, encryption_version FROM workspace_secrets").
+	// No MODEL secret (formerly MODEL_PROVIDER — see 2026-05-19 rename
+	// migration). Pin the WHERE clause so a regression that reads the
+	// wrong column-name shows up here.
+	mock.ExpectQuery(`SELECT encrypted_value, encryption_version FROM workspace_secrets WHERE workspace_id = \$1 AND key = 'MODEL'`).
 		WithArgs("ws-model").
 		WillReturnError(sql.ErrNoRows)
 
@@ -516,7 +518,7 @@ func TestSecretsGetModel_DBError(t *testing.T) {
 	setupTestRedis(t)
 	handler := NewSecretsHandler(nil)
 
-	mock.ExpectQuery("SELECT encrypted_value, encryption_version FROM workspace_secrets").
+	mock.ExpectQuery(`SELECT encrypted_value, encryption_version FROM workspace_secrets WHERE workspace_id = \$1 AND key = 'MODEL'`).
 		WithArgs("ws-model-err").
 		WillReturnError(sql.ErrConnDone)
 
@@ -544,7 +546,9 @@ func TestSecretsSetModel_Upsert(t *testing.T) {
 	restartCalled := make(chan string, 1)
 	handler := NewSecretsHandler(func(id string) { restartCalled <- id })
 
-	mock.ExpectExec(`INSERT INTO workspace_secrets`).
+	// Pin the literal 'MODEL' key in the SQL so a regression to the
+	// pre-2026-05-19 'MODEL_PROVIDER' column name shows up here.
+	mock.ExpectExec(`INSERT INTO workspace_secrets[\s\S]*'MODEL'`).
 		WithArgs("00000000-0000-0000-0000-000000000001", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -578,7 +582,8 @@ func TestSecretsSetModel_EmptyClears(t *testing.T) {
 	setupTestRedis(t)
 	handler := NewSecretsHandler(func(string) {})
 
-	mock.ExpectExec(`DELETE FROM workspace_secrets`).
+	// Pin the literal 'MODEL' key — see TestSecretsSetModel_Upsert.
+	mock.ExpectExec(`DELETE FROM workspace_secrets WHERE workspace_id = \$1 AND key = 'MODEL'`).
 		WithArgs("00000000-0000-0000-0000-000000000002").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -615,6 +620,65 @@ func TestSecretsSetModel_InvalidID(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for bad UUID, got %d", w.Code)
+	}
+}
+
+// TestSecretsModel_RoundTrip_KeyIsMODELNotMODEL_PROVIDER pins the
+// 2026-05-19 rename: writes via SetModel land under workspace_secrets
+// key='MODEL', and reads via GetModel hit the same key. A regression
+// that reverts either side to 'MODEL_PROVIDER' will mismatch sqlmock's
+// query-regex anchor and fail loudly here. Combined integration-shape
+// guard for the secrets.go half of fix/workspace-server-rename-
+// MODEL_PROVIDER-to-MODEL.
+func TestSecretsModel_RoundTrip_KeyIsMODELNotMODEL_PROVIDER(t *testing.T) {
+	mock := setupTestDB(t)
+	setupTestRedis(t)
+	handler := NewSecretsHandler(func(string) {})
+
+	// 1. SetModel — must hit key='MODEL' in the INSERT.
+	mock.ExpectExec(`INSERT INTO workspace_secrets[\s\S]*'MODEL'[\s\S]*ON CONFLICT`).
+		WithArgs("00000000-0000-0000-0000-000000000099", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w1 := httptest.NewRecorder()
+	c1, _ := gin.CreateTestContext(w1)
+	c1.Params = gin.Params{{Key: "id", Value: "00000000-0000-0000-0000-000000000099"}}
+	c1.Request = httptest.NewRequest("PUT", "/workspaces/00000000-0000-0000-0000-000000000099/model",
+		strings.NewReader(`{"model":"gpt-5.5"}`))
+	c1.Request.Header.Set("Content-Type", "application/json")
+	handler.SetModel(c1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("SetModel: expected 200, got %d: %s", w1.Code, w1.Body.String())
+	}
+
+	// 2. GetModel — must hit key='MODEL' in the SELECT. Return raw
+	//    bytes; the handler will run them through DecryptVersioned.
+	//    crypto is disabled in the test env (no MASTER_KEY), so the
+	//    raw bytes pass through unchanged. We assert the SELECT
+	//    fires against key='MODEL' (the rename pin); the decoded
+	//    value isn't load-bearing for this contract test.
+	mock.ExpectQuery(`SELECT encrypted_value, encryption_version FROM workspace_secrets WHERE workspace_id = \$1 AND key = 'MODEL'`).
+		WithArgs("00000000-0000-0000-0000-000000000099").
+		WillReturnRows(sqlmock.NewRows([]string{"encrypted_value", "encryption_version"}).
+			AddRow([]byte("gpt-5.5"), 0))
+
+	w2 := httptest.NewRecorder()
+	c2, _ := gin.CreateTestContext(w2)
+	c2.Params = gin.Params{{Key: "id", Value: "00000000-0000-0000-0000-000000000099"}}
+	c2.Request = httptest.NewRequest("GET", "/workspaces/00000000-0000-0000-0000-000000000099/model", nil)
+	handler.GetModel(c2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("GetModel: expected 200, got %d: %s", w2.Code, w2.Body.String())
+	}
+
+	// We don't assert resp["model"] equals "gpt-5.5" because crypto
+	// state in this package varies by build tag; the load-bearing
+	// contract is the workspace_secrets key, pinned by the sqlmock
+	// regex above. If a future change adds encryption to the test
+	// env, the round-trip value check can move to an integration
+	// test that owns the crypto state.
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations — Model round-trip did not hit key='MODEL' on both sides: %v", err)
 	}
 }
 
