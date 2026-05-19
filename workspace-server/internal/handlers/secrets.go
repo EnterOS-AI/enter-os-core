@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"regexp"
 
+	"github.com/Molecule-AI/molecule-monorepo/platform/internal/audit"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/crypto"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/db"
 	"github.com/Molecule-AI/molecule-monorepo/platform/internal/wsauth"
@@ -262,6 +263,17 @@ func (h *SecretsHandler) Set(c *gin.Context) {
 		return
 	}
 
+	// Phase 1 audit: structured event for the security trail. Inline (not
+	// goroutine) so the event is durable before we ack the user; emit is
+	// best-effort and never errors out of the request path.
+	audit.Emit(c.Request.Context(), "secret.set", map[string]any{
+		"workspace_id": workspaceID,
+		"key":          body.Key,
+		"value_hash":   audit.HashValuePrefix(body.Value, 8),
+		"scope":        "workspace",
+		"operation":    "set",
+	})
+
 	// Auto-restart workspace to pick up new secret.
 	// RFC internal#524 Layer 1: route through globalGoAsync so tests can
 	// drain the detached restart goroutine before db.DB is swapped — see
@@ -300,6 +312,15 @@ func (h *SecretsHandler) Delete(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "secret not found"})
 		return
 	}
+
+	// Phase 1 audit: structured event for the security trail. Only on
+	// real deletes (rows>0) — a 404 is not a state change.
+	audit.Emit(c.Request.Context(), "secret.delete", map[string]any{
+		"workspace_id": workspaceID,
+		"key":          key,
+		"scope":        "workspace",
+		"operation":    "delete",
+	})
 
 	// Auto-restart workspace to pick up removed secret.
 	// RFC internal#524 Layer 1: see Set() above for the drain rationale.
@@ -393,6 +414,15 @@ func (h *SecretsHandler) SetGlobal(c *gin.Context) {
 	key := body.Key
 	globalGoAsync(func() { h.restartAllAffectedByGlobalKey(key) })
 
+	// Phase 1 audit: admin-scope secret write — high-value security event.
+	auditCtx := audit.WithActorKind(c.Request.Context(), audit.ActorAdmin)
+	audit.Emit(auditCtx, "secret.set", map[string]any{
+		"key":        body.Key,
+		"value_hash": audit.HashValuePrefix(body.Value, 8),
+		"scope":      "global",
+		"operation":  "set",
+	})
+
 	c.JSON(http.StatusOK, gin.H{"status": "saved", "key": body.Key, "scope": "global"})
 }
 
@@ -470,6 +500,14 @@ func (h *SecretsHandler) DeleteGlobal(c *gin.Context) {
 	// as SetGlobal above.
 	k := key
 	globalGoAsync(func() { h.restartAllAffectedByGlobalKey(k) })
+
+	// Phase 1 audit: admin-scope secret delete.
+	auditCtx := audit.WithActorKind(c.Request.Context(), audit.ActorAdmin)
+	audit.Emit(auditCtx, "secret.delete", map[string]any{
+		"key":       key,
+		"scope":     "global",
+		"operation": "delete",
+	})
 
 	c.JSON(http.StatusOK, gin.H{"status": "deleted", "key": key, "scope": "global"})
 }
