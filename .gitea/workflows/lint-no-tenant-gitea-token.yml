@@ -1,0 +1,179 @@
+name: Lint no tenant GITEA/GITHUB token write
+
+# Task #146 — CI guardrail companion to RFC#523's `lint-forbidden-env-keys.yml`.
+#
+# `lint-forbidden-env-keys.yml` (Layer 3) catches code that hardcodes a
+# forbidden env-var key NAME as a quoted literal in workspace_secrets
+# writer paths under workspace-server/internal/.
+#
+# This workflow catches a BROADER class: any code path that reads a
+# repo-host token (GITEA_TOKEN / GITHUB_TOKEN / GH_TOKEN) and then writes
+# it into a TENANT WORKSPACE's env, secret store, user-data, or
+# provision payload. This is the actual RFC#523 threat-model statement —
+# the goal is "no tenant workspace ever receives an operator-scope repo
+# token," not just "no _quoted_ literal `GITEA_TOKEN`." A future writer
+# could route the value via a variable, a struct field, or a config key
+# and slip past the existing literal scan; this lint catches those
+# routing patterns at PR review time.
+#
+# Scope
+#   Scans the WHOLE repo's Go sources (not just workspace-server/) for
+#   co-occurrences of:
+#     - a repo-host token NAME (GITEA_TOKEN / GITHUB_TOKEN / GH_TOKEN /
+#       GITEA_PAT / GITHUB_PAT) used as os.Getenv argument or string
+#       literal
+#     - within a file that ALSO references a tenant-writer surface
+#       (`tenant`, `workspace_secrets`, `global_secrets`, `seedAllowList`,
+#       `/settings/secrets`, `userData`, `provisionPayload`,
+#       `envVars[`, `containerEnv`).
+#
+#   Co-occurrence (not single-line) is the false-positive control: a
+#   file that just LOGS the variable name (e.g. "missing GITEA_TOKEN")
+#   without touching any tenant surface won't fire.
+#
+# Drift contract with lint-forbidden-env-keys.yml
+#   Both lints share the same FORBIDDEN_KEYS list (a subset — only the
+#   repo-host tokens, since this lint's threat model is "tenant gets
+#   write access to operator's git host"). If RFC#523's deny set grows,
+#   update BOTH this file AND lint-forbidden-env-keys.yml AND the Go
+#   source-of-truth in
+#   workspace-server/internal/handlers/workspace_provision_forbidden_env.go.
+#
+# Open-source-template-friendly
+#   The patterns scanned are generic (no MOLECULE_-prefix literals).
+#   A fork can copy this workflow as-is and adjust FORBIDDEN_KEYS.
+#
+# Path-filter discipline
+#   No `paths:` filter — required-status workflows must run on every PR
+#   per `feedback_path_filtered_workflow_cant_be_required`. Scan is
+#   sub-second.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main, staging]
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  scan:
+    name: Scan for repo-host token write into tenant workspace surface
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+
+      - name: Find Go files referencing a tenant-writer surface AND a repo-host token
+        run: |
+          set -euo pipefail
+
+          # Repo-host token NAMES — the threat-model subset. Operator-fleet
+          # tokens (CP_ADMIN_API_TOKEN, RAILWAY_TOKEN, INFISICAL_*) are
+          # caught by lint-forbidden-env-keys.yml's broader deny set; this
+          # lint focuses on the git-host class so a single co-occurrence
+          # match has a low false-positive rate.
+          FORBIDDEN_KEYS=(
+            "GITEA_TOKEN"
+            "GITEA_PAT"
+            "GITHUB_TOKEN"
+            "GITHUB_PAT"
+            "GH_TOKEN"
+          )
+
+          # Tenant-writer surface markers. A file matches the surface set
+          # if it references ANY of these strings. This is the "is this
+          # code path writing into a tenant workspace?" heuristic.
+          # Curated to catch the actual code shapes used in this repo
+          # (verified by grep against current main 2026-05-19):
+          #   - "workspace_secrets" / "global_secrets"  → DB table writes
+          #   - "seedAllowList"                          → CP-side seed table
+          #   - "/settings/secrets"                      → tenant HTTP API write
+          #   - "envVars["                               → in-memory env map write
+          #   - "containerEnv"                           → docker-run env-set
+          #   - "userData"                               → EC2 user-data script
+          #   - "provisionPayload" / "provisionContext"  → provision-request shape
+          SURFACE_PATTERN='workspace_secrets|global_secrets|seedAllowList|/settings/secrets|envVars\[|containerEnv|userData|provisionPayload|provisionContext'
+
+          # Files that legitimately reference these names AND a surface
+          # marker, but do so for guard / strip / test / doc-comment
+          # reasons. New entries require reviewer signoff and a one-line
+          # justification in the diff.
+          EXEMPT_FILES=(
+            # RFC#523 L1 deny-set source-of-truth + tests
+            "workspace-server/internal/handlers/workspace_provision_forbidden_env.go"
+            "workspace-server/internal/handlers/workspace_provision_forbidden_env_test.go"
+            # Forensic-#145 silent-strip denylist (defense-in-depth, by design lists the names)
+            "workspace-server/internal/provisioner/provisioner.go"
+            "workspace-server/internal/provisioner/provisioner_test.go"
+            # Pre-RFC#523 persona-fallback / org-helper paths. The L1
+            # fail-closed runs BEFORE these writers; downstream silent-strip
+            # also covers them. See applyAgentGitHTTPCreds doc-comment.
+            "workspace-server/internal/handlers/agent_git_identity.go"
+            "workspace-server/internal/handlers/org_helpers.go"
+            "workspace-server/internal/handlers/org.go"
+            # CP→platform admin auth (NOT a tenant env write).
+            "workspace-server/internal/provisioner/cp_provisioner.go"
+          )
+
+          # Build an extended-regex alternation of forbidden keys.
+          KEY_ALT="$(IFS='|'; echo "${FORBIDDEN_KEYS[*]}")"
+
+          # Find candidate files: Go non-test sources that contain a
+          # tenant-writer surface marker.
+          mapfile -t CANDIDATES < <(
+            grep -rlE --include='*.go' --exclude='*_test.go' \
+              "${SURFACE_PATTERN}" . 2>/dev/null \
+            | sed 's|^\./||' \
+            | sort -u
+          )
+
+          if [ "${#CANDIDATES[@]}" -eq 0 ]; then
+            echo "OK No tenant-writer-surface files found in tree (unexpected, but not a lint failure)."
+            exit 0
+          fi
+
+          HITS=""
+          for f in "${CANDIDATES[@]}"; do
+            # Skip exempt files.
+            skip=0
+            for ex in "${EXEMPT_FILES[@]}"; do
+              if [ "$f" = "$ex" ]; then skip=1; break; fi
+            done
+            [ "$skip" = "1" ] && continue
+
+            # File contains a surface marker; now grep for a forbidden
+            # key NAME. We require a QUOTED-literal match to avoid
+            # firing on a comment like "// also handle GITEA_TOKEN".
+            #
+            # The literal form catches:
+            #   - os.Getenv("GITEA_TOKEN")
+            #   - envVars["GITEA_TOKEN"] = ...
+            #   - {envKey: "GITEA_TOKEN", tenantKey: "GITEA_TOKEN"}
+            # but not:
+            #   - // see GITEA_TOKEN below   (no quotes)
+            found=$(grep -nE "\"(${KEY_ALT})\"" "$f" 2>/dev/null || true)
+            if [ -n "$found" ]; then
+              HITS="${HITS}--- ${f} ---\n${found}\n"
+            fi
+          done
+
+          if [ -n "$HITS" ]; then
+            echo "::error::Task #146 lint: repo-host token name(s) quoted in a tenant-writer-surface file:"
+            printf "$HITS"
+            echo ""
+            echo "These files reference a tenant-writer surface (workspace_secrets,"
+            echo "seedAllowList, /settings/secrets, containerEnv, userData, etc.)"
+            echo "AND quote a repo-host token name (GITEA_TOKEN/GITHUB_TOKEN/…)."
+            echo "Per RFC#523 threat model, tenant workspaces MUST NOT receive"
+            echo "operator-scope repo-host tokens. If your code legitimately needs"
+            echo "to reference one of these names in a tenant-writer file (e.g."
+            echo "a deny-set definition or silent-strip list), add the file to"
+            echo "EXEMPT_FILES with a one-line justification — reviewer signoff"
+            echo "required."
+            exit 1
+          fi
+
+          echo "OK No tenant-writer-surface file co-mentions a repo-host token literal."

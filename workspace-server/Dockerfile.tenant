@@ -52,15 +52,26 @@ COPY workspace-server/ .
 # threaded through here, every tenant returns "dev" and the verification
 # fails closed — which is the correct fail-direction (#2395 root fix).
 ARG GIT_SHA=dev
+# Build flags (RFC#563):
+#   -trimpath           strip absolute build-host paths from the binary
+#   -ldflags "-s -w"    omit symbol table (-s) and DWARF debug info (-w)
+#   -X ...GitSHA=...    preserved — /buildinfo still returns the SHA at
+#                       runtime. -s removes the symbol *table* but not
+#                       -X-injected string vars (they live in static
+#                       data, not in the symtab).
+# Empirical local measurement: ~29% smaller (87→61MB) for /platform.
+# Mirrors the pattern already in molecule-controlplane/Dockerfile.
 RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags "-X github.com/Molecule-AI/molecule-monorepo/platform/internal/buildinfo.GitSHA=${GIT_SHA}" \
+    -trimpath \
+    -ldflags "-s -w -X github.com/Molecule-AI/molecule-monorepo/platform/internal/buildinfo.GitSHA=${GIT_SHA}" \
     -o /platform ./cmd/server
 # Memory v2 sidecar binary (Memory v2 #2728). Bundled so an operator
 # can activate cutover by flipping MEMORY_V2_CUTOVER=true without
 # provisioning a separate service. See entrypoint-tenant.sh for the
 # launch logic.
 RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags "-X github.com/Molecule-AI/molecule-monorepo/platform/internal/buildinfo.GitSHA=${GIT_SHA}" \
+    -trimpath \
+    -ldflags "-s -w -X github.com/Molecule-AI/molecule-monorepo/platform/internal/buildinfo.GitSHA=${GIT_SHA}" \
     -o /memory-plugin ./cmd/memory-plugin-postgres
 
 # ── Stage 2: Canvas Next.js standalone ────────────────────────────────
