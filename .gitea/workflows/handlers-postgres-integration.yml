@@ -77,7 +77,16 @@ env:
 jobs:
   detect-changes:
     name: detect-changes
-    runs-on: ubuntu-latest
+    # mc#1529 §1: pin to `docker-host` so the integration job runs on the
+    # operator-host runners (molecule-runner-*), which carry the
+    # `molecule-core-net` bridge network this workflow depends on. PC2
+    # runners (hongming-pc-runner-*) also advertise ubuntu-latest but
+    # don't have that network — the previous `runs-on: ubuntu-latest`
+    # rolled the dice and hard-failed the bridge-inspect step ~30% of
+    # the time. detect-changes itself doesn't need the bridge, but keeping
+    # both jobs on the same label avoids workspace-volume cross-host
+    # surprises and keeps the routing rule discoverable in one place.
+    runs-on: docker-host
     # mc#774 Phase 3 (RFC §1): surface broken workflows without blocking.
     # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
@@ -129,7 +138,9 @@ jobs:
   integration:
     name: Handlers Postgres Integration
     needs: detect-changes
-    runs-on: ubuntu-latest
+    # mc#1529 §1: must run on operator-host (where `molecule-core-net`
+    # exists). See detect-changes for the full routing rationale.
+    runs-on: docker-host
     # mc#774 Phase 3 (RFC §1): surface broken workflows without blocking.
     # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
