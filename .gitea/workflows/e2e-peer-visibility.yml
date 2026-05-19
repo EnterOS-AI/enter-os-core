@@ -52,6 +52,30 @@ name: E2E Peer Visibility (literal MCP list_peers)
 #     flip-to-required-ready (mirrors e2e-staging-saas.yml's proven shape;
 #     real EC2-provisioning E2E is push/dispatch/cron only — it is 30+ min
 #     and cannot run per-PR-update).
+#
+# LOCAL BACKEND (added 2026-05-15 — feedback_local_must_mimic_production,
+# feedback_mandatory_local_e2e_before_ship, feedback_local_test_before_
+# staging_e2e)
+# --------------------------------------------------------------------
+# The standing rule is that the local prod-mimic stack runs a MANDATORY
+# local-Postgres E2E BEFORE staging E2E. A staging-only peer-visibility
+# gate caught regressions late + expensively (cold EC2). The
+# `peer-visibility-local` job below runs the SAME byte-identical
+# assertion (tests/e2e/lib/peer_visibility_assert.sh) against the local
+# docker-compose stack — built + booted exactly like e2e-api.yml's
+# proven E2E API Smoke Test job (ephemeral pg/redis ports, go build,
+# background platform-server). It runs on PR + push (local boot is
+# minutes, not the 30+ min cold-EC2 path), so peer-visibility is part of
+# the local gate that fires before the staging E2E.
+#
+# It is its OWN non-required status context `E2E Peer Visibility (local)`
+# — same non-required-by-design decision as the staging job (red until
+# Hermes-401 #162 / OpenClaw-never-online #165 land; flip-to-required
+# tracked at molecule-core#1296). It is an HONEST gate: NO
+# continue-on-error mask (feedback_fix_root_not_symptom). It is kept a
+# distinct context (not folded into e2e-api.yml's required `E2E API
+# Smoke Test`) precisely so a deliberately-RED-today gate cannot wedge
+# the required local-E2E job or any unrelated merge.
 
 on:
   push:
@@ -65,6 +89,8 @@ on:
       - 'workspace/a2a_mcp_server.py'
       - 'workspace/platform_tools/registry.py'
       - 'tests/e2e/test_peer_visibility_mcp_staging.sh'
+      - 'tests/e2e/test_peer_visibility_mcp_local.sh'
+      - 'tests/e2e/lib/peer_visibility_assert.sh'
       - '.gitea/workflows/e2e-peer-visibility.yml'
   pull_request:
     branches: [main]
@@ -77,6 +103,8 @@ on:
       - 'workspace/a2a_mcp_server.py'
       - 'workspace/platform_tools/registry.py'
       - 'tests/e2e/test_peer_visibility_mcp_staging.sh'
+      - 'tests/e2e/test_peer_visibility_mcp_local.sh'
+      - 'tests/e2e/lib/peer_visibility_assert.sh'
       - '.gitea/workflows/e2e-peer-visibility.yml'
   workflow_dispatch:
   schedule:
@@ -108,16 +136,160 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Validate driving script
+      - name: Validate driving scripts + shared assertion lib
         run: |
+          bash -n tests/e2e/lib/peer_visibility_assert.sh
+          echo "lib/peer_visibility_assert.sh — bash syntax OK"
           bash -n tests/e2e/test_peer_visibility_mcp_staging.sh
           echo "test_peer_visibility_mcp_staging.sh — bash syntax OK"
-          echo "Real fresh-provision MCP list_peers E2E runs on push to"
+          bash -n tests/e2e/test_peer_visibility_mcp_local.sh
+          echo "test_peer_visibility_mcp_local.sh — bash syntax OK"
+          echo "Staging fresh-provision MCP list_peers E2E runs on push to"
           echo "main / workflow_dispatch / daily cron (30+ min EC2 boot)."
+          echo "The LOCAL backend runs in the peer-visibility-local job"
+          echo "below on this same PR (local docker-compose stack)."
 
-  # Real gate: provisions a throwaway org + sibling-per-runtime, drives
-  # the LITERAL list_peers MCP call per runtime, asserts 200 + expected
-  # peer set, then scoped teardown. push(main)/dispatch/cron only.
+  # LOCAL gate: same byte-identical assertion against the local prod-mimic
+  # docker-compose stack — the MANDATORY local-E2E that must run BEFORE
+  # the staging E2E (feedback_mandatory_local_e2e_before_ship,
+  # feedback_local_test_before_staging_e2e). Bootstrap mirrors
+  # e2e-api.yml's proven E2E API Smoke Test job (per-run container names +
+  # ephemeral host ports so concurrent host-network act_runner runs don't
+  # collide; go build; background platform-server). Its OWN non-required
+  # status context `E2E Peer Visibility (local)` — non-required-by-design
+  # exactly like the staging job (red until #162/#165 land;
+  # flip-to-required tracked at molecule-core#1296). HONEST gate, NO
+  # continue-on-error mask (feedback_fix_root_not_symptom). Runs on PR +
+  # push (local boot is minutes, not the 30+ min cold-EC2 path).
+  # bp-required: pending #1296
+  peer-visibility-local:
+    name: E2E Peer Visibility (local)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Per-run names + ephemeral ports — same collision-avoidance as
+      # e2e-api.yml (host-network act_runner; feedback_act_runner_*).
+      PG_CONTAINER: pg-e2e-pv-${{ github.run_id }}-${{ github.run_attempt }}
+      REDIS_CONTAINER: redis-e2e-pv-${{ github.run_id }}-${{ github.run_attempt }}
+      # LLM keys so hermes/openclaw can actually boot. The local script
+      # SKIPs (not fails) any runtime whose key is absent, so a partially
+      # keyed CI env still exercises whatever it can.
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.E2E_CLAUDE_CODE_OAUTH_TOKEN }}
+      E2E_MINIMAX_API_KEY: ${{ secrets.MOLECULE_STAGING_MINIMAX_API_KEY }}
+      E2E_ANTHROPIC_API_KEY: ${{ secrets.MOLECULE_STAGING_ANTHROPIC_API_KEY }}
+      E2E_OPENAI_API_KEY: ${{ secrets.MOLECULE_STAGING_OPENAI_API_KEY }}
+      PV_RUNTIMES: "hermes openclaw claude-code"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 'stable'
+          cache: true
+          cache-dependency-path: workspace-server/go.sum
+      - name: Pre-pull alpine + ensure provisioner network
+        run: |
+          docker pull alpine:latest >/dev/null
+          docker network create molecule-core-net >/dev/null 2>&1 || true
+          echo "alpine:latest pre-pulled; molecule-core-net ensured."
+      - name: Start Postgres (docker, ephemeral port)
+        run: |
+          docker rm -f "$PG_CONTAINER" 2>/dev/null || true
+          docker run -d --name "$PG_CONTAINER" \
+            -e POSTGRES_USER=dev -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=molecule \
+            -p 0:5432 postgres:16 >/dev/null
+          PG_PORT=$(docker port "$PG_CONTAINER" 5432/tcp | awk -F: '/^0\.0\.0\.0:/ {print $2; exit}')
+          [ -n "$PG_PORT" ] || PG_PORT=$(docker port "$PG_CONTAINER" 5432/tcp | head -1 | awk -F: '{print $NF}')
+          if [ -z "$PG_PORT" ]; then
+            echo "::error::Could not resolve host port for $PG_CONTAINER"
+            docker logs "$PG_CONTAINER" || true; exit 1
+          fi
+          echo "DATABASE_URL=postgres://dev:dev@127.0.0.1:${PG_PORT}/molecule?sslmode=disable" >> "$GITHUB_ENV"
+          for i in $(seq 1 30); do
+            docker exec "$PG_CONTAINER" pg_isready -U dev >/dev/null 2>&1 && { echo "Postgres ready after ${i}s"; exit 0; }
+            sleep 1
+          done
+          echo "::error::Postgres did not become ready in 30s"; docker logs "$PG_CONTAINER" || true; exit 1
+      - name: Start Redis (docker, ephemeral port)
+        run: |
+          docker rm -f "$REDIS_CONTAINER" 2>/dev/null || true
+          docker run -d --name "$REDIS_CONTAINER" -p 0:6379 redis:7 >/dev/null
+          REDIS_PORT=$(docker port "$REDIS_CONTAINER" 6379/tcp | awk -F: '/^0\.0\.0\.0:/ {print $2; exit}')
+          [ -n "$REDIS_PORT" ] || REDIS_PORT=$(docker port "$REDIS_CONTAINER" 6379/tcp | head -1 | awk -F: '{print $NF}')
+          if [ -z "$REDIS_PORT" ]; then
+            echo "::error::Could not resolve host port for $REDIS_CONTAINER"
+            docker logs "$REDIS_CONTAINER" || true; exit 1
+          fi
+          echo "REDIS_URL=redis://127.0.0.1:${REDIS_PORT}" >> "$GITHUB_ENV"
+          for i in $(seq 1 15); do
+            docker exec "$REDIS_CONTAINER" redis-cli ping 2>/dev/null | grep -q PONG && { echo "Redis ready after ${i}s"; exit 0; }
+            sleep 1
+          done
+          echo "::error::Redis did not become ready in 15s"; docker logs "$REDIS_CONTAINER" || true; exit 1
+      - name: Build platform
+        working-directory: workspace-server
+        run: go build -o platform-server ./cmd/server
+      - name: Pick platform port
+        run: |
+          PLATFORM_PORT=$(python3 - <<'PY'
+          import socket
+          with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+              s.bind(("127.0.0.1", 0))
+              print(s.getsockname()[1])
+          PY
+          )
+          echo "PORT=${PLATFORM_PORT}" >> "$GITHUB_ENV"
+          echo "BASE=http://127.0.0.1:${PLATFORM_PORT}" >> "$GITHUB_ENV"
+          echo "Platform host port: ${PLATFORM_PORT}"
+      - name: Kill stale platform-server before start
+        run: |
+          killed=0
+          for pid in $(grep -l "platform-serve" /proc/[0-9]*/comm 2>/dev/null); do
+            kpid="${pid%/comm}"; kpid="${kpid##*/}"
+            cmdline=$(cat "/proc/${kpid}/cmdline" 2>/dev/null | tr '\0' ' ')
+            if echo "$cmdline" | grep -q "platform-server"; then
+              echo "Killing stale platform-server pid ${kpid}"
+              kill "$kpid" 2>/dev/null || true; killed=$((killed + 1))
+            fi
+          done
+          [ "$killed" -gt 0 ] && sleep 2 || true
+          echo "stale-kill done ($killed killed)"
+      - name: Start platform (background)
+        working-directory: workspace-server
+        run: |
+          ./platform-server > platform.log 2>&1 &
+          echo $! > platform.pid
+      - name: Wait for /health
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf "$BASE/health" > /dev/null && { echo "Platform up after ${i}s"; exit 0; }
+            sleep 1
+          done
+          echo "::error::Platform did not become healthy in 30s"
+          cat workspace-server/platform.log || true; exit 1
+      - name: Run LOCAL fresh-provision peer-visibility E2E (literal MCP list_peers)
+        # HONEST gate — NO continue-on-error. Red today (Hermes-401 #162 /
+        # OpenClaw-never-online #165 not yet fixed); green when they land.
+        # Non-required-by-design via its distinct status context until the
+        # molecule-core#1296 flip-to-required.
+        run: bash tests/e2e/test_peer_visibility_mcp_local.sh
+      - name: Dump platform log on failure
+        if: failure()
+        run: cat workspace-server/platform.log || true
+      - name: Stop platform
+        if: always()
+        run: |
+          if [ -f workspace-server/platform.pid ]; then
+            kill "$(cat workspace-server/platform.pid)" 2>/dev/null || true
+          fi
+      - name: Stop service containers
+        if: always()
+        run: |
+          docker rm -f "$PG_CONTAINER" 2>/dev/null || true
+          docker rm -f "$REDIS_CONTAINER" 2>/dev/null || true
+
+  # Real STAGING gate: provisions a throwaway org + sibling-per-runtime,
+  # drives the LITERAL list_peers MCP call per runtime, asserts 200 +
+  # expected peer set, then scoped teardown. push(main)/dispatch/cron only.
   peer-visibility:
     name: E2E Peer Visibility
     runs-on: ubuntu-latest

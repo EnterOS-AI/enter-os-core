@@ -64,6 +64,13 @@
 
 set -uo pipefail
 
+# The literal MCP list_peers assertion lives in the shared, backend-
+# agnostic lib so it is BYTE-IDENTICAL between this staging backend and
+# the local docker-compose backend (tests/e2e/test_peer_visibility_mcp_
+# local.sh). Only provisioning/teardown differs per backend.
+# shellcheck source=tests/e2e/lib/peer_visibility_assert.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/peer_visibility_assert.sh"
+
 CP_URL="${MOLECULE_CP_URL:-https://staging-api.moleculesai.app}"
 ADMIN_TOKEN="${MOLECULE_ADMIN_TOKEN:?MOLECULE_ADMIN_TOKEN required — Railway staging CP_ADMIN_API_TOKEN}"
 RUN_ID_SUFFIX="${E2E_RUN_ID:-$(date +%H%M%S)-$$}"
@@ -259,101 +266,19 @@ done
 # through WorkspaceAuth + MCPRateLimiter.
 log "6/6 driving the LITERAL list_peers MCP call per runtime..."
 echo ""
-RPC_BODY='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_peers","arguments":{}}}'
 REGRESSED=0
 declare -A VERDICT
 
 for rt in $PV_RUNTIMES; do
   wid="${WS_IDS[$rt]}"
   wtok="${WS_TOKENS[$rt]}"
-  # The expected peer set = every OTHER provisioned workspace (parent +
-  # the sibling runtimes), excluding the caller itself.
-  EXPECT_IDS=$(echo "$ALL_WS_IDS" | tr ' ' '\n' | grep -v "^${wid}$" | grep -v '^$')
-
-  set +e
-  RESP=$(curl -sS -X POST "$TENANT_URL/workspaces/$wid/mcp" \
-    -H "Authorization: Bearer $wtok" \
-    -H "X-Molecule-Org-Id: $ORG_ID" \
-    -H "Content-Type: application/json" \
-    -d "$RPC_BODY" \
-    -o /tmp/pv_mcp_body.json -w "%{http_code}" 2>/dev/null)
-  set -e
-  HTTP_CODE="$RESP"
-  BODY=$(cat /tmp/pv_mcp_body.json 2>/dev/null || echo '')
-
-  echo "--- $rt (ws=$wid) ---"
-  echo "    HTTP $HTTP_CODE"
-  echo "    body: $(echo "$BODY" | head -c 600)"
-
-  # (1) HTTP 200 — a 401 (WorkspaceAuth reject, the Hermes symptom) fails here.
-  if [ "$HTTP_CODE" != "200" ]; then
-    echo "  ✗ $rt: list_peers MCP call returned HTTP $HTTP_CODE (expected 200)"
-    VERDICT[$rt]="FAIL(http=$HTTP_CODE)"
-    REGRESSED=1
-    continue
-  fi
-
-  # (2) JSON-RPC result present, not an error object.
-  PARSE=$(echo "$BODY" | python3 -c "
-import sys, json
-expect = set(filter(None, '''$EXPECT_IDS'''.split()))
-try:
-    d = json.load(sys.stdin)
-except Exception as e:
-    print('PARSE_ERROR:' + str(e)); sys.exit(0)
-if isinstance(d, dict) and d.get('error') is not None:
-    print('RPC_ERROR:' + json.dumps(d['error'])[:200]); sys.exit(0)
-res = d.get('result') if isinstance(d, dict) else None
-if res is None:
-    print('NO_RESULT'); sys.exit(0)
-# MCP tools/call result shape: {content:[{type:text,text:'<json or prose>'}]}
-text = ''
-if isinstance(res, dict):
-    for c in res.get('content', []):
-        if c.get('type') == 'text':
-            text += c.get('text', '')
-text_l = text.lower()
-# Native-sessions fallback signature (the OpenClaw symptom): the agent
-# answered from its own runtime session list, not the platform peer set.
-if 'sessions_list' in text_l or 'no platform peers' in text_l or 'native session' in text_l:
-    print('NATIVE_FALLBACK:' + text[:200]); sys.exit(0)
-# The expected sibling IDs must literally appear in the returned peer text.
-found = sorted(i for i in expect if i in text)
-missing = sorted(expect - set(found))
-if not expect:
-    print('NO_EXPECTED_PEERS_CONFIGURED'); sys.exit(0)
-if missing:
-    print('MISSING_PEERS:found=%d/%d missing=%s' % (len(found), len(expect), ','.join(m[:8] for m in missing)))
-    sys.exit(0)
-print('OK:found=%d/%d' % (len(found), len(expect)))
-" 2>/dev/null)
-
-  case "$PARSE" in
-    OK:*)
-      echo "  ✓ $rt: list_peers returned 200 and contains all expected peers ($PARSE)"
-      VERDICT[$rt]="OK"
-      ;;
-    NATIVE_FALLBACK:*)
-      echo "  ✗ $rt: list_peers fell back to NATIVE sessions — sees no platform peers ($PARSE)"
-      VERDICT[$rt]="FAIL(native-fallback)"
-      REGRESSED=1
-      ;;
-    RPC_ERROR:*|NO_RESULT|PARSE_ERROR:*)
-      echo "  ✗ $rt: list_peers MCP call did not return a usable result ($PARSE)"
-      VERDICT[$rt]="FAIL(rpc=$PARSE)"
-      REGRESSED=1
-      ;;
-    MISSING_PEERS:*)
-      echo "  ✗ $rt: list_peers returned 200 but peer set is wrong/empty ($PARSE)"
-      VERDICT[$rt]="FAIL(peers=$PARSE)"
-      REGRESSED=1
-      ;;
-    *)
-      echo "  ✗ $rt: unexpected verdict '$PARSE'"
-      VERDICT[$rt]="FAIL(unknown)"
-      REGRESSED=1
-      ;;
-  esac
+  # Byte-identical assertion via the shared lib. Staging passes ORG_ID as
+  # the X-Molecule-Org-Id header value; the literal MCP call + every
+  # anti-proxy / anti-native-fallback guarantee is the SAME code the
+  # local backend runs.
+  PV_VERDICT=""
+  pv_assert_runtime "$rt" "$wid" "$wtok" "$TENANT_URL" "$ORG_ID" "$ALL_WS_IDS" || REGRESSED=1
+  VERDICT[$rt]="$PV_VERDICT"
   echo ""
 done
 
