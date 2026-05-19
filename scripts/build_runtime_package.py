@@ -256,6 +256,13 @@ dependencies = [
     "uvicorn>=0.30.0",
     "starlette>=0.38.0",
     "websockets>=12.0",
+    # multipart/form-data parser — required for Starlette's Request.form() on
+    # /internal/chat/uploads/ingest. Without it, Starlette raises AssertionError
+    # when parsing multipart bodies, which the chat-upload handler surfaces as
+    # an opaque 400. Mirrors the canonical pin in workspace/requirements.txt;
+    # >=0.0.27 avoids CVE-2024-53981 (DoS via malformed boundary).
+    # Forensic a78762a0 (2026-05-19): Hermes PDF upload 400 root cause.
+    "python-multipart>=0.0.27",
     "pyyaml>=6.0",
     "langchain-core>=0.3.0",
     "opentelemetry-api>=1.24.0",
