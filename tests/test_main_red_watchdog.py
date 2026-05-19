@@ -244,6 +244,119 @@ def test_is_red_state_only_fallback_still_works(wd_module):
     assert len(failed) == 1
 
 
+# --------------------------------------------------------------------------
+# Cancel-cascade filter (mc#1564) — Gitea maps action_run.status=2 (Failure)
+# AND status=3 (Cancelled) BOTH to commit-status `"failure"`. We only want
+# real failures (status=2) to file. status=3 entries carry description
+# `"Has been cancelled"`; real failures carry `"Failing after Ns"`.
+# Canonical Gitea 1.22.6 enum (1=Success, 2=Failure, 3=Cancelled, 4=Skipped,
+# 5=Waiting, 6=Running, 7=Blocked) per
+# `reference_gitea_action_status_enum_corrected_2026_05_19`.
+# --------------------------------------------------------------------------
+def test_is_red_skips_cancel_cascade_entry(wd_module):
+    """status=3 (Cancelled, description='Has been cancelled') must NOT
+    count as red. Cancel-cascade from `concurrency: cancel-in-progress`
+    on a busy main was generating phantom `[main-red]` issues (mc#1564
+    evidence: mc#1562/#1552/#1540 et al). The filter is the durable fix."""
+    red, failed = wd_module.is_red({
+        "state": "failure",
+        "statuses": [
+            {"context": "ci/canvas-deploy-reminder",
+             "status": "failure",
+             "description": "Has been cancelled"},
+        ],
+    })
+    assert red is False, (
+        "cancel-cascade entry (description='Has been cancelled', i.e. "
+        "Gitea action_run.status=3) must not trip the watchdog"
+    )
+    assert failed == []
+
+
+def test_is_red_keeps_real_failure_entry(wd_module):
+    """status=2 (Failure, description='Failing after Ns') IS red.
+    Companion to the cancel-cascade filter — we must not over-filter."""
+    red, failed = wd_module.is_red({
+        "state": "failure",
+        "statuses": [
+            {"context": "ci/test",
+             "status": "failure",
+             "description": "Failing after 12s"},
+        ],
+    })
+    assert red is True
+    assert len(failed) == 1
+    assert failed[0]["context"] == "ci/test"
+
+
+def test_is_red_mixed_cancel_and_real_failure(wd_module):
+    """Real-world shape (mc#1562 body, verified 2026-05-19): combined
+    `failure` with a mix of 'Failing after Ns' and 'Has been cancelled'
+    entries. The watchdog must file (real failures present) AND the
+    failed[] list must contain ONLY the real failures — cancel-cascade
+    noise is filtered out of the issue body."""
+    red, failed = wd_module.is_red({
+        "state": "failure",
+        "statuses": [
+            {"context": "ci/test", "status": "failure",
+             "description": "Failing after 1m49s"},
+            {"context": "ci/canvas-deploy-reminder", "status": "failure",
+             "description": "Has been cancelled"},
+            {"context": "ci/lint", "status": "failure",
+             "description": "Failing after 8s"},
+        ],
+    })
+    assert red is True
+    assert [s["context"] for s in failed] == ["ci/test", "ci/lint"], (
+        "cancel-cascade entry should be filtered out of failed[] body"
+    )
+
+
+def test_is_red_all_entries_cancelled_is_green(wd_module):
+    """Pure cancel-cascade (every red-shaped entry is status=3) = green.
+    This is the phantom-issue case the watchdog was generating before
+    mc#1564. With the filter, no issue files."""
+    red, failed = wd_module.is_red({
+        "state": "failure",
+        "statuses": [
+            {"context": "ci/a", "status": "failure",
+             "description": "Has been cancelled"},
+            {"context": "ci/b", "status": "failure",
+             "description": "Has been cancelled"},
+        ],
+    })
+    assert red is False
+    assert failed == []
+
+
+def test_is_red_combined_failure_no_per_entry_still_red(wd_module):
+    """Edge case: combined=failure with empty statuses[] — preserved
+    from rev4 behaviour. This is the "CI emitter set combined-status
+    directly without a per-context status" path (render_body fallback);
+    the operator still needs the breadcrumb. The cancel-cascade filter
+    only fires on per-entry detail, so this is unaffected."""
+    red, failed = wd_module.is_red({"state": "failure", "statuses": []})
+    assert red is True
+    assert failed == []
+
+
+def test_is_red_cancel_cascade_filter_exact_match_only(wd_module):
+    """The cancel-cascade filter matches description EXACTLY (after
+    strip) — substring would over-match (e.g. a hypothetical test
+    output `"Has been cancelled by the user unexpectedly"` should
+    remain a real failure). Locks down the contract."""
+    red, failed = wd_module.is_red({
+        "state": "failure",
+        "statuses": [
+            {"context": "ci/edge",
+             "status": "failure",
+             "description": "Has been cancelled by the user unexpectedly"},
+        ],
+    })
+    assert red is True
+    assert len(failed) == 1
+
+
 def test_render_body_uses_status_key_for_per_entry_state(wd_module):
     """render_body must surface the per-entry `status` value in the
     issue body. Pre-rev4 it read `state` (always None on real Gitea) →

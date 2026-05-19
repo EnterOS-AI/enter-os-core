@@ -218,6 +218,31 @@ def is_red(status: dict) -> tuple[bool, list[dict]]:
 
     `failed_statuses` is the list of per-context entries whose own
     `state` is in the red set; useful for the issue body.
+
+    Cancel-cascade filter (mc#1564, 2026-05-19):
+      Gitea maps BOTH `action_run.status=2 (Failure)` AND
+      `action_run.status=3 (Cancelled)` to commit-status string
+      `"failure"`. On a busy main with
+      `concurrency: cancel-in-progress: true`, every merge burst
+      cancels prior in-flight runs (status=3) — those bubble to the
+      combined-status `failure` and inflate the watchdog's red%,
+      generating phantom `[main-red]` issues (mc#1562/#1552/#1540/...).
+      Canonical Gitea 1.22.6 enum per `models/actions/status.go` +
+      `reference_gitea_action_status_enum_corrected_2026_05_19`:
+          1=Success, 2=Failure, 3=Cancelled, 4=Skipped,
+          5=Waiting, 6=Running, 7=Blocked
+      We only want status=2 (real defects) to file. At the
+      commit-status layer we don't have the integer enum directly
+      (only the `failure` rollup string), so we use the description
+      string Gitea writes when a run is cancelled — empirically
+      `"Has been cancelled"` (verified 2026-05-19 via #1562 body).
+      Real failures show `"Failing after Ns"` and are unaffected.
+      This is option B from mc#1564 (description-string filter, no
+      extra API call). Description-string stability is a soft contract
+      with Gitea; if a future release renames it, the cancel-cascade
+      entries will simply leak back through (visible-not-silent), and
+      we'll either re-pin the string or upgrade to option A (resolve
+      the underlying action_run.status integer via target_url).
     """
     combined = status.get("state")
     statuses = status.get("statuses") or []
@@ -233,11 +258,30 @@ def is_red(status: dict) -> tuple[bool, list[dict]]:
     def _entry_state(s: dict) -> str:
         return s.get("status") or s.get("state") or ""
 
+    def _is_cancel_cascade(s: dict) -> bool:
+        """status=3 entry per Gitea 1.22.6 description-string contract.
+        Match exactly (after strip) — substring match would catch
+        legitimate test names like "Has been cancelled by the user
+        unexpectedly" in failure logs."""
+        desc = (s.get("description") or "").strip()
+        return desc == "Has been cancelled"
+
     failed = [
         s for s in statuses
-        if isinstance(s, dict) and _entry_state(s) in red_states
+        if isinstance(s, dict)
+        and _entry_state(s) in red_states
+        and not _is_cancel_cascade(s)
     ]
-    return (combined in red_states or bool(failed), failed)
+    # Combined state alone is no longer sufficient — combined=failure
+    # may be 100% cancel-cascade. Drive `red` off the FILTERED list:
+    # if every red-shaped per-entry was cancel-cascade, `failed` is
+    # empty and we report green. Combined-failure with no per-entry
+    # detail (empty `statuses[]`) still trips red — that's the
+    # "CI emitter set combined-status directly" edge case from
+    # render_body's fallback path; we keep filing on it so the
+    # operator sees the breadcrumb.
+    combined_red_no_detail = combined in red_states and not statuses
+    return (bool(failed) or combined_red_no_detail, failed)
 
 
 # --------------------------------------------------------------------------
