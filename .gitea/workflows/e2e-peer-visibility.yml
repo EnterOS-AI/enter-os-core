@@ -164,7 +164,7 @@ jobs:
   # bp-required: pending #1296
   peer-visibility-local:
     name: E2E Peer Visibility (local)
-    runs-on: ubuntu-latest
+    runs-on: docker-host
     timeout-minutes: 30
     env:
       # Per-run names + ephemeral ports — same collision-avoidance as

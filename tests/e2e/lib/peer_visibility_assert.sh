@@ -153,11 +153,13 @@ print('OK:found=%d/%d' % (len(found), len(expect)))
       # Caller bug, not a runtime regression — surface loudly so a
       # mis-wired backend can't mint a false green.
       echo "  ✗ $rt: no expected peers were configured for this caller"
+      # shellcheck disable=SC2034 # exported verdict is read by the caller's map plumbing.
       PV_VERDICT="FAIL(rpc=NO_EXPECTED_PEERS_CONFIGURED)"
       return 1
       ;;
     *)
       echo "  ✗ $rt: unexpected verdict '$parse'"
+      # shellcheck disable=SC2034 # exported verdict is read by the caller's map plumbing.
       PV_VERDICT="FAIL(unknown)"
       return 1
       ;;

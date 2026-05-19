@@ -128,7 +128,7 @@ jobs:
   e2e-api:
     needs: detect-changes
     name: E2E API Smoke Test
-    runs-on: ubuntu-latest
+    runs-on: docker-host
     timeout-minutes: 15
     env:
       # Unique per-run container names so concurrent runs on the host-

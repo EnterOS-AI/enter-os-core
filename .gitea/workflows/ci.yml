@@ -401,7 +401,7 @@ jobs:
 
   canvas-deploy-reminder:
     name: Canvas Deploy Reminder
-    runs-on: ubuntu-latest
+    runs-on: docker-host
     # mc#774 root-fix: added job-level `if:` so ci-required-drift.py's
     # ci_job_names() detects this as github.ref-gated and skips it from F1.
     # The step-level exit 0 handles the "not main push" case; the job-level

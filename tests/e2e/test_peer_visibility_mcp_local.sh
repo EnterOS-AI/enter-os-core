@@ -208,7 +208,9 @@ log "    PARENT_ID=$PARENT_ID"
 # box (bash 3.2, no associative arrays) per feedback_local_must_mimic_
 # production. WS_IDS / VERDICT are kept as newline-delimited "rt<TAB>val"
 # maps with tiny get/set helpers (portable to bash 3.2+ AND ubuntu CI).
+# shellcheck disable=SC2034 # map values are updated through portable eval-based helpers.
 WS_IDS_MAP=""
+# shellcheck disable=SC2034 # map values are updated through portable eval-based helpers.
 VERDICT_MAP=""
 _map_set() { # _map_set <mapvarname> <key> <value>
   local __m="$1" __k="$2" __v="$3" __cur
