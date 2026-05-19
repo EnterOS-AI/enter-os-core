@@ -62,7 +62,13 @@ env:
 jobs:
   # bp-exempt: change detector only; downstream Harness Replays is the meaningful gate.
   detect-changes:
-    runs-on: ubuntu-latest
+    # mc#1529 follow-on: pin to `docker-host` so this lane lands on
+    # Linux operator-host runners (the only ones with a working
+    # docker.sock + `molecule-core-net`). The bare `ubuntu-latest`
+    # label is also matched by hongming-pc-runner-* (Windows act_runner
+    # v1.0.3), where the `docker compose ...` exec below fails. Mirror
+    # of mc#1543; see internal#512 for class defect.
+    runs-on: docker-host
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
     # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
@@ -162,7 +168,9 @@ jobs:
   harness-replays:
     needs: detect-changes
     name: Harness Replays
-    runs-on: ubuntu-latest
+    # mc#1529 follow-on: `docker compose ... ps/logs` against tenant-alpha/
+    # beta containers. Must run on operator-host Linux (docker-host).
+    runs-on: docker-host
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
     # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true

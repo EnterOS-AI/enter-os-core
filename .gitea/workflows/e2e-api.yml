@@ -108,7 +108,20 @@ env:
 
 jobs:
   detect-changes:
-    runs-on: ubuntu-latest
+    # mc#1529 follow-on: pin to `docker-host` so the e2e-api lane lands
+    # on Linux operator-host runners (molecule-runner-*) that carry the
+    # `molecule-core-net` bridge network + a working `aws ecr get-login-
+    # password | docker login` path. The bare `ubuntu-latest` label is
+    # also accepted by hongming-pc-runner-* (Windows act_runner v1.0.3),
+    # where the docker.sock-bound steps below fail non-deterministically
+    # (e.g. `docker run -d --name pg-e2e-api-...` with port-bind +
+    # `docker exec ... pg_isready` cannot work against a Windows daemon).
+    # detect-changes itself doesn't bind docker.sock, but pinning here too
+    # keeps both jobs on the same lane so we don't re-roll the dice on
+    # workspace-volume cross-host surprises and the routing rule is
+    # discoverable in one place. Mirror of mc#1543 (handlers-postgres-
+    # integration). See internal#512 for the class defect.
+    runs-on: docker-host
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
     # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
@@ -160,7 +173,10 @@ jobs:
   e2e-api:
     needs: detect-changes
     name: E2E API Smoke Test
-    runs-on: ubuntu-latest
+    # mc#1529 follow-on: must run on operator-host Linux runners (where
+    # docker.sock + `molecule-core-net` + `aws ecr ...` work). See
+    # detect-changes for the full rationale.
+    runs-on: docker-host
     # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
     # mc#774: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
     continue-on-error: true
