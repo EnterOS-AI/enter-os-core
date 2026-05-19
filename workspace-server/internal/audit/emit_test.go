@@ -201,8 +201,13 @@ func TestHashValuePrefix_StableAndBounded(t *testing.T) {
 	if got := HashValuePrefix("a", 999); len(got) != 64 {
 		t.Errorf("clamp-hi failed: %q", got)
 	}
-	// Stable across calls (same input → same prefix).
-	if HashValuePrefix("x", 8) != HashValuePrefix("x", 8) {
-		t.Errorf("hash not stable")
+	// Stable across calls (same input → same prefix). Bind to vars so
+	// staticcheck SA4000 does not flag the comparison as tautological;
+	// the intent is to assert call-stability, which requires invoking
+	// the function twice with the same input.
+	a := HashValuePrefix("x", 8)
+	b := HashValuePrefix("x", 8)
+	if a != b {
+		t.Errorf("hash not stable: a=%q b=%q", a, b)
 	}
 }
