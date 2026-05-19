@@ -433,6 +433,13 @@ const externalHermesChannelTemplate = `# Hermes channel — bridges this workspa
 # hermes-agent session. No tunnel/public URL needed (long-poll based,
 # same shape as the Claude Code channel).
 #
+# Multi-workspace: each workspace's plugin_platforms entry is keyed by a
+# workspace-specific slug ("{{MCP_SERVER_NAME}}") so two molecule
+# workspaces can coexist in one hermes config — YAML rejects duplicate
+# mapping keys, so re-using the same "molecule:" key for a second
+# workspace would silently overwrite the first. Re-running this snippet
+# for another workspace ADDS a sibling entry instead.
+#
 # Prereq: a hermes-agent install on the target machine. Latest builds
 # (post #17751) ship the platform-plugin API natively; older ones are
 # also supported via the plugin's dual-mode fallback.
@@ -447,13 +454,17 @@ export MOLECULE_PLATFORM_URL={{PLATFORM_URL}}
 export MOLECULE_WORKSPACE_TOKEN="<paste from create response>"
 
 # 3. Edit ~/.hermes/config.yaml — under your existing top-level
-#    gateway: block, add a plugin_platforms entry:
+#    gateway: block, add a plugin_platforms entry. The platform key
+#    ({{MCP_SERVER_NAME}}) is workspace-specific so multiple molecule
+#    workspaces coexist; re-using the same key for a second workspace
+#    would silently overwrite the first (YAML duplicate-key collapse):
 #
 #      gateway:
 #        # ...your existing gateway settings...
 #        plugin_platforms:
-#          molecule:
+#          {{MCP_SERVER_NAME}}:
 #            enabled: true
+#            workspace_id: {{WORKSPACE_ID}}
 #
 #    If you don't yet have a gateway: block, create one with just
 #    that plugin_platforms entry. Don't append blindly — YAML
@@ -506,6 +517,14 @@ hermes gateway --replace
 const externalCodexTemplate = `# Codex external setup — outbound tools (MCP) + inbound push (bridge).
 # For operators whose external agent is a codex CLI (@openai/codex)
 # session.
+#
+# Multi-workspace: the TOML table name is workspace-specific
+# ("{{MCP_SERVER_NAME}}") so two molecule workspaces can coexist in one
+# ~/.codex/config.toml — TOML rejects duplicate
+# [mcp_servers.<name>] tables, so re-using a bare "molecule" name for a
+# second workspace would either break codex parsing or silently
+# overwrite the first. Re-running this snippet for another workspace
+# ADDS a sibling table instead.
 
 # 1. Install codex CLI, the workspace runtime, and the bridge daemon:
 npm install -g @openai/codex@latest
@@ -514,23 +533,21 @@ pip install codex-channel-molecule
 
 # 2. Wire the molecule MCP server into codex's config.toml — this is
 #    the OUTBOUND path (codex calls list_peers / delegate_task /
-#    send_message_to_user / commit_memory).
-#
-#    Don't append blindly — TOML rejects duplicate
-#    [mcp_servers.molecule] tables, so re-running on an existing
-#    config will break codex parsing. If [mcp_servers.molecule]
-#    already exists (e.g. you set this up before), replace the
-#    existing block instead of appending.
+#    send_message_to_user / commit_memory). The table name
+#    ({{MCP_SERVER_NAME}}) is workspace-specific; re-running the
+#    snippet for a DIFFERENT workspace appends a sibling table without
+#    touching the first. Re-running for the SAME workspace produces
+#    the same name, so replace the existing block instead of appending.
 
 mkdir -p ~/.codex
 # (then open ~/.codex/config.toml in your editor and paste:)
 #
-# [mcp_servers.molecule]
+# [mcp_servers.{{MCP_SERVER_NAME}}]
 # command = "molecule-mcp"
 # args = []
 # startup_timeout_sec = 30
 #
-# [mcp_servers.molecule.env]
+# [mcp_servers.{{MCP_SERVER_NAME}}.env]
 # WORKSPACE_ID = "{{WORKSPACE_ID}}"
 # PLATFORM_URL = "{{PLATFORM_URL}}"
 # MOLECULE_WORKSPACE_TOKEN = "<paste from create response>"
@@ -574,11 +591,13 @@ codex
 # Need help?
 #   Documentation: https://doc.moleculesai.app/docs/guides/mcp-server-setup
 #   Common errors:
-#     • [mcp_servers.molecule] not loaded — codex must be ≥ 0.57.
+#     • [mcp_servers.{{MCP_SERVER_NAME}}] not loaded — codex must be ≥ 0.57.
 #       Check with ` + "`codex --version`" + `; upgrade via npm install -g @openai/codex@latest.
-#     • TOML parse error after re-running setup — TOML rejects duplicate
-#       [mcp_servers.molecule] tables. Open ~/.codex/config.toml and
-#       remove the old block before pasting the new one.
+#     • TOML parse error after re-running setup for the SAME workspace —
+#       TOML rejects duplicate [mcp_servers.<name>] tables. Open
+#       ~/.codex/config.toml and remove the old block before pasting the
+#       new one. (A second molecule workspace gets a DIFFERENT table
+#       name, so coexisting workspaces don't conflict.)
 #     • Canvas messages don't wake codex — step 3 (codex-channel-molecule
 #       bridge daemon) is required for inbound push. Check
 #       pgrep -f codex-channel-molecule and tail ~/.codex-channel-molecule/daemon.log.
@@ -604,23 +623,23 @@ const externalKimiTemplate = `# Kimi CLI external setup — register + heartbeat
 pip install molecule-ai-workspace-runtime
 
 # 2. Save credentials and the bridge script:
-mkdir -p ~/.molecule-ai/kimi-workspace
-chmod 700 ~/.molecule-ai/kimi-workspace
-cat > ~/.molecule-ai/kimi-workspace/env <<'EOF'
+mkdir -p ~/.molecule-ai/kimi-{{MCP_SERVER_NAME}}
+chmod 700 ~/.molecule-ai/kimi-{{MCP_SERVER_NAME}}
+cat > ~/.molecule-ai/kimi-{{MCP_SERVER_NAME}}/env <<'EOF'
 WORKSPACE_ID={{WORKSPACE_ID}}
 PLATFORM_URL={{PLATFORM_URL}}
 MOLECULE_WORKSPACE_TOKEN=<paste from create response>
 EOF
-chmod 600 ~/.molecule-ai/kimi-workspace/env
+chmod 600 ~/.molecule-ai/kimi-{{MCP_SERVER_NAME}}/env
 
-cat > ~/.molecule-ai/kimi-workspace/kimi_bridge.py <<'PYEOF'
+cat > ~/.molecule-ai/kimi-{{MCP_SERVER_NAME}}/kimi_bridge.py <<'PYEOF'
 #!/usr/bin/env python3
 """Kimi bridge — keeps workspace online and polls for canvas messages."""
 import json, logging, time
 from pathlib import Path
 import httpx
 
-ENV = Path.home() / ".molecule-ai" / "kimi-workspace" / "env"
+ENV = Path.home() / ".molecule-ai" / "kimi-{{MCP_SERVER_NAME}}" / "env"
 HEARTBEAT_INTERVAL = 20
 POLL_INTERVAL = 5
 
@@ -710,10 +729,10 @@ def main():
 if __name__ == "__main__":
     main()
 PYEOF
-chmod +x ~/.molecule-ai/kimi-workspace/kimi_bridge.py
+chmod +x ~/.molecule-ai/kimi-{{MCP_SERVER_NAME}}/kimi_bridge.py
 
 # 3. Start the bridge (run in a persistent terminal or via launchd):
-python3 ~/.molecule-ai/kimi-workspace/kimi_bridge.py
+python3 ~/.molecule-ai/kimi-{{MCP_SERVER_NAME}}/kimi_bridge.py
 
 # What the script does:
 #   • Registers the workspace in poll mode (no public URL needed)
@@ -724,7 +743,7 @@ python3 ~/.molecule-ai/kimi-workspace/kimi_bridge.py
 # To change the reply logic, edit the send_reply() call inside the loop.
 # To send a one-off reply from another terminal:
 #   curl -fsS -X POST "{{PLATFORM_URL}}/workspaces/{{WORKSPACE_ID}}/notify" \
-#     -H "Authorization: Bearer $(cat ~/.molecule-ai/kimi-workspace/env | grep TOKEN | cut -d= -f2)" \
+#     -H "Authorization: Bearer $(cat ~/.molecule-ai/kimi-{{MCP_SERVER_NAME}}/env | grep TOKEN | cut -d= -f2)" \
 #     -H "Content-Type: application/json" \
 #     -d '{"message":"Hello from Kimi"}'
 #
@@ -746,6 +765,13 @@ const externalOpenClawTemplate = `# OpenClaw MCP config — outbound tool path. 
 # sessions.steer push path; an external setup would need the same
 # bridge daemon the template uses. For inbound delivery on an
 # external machine today, pair with the Python SDK tab.
+#
+# Multi-workspace: each workspace registers under a workspace-specific
+# MCP server name ("{{MCP_SERVER_NAME}}"). openclaw keys MCP servers by
+# name in its config (~/.openclaw/mcp/<name>.json), so re-running with
+# a bare "molecule" name would overwrite the prior workspace's entry.
+# Re-run this snippet for another workspace to ADD a sibling entry
+# instead.
 
 # 1. Install openclaw CLI + the workspace runtime wheel:
 #    The version pin (>=0.1.999) ensures the "molecule-mcp" console
@@ -776,7 +802,7 @@ pip install "molecule-ai-workspace-runtime>=0.1.999"
 # workspace as awaiting_agent (OFFLINE) within 60-90s even while
 # tools work.
 WORKSPACE_TOKEN="<paste from create response>"
-openclaw mcp set molecule "$(cat <<EOF
+openclaw mcp set {{MCP_SERVER_NAME}} "$(cat <<EOF
 {
   "command": "molecule-mcp",
   "args": [],
@@ -806,6 +832,6 @@ openclaw agent --message "list my peers"
 #     • Gateway not starting — tail ~/.openclaw/gateway.log. The loopback
 #       bind requires :18789 to be free; check with ` + "`lsof -iTCP:18789`" + `.
 #     • ` + "`openclaw mcp set`" + ` rejected — the heredoc generates JSON;
-#       verify with ` + "`jq < ~/.openclaw/mcp/molecule.json`" + ` and re-run
+#       verify with ` + "`jq < ~/.openclaw/mcp/{{MCP_SERVER_NAME}}.json`" + ` and re-run
 #       ` + "`openclaw mcp set`" + ` if the file is malformed.
 `

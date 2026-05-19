@@ -361,3 +361,55 @@ func TestBuildExternalConnectionPayload_McpServerNameUniquePerWorkspace(t *testi
 		})
 	}
 }
+
+// TestBuildExternalConnectionPayload_AllRuntimeSnippetsAreWorkspaceUnique
+// extends the multi-workspace install contract to every runtime tab in
+// the modal. Each MCP-host config keyspace has the SAME equivalence
+// class as Claude Code's `claude mcp add <name>`:
+//
+//   - codex: ~/.codex/config.toml [mcp_servers.<name>] — TOML rejects
+//     duplicate table keys, so a second workspace with the same name
+//     either breaks parsing or overwrites the first table.
+//   - openclaw: ~/.openclaw/mcp/<name>.json — file is keyed by <name>,
+//     `openclaw mcp set <same-name>` overwrites.
+//   - hermes: ~/.hermes/config.yaml gateway.plugin_platforms.<key>:
+//     YAML rejects duplicate mapping keys.
+//   - kimi: ~/.molecule-ai/kimi-<slug>/ per-workspace dir — single
+//     "kimi-workspace" dir would have both workspaces' envs collide.
+//
+// All four must therefore stamp the workspace-specific
+// {{MCP_SERVER_NAME}} slug. This test catches a future template author
+// who introduces a new runtime tab without plumbing the slug.
+func TestBuildExternalConnectionPayload_AllRuntimeSnippetsAreWorkspaceUnique(t *testing.T) {
+	got := BuildExternalConnectionPayload("https://p.test", "id-a", "my-bot", "tok")
+
+	// Per-template literal that proves the slug was stamped through.
+	wantPerSnippet := map[string]string{
+		"universal_mcp_snippet": "claude mcp add molecule-my-bot ",
+		"codex_snippet":         "[mcp_servers.molecule-my-bot]",
+		"openclaw_snippet":      "openclaw mcp set molecule-my-bot ",
+		"hermes_channel_snippet": "          molecule-my-bot:",
+		"kimi_snippet":          "~/.molecule-ai/kimi-molecule-my-bot",
+	}
+	for key, needle := range wantPerSnippet {
+		v, _ := got[key].(string)
+		if !strings.Contains(v, needle) {
+			t.Errorf("%s missing per-workspace slug literal %q:\n%s", key, needle, v)
+		}
+	}
+
+	// No template should still contain the unstamped placeholder — that
+	// would mean BuildExternalConnectionPayload's stamp() didn't sweep
+	// it, which is the regression we're guarding against.
+	for _, k := range []string{
+		"curl_register_template", "python_snippet",
+		"claude_code_channel_snippet", "universal_mcp_snippet",
+		"hermes_channel_snippet", "codex_snippet", "openclaw_snippet",
+		"kimi_snippet",
+	} {
+		v, _ := got[k].(string)
+		if strings.Contains(v, "{{MCP_SERVER_NAME}}") {
+			t.Errorf("%s still contains literal {{MCP_SERVER_NAME}}", k)
+		}
+	}
+}

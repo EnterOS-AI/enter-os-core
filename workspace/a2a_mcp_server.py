@@ -498,14 +498,20 @@ def _build_initialize_result() -> dict:
             "experimental": {"claude/channel": {}},
         },
         # Identifier convention: this server is what users register with
-        # `claude mcp add molecule -- molecule-mcp` (and similar across
-        # other MCP hosts), so the canonical name is "molecule". Earlier
-        # versions reported "a2a-delegation" — accurate to the original
-        # purpose but a mismatch with how operators actually name it.
-        # Mismatch is harmless on tool routing (all MCP hosts dispatch
-        # by the user-supplied registration name, NOT serverInfo.name)
-        # but matters for any future Claude Code allowlist that gates
-        # channel push by hardcoded server name (issue #2934).
+        # `claude mcp add molecule-<workspace-slug> -- molecule-mcp` (and
+        # similar across other MCP hosts). The user-supplied
+        # registration name is workspace-specific so multiple molecule
+        # workspaces can coexist in one MCP-host session (see
+        # workspace-server/internal/handlers/external_connection.go's
+        # mcpServerNameForWorkspace + mc#1535). The serverInfo.name
+        # below is purely a self-describing label — "molecule" stays
+        # generic on purpose. Earlier versions reported "a2a-delegation"
+        # — accurate to the original purpose but a mismatch with how
+        # operators actually name it. Routing is by the user-supplied
+        # registration name on every MCP host, NOT serverInfo.name; the
+        # mismatch is harmless. Matters only for any future Claude Code
+        # allowlist that gates channel push by hardcoded server name
+        # (issue #2934).
         "serverInfo": {"name": "molecule", "version": "1.0.0"},
         # Built per-call (not the module-level constant) so an operator
         # who sets MOLECULE_MCP_POLL_TIMEOUT_SECS after import — e.g.

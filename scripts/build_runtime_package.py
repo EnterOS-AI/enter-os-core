@@ -311,8 +311,17 @@ locally.
   deps from your system Python. Plain `pip install --user` works
   but the binary lands in `~/.local/bin` (Linux) or
   `~/Library/Python/3.X/bin` (macOS) which is often not on PATH on
-  a fresh shell — `claude mcp add molecule -- molecule-mcp` then
-  fails with "command not found" at first use.
+  a fresh shell — `claude mcp add molecule-<workspace-slug> -- molecule-mcp`
+  then fails with "command not found" at first use.
+
+* **Server name in `claude mcp add` is workspace-specific.** The
+  Canvas "Add to Claude Code" snippet stamps a unique slug
+  (`molecule-<workspace-name>`) so a single Claude Code session can
+  talk to N molecule workspaces concurrently — `claude mcp add` keys
+  entries by name in `~/.claude.json`, so re-running with a bare
+  `molecule` name silently overwrites the prior workspace's entry.
+  See [molecule-core#1535](https://git.moleculesai.app/molecule-ai/molecule-core/pulls/1535)
+  for the canonical generator.
 
 ### Install
 
@@ -336,8 +345,10 @@ WORKSPACE_ID=<uuid> \\
 That exposes the same 8 platform tools (`delegate_task`, `list_peers`,
 `send_message_to_user`, `commit_memory`, etc.) that container-bound
 runtimes already get via the workspace's auto-spawned MCP. Register
-the binary in your agent's MCP config (e.g. Claude Code's
-`claude mcp add molecule -- molecule-mcp` with the env above).
+the binary in your agent's MCP config — use a workspace-specific
+server name so multi-workspace setups don't collide (e.g. Claude Code:
+`claude mcp add molecule-<workspace-slug> -- molecule-mcp` with the env
+above; the Canvas modal stamps the right slug for you).
 
 ### Keeping the token out of shell history
 
@@ -375,8 +386,8 @@ hold:
    wheel does (see `_build_initialize_result`). Nothing for you to
    do.
 2. **Claude Code installs the server as a marketplace plugin** — a
-   plain `claude mcp add molecule -- molecule-mcp` produces a
-   non-plugin-sourced server, which Claude Code rejects with
+   plain `claude mcp add molecule-<workspace-slug> -- molecule-mcp`
+   produces a non-plugin-sourced server, which Claude Code rejects with
    `channel_enable requires a marketplace plugin`. Until the
    official `moleculesai/claude-code-plugin` marketplace lands
    (tracking [#2936](https://git.moleculesai.app/molecule-ai/molecule-core/issues/2936)),
