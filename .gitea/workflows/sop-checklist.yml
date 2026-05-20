@@ -2,24 +2,20 @@
 #
 # RFC#351 Step 2 of 6 (implementation MVP).
 #
-# === DESIGN ===
+# === CONSOLIDATION (issue #1280) ===
 #
-# Goal: each PR must answer 7 SOP-checklist questions in its body,
-# and each item must have at least one /sop-ack <slug> comment from
-# a non-author peer in the required team. BP requires the
-# `sop-checklist / all-items-acked (pull_request)` status to merge.
+# This workflow is the SINGLE `issue_comment` subscriber — the logic from
+# `review-refire-comments.yml` has been merged in. Before this change:
+#   - sop-checklist.yml (pre-2026-05-16) → issue_comment:[created,edited,deleted] → runner slot used, job no-oped
+#   - review-refire-comments.yml           → issue_comment:[created]            → runner slot used, job no-oped
+#   → every non-refire comment occupied 2 runner slots for ~800 s each
+#      (~650 no-op runs/day, ~1,300 runner-slot-occupancy-hours/day).
 #
-# Triggers:
-#   - `pull_request_target`: opened, edited, synchronize, reopened
-#       → fires when PR opens, body is edited (refire — RFC#351 §4),
-#         or new code is pushed (head.sha changes → stale status would
-#         be auto-discarded by BP via dismiss_stale_reviews, but the
-#         status itself is per-SHA so we re-post on the new head).
-#   - `issue_comment`: created, edited, deleted
-#       → fires on any new comment so /sop-ack / /sop-revoke take
-#         effect immediately (Gitea 1.22.6 doesn't refire on
-#         pull_request_review per feedback_pull_request_review_no_refire,
-#         so issue_comment is the canonical refire channel).
+# Fix (PR #1345 / issue #1280):
+#   - ONE workflow, ONE issue_comment:[created] subscription (no edited/deleted)
+#   - all-items-acked job: pull_request_target OR sop slash-command comments
+#   - review-refire job: qa/security/tier refire slash commands
+#   → ~50% reduction in comment-triggered runner occupancy vs pre-fix.
 #
 # Trust boundary (mirrors RFC#324 §A4 + sop-tier-check security note):
 #   `pull_request_target` (not `pull_request`) — workflow def is loaded
@@ -51,7 +47,7 @@
 #   /sop-ack <slug-or-numeric-alias> [optional note]
 #       — register a peer-ack for one checklist item.
 #       — slug accepts kebab-case, snake_case, or natural-spaces
-#         (all normalize to canonical kebab-case).
+#         (all normalized to canonical kebab-case).
 #       — numeric 1..7 maps via config.items[*].numeric_alias.
 #       — most-recent (user, slug) directive wins.
 #
@@ -60,6 +56,13 @@
 #       — does NOT affect other peers' acks on the same slug.
 #       — most-recent (user, slug) directive wins, so a later /sop-ack
 #         re-restores the ack.
+#
+#   /sop-n/a <gate> [reason]
+#       — declare a gate (qa-review, security-review) N/A.
+#       — see sop-checklist-config.yaml n/a_gates section.
+#
+#   /qa-recheck /security-recheck /refire-tier-check
+#       — refire the corresponding status check on the PR head.
 #
 # The eval is read-only + idempotent (read PR + comments + team
 # membership, compute, post status). Re-running on any event is safe —
@@ -79,7 +82,10 @@ on:
   pull_request_target:
     types: [opened, edited, synchronize, reopened, labeled, unlabeled]
   issue_comment:
-    types: [created, edited, deleted]
+    types: [created]   # NOT [created, edited, deleted] — Gitea 1.22.6 holds a runner slot
+    # at job-parsing time, before job-level if: guards run. edited/deleted events
+    # occupied ~1,300 runner-slot-hours/day on this workflow alone during the
+    # 2026-05-16 freeze. Per PR #1345 fix.
 
 permissions:
   contents: read
@@ -88,10 +94,10 @@ permissions:
   secrets: read
 
 jobs:
+  # sop-checklist gate: runs on PR lifecycle events OR sop slash commands.
+  # All other comment types (no-op text comments) no longer assign a runner
+  # because this job's if: guard short-circuits before runner assignment.
   all-items-acked:
-    # Run on pull_request_target events always. On issue_comment events,
-    # only when the comment is on a PR (issue_comment fires for issues
-    # too) and the body contains one of the slash-commands.
     if: |
       github.event_name == 'pull_request_target' ||
       (github.event_name == 'issue_comment' &&
@@ -125,3 +131,95 @@ jobs:
             --pr "$PR_NUMBER" \
             --config .gitea/sop-checklist-config.yaml \
             --gitea-host git.moleculesai.app
+
+  # bp-exempt: informational refire handler, not a merge gate. Emits
+  # qa-review/security-review status updates on /qa-recheck et al slash commands.
+  review-refire:
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request != null
+    runs-on: ubuntu-latest
+    steps:
+      - name: Classify comment
+        id: classify
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          {
+            echo "run_qa=false"
+            echo "run_security=false"
+            echo "run_tier=false"
+          } >> "$GITHUB_OUTPUT"
+          first_line=$(printf '%s\n' "$COMMENT_BODY" | sed -n '1p')
+          case "$first_line" in
+            /qa-recheck*)
+              echo "run_qa=true" >> "$GITHUB_OUTPUT"
+              ;;
+            /security-recheck*)
+              echo "run_security=true" >> "$GITHUB_OUTPUT"
+              ;;
+            /refire-tier-check*)
+              echo "run_tier=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::notice::no supported review refire slash command; no-op"
+              ;;
+          esac
+
+      - name: Check out BASE ref for trusted scripts
+        if: |
+          steps.classify.outputs.run_qa == 'true' ||
+          steps.classify.outputs.run_security == 'true' ||
+          steps.classify.outputs.run_tier == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Refire qa-review status
+        if: steps.classify.outputs.run_qa == 'true'
+        env:
+          # RFC_324_TEAM_READ_TOKEN is read-only (team membership read scope only).
+          # review-refire-status.sh POSTs to /statuses — requires write scope.
+          # SOP_TIER_CHECK_TOKEN carries write:repository + write:issue + read:organization.
+          GITEA_TOKEN: ${{ secrets.SOP_TIER_CHECK_TOKEN || secrets.GITHUB_TOKEN }}
+          GITEA_HOST: git.moleculesai.app
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TEAM: qa
+          TEAM_ID: '20'
+          REVIEW_CHECK_DEBUG: '0'
+          REVIEW_CHECK_STRICT: '0'
+        run: |
+          set -euo pipefail
+          .gitea/scripts/review-refire-status.sh
+
+      - name: Refire security-review status
+        if: steps.classify.outputs.run_security == 'true'
+        env:
+          # RFC_324_TEAM_READ_TOKEN is read-only (team membership read scope only).
+          # review-refire-status.sh POSTs to /statuses — requires write scope.
+          # SOP_TIER_CHECK_TOKEN carries write:repository + write:issue + read:organization.
+          GITEA_TOKEN: ${{ secrets.SOP_TIER_CHECK_TOKEN || secrets.GITHUB_TOKEN }}
+          GITEA_HOST: git.moleculesai.app
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TEAM: security
+          TEAM_ID: '21'
+          REVIEW_CHECK_DEBUG: '0'
+          REVIEW_CHECK_STRICT: '0'
+        run: |
+          set -euo pipefail
+          .gitea/scripts/review-refire-status.sh
+
+      - name: Refire sop-tier-check status
+        if: steps.classify.outputs.run_tier == 'true'
+        env:
+          GITEA_TOKEN: ${{ secrets.SOP_TIER_CHECK_TOKEN || secrets.GITHUB_TOKEN }}
+          GITEA_HOST: git.moleculesai.app
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          SOP_DEBUG: '0'
+        run: bash .gitea/scripts/sop-tier-refire.sh

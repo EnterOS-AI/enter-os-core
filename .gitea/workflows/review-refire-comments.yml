@@ -1,11 +1,16 @@
-# Consolidated comment dispatcher for manual review/tier refires.
+# DEPRECATED — superseded by `.gitea/workflows/sop-checklist.yml`.
 #
+# The review-refire logic (qa/security/tier slash-command dispatch) has been
+# merged into sop-checklist.yml as the `review-refire` job. This workflow
+# is kept as a no-op stub to avoid a gap during the transition window where
+# this file may be deleted while sop-checklist.yml has not yet been merged.
+#
+# After sop-checklist.yml lands, this file will be deleted (issue #1280).
+#
+# Historical behavior (superseded):
 # Gitea 1.22 queues one run per workflow subscribed to `issue_comment` before
-# evaluating job-level `if:`. SOP-heavy PRs therefore created queue storms when
-# qa-review, security-review, sop-checklist, and sop-tier-refire all
-# listened to comments. This workflow is the single non-SOP comment subscriber:
-# ordinary comments no-op quickly; slash commands post the required status
-# contexts to the PR head SHA.
+# evaluating job-level `if:`. Previously this workflow was the single
+# non-SOP comment subscriber for qa/security/tier refire slash commands.
 
 name: review-refire-comments
 
@@ -23,91 +28,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # No-op stub — all refire logic moved to sop-checklist.yml review-refire job.
+  # Kept to avoid transition gap; will be deleted after sop-checklist.yml merges.
   dispatch:
     runs-on: ubuntu-latest
     steps:
-      - name: Classify comment
-        id: classify
-        env:
-          COMMENT_BODY: ${{ github.event.comment.body }}
-          IS_PR: ${{ github.event.issue.pull_request != null }}
+      - name: Deprecated — refire logic moved to sop-checklist.yml
         run: |
-          set -euo pipefail
-          {
-            echo "run_qa=false"
-            echo "run_security=false"
-            echo "run_tier=false"
-          } >> "$GITHUB_OUTPUT"
-          if [ "$IS_PR" != "true" ]; then
-            echo "::notice::not a PR comment; no-op"
-            exit 0
-          fi
-          first_line=$(printf '%s\n' "$COMMENT_BODY" | sed -n '1p')
-          case "$first_line" in
-            /qa-recheck*)
-              echo "run_qa=true" >> "$GITHUB_OUTPUT"
-              ;;
-            /security-recheck*)
-              echo "run_security=true" >> "$GITHUB_OUTPUT"
-              ;;
-            /refire-tier-check*)
-              echo "run_tier=true" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "::notice::no supported review refire slash command; no-op"
-              ;;
-          esac
-
-      - name: Check out BASE ref for trusted scripts
-        if: |
-          steps.classify.outputs.run_qa == 'true' ||
-          steps.classify.outputs.run_security == 'true' ||
-          steps.classify.outputs.run_tier == 'true'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-
-      - name: Refire qa-review status
-        if: steps.classify.outputs.run_qa == 'true'
-        env:
-          GITEA_TOKEN: ${{ secrets.RFC_324_TEAM_READ_TOKEN || secrets.GITHUB_TOKEN }}
-          GITEA_HOST: git.moleculesai.app
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.issue.number }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          TEAM: qa
-          TEAM_ID: '20'
-          REVIEW_CHECK_DEBUG: '0'
-          REVIEW_CHECK_STRICT: '0'
-          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
-        run: |
-          set -euo pipefail
-          .gitea/scripts/review-refire-status.sh
-
-      - name: Refire security-review status
-        if: steps.classify.outputs.run_security == 'true'
-        env:
-          GITEA_TOKEN: ${{ secrets.RFC_324_TEAM_READ_TOKEN || secrets.GITHUB_TOKEN }}
-          GITEA_HOST: git.moleculesai.app
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.issue.number }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          TEAM: security
-          TEAM_ID: '21'
-          REVIEW_CHECK_DEBUG: '0'
-          REVIEW_CHECK_STRICT: '0'
-          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
-        run: |
-          set -euo pipefail
-          .gitea/scripts/review-refire-status.sh
-
-      - name: Refire sop-tier-check status
-        if: steps.classify.outputs.run_tier == 'true'
-        env:
-          GITEA_TOKEN: ${{ secrets.SOP_TIER_CHECK_TOKEN || secrets.GITHUB_TOKEN }}
-          GITEA_HOST: git.moleculesai.app
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.issue.number }}
-          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
-          SOP_DEBUG: '0'
-        run: bash .gitea/scripts/sop-tier-refire.sh
+          echo "::warning::review-refire-comments.yml is deprecated. Refire logic is now in sop-checklist.yml review-refire job. This workflow is a no-op stub pending deletion (issue #1280)."
+          exit 0
