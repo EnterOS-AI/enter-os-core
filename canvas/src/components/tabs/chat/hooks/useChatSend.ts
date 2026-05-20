@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import { uploadChatFiles } from "../uploads";
+import { uploadChatFiles, FileTooLargeError } from "../uploads";
 import { createMessage, type ChatMessage, type ChatAttachment } from "../types";
 import { extractFilesFromTask } from "../message-parser";
 
@@ -46,6 +46,52 @@ export function extractReplyText(resp: A2AResponse): string {
   return collected.join("\n");
 }
 
+/** Map a thrown error from `uploadChatFiles` to the user-facing reason
+ *  shown in the chat error banner.
+ *
+ *  Cases (per `feedback_surface_actionable_failure_reason_to_user` —
+ *  user-facing failures MUST tell the user WHY):
+ *
+ *    1. FileTooLargeError → use the error's message verbatim. The
+ *       pre-flight already built the actionable string with the actual
+ *       size + the cap; don't re-wrap it (which would prepend a
+ *       redundant "Upload failed:" prefix).
+ *
+ *    2. DOMException name="TimeoutError" → AbortSignal.timeout fired
+ *       during the fetch. Pre-flight already excluded file-size, so
+ *       this CANNOT mean "file too large". Surface a connection-speed
+ *       message — the user's actionable next step is retry or check
+ *       network, NOT shrink the file.
+ *
+ *    3. Other Error → use the wrapped form so the server's reason
+ *       (e.g. "upload failed: 413 ...") reaches the user instead of
+ *       being swallowed.
+ *
+ *    4. Non-Error throw → generic fallback.
+ *
+ *  Exported for unit testing — the case-by-case mapping is the
+ *  load-bearing contract this PR ships. */
+export function mapUploadErrorToReason(e: unknown): string {
+  if (e instanceof FileTooLargeError) {
+    // Already a complete, user-facing sentence — surface verbatim.
+    return e.message;
+  }
+  // DOMException with name="TimeoutError" is what AbortSignal.timeout
+  // produces on abort. Browsers represent it as a DOMException, not a
+  // regular Error subclass — feature-detect via .name to avoid coupling
+  // to a global that's missing in test envs.
+  if (
+    e !== null && typeof e === "object" &&
+    "name" in e && (e as { name: unknown }).name === "TimeoutError"
+  ) {
+    return "Upload timed out — your connection is too slow for this file. Try again, or reduce file size.";
+  }
+  if (e instanceof Error) {
+    return `Upload failed: ${e.message}`;
+  }
+  return "Upload failed";
+}
+
 export interface UseChatSendOptions {
   getHistoryMessages: () => ChatMessage[];
   onUserMessage?: (msg: ChatMessage) => void;
@@ -85,9 +131,12 @@ export function useChatSend(workspaceId: string, options: UseChatSendOptions) {
         } catch (e) {
           setUploading(false);
           sendInFlightRef.current = false;
-          setError(
-            e instanceof Error ? `Upload failed: ${e.message}` : "Upload failed",
-          );
+          // Error-reason routing (CTO 2026-05-19 on forensic a99ab0a1:
+          // "if its file size issue, should have error that instead
+          // saying timeout which is wrong"). Each cause maps to ITS
+          // OWN message — NO conflation between file-size and
+          // connection-too-slow.
+          setError(mapUploadErrorToReason(e));
           return;
         }
         setUploading(false);

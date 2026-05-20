@@ -27,8 +27,8 @@ Path safety:
     collisions astronomical, but defense-in-depth costs nothing).
 
 Limits (matches the Go contract from chat_files.go):
-    - 50 MB total request body
-    - 25 MB per file
+    - 100 MB total request body
+    - 100 MB per file
     - filename truncated to 100 chars
 
 Response shape:
@@ -64,11 +64,20 @@ CHAT_UPLOAD_DIR = "/workspace/.molecule/chat-uploads"
 # Total-request body cap. multipart/form-data with multiple parts can
 # add ~100 bytes of framing per file; the cap is the bytes hitting the
 # socket, including framing.
-CHAT_UPLOAD_MAX_BYTES = 50 * 1024 * 1024  # 50 MB
+#
+# SERVER_MIRROR: keep aligned with workspace-server/internal/handlers/
+# chat_files.go chatUploadMaxBytes AND canvas/src/components/tabs/chat/
+# uploads.ts MAX_UPLOAD_BYTES. Three constants exist (platform Go +
+# workspace Python + canvas TS) because each layer must enforce or
+# pre-flight the cap on its own; an SSOT follow-up tracked in
+# molecule-ai/internal would expose the cap via GET /uploads/limits.
+CHAT_UPLOAD_MAX_BYTES = 100 * 1024 * 1024  # 100 MB
 
-# Per-file cap. Keeping per-file under total lets a user attach, say,
-# a 5 MB PDF + 10 small screenshots in a single batch.
-CHAT_UPLOAD_MAX_FILE_BYTES = 25 * 1024 * 1024  # 25 MB
+# Per-file cap. Aligned with the total at 100 MB so a single legitimate
+# large file (e.g. a 70 MB PDF — reno-stars 2026-05-19 forensic
+# a99ab0a1) succeeds end-to-end; batched small attachments still fit
+# under the same ceiling.
+CHAT_UPLOAD_MAX_FILE_BYTES = 100 * 1024 * 1024  # 100 MB
 
 # Conservative {alnum, dot, underscore, dash} character class — anything
 # outside gets rewritten so embedded paths, control chars, newlines,

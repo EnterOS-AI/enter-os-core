@@ -210,7 +210,7 @@ def test_no_files_field_returns_400(client: TestClient):
 
 def test_per_file_oversize_returns_413(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     """Per-file cap is enforced. Lower the cap for the test so we don't
-    have to construct a real 25 MB body."""
+    have to construct a real 100 MB body."""
     monkeypatch.setattr(internal_chat_uploads, "CHAT_UPLOAD_MAX_FILE_BYTES", 16)
     big = b"x" * 32  # > 16
     r = client.post(

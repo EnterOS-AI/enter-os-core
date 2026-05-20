@@ -1,6 +1,55 @@
 import { PLATFORM_URL, platformAuthHeaders } from "@/lib/api";
 import type { ChatAttachment } from "./types";
 
+/** Hard cap on a single chat upload. Pre-flight gate: this constant is
+ *  checked BEFORE any network I/O so a file-size violation surfaces
+ *  immediately with an actionable reason ("File too large (got X MB)
+ *  — limit is 100MB") rather than as a downstream timeout or 413.
+ *
+ *  SERVER_MIRROR: keep aligned with
+ *    - workspace-server/internal/handlers/chat_files.go chatUploadMaxBytes
+ *    - workspace/internal_chat_uploads.py CHAT_UPLOAD_MAX_BYTES /
+ *      CHAT_UPLOAD_MAX_FILE_BYTES
+ *
+ *  Three mirror sites exist because each layer must enforce / pre-flight
+ *  on its own (no shared codegen yet). Tracked for SSOT follow-up:
+ *  expose via GET /uploads/limits so the client can fetch the live cap
+ *  instead of duplicating the constant. */
+export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+
+/** Thrown by `uploadChatFiles` when a candidate file exceeds
+ *  MAX_UPLOAD_BYTES. Caught by `useChatSend` and surfaced verbatim —
+ *  the message is already user-actionable. Distinct name lets the
+ *  catch path route it correctly without parsing the message string.
+ *
+ *  Why a distinct class instead of a sentinel string match: the catch
+ *  in `useChatSend` already needs to discriminate this case from a
+ *  `TimeoutError` (which has a structurally similar surface but a
+ *  DIFFERENT root cause). Conflating them was the bug CTO flagged on
+ *  forensic a99ab0a1: "if its file size issue, should have error that
+ *  instead saying timeout which is wrong". */
+export class FileTooLargeError extends Error {
+  readonly name = "FileTooLargeError";
+  readonly fileSize: number;
+  constructor(fileSize: number, message: string) {
+    super(message);
+    this.fileSize = fileSize;
+  }
+}
+
+/** Compute the abort timeout for an upload of `totalBytes`. Floor at
+ *  60s (small-file ergonomics: a 100 KB image shouldn't wait 1000s to
+ *  see a typo'd hostname surface as a connect error). Above the floor,
+ *  scale linearly at ~100 KB/s assumed minimum uplink — at the 100 MB
+ *  cap this yields ~1000s, comfortable for the slow-mobile-tether case
+ *  that motivated forensic a99ab0a1 (Ryan's >50 MB upload aborted at
+ *  the fixed 60s timeout while still streaming).
+ *
+ *  Exported for the unit test that pins the curve at the boundary. */
+export function computeUploadTimeoutMs(totalBytes: number): number {
+  return Math.max(60_000, totalBytes / 100); // 100KB/s → ms = bytes/100
+}
+
 /** Chat attachments are intentionally uploaded via a direct fetch()
  *  instead of the `api.post` helper — `api.post` JSON-stringifies the
  *  body, which would 500 on a Blob. Auth headers (tenant slug, admin
@@ -10,25 +59,57 @@ import type { ChatAttachment } from "./types";
  *  Content-Type so the browser writes the multipart boundary into the
  *  header; setting it manually would yield a multipart body the server
  *  can't parse. See lib/api.ts platformAuthHeaders() for the full
- *  rationale on why this pair must stay matched. */
+ *  rationale on why this pair must stay matched.
+ *
+ *  Failure-reason contract (CTO 2026-05-19 directive on forensic
+ *  a99ab0a1: each cause maps to ITS OWN message, no conflation):
+ *    1. file.size > MAX_UPLOAD_BYTES  → throws FileTooLargeError
+ *       BEFORE any network I/O, with the offending size + the cap.
+ *    2. fetch aborts via AbortSignal  → DOMException name="TimeoutError";
+ *       caller surfaces "connection too slow" (file-size already
+ *       excluded by gate 1, so the TimeoutError CANNOT mean file-size).
+ *    3. server returns !res.ok        → throws Error with the server's
+ *       reason embedded (status + body); caller surfaces verbatim.
+ *    4. any other thrown error        → falls through as-is. */
 export async function uploadChatFiles(
   workspaceId: string,
   files: File[],
 ): Promise<ChatAttachment[]> {
   if (files.length === 0) return [];
 
+  // PRE-FLIGHT: bail before any network I/O if any file exceeds the cap.
+  // After this gate, an AbortSignal.timeout firing during the fetch
+  // CANNOT be attributed to file size — it's necessarily a slow
+  // connection. That distinction is what makes the downstream error
+  // mapping unambiguous.
+  let totalBytes = 0;
+  for (const f of files) {
+    if (f.size > MAX_UPLOAD_BYTES) {
+      const sizeMb = (f.size / (1024 * 1024)).toFixed(1);
+      throw new FileTooLargeError(
+        f.size,
+        `File too large (got ${sizeMb}MB) — limit is 100MB. Please use a smaller file.`,
+      );
+    }
+    totalBytes += f.size;
+  }
+
   const form = new FormData();
   for (const f of files) form.append("files", f, f.name);
 
-  // Uploads legitimately take a while on cold cache (tar write +
-  // docker cp into the container). 60s is comfortable for the 25MB/
-  // 50MB caps the server enforces.
+  // Scale the abort timeout with payload size so a legitimate slow-
+  // uplink upload of a large file isn't aborted before the body has
+  // finished streaming. The fixed 60s previous-version was the root
+  // cause of forensic a99ab0a1: Ryan's ~60 MB upload over a constrained
+  // uplink streamed past 60s, AbortSignal fired client-side, server
+  // got a truncated body, the user saw "signal timed out" — when the
+  // real cause was simply "uplink slower than our hard-coded deadline".
   const res = await fetch(`${PLATFORM_URL}/workspaces/${workspaceId}/chat/uploads`, {
     method: "POST",
     headers: platformAuthHeaders(),
     body: form,
     credentials: "include",
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.timeout(computeUploadTimeoutMs(totalBytes)),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
