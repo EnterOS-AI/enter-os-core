@@ -1,0 +1,26 @@
+-- core#3082 flap fix: grace-window hysteresis for the management-MCP
+-- online/degraded gate.
+--
+-- Background: the RCA#2970 / core#3082 gate degrades a kind='platform'
+-- concierge whose declared management MCP is not present in the heartbeat's
+-- loaded_mcp_tools list (or whose runtime omits the list entirely). On the
+-- live fleet this degrades on EVERY 'online' heartbeat because the runtime
+-- producer that would populate loaded_mcp_tools is not yet wired, so the
+-- field is always absent. The generic degraded->online recovery branch then
+-- flips the agent back to online on the next heartbeat, producing the
+-- observed ~50/50 online<->degraded oscillation (the agent is functional the
+-- whole time).
+--
+-- This column records WHEN the management MCP first appeared
+-- absent/incomplete for an online platform agent. The gate degrades only
+-- once the absence has persisted past a startup/warmup grace window
+-- (see managementMCPUnloadedGrace in registry.go), so a single transient or
+-- warmup-window heartbeat with an absent/partial tool list does NOT flap the
+-- agent to degraded. A genuinely-missing management MCP still degrades once
+-- the window elapses, preserving the fail-closed intent of RCA#2970.
+--
+-- NULL = the management MCP is currently observed loaded (or the gate does
+-- not apply to this workspace). The column is cleared back to NULL the
+-- moment a heartbeat reports the required tool loaded.
+
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS mcp_unloaded_since TIMESTAMPTZ;

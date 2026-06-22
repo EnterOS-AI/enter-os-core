@@ -1,0 +1,375 @@
+name: redeploy-tenants-on-staging
+
+# Ported from .github/workflows/redeploy-tenants-on-staging.yml on 2026-05-11 per RFC
+# internal#219 §1 sweep. Differences from the GitHub version:
+#   - Dropped `workflow_dispatch.inputs` (Gitea 1.22.6 parser rejects them
+#     per feedback_gitea_workflow_dispatch_inputs_unsupported).
+#   - Dropped `merge_group:` (no Gitea merge queue).
+#   - Dropped `environment:` blocks (Gitea has no environments).
+#   - Workflow-level env.GITHUB_SERVER_URL pinned per
+#     feedback_act_runner_github_server_url.
+#   - `continue-on-error: true` on each job (RFC §1 contract).
+#   - ~~**Gitea workflow_run trigger limitation**~~ FIXED: replaced with
+#     push+paths filter per this PR. Gitea 1.22.6 does not support
+#     `workflow_run` (task #81). The push trigger fires on every
+#     commit to publish-workspace-server-image.yml which is the
+#     same signal (only successful runs commit to main). Removed
+#     `workflow_run.conclusion==success` job if since push implies
+#     the workflow completed and committed.
+#
+
+# Auto-refresh staging tenant EC2s after every staging-branch merge.
+#
+# Mirror of redeploy-tenants-on-main.yml, with the staging-CP host and
+# the :staging-latest tag. Sister workflow exists for prod (rolls
+# :latest after staging-verify). Both share the same shape — just
+# different CP_URL + target_tag + admin token secret.
+#
+# Why this workflow exists: publish-workspace-server-image now builds
+# on every staging-branch push (PR #2335), pushing
+# platform-tenant:staging-latest to GHCR. Existing tenants pulled
+# their image once at boot and never re-pull, so the new image just
+# sits unused until the tenant is reprovisioned.
+#
+# This workflow closes the gap by calling staging-CP's
+# /cp/admin/tenants/redeploy-fleet, which performs a canary-first,
+# batched, health-gated SSM redeploy across every live staging tenant.
+# Same endpoint shape as prod CP — only the host differs.
+#
+# Runtime ordering:
+#   1. publish-workspace-server-image completes on staging branch →
+#      new :staging-latest in GHCR.
+#   2. This workflow fires via workflow_run, waits 30s for GHCR's CDN
+#      to propagate the new tag.
+#   3. Calls redeploy-fleet with no canary (staging IS canary; we don't
+#      need a sub-canary inside it). Soak still applies to the first
+#      tenant in case of bad-deploy detection.
+#   4. Any failure aborts the rollout and leaves older tenants on the
+#      prior image — safer default than half-and-half state.
+#
+# Rollback path: re-run with workflow_dispatch + target_tag=staging-<sha>
+# of a known-good build.
+
+on:
+  push:
+    branches: [staging]
+    paths:
+      - '.gitea/workflows/publish-workspace-server-image.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  # No write scopes needed — the workflow hits an external CP endpoint,
+  # not the GitHub API.
+
+# Serialize per-branch so two rapid staging pushes' redeploys don't
+# overlap and cause confusing per-tenant SSM state. cancel-in-progress
+# is false because aborting a half-rolled-out fleet leaves tenants
+# stuck on whatever image they happened to be on when cancelled.
+concurrency:
+  group: redeploy-tenants-on-staging
+  cancel-in-progress: false
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  # bp-exempt: post-merge staging redeploy side effect; CI / all-required gates source changes.
+  redeploy:
+    # Dedicated publish/release lane (internal#462 / #394 / #399).
+    # Post-merge staging redeploy — a deploy action, reserved capacity.
+    # `publish` -> molecule-runner-publish-* sub-pool.
+    runs-on: publish
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#2654: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true
+    timeout-minutes: 25
+    steps:
+      - name: Wait for GHCR tag propagation
+        # GHCR's edge cache takes ~15-30s to consistently serve the new
+        # :staging-latest manifest after the registry accepts the push.
+        # Same rationale as redeploy-tenants-on-main.yml.
+        run: sleep 30
+
+      - name: Call staging-CP redeploy-fleet
+        # CP_STAGING_ADMIN_API_TOKEN must be set as a repo/org secret
+        # on molecule-ai/molecule-core, matching staging-CP's
+        # CP_ADMIN_API_TOKEN env var (visible in Railway controlplane
+        # / staging environment). Stored separately from the prod
+        # CP_ADMIN_API_TOKEN so a leak of one doesn't auth the other.
+        env:
+          CP_URL: ${{ vars.STAGING_CP_URL || 'https://staging-api.moleculesai.app' }}
+          CP_STAGING_ADMIN_API_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+          TARGET_TAG: ${{ inputs.target_tag || 'staging-latest' }}
+          CANARY_SLUG: ${{ inputs.canary_slug || '' }}
+          SOAK_SECONDS: ${{ inputs.soak_seconds || '60' }}
+          BATCH_SIZE: ${{ inputs.batch_size || '3' }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+        run: |
+          set -euo pipefail
+
+          # Schedule-vs-dispatch hardening (mirrors sweep-cf-orphans
+          # and sweep-cf-tunnels): hard-fail on auto-trigger when the
+          # secret is missing so a misconfigured-repo doesn't silently
+          # serve stale staging tenants. Soft-skip on operator dispatch.
+          if [ -z "${CP_STAGING_ADMIN_API_TOKEN:-}" ]; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "::warning::CP_STAGING_ADMIN_API_TOKEN secret not set — skipping redeploy"
+              echo "::warning::Set CP_STAGING_ADMIN_API_TOKEN in repo secrets to enable auto-redeploy."
+              echo "::notice::Pull the value from staging-CP's CP_ADMIN_API_TOKEN env in Railway."
+              exit 0
+            fi
+            echo "::error::staging redeploy cannot run — CP_STAGING_ADMIN_API_TOKEN secret missing"
+            echo "::error::set it at Settings → Secrets and Variables → Actions; pull from staging-CP's CP_ADMIN_API_TOKEN env in Railway."
+            exit 1
+          fi
+
+          # confirm:true ack required by CP /cp/admin/tenants/redeploy-fleet
+          # contract (cp#228 / task #308) for fleet-wide intent. Empty body
+          # / {confirm:false} / {only_slugs:[]} → 400. Staging IS the
+          # canary, no slug scoping; this rolls the entire staging fleet,
+          # so confirm:true is correct.
+          BODY=$(jq -nc \
+            --arg tag "$TARGET_TAG" \
+            --arg canary "$CANARY_SLUG" \
+            --argjson soak "$SOAK_SECONDS" \
+            --argjson batch "$BATCH_SIZE" \
+            --argjson dry "$DRY_RUN" \
+            '{
+              target_tag: $tag,
+              canary_slug: $canary,
+              soak_seconds: $soak,
+              batch_size: $batch,
+              dry_run: $dry,
+              confirm: true
+            }')
+
+          echo "POST $CP_URL/cp/admin/tenants/redeploy-fleet"
+          echo "  body: $BODY"
+
+          HTTP_RESPONSE=$(mktemp)
+          HTTP_CODE_FILE=$(mktemp)
+          # Route -w into its own tempfile so curl's exit code (e.g. 56
+          # on connection-reset) can't pollute the captured stdout. The
+          # previous inline-substitution shape produced "000000" on
+          # connection reset — caught on main variant 2026-05-04
+          # redeploying sha 2b862f6. Same fix shape as the synth-E2E
+          # §9c gate (PR #2797). See lint-curl-status-capture.yml for
+          # the CI gate that pins this fix shape.
+          set +e
+          curl -sS -o "$HTTP_RESPONSE" -w '%{http_code}' \
+            -m 1200 \
+            -H "Authorization: Bearer $CP_STAGING_ADMIN_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -X POST "$CP_URL/cp/admin/tenants/redeploy-fleet" \
+            -d "$BODY" >"$HTTP_CODE_FILE"
+          set -e
+          # Stderr from curl (-sS shows dial errors etc.) goes to the
+          # runner log so operators can see WHY a connection failed.
+          HTTP_CODE=$(cat "$HTTP_CODE_FILE" 2>/dev/null || echo "000")
+          [ -z "$HTTP_CODE" ] && HTTP_CODE="000"
+
+          echo "HTTP $HTTP_CODE"
+          # REDACT the raw CP/SSM response in the runner log (Rule 8 —
+          # the previous `cat $HTTP_RESPONSE | jq . || cat $HTTP_RESPONSE`
+          # leaked the raw ValidationException into the persistent CI log
+          # on 2026-06-15 staging run 509031, masking the actual cause).
+          # Print ONLY: HTTP status code, a count, and a success/failure
+          # boolean. Per-tenant details (with the .error field redacted to
+          # a boolean) go to the GITHUB_STEP_SUMMARY for operator visibility.
+          REDACTED_BODY="$(jq -c '{ok, result_count: (.results // [] | length), stragglers_count: ((.stragglers // []) | length), http_code: ("'"$HTTP_CODE"'")}' "$HTTP_RESPONSE" 2>/dev/null || echo '{"ok":"unparseable","http_code":"'"$HTTP_CODE"'"}')"
+          echo "$REDACTED_BODY"
+
+          {
+            echo "## Staging tenant redeploy fleet"
+            echo ""
+            echo "**Target tag:** \`$TARGET_TAG\`"
+            echo "**Canary:** \`${CANARY_SLUG:-(none — staging is itself the canary)}\` (soak ${SOAK_SECONDS}s)"
+            echo "**Batch size:** $BATCH_SIZE"
+            echo "**Dry run:** $DRY_RUN"
+            echo "**HTTP:** $HTTP_CODE"
+            echo ""
+            echo "### Per-tenant result"
+            echo ""
+            # REDACT `.error` to a boolean (Rule 8 — the previous
+            # `\(.error // "-")` printed the raw error string, including
+            # SSM ValidationExceptions with operator-sensitive values, into
+            # the persistent CI log).
+            echo '| Slug | Phase | SSM Status | Exit | Healthz | Error |'
+            echo '|------|-------|------------|------|---------|-------|'
+            jq -r '.results[]? | "| \(.slug) | \(.phase) | \(.ssm_status // "-") | \(.ssm_exit_code) | \(.healthz_ok) | \((.error // "") != "") |"' "$HTTP_RESPONSE" 2>/dev/null || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Distinguish "real fleet failure" from "E2E teardown race".
+          #
+          # CP returns HTTP 500 + ok=false whenever ANY tenant in the
+          # fleet failed SSM or healthz. In practice the recurring source
+          # of these is ephemeral test tenants being torn down by their
+          # parent E2E run mid-redeploy: the EC2 dies → SSM exit=2 or
+          # healthz timeout → CP marks the fleet failed → this workflow
+          # goes red even though every operator-facing tenant rolled fine.
+          #
+          # Ephemeral slug prefixes (kept in sync with sweep-stale-e2e-orgs.yml
+          # — see that file for the source-of-truth list and rationale):
+          #   - e2e-*       — canvas/saas/ext E2E suites
+          #   - rt-e2e-*    — runtime-test harness fixtures (RFC #2251)
+          # Long-lived prefixes that are NOT ephemeral and MUST hard-fail:
+          # demo-prep, dryrun-*, dryrun2-*, plus all human tenant slugs.
+          #
+          # Filter: if HTTP=500/ok=false AND every failed slug matches an
+          # ephemeral prefix, treat as soft-warn and let the verify step
+          # downstream handle unreachable-vs-stale (#2402). Any non-ephemeral
+          # failure or a non-500 HTTP response remains a hard failure.
+          OK=$(jq -r '.ok // "false"' "$HTTP_RESPONSE")
+          FAILED_SLUGS=$(jq -r '
+            .results[]?
+            | select((.healthz_ok != true) or (.ssm_status != "Success"))
+            | .slug' "$HTTP_RESPONSE" 2>/dev/null || true)
+          EPHEMERAL_PREFIX_RE='^(e2e-|rt-e2e-)'
+          NON_EPHEMERAL_FAILED=$(printf '%s\n' "$FAILED_SLUGS" | grep -v '^$' | grep -Ev "$EPHEMERAL_PREFIX_RE" || true)
+
+          if [ "$HTTP_CODE" = "200" ] && [ "$OK" = "true" ]; then
+            : # happy path — fall through to verification
+          elif [ "$HTTP_CODE" = "500" ] && [ -z "$NON_EPHEMERAL_FAILED" ] && [ -n "$FAILED_SLUGS" ]; then
+            COUNT=$(printf '%s\n' "$FAILED_SLUGS" | grep -Ec "$EPHEMERAL_PREFIX_RE" || true)
+            echo "::warning::redeploy-fleet returned HTTP 500 but every failed tenant ($COUNT) is ephemeral (e2e-*/rt-e2e-*) — treating as teardown race, soft-warning."
+            printf '%s\n' "$FAILED_SLUGS" | sed 's/^/::warning::  failed: /'
+          elif [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::redeploy-fleet returned HTTP $HTTP_CODE"
+            if [ -n "$NON_EPHEMERAL_FAILED" ]; then
+              echo "::error::non-ephemeral tenant(s) failed:"
+              printf '%s\n' "$NON_EPHEMERAL_FAILED" | sed 's/^/::error::  /'
+            fi
+            exit 1
+          else
+            # HTTP=200 but ok=false (shouldn't happen with current CP
+            # but keep the gate for completeness).
+            echo "::error::redeploy-fleet reported ok=false (see summary for which tenant halted the rollout)"
+            exit 1
+          fi
+          echo "::notice::Staging tenant fleet redeploy reported ssm_status=Success — verifying actual image roll on each tenant..."
+
+          cp "$HTTP_RESPONSE" "$RUNNER_TEMP/redeploy-response.json"
+
+      - name: Verify each staging tenant /buildinfo matches published SHA
+        # Mirror of the verify step in redeploy-tenants-on-main.yml — see
+        # there for the rationale (#2395 root fix). Staging has the same
+        # ssm_status-success-but-stale-image hazard and benefits from the
+        # same gate. Diff: TENANT_DOMAIN includes the `staging.` infix.
+        env:
+          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          TARGET_TAG: ${{ inputs.target_tag || 'staging-latest' }}
+          TENANT_DOMAIN: 'staging.moleculesai.app'
+        run: |
+          set -euo pipefail
+
+          # staging-latest is the staging-side moving tag; treat it the
+          # same way main treats `latest`. Operator-pinned SHAs skip
+          # verification (see main variant for why).
+          if [ "$TARGET_TAG" != "staging-latest" ] && [ "$TARGET_TAG" != "latest" ] && [ "$TARGET_TAG" != "$EXPECTED_SHA" ]; then
+            echo "::notice::target_tag=$TARGET_TAG (operator-pinned) — skipping per-tenant SHA verification."
+            exit 0
+          fi
+
+          RESP="$RUNNER_TEMP/redeploy-response.json"
+          if [ ! -s "$RESP" ]; then
+            echo "::error::redeploy-response.json missing or empty"
+            exit 1
+          fi
+
+          mapfile -t SLUGS < <(jq -r '.results[]? | select(.healthz_ok == true) | .slug' "$RESP")
+          if [ ${#SLUGS[@]} -eq 0 ]; then
+            echo "::warning::No staging tenants reported healthz_ok — nothing to verify"
+            exit 0
+          fi
+
+          echo "Verifying ${#SLUGS[@]} staging tenant(s) against EXPECTED_SHA=${EXPECTED_SHA:0:7}..."
+
+          # Two distinct failure modes here:
+          #   STALE_COUNT      — tenant returned a SHA that doesn't match. THIS is
+          #                      the #2395 bug class: tenant up + serving old code.
+          #                      Always hard-fail the workflow.
+          #   UNREACHABLE_COUNT — tenant didn't respond. Almost always a benign
+          #                      teardown race: redeploy-fleet snapshot says
+          #                      healthz_ok=true, then the E2E suite tears the
+          #                      ephemeral tenant down before this step runs (the
+          #                      e2e-* fixtures churn 5-10/hour on staging). Soft-
+          #                      warn so we don't block staging→main on cleanup.
+          #                      Real "tenant up but unreachable" is caught by CP's
+          #                      own healthz monitor + the post-redeploy alert; we
+          #                      don't need to double-count it here.
+          STALE_COUNT=0
+          UNREACHABLE_COUNT=0
+          STALE_LINES=()
+          UNREACHABLE_LINES=()
+          for slug in "${SLUGS[@]}"; do
+            URL="https://${slug}.${TENANT_DOMAIN}/buildinfo"
+            BODY=$(curl -sS --max-time 30 --retry 3 --retry-delay 5 --retry-connrefused "$URL" || true)
+            ACTUAL_SHA=$(echo "$BODY" | jq -r '.git_sha // ""' 2>/dev/null || echo "")
+            if [ -z "$ACTUAL_SHA" ]; then
+              UNREACHABLE_COUNT=$((UNREACHABLE_COUNT + 1))
+              UNREACHABLE_LINES+=("| $slug | (no /buildinfo response) | ${EXPECTED_SHA:0:7} | ⚠ unreachable (likely teardown race) |")
+              continue
+            fi
+            if [ "$ACTUAL_SHA" = "$EXPECTED_SHA" ]; then
+              echo "  $slug: ${ACTUAL_SHA:0:7} ✓"
+            else
+              STALE_COUNT=$((STALE_COUNT + 1))
+              STALE_LINES+=("| $slug | ${ACTUAL_SHA:0:7} | ${EXPECTED_SHA:0:7} | ❌ stale |")
+            fi
+          done
+
+          {
+            echo ""
+            echo "### Per-tenant /buildinfo verification (staging)"
+            echo ""
+            echo "Expected SHA: \`${EXPECTED_SHA:0:7}\`"
+            echo ""
+            if [ $STALE_COUNT -gt 0 ]; then
+              echo "**${STALE_COUNT} STALE tenant(s) — these did NOT pick up the new image despite ssm_status=Success:**"
+              echo ""
+              echo "| Slug | Actual /buildinfo SHA | Expected | Status |"
+              echo "|------|----------------------|----------|--------|"
+              for line in "${STALE_LINES[@]}"; do echo "$line"; done
+              echo ""
+            fi
+            if [ $UNREACHABLE_COUNT -gt 0 ]; then
+              echo "**${UNREACHABLE_COUNT} unreachable tenant(s) — likely E2E teardown race (soft-warn, not failing):**"
+              echo ""
+              echo "| Slug | Actual /buildinfo SHA | Expected | Status |"
+              echo "|------|----------------------|----------|--------|"
+              for line in "${UNREACHABLE_LINES[@]}"; do echo "$line"; done
+              echo ""
+            fi
+            if [ $STALE_COUNT -eq 0 ] && [ $UNREACHABLE_COUNT -eq 0 ]; then
+              echo "All ${#SLUGS[@]} staging tenants returned matching SHA. ✓"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ $UNREACHABLE_COUNT -gt 0 ]; then
+            echo "::warning::$UNREACHABLE_COUNT staging tenant(s) unreachable post-redeploy. Likely benign teardown race — CP healthz monitor catches real outages."
+          fi
+
+          # Belt-and-suspenders sanity floor: if MORE than half the fleet is
+          # unreachable AND the fleet is large enough that "half down" is
+          # statistically meaningful, this is a real outage (e.g. new image
+          # crashes on startup), not a teardown race. Hard-fail.
+          #
+          # Floor only applies when TOTAL_VERIFIED >= 4 — below that, the
+          # staging-verify step is the actual gate for "all tenants down"
+          # detection (it runs against the canary first and aborts the
+          # rollout if the canary fails to come up). Without the >=4 gate,
+          # a 1-tenant fleet (e.g. a single ephemeral e2e-* tenant on a
+          # quiet staging push) would re-flake on the exact teardown-race
+          # condition #2402 fixed: 1 of 1 unreachable = 100% > 50% → fail.
+          TOTAL_VERIFIED=${#SLUGS[@]}
+          if [ $TOTAL_VERIFIED -ge 4 ] && [ $UNREACHABLE_COUNT -gt $((TOTAL_VERIFIED / 2)) ]; then
+            echo "::error::$UNREACHABLE_COUNT of $TOTAL_VERIFIED staging tenant(s) unreachable — exceeds 50% threshold on a fleet large enough that this signals a real outage, not teardown race."
+            exit 1
+          fi
+
+          if [ $STALE_COUNT -gt 0 ]; then
+            echo "::error::$STALE_COUNT staging tenant(s) returned a stale SHA. ssm_status=Success was misleading — see job summary."
+            exit 1
+          fi
+
+          echo "::notice::Staging tenant fleet redeploy complete — all reachable tenants on ${EXPECTED_SHA:0:7} (${UNREACHABLE_COUNT} unreachable, soft-warned)."

@@ -1,0 +1,170 @@
+# security-review — non-author APPROVE from the `security` Gitea team
+# required to merge.
+#
+# RFC#324 Step 1 of 5 (workflow-add). Mirror of `qa-review.yml`; differs
+# only in TEAM=security, TEAM_ID=21, and the slash-command name.
+#
+# See `qa-review.yml` header for the full A1-α / A1.1 / A4 / A5 design
+# rationale; everything below is identical in shape.
+#
+# A1-α addendum (internal#760): review-event trigger added so the security
+# gate flips immediately when a team member submits an APPROVE review.
+# Uses `pull_request_review` types: [submitted] — verified live via
+# sop-checklist.yml which provably fires this event (produces
+# `sop-checklist / all-items-acked (pull_request_review)` contexts).
+# The job-level `if:` does NOT guard on review.state (issue #2159):
+# Gitea 1.22.6's payload shape for this event does not reliably expose
+# the state field that the GitHub-style guard expects.  The evaluator
+# (review-check.sh) reads actual reviews from the API and checks for a
+# real APPROVE, so running on COMMENT or REQUEST_CHANGES is harmless
+# (read-only, idempotent).  Branch-protection requires the
+# `(pull_request_target)` context variant, so the review-event path
+# EXPLICITLY POSTS the required context via the API. Trust boundary
+# preserved (BASE ref, no PR-head).
+
+name: security-review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+jobs:
+  # bp-required: pending #3141 — CTO-authorized: this gate is becoming TRULY
+  # merge-blocking. NB: `CI / all-required` does NOT enforce this context — it is
+  # a plain `needs:` aggregator over CI's OWN jobs (ci.yml) and Gitea has no
+  # cross-workflow `needs:`; the prior poll-the-status-API design was removed
+  # (runner-squat RCA 2026-06-01). Enforcement requires the BP context
+  # `security-review / approved (pull_request_target)` to be in
+  # branch_protections/main.status_check_contexts (owner action, tracked in
+  # #3141; allowlist landed in .gitea/required-contexts.txt this PR, BP flip
+  # follows merge). `pending #NNN` per lint_required_context_exists_in_bp grammar.
+  approved:
+    # Gate the job:
+    #   - On pull_request_target events: always run.
+    #   - On pull_request_review events: always run.  We do NOT guard on
+    #     review.state here because Gitea 1.22.6's payload shape for this
+    #     event does not reliably expose the state field (issue #2159).
+    #     The evaluator (review-check.sh) reads actual reviews from the
+    #     API and checks for a real APPROVE, so running on COMMENT or
+    #     REQUEST_CHANGES is harmless (read-only, idempotent).
+    #   - On labeled/unlabeled events: re-evaluate when labels change.
+    #     This ensures security-review flips when risk-indicator labels
+    #     are added or removed.
+    # Comment-triggered refires live in sop-checklist.yml review-refire job.
+    if: |
+      github.event_name == 'pull_request_target' ||
+      github.event_name == 'pull_request_review'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Privilege check (A1.1 — INFORMATIONAL log only, NOT a gate)
+        # RFC#324 v1.3 §A1.1: does NOT gate subsequent steps. See
+        # qa-review.yml for full rationale. Eval is read-only/idempotent
+        # so re-running on a non-collaborator comment is harmless.
+        if: github.event_name == 'issue_comment'
+        env:
+          GITEA_TOKEN: ${{ secrets.SOP_CHECKLIST_GATE_TOKEN }}
+        run: |
+          set -euo pipefail
+          login="${{ github.event.comment.user.login }}"
+          # Write token to a mode-600 file so it never appears in curl's argv.
+          # (#541: -H "Authorization: token $TOKEN" puts the secret in /proc/<pid>/cmdline)
+          authfile=$(mktemp)
+          chmod 600 "$authfile"
+          printf 'header = "Authorization: token %s"\n' "$GITEA_TOKEN" > "$authfile"
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -K "$authfile" \
+            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/collaborators/${login}")
+          rm -f "$authfile"
+          if [ "$code" = "204" ]; then
+            echo "::notice::Recheck from ${login} (collaborator=true)"
+          else
+            echo "::notice::Recheck from ${login} (collaborator=false, HTTP ${code}) — proceeding with read-only eval anyway"
+          fi
+
+      - name: Check out BASE ref (A4 — never PR-head)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Evaluate security-review
+        id: eval
+        env:
+          GITEA_TOKEN: ${{ secrets.SOP_CHECKLIST_GATE_TOKEN }}
+          GITEA_HOST: git.moleculesai.app
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TEAM: security
+          TEAM_ID: '21'
+          REVIEW_CHECK_DEBUG: '0'
+          REVIEW_CHECK_STRICT: '0'
+        run: bash .gitea/scripts/review-check.sh
+
+      - name: Post required status context on pull_request_review
+        # Gitea Actions auto-publishes (pull_request_review) context
+        # for this event, but branch-protection requires (pull_request_target).
+        # We explicitly POST the BP-required context so the gate flips.
+        # Trust boundary: same BASE-ref script result, no PR-head code.
+        #
+        # TOKEN FIX (RC 8326): uses STATUS_POST_TOKEN (CTO-granted,
+        # msg d52cc72a). Dedicated narrow-scoped write:repository token
+        # for the explicit status POST. Evaluator step stays on
+        # SOP_CHECKLIST_GATE_TOKEN (read-only) per deliberate security
+        # separation: eval computes, POST writes, never the same cred.
+        if: github.event_name == 'pull_request_review' && always()
+        env:
+          GITEA_TOKEN: ${{ secrets.STATUS_POST_TOKEN }}
+          GITEA_HOST: git.moleculesai.app
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          EVAL_OUTCOME: ${{ steps.eval.outcome }}
+        run: |
+          set -euo pipefail
+          authfile=$(mktemp)
+          chmod 600 "$authfile"
+          printf 'header = "Authorization: token %s"\n' "$GITEA_TOKEN" > "$authfile"
+
+          prfile=$(mktemp)
+          code=$(curl -sS -o "$prfile" -w '%{http_code}' -K "$authfile" \
+            "https://${GITEA_HOST}/api/v1/repos/${REPO}/pulls/${PR_NUMBER}")
+          if [ "$code" != "200" ]; then
+            echo "::error::GET /pulls/${PR_NUMBER} returned HTTP ${code}"
+            rm -f "$prfile" "$authfile"
+            exit 1
+          fi
+          head_sha=$(jq -r '.head.sha // ""' "$prfile")
+          rm -f "$prfile"
+
+          if [ "$EVAL_OUTCOME" = "success" ]; then
+            status_state="success"
+            description="Approved via pull_request_review trigger"
+          else
+            status_state="failure"
+            description="Review check failed via pull_request_review trigger"
+          fi
+
+          body=$(jq -nc \
+            --arg state "$status_state" \
+            --arg context "security-review / approved (pull_request_target)" \
+            --arg description "$description" \
+            '{state:$state, context:$context, description:$description}')
+
+          post_code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+            -K "$authfile" -H "Content-Type: application/json" \
+            -d "$body" \
+            "https://${GITEA_HOST}/api/v1/repos/${REPO}/statuses/${head_sha}")
+
+          rm -f "$authfile"
+
+          if [ "$post_code" != "200" ] && [ "$post_code" != "201" ]; then
+            echo "::error::POST /statuses/${head_sha} returned HTTP ${post_code}"
+            exit 1
+          fi
+
+          echo "::notice::posted ${status_state} for context=\"security-review / approved (pull_request_target)\" on sha=${head_sha}"

@@ -1,0 +1,15 @@
+-- workspaces.template: the template a workspace was created from (the
+-- workspace-configs-templates folder name, e.g. "seo-agent"). Persisted at
+-- create time so the RESTART / re-provision path can re-deliver the SAME
+-- template's config.yaml + prompts (and re-run the declared-plugin reconcile)
+-- instead of re-provisioning with template="" — which silently degraded the
+-- box to a 218-byte stub config and dropped its skills on EVERY restart
+-- (RFC#2843 #32 keystone / #33; root-caused 2026-06-17 from live tenant-box
+-- logs: the auto-restart cycle rebuilt the provision payload with Name/Tier/
+-- Runtime only, never the template, so the SaaS re-provision had no
+-- TemplateIdentity to fetch assets from).
+--
+-- Empty string = no template (default/blank workspaces). NOT NULL DEFAULT ''
+-- keeps existing rows valid and the restart-side read trivial (no NULL handling).
+-- Idempotent + additive.
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS template TEXT NOT NULL DEFAULT '';

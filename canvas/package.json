@@ -1,0 +1,50 @@
+{
+  "name": "molecule-monorepo-canvas",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack -p 3000",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@novnc/novnc": "^1.7.0",
+    "@radix-ui/react-alert-dialog": "^1.1.15",
+    "@radix-ui/react-dialog": "^1.1.15",
+    "@radix-ui/react-tabs": "^1.1.12",
+    "@radix-ui/react-tooltip": "^1.1.14",
+    "@tailwindcss/typography": "^0.5.19",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xyflow/react": "^12.4.0",
+    "clsx": "^2.1.1",
+    "next": "^15.1.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "tailwind-merge": "^3.5.0",
+    "xterm": "^5.3.0",
+    "zustand": "^5.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@tailwindcss/postcss": "^4.0.0",
+    "@testing-library/jest-dom": "^6.6.0",
+    "@testing-library/react": "^16.1.0",
+    "@types/node": "^25.6.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^6.0.1",
+    "@vitest/coverage-v8": "^4.1.5",
+    "eslint": "^9.39.4",
+    "eslint-config-next": "^15.5.15",
+    "jsdom": "^29.1.1",
+    "postcss": "^8.5.13",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.2"
+  }
+}

@@ -1,0 +1,81 @@
+# Render deployment configuration for Molecule AI
+# Deploy with one click: https://render.com/deploy
+#
+# This file provisions:
+#   - platform   (Go API server)
+#   - canvas     (Next.js frontend)
+#   - postgres   (managed Postgres 16)
+#   - redis      (managed Redis 7)
+#
+# Required: set SECRETS_ENCRYPTION_KEY in the Render dashboard after first deploy.
+# Generate: openssl rand -base64 32
+
+services:
+  # ── Go Platform API ────────────────────────────────────────────────────────
+  - type: web
+    name: molecule-platform
+    runtime: docker
+    dockerfilePath: ./workspace-server/Dockerfile
+    dockerContext: ./platform
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: "8080"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: molecule-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: molecule-redis
+          type: redis
+          property: connectionString
+      - key: PLATFORM_URL
+        # Set this to your platform's public Render URL after first deploy,
+        # e.g. https://molecule-platform.onrender.com
+        value: "https://molecule-platform.onrender.com"
+      - key: CORS_ORIGINS
+        # Set to your canvas public URL after first deploy
+        value: "https://molecule-canvas.onrender.com"
+      - key: RATE_LIMIT
+        value: "500"
+      - key: SECRETS_ENCRYPTION_KEY
+        # REQUIRED: set this in Render dashboard → Environment
+        # Generate: openssl rand -base64 32
+        generateValue: true
+      - key: ACTIVITY_RETENTION_DAYS
+        value: "7"
+
+  # ── Next.js Canvas ─────────────────────────────────────────────────────────
+  - type: web
+    name: molecule-canvas
+    runtime: docker
+    dockerfilePath: ./canvas/Dockerfile
+    dockerContext: ./canvas
+    plan: starter
+    healthCheckPath: /
+    envVars:
+      - key: NEXT_PUBLIC_PLATFORM_URL
+        fromService:
+          name: molecule-platform
+          type: web
+          property: host
+          envVarKey: NEXT_PUBLIC_PLATFORM_URL
+      - key: NEXT_PUBLIC_WS_URL
+        # Render web services are HTTPS/WSS by default
+        value: "wss://molecule-platform.onrender.com/ws"
+
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  - type: redis
+    name: molecule-redis
+    plan: starter
+    maxmemoryPolicy: noeviction
+
+databases:
+  # ── Postgres 16 ────────────────────────────────────────────────────────────
+  - name: molecule-postgres
+    plan: starter
+    databaseName: molecule
+    user: molecule
+    postgresMajorVersion: 16

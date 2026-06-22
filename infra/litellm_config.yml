@@ -1,0 +1,75 @@
+# LiteLLM Proxy Configuration — Molecule AI
+# ─────────────────────────────────────────────────────────────────────────────
+# This file is mounted into the litellm container at /app/config.yaml.
+# Workspace agents reach the proxy at http://litellm:4000 (Docker-internal).
+#
+# Usage:
+#   docker compose --profile multi-provider up
+#
+# Then in a workspace config.yaml, set:
+#   model: openai/claude-opus-4-5          # routed via LiteLLM → Anthropic
+#   model: openai/gpt-4o                   # routed via LiteLLM → OpenAI
+#   model: openai/ollama/llama3.2          # routed via LiteLLM → Ollama
+#
+# The workspace's OPENAI_BASE_URL env var must be set to http://litellm:4000
+# and OPENAI_API_KEY to the value of LITELLM_MASTER_KEY below (default: sk-molecule).
+# ─────────────────────────────────────────────────────────────────────────────
+
+general_settings:
+  master_key: ${LITELLM_MASTER_KEY:-sk-molecule}   # used as OPENAI_API_KEY by agents
+
+model_list:
+  # ── Anthropic ──────────────────────────────────────────────────────────────
+  - model_name: claude-opus-4-5
+    litellm_params:
+      model: anthropic/claude-opus-4-5
+      api_key: ${ANTHROPIC_API_KEY}
+
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: ${ANTHROPIC_API_KEY}
+
+  - model_name: claude-opus-4-7
+    litellm_params:
+      model: anthropic/claude-opus-4-7
+      api_key: ${ANTHROPIC_API_KEY}
+
+  # ── OpenAI ─────────────────────────────────────────────────────────────────
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: ${OPENAI_API_KEY}
+
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: ${OPENAI_API_KEY}
+
+  # ── OpenRouter ─────────────────────────────────────────────────────────────
+  - model_name: openrouter/deepseek-r1
+    litellm_params:
+      model: openrouter/deepseek/deepseek-r1
+      api_key: ${OPENROUTER_API_KEY}
+
+  - model_name: openrouter/qwen3-235b
+    litellm_params:
+      model: openrouter/qwen/qwen3-235b-a22b
+      api_key: ${OPENROUTER_API_KEY}
+
+  # ── Ollama (local — requires --profile local-models) ───────────────────────
+  - model_name: ollama/llama3.2
+    litellm_params:
+      model: ollama/llama3.2
+      api_base: http://ollama:11434
+
+  - model_name: ollama/qwen2.5-coder
+    litellm_params:
+      model: ollama/qwen2.5-coder:7b
+      api_base: http://ollama:11434
+
+litellm_settings:
+  # Drop unsupported params silently (e.g. some models don't support temperature)
+  drop_params: true
+  # Request timeout in seconds
+  request_timeout: 120

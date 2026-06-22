@@ -1,0 +1,58 @@
+-- 044_platform_inbound_secret.up.sql
+--
+-- Per-workspace shared secret that the **platform** presents when calling
+-- INTO a workspace's HTTP server (e.g. POST /internal/chat/uploads/ingest).
+--
+-- Asymmetric to workspace_auth_tokens, by design:
+--
+--   workspace_auth_tokens         workspaces.platform_inbound_secret
+--   ─────────────────────         ─────────────────────────────────
+--   workspace → platform          platform → workspace
+--   plaintext NEVER stored        plaintext STORED here
+--   bcrypt-style hash compare     string-equality compare
+--   workspace presents bearer     platform presents bearer
+--   platform validates by hash    workspace validates by file compare
+--
+-- Why a separate column / role:
+--
+--   * Principle of least privilege. Platform's authority over a workspace
+--     is structurally different from the workspace's authority on the
+--     platform; one bearer for both blurs that.
+--   * Independent rotation. A platform-side compromise can be contained by
+--     rotating only this column fleet-wide, without revoking every
+--     workspace's outbound auth (which would take down heartbeat / A2A).
+--   * Audit clarity. workspace-side logs see distinct bearers for
+--     "platform call" vs "user call".
+--   * Cheap to add now, expensive to retrofit. Splitting later forces a
+--     fleet-wide rolling rotation while old + new clients coexist.
+--
+-- Why plaintext (not hashed):
+--
+-- The platform needs the plaintext at every forward call to put in the
+-- Authorization header. Storing only a hash would force a re-mint on
+-- every call (defeating the purpose) or a separate plaintext store
+-- (defeating the simplicity).
+--
+-- Encryption at rest: this column relies on Postgres-volume / disk
+-- encryption (Railway-managed, AES-256). Application-layer encryption
+-- via the existing SECRETS_ENCRYPTION_KEY pathway (workspace_secrets) is
+-- a defense-in-depth follow-up — tracked separately so this migration
+-- stays additive.
+--
+-- Workspace-side delivery: the plaintext is written into
+-- /configs/.platform_inbound_secret at provision time alongside the
+-- existing /configs/.auth_token. Both files are 0600 and live on the
+-- workspace's volume only.
+--
+-- Nullable for forward-compat: existing rows have no value until the
+-- workspace is reprovisioned. /internal/* handlers MUST refuse to serve
+-- when the file is empty (fail-closed, not fail-open) so legacy rows
+-- can't be hit pre-migration without a fresh secret.
+--
+-- Reverse plan: the .down.sql drops the column. Any caller relying on
+-- the secret would 404 after the column is gone — the column add is
+-- additive in the proper direction; the down is destructive only because
+-- the value would be irrecoverable.
+
+ALTER TABLE workspaces
+    ADD COLUMN IF NOT EXISTS platform_inbound_secret TEXT NULL;

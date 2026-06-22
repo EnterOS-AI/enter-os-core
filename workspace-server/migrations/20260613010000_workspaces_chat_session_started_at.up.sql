@@ -1,0 +1,22 @@
+-- workspaces.chat_session_started_at: a soft boundary that marks the
+-- start of the user's current chat session (core#2697).
+--
+-- Soft-boundary design (CTO decision): pressing "New session" in the
+-- canvas chat panel rotates this column to now(); chat-history reads
+-- filter rows where created_at >= chat_session_started_at. Pre-marker
+-- rows stay in the DB, so a user can always look back at older
+-- sessions via a future "history" affordance. We do NOT delete rows
+-- (destructive) and we do NOT introduce a session_id FK (heavy: would
+-- need a sessions table, ON DELETE rules, backfill).
+--
+-- Idempotent: ADD COLUMN IF NOT EXISTS so the migration runner can
+-- re-apply after a partial-failure without aborting. The column is
+-- NULLABLE so existing workspaces (pre-deploy) read history with no
+-- filter — the same behavior they had before this PR landed.
+--
+-- Drift contract: a chat-history fetch MUST treat NULL as "no filter"
+-- (don't compare against epoch zero, which would silently drop
+-- pre-marker rows). The store's ListOptions handles this via a
+-- HasSessionStarted bool, mirroring the BeforeTS cursor pattern.
+ALTER TABLE workspaces
+    ADD COLUMN IF NOT EXISTS chat_session_started_at TIMESTAMPTZ;

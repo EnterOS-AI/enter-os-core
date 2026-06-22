@@ -1,0 +1,73 @@
+name: Check migration collisions
+
+# Ported from .github/workflows/check-migration-collisions.yml on 2026-05-11
+# per RFC internal#219 §1 sweep.
+#
+# Differences from the GitHub version:
+#   - on.paths includes .gitea/workflows/check-migration-collisions.yml
+#     (this file) instead of the .github/ one.
+#   - Workflow-level env.GITHUB_SERVER_URL pinned to https://git.moleculesai.app
+#     so scripts/ops/check_migration_collisions.py can derive the Gitea API
+#     base (the script already supports this; see _gitea_api_url()).
+#   - `continue-on-error: true` on the job (RFC §1 contract).
+#
+# Hard gate (#2341): fails a PR that adds a migration prefix already
+# claimed by the base branch or another open PR. Caught manually 2026-04-30
+# during PR #2276 rebase: 044_runtime_image_pins collided with
+# 044_platform_inbound_secret from RFC #2312. This workflow makes that
+# check automatic.
+#
+# Trigger model: pull_request only — there's no value running this on
+# pushes to staging or main (those are post-merge; the gate must fire
+# pre-merge to be useful). Path filter scopes to PRs that actually touch
+# migrations.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'workspace-server/migrations/**'
+      - 'scripts/ops/check_migration_collisions.py'
+      - '.gitea/workflows/check-migration-collisions.yml'
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+permissions:
+  contents: read
+  # API needs read access to other PRs to detect cross-PR collisions
+  pull-requests: read
+
+jobs:
+  check:
+    name: Migration version collision check
+    runs-on: ubuntu-latest
+    # Phase 4 (RFC #219 §1): 22 days green since 2026-05-11 port.
+    # mc#1982 mask removed — no surfaced defects in this lane.
+    continue-on-error: false
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Need history to diff against base ref
+          fetch-depth: 0
+
+      - name: Detect collisions
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: origin/${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          # Auto-injected; Gitea aliases this for in-repo API access.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Ensure the named base ref exists locally. checkout@v4 with
+          # fetch-depth=0 pulls full history, but the explicit fetch is
+          # cheap insurance against form-of-ref differences across runs.
+          #
+          # IMPORTANT: do NOT pass --depth=1 here. The script below uses
+          # `git diff origin/<base>...<head>` (three-dot, merge-base form),
+          # which fails with "fatal: no merge base" if the base ref is
+          # shallow.
+          git fetch origin "${{ github.event.pull_request.base.ref }}" || true
+          python3 scripts/ops/check_migration_collisions.py

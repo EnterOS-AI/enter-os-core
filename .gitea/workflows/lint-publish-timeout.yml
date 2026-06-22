@@ -1,0 +1,38 @@
+name: Lint publish-runner timeout-minutes
+
+# Fail CI when any job running on the self-hosted `publish` runner pool
+# omits `timeout-minutes`. A hung Docker build/push on the small `publish`
+# pool blocks every subsequent image publish and tenant redeploy org-wide
+# (issue #2913).
+
+on:
+  pull_request:
+    paths:
+      - '.gitea/workflows/**'
+      - '.gitea/scripts/lint-publish-timeout.py'
+  push:
+    branches: [main, staging]
+    paths:
+      - '.gitea/workflows/**'
+      - '.gitea/scripts/lint-publish-timeout.py'
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  # bp-exempt: informational lint; not a branch-protection required gate.
+  lint:
+    name: Lint publish-runner timeout-minutes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.11'
+
+      - name: Install PyYAML
+        run: pip install --quiet 'PyYAML>=6.0'
+
+      - name: Lint publish-runner timeout-minutes
+        run: python3 .gitea/scripts/lint-publish-timeout.py

@@ -1,0 +1,42 @@
+{
+  "_comment": "Platform template registry. Repos may be public or platform-private; CI and runtime template-cache refresh clone them with the SSOT-managed template read token, then strip .git metadata before use. Customer/private tenant templates remain outside this platform manifest.",
+  "_pinning_contract": "RFC #2927 — every entry's `ref` is pinned to an immutable commit SHA (not a branch like `main` and not a mutable tag). The previous `ref:main` exposure made provisioning non-reproducible — a merge to ANY template's `main` instantly reached every subsequent provision. Pinning restores: (a) reproducible identity (same SHA → same config.yaml + prompts + skills on every boot); (b) auditable provenance (the SHA is the artifact's content-address); (c) explicit upgrades (bumping a pin is a reviewed PR, not silent). CI test TestManifest_RefPinningCompleteness (workspace-server/internal/handlers/manifest_pinning_test.go) asserts the pinning contract: (1) every ref is a 40-char commit SHA, (2) every pinned SHA is reachable in the named repo, (3) workspace_template entries include config.yaml in the pinned ref's tree. To bump a pin: PR with the new SHA, tests run, driver reviews the diff. PLATFORM-AGENT is now pinned (its config.yaml exists at the pinned SHA): clone-manifest.sh stages it at .tenant-bundle-deps/workspace-configs-templates/platform-agent, which Dockerfile.platform-agent COPYs to bake the concierge identity into the molecule-platform-agent image (publish-workspace-server-image.yml). The concierge (kind=platform) provisions on that image (core#2495).",
+  "version": 1,
+  "plugins": [
+    {"name": "browser-automation", "repo": "molecule-ai/molecule-ai-plugin-browser-automation", "ref": "7a3cea71e684fe87fc2847e2b105301b552a9098"},
+    {"name": "ecc", "repo": "molecule-ai/molecule-ai-plugin-ecc", "ref": "4df7e4c58c3fc645a122cffcfffd590c895a8eb3"},
+    {"name": "gh-identity", "repo": "molecule-ai/molecule-ai-plugin-gh-identity", "ref": "72dafc7756c74e164927150ff65e4c73afac4b17"},
+    {"name": "molecule-audit", "repo": "molecule-ai/molecule-ai-plugin-molecule-audit", "ref": "e8d76dae1ffa517564b790b1a0c3bffcdbe07ae8"},
+    {"name": "molecule-audit-trail", "repo": "molecule-ai/molecule-ai-plugin-molecule-audit-trail", "ref": "33069988d759a56e0f8584c2593369907d340cb5"},
+    {"name": "molecule-careful-bash", "repo": "molecule-ai/molecule-ai-plugin-molecule-careful-bash", "ref": "41f0a48a8825b85bcdd721c509ad0d85d1457ab2"},
+    {"name": "molecule-compliance", "repo": "molecule-ai/molecule-ai-plugin-molecule-compliance", "ref": "eacb510e6caafa4026cc4de384b539743346a866"},
+    {"name": "molecule-dev", "repo": "molecule-ai/molecule-ai-plugin-molecule-dev", "ref": "f3a878f2acdfefd7004f0a274aba84143414fa9f"},
+    {"name": "molecule-freeze-scope", "repo": "molecule-ai/molecule-ai-plugin-molecule-freeze-scope", "ref": "8e7a105734e7a07773d40ce26f78204ae1700b8e"},
+    {"name": "molecule-hitl", "repo": "molecule-ai/molecule-ai-plugin-molecule-hitl", "ref": "e2aec0f9fd18665afdb10b17595909dace40d2ad"},
+    {"name": "molecule-prompt-watchdog", "repo": "molecule-ai/molecule-ai-plugin-molecule-prompt-watchdog", "ref": "15f42b67e36a6f29d34f5e975ae24c1756780897"},
+    {"name": "molecule-security-scan", "repo": "molecule-ai/molecule-ai-plugin-molecule-security-scan", "ref": "0e6eb14b04e44f9b9f1eae849d9c743e700dd905"},
+    {"name": "molecule-session-context", "repo": "molecule-ai/molecule-ai-plugin-molecule-session-context", "ref": "793350865cc531f947f8d796c2595c0726dfa2a2"},
+    {"name": "molecule-skill-code-review", "repo": "molecule-ai/molecule-ai-plugin-molecule-skill-code-review", "ref": "e150abff5c54f19ddf8addbf8e52dc3c56f57097"},
+    {"name": "molecule-skill-cron-learnings", "repo": "molecule-ai/molecule-ai-plugin-molecule-skill-cron-learnings", "ref": "ab262586f94f6aa83ce4cbc5a92736ca8b7fc91d"},
+    {"name": "molecule-skill-cross-vendor-review", "repo": "molecule-ai/molecule-ai-plugin-molecule-skill-cross-vendor-review", "ref": "0054b4968848ca1434cce37c7889065e96f4d313"},
+    {"name": "molecule-skill-llm-judge", "repo": "molecule-ai/molecule-ai-plugin-molecule-skill-llm-judge", "ref": "c66afd939493353bed6bd99ec1a41bcf13623461"},
+    {"name": "molecule-skill-update-docs", "repo": "molecule-ai/molecule-ai-plugin-molecule-skill-update-docs", "ref": "0919b2e3a91197a702a0b4c068330882eb91572f"},
+    {"name": "molecule-workflow-retro", "repo": "molecule-ai/molecule-ai-plugin-molecule-workflow-retro", "ref": "418062bd4416a7785ca1972fed33f685f2dd3114"},
+    {"name": "molecule-workflow-triage", "repo": "molecule-ai/molecule-ai-plugin-molecule-workflow-triage", "ref": "fe63415f42d96e1b8ed3ea3bbef3b27fb31c9734"},
+    {"name": "superpowers", "repo": "molecule-ai/molecule-ai-plugin-superpowers", "ref": "b4e56ff9740099c62b8f8cae6619f66eb55c3201"}
+  ],
+  "workspace_templates": [
+    {"name": "claude-code-default", "repo": "molecule-ai/molecule-ai-workspace-template-claude-code", "ref": "950d39a490c12ba0f355ed8ca03b23fda9884823"},
+    {"name": "hermes", "repo": "molecule-ai/molecule-ai-workspace-template-hermes", "ref": "ca7e1efafb982f6d97a6a188067fd9198b2f18b7"},
+    {"name": "openclaw", "repo": "molecule-ai/molecule-ai-workspace-template-openclaw", "ref": "143e69b56f2530433141f5a87373e8a76578c52e"},
+    {"name": "codex", "repo": "molecule-ai/molecule-ai-workspace-template-codex", "ref": "070447a0afdf66ae6f2bb166ac3e2b2884456951"},
+    {"name": "google-adk", "repo": "molecule-ai/molecule-ai-workspace-template-google-adk", "ref": "3f9fd7ef6ea4dd912bb65446607f3c3c991ea76e"},
+    {"name": "seo-agent", "repo": "molecule-ai/molecule-ai-workspace-template-seo-agent", "ref": "f6a18eb4716a040fb24c5fb79830c50c5368a2da", "runtime": "claude-code"},
+    {"name": "platform-agent", "repo": "molecule-ai/molecule-ai-workspace-template-platform-agent", "ref": "776916df9ada9c03b761f9485b2ed0933a9c9140", "runtime": "claude-code"}
+  ],
+  "org_templates": [
+    {"name": "molecule-dev", "repo": "molecule-ai/molecule-ai-org-template-molecule-dev", "ref": "990d7b23f65dadd7afe05958a77eeb74082b4feb"},
+    {"name": "molecule-worker-gemini", "repo": "molecule-ai/molecule-ai-org-template-molecule-worker-gemini", "ref": "1d1205a8711a3bec8f6a8ddd087fc4ae430e2395"},
+    {"name": "ux-ab-lab", "repo": "molecule-ai/molecule-ai-org-template-ux-ab-lab", "ref": "76fe4821153cc35b3f073f6e4f18f766f5f3a251"}
+  ]
+}

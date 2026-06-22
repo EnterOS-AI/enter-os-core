@@ -1,0 +1,334 @@
+name: E2E Staging Canvas (Playwright)
+
+# Ported from .github/workflows/e2e-staging-canvas.yml on 2026-05-11 per RFC
+# internal#219 §1 sweep. Differences from the GitHub version:
+#   - Dropped `workflow_dispatch.inputs` (Gitea 1.22.6 parser rejects them
+#     per feedback_gitea_workflow_dispatch_inputs_unsupported).
+#   - Dropped `merge_group:` (no Gitea merge queue).
+#   - Dropped `environment:` blocks (Gitea has no environments).
+#   - Workflow-level env.GITHUB_SERVER_URL pinned per
+#     feedback_act_runner_github_server_url.
+#   - `continue-on-error: true` on each job (RFC §1 contract).
+#
+
+# Playwright test suite that provisions a fresh staging org per run and
+# verifies every workspace-panel tab renders REAL content (not just an
+# empty/errored container). Complements e2e-staging-saas.yml (which tests
+# the API shape) by exercising the actual browser + canvas bundle against
+# live staging.
+#
+# PROMOTION-READINESS (toward making this a HARD merge-gate):
+#   NOW RELIABLE (spec hardened — staging-tabs.spec.ts):
+#     - All waits condition-based (toBeVisible/toHaveAttribute/expect.poll);
+#       no fixed waitForTimeout in the spec.
+#     - Tabs asserted on settled REAL content, not "container visible".
+#     - ErrorBoundary + visible error alerts fail non-degraded tabs.
+#     - Tab-list parity-checked vs live DOM; fail-closed on missing tenant.
+#   STILL BLOCKS PROMOTION-TO-REQUIRED (do NOT remove continue-on-error —
+#   CTO-owned, RFC internal#219 §1):
+#     - Infra dependency: real staging EC2 per run (12-20 min cold boot);
+#       AWS/Cloudflare/CP availability would become merge-blockers.
+#     - Shared-zone TLS/DNS/ACME propagation flake surface is upstream of
+#       this repo and outside its control.
+#     - Required-gate correctness needs CP_STAGING_ADMIN_API_TOKEN GUARANTEED
+#       present; today's skip-if-absent (core#2225) is right for non-gating
+#       but would skip-green a required check.
+#     - Single hermes/platform_managed workspace; agent-dependent content
+#       (live chat/traces round-trip) not exercised on staging (#2162).
+#   The full checklist lives at the foot of canvas/e2e/staging-tabs.spec.ts.
+#
+# Triggers: push to main, PR touching canvas sources + this workflow only
+# after the PR enters `merge-queue`, manual dispatch, and scheduled cron to
+# catch browser/runtime drift even when canvas is quiet.
+# Added staging to push/pull_request branches so the auto-promote gate
+# check (--event push --branch staging) can see a completed run for this
+# workflow — mirrors what PR #1891 does for e2e-api.yml.
+
+on:
+  # Trigger model (revised 2026-04-29):
+  #
+  # Always fires on push/pull_request; real work is gated per-step on
+  # `needs.detect-changes.outputs.canvas`. When canvas/ paths haven't
+  # changed, the no-op step alone runs and emits SUCCESS for the
+  # `Canvas tabs E2E` check, satisfying branch protection without
+  # spending CI cycles. See e2e-api.yml for the rationale on why this
+  # is a single job rather than two-jobs-sharing-name.
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Nightly at 08:00 UTC — catches Chrome / Playwright / Next.js
+    # release-note-shaped regressions that don't ride in with a PR.
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+concurrency:
+  # Per-SHA grouping (changed 2026-04-28 from a single global group). The
+  # global group made auto-promote-staging brittle: when a staging push
+  # queued behind an in-flight run and a third entrant (a PR run, a
+  # follow-on push) entered the group, the staging push got cancelled —
+  # leaving auto-promote-staging looking at `completed/cancelled` for a
+  # required gate and refusing to advance main. Observed 2026-04-28
+  # 23:51-23:53 on staging tip 3f99fede.
+  #
+  # The original intent of the global group was to throttle parallel
+  # E2E provisions (each spins a fresh EC2). At our scale that throttle
+  # isn't worth the correctness cost — fresh-org-per-run isolates the
+  # state, and the cost of two parallel runs (~$0.001/min × 10min × 2)
+  # is rounding error vs. the cost of a stuck pipeline.
+  #
+  # Per-SHA still dedupes accidental double-triggers for the SAME SHA.
+  # It does NOT cancel obsolete-PR-version runs on force-push; that
+  # wasted CI is acceptable given the alternative is losing staging-tip
+  # data that auto-promote-staging needs.
+  group: e2e-staging-canvas-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#2654: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true
+    outputs:
+      canvas: ${{ steps.decide.outputs.canvas }}
+      debug: ${{ steps.decide.outputs.debug }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - id: decide
+        env:
+          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QUEUE_LABEL: merge-queue
+        # Inline replacement for dorny/paths-filter — see e2e-api.yml.
+        # Cron and manual triggers always run real work (no diff context).
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "canvas=true" >> "$GITHUB_OUTPUT"
+            echo "debug=manual-trigger event=${{ github.event_name }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          BASE="${GITHUB_BASE_REF:-${{ github.event.before }}}"
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ -n "${{ github.event.pull_request.base.sha }}" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          fi
+          if [ -z "$BASE" ] || echo "$BASE" | grep -qE '^0+$'; then
+            echo "canvas=true" >> "$GITHUB_OUTPUT"
+            echo "debug=new-branch-fallback base=$BASE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! git cat-file -e "$BASE" 2>/dev/null; then
+            git fetch --depth=1 origin "$BASE" 2>/dev/null || true
+          fi
+          if ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "canvas=true" >> "$GITHUB_OUTPUT"
+            echo "debug=base-missing-fallback base=$BASE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BASE" HEAD)
+          CHANGED_FLAT=$(echo "$CHANGED" | tr '\n' ',')
+          if ! echo "$CHANGED" | grep -qE '^(canvas/|\.gitea/workflows/e2e-staging-canvas\.yml$)'; then
+            echo "canvas=false" >> "$GITHUB_OUTPUT"
+            echo "debug=no-matching-paths base=$BASE changed=$CHANGED_FLAT" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "canvas=true" >> "$GITHUB_OUTPUT"
+            echo "debug=non-pr-run base=$BASE changed=$CHANGED_FLAT" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          authfile=$(mktemp)
+          chmod 600 "$authfile"
+          printf 'header = "Authorization: token %s"\n' "$GITEA_TOKEN" > "$authfile"
+          labels=$(curl -fsS -K "$authfile" \
+            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels" \
+            | python3 -c 'import json,sys; print("\n".join(label.get("name","") for label in json.load(sys.stdin)))') || {
+            # Labels API unavailable: fail open so the E2E gate runs rather
+            # than silently no-oping a potentially-breaking PR.
+            rm -f "$authfile"
+            echo "canvas=true" >> "$GITHUB_OUTPUT"
+            echo "debug=labels-api-unavailable pr=${{ github.event.pull_request.number }} base=$BASE changed=$CHANGED_FLAT" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          rm -f "$authfile"
+          LABELS_FLAT=$(echo "$labels" | tr '\n' ',')
+          if printf '%s\n' "$labels" | grep -qx "$QUEUE_LABEL"; then
+            echo "canvas=true" >> "$GITHUB_OUTPUT"
+            echo "debug=merge-queue-labeled base=$BASE changed=$CHANGED_FLAT" >> "$GITHUB_OUTPUT"
+          else
+            echo "PR is not in merge-queue; skipping heavy E2E Staging Canvas for normal PR path."
+            echo "canvas=false" >> "$GITHUB_OUTPUT"
+            echo "debug=no-merge-queue-label base=$BASE changed=$CHANGED_FLAT labels=$LABELS_FLAT" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ONE job (no job-level `if:`) that always runs and reports under the
+  # required-check name `Canvas tabs E2E`. Real work is gated per-step on
+  # `needs.detect-changes.outputs.canvas`. See e2e-api.yml for the full
+  # rationale — same path-filter check-name parity issue blocked PR #2264
+  # (staging→main) on 2026-04-29 because branch protection treats matching-
+  # name check runs as a SET, and any SKIPPED member fails the eval.
+  playwright:
+    needs: detect-changes
+    name: Canvas tabs E2E
+    runs-on: ubuntu-latest
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#2654: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true
+    timeout-minutes: 40
+
+    env:
+      CANVAS_E2E_STAGING: '1'
+      MOLECULE_CP_URL: https://staging-api.moleculesai.app
+      # 2026-05-11: secret canonicalised from MOLECULE_STAGING_ADMIN_TOKEN
+      # (dead in org secret store) to CP_STAGING_ADMIN_API_TOKEN per
+      # internal#322 — see this PR for the cross-workflow sweep.
+      MOLECULE_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+
+    defaults:
+      run:
+        working-directory: canvas
+
+    steps:
+      - name: No-op pass (paths filter excluded this commit)
+        if: needs.detect-changes.outputs.canvas != 'true'
+        working-directory: .
+        run: |
+          echo "No canvas / workflow changes — E2E Staging Canvas gate satisfied without running tests."
+          echo "::notice::E2E Staging Canvas no-op pass (paths filter excluded this commit)."
+          echo "::notice::detect-changes debug: ${{ needs.detect-changes.outputs.debug }}"
+
+      - if: needs.detect-changes.outputs.canvas == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Skip-if-absent (core#2225), mirroring the serving-e2e gate's
+      # skip-if-secret-unset contract: a MISSING CI secret is an operator
+      # CONFIG gap, not a code regression, so it must not paint this E2E
+      # red. When CP_STAGING_ADMIN_API_TOKEN is unset we emit a LOUD
+      # ::warning:: + ::notice:: and skip the real provision/test steps (the
+      # job still completes green). When the secret IS present we run the
+      # full suite exactly as before. Operators: set
+      # CP_STAGING_ADMIN_API_TOKEN as a repo/org Actions secret on
+      # molecule-core to actually exercise this E2E.
+      - name: Check admin token (skip-if-absent)
+        id: token_check
+        if: needs.detect-changes.outputs.canvas == 'true'
+        run: |
+          if [ -z "$MOLECULE_ADMIN_TOKEN" ]; then
+            echo "::warning::CP_STAGING_ADMIN_API_TOKEN is not set on this runner — SKIPPING the staging canvas E2E (cannot auth to staging CP). This is an operator config gap, not a code failure; set the secret on molecule-core (repo or org Actions secrets) to run it. See core#2225."
+            echo "::notice::E2E Staging Canvas skipped: CP_STAGING_ADMIN_API_TOKEN absent."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "CP_STAGING_ADMIN_API_TOKEN present ✓ — running staging canvas E2E."
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node
+        if: needs.detect-changes.outputs.canvas == 'true' && steps.token_check.outputs.present == 'true'
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: canvas/package-lock.json
+
+      - name: Install canvas deps
+        if: needs.detect-changes.outputs.canvas == 'true' && steps.token_check.outputs.present == 'true'
+        run: npm ci
+
+      - name: Install Playwright browsers
+        if: needs.detect-changes.outputs.canvas == 'true' && steps.token_check.outputs.present == 'true'
+        timeout-minutes: 10
+        run: |
+          PREBAKED_PLAYWRIGHT=/ms-playwright
+          if [ -d "${PREBAKED_PLAYWRIGHT}" ] && find "${PREBAKED_PLAYWRIGHT}" -maxdepth 3 -type f -name 'chrome' | grep -q .; then
+            echo "Using prebaked Playwright Chromium from ${PREBAKED_PLAYWRIGHT}"
+            echo "PLAYWRIGHT_BROWSERS_PATH=${PREBAKED_PLAYWRIGHT}" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          npx playwright install --with-deps chromium
+
+      - name: Run staging canvas E2E
+        if: needs.detect-changes.outputs.canvas == 'true' && steps.token_check.outputs.present == 'true'
+        run: npx playwright test --config=playwright.staging.config.ts
+
+      - name: Upload Playwright report on failure
+        if: failure() && needs.detect-changes.outputs.canvas == 'true'
+        # Pinned to v3 for Gitea act_runner v0.6 compatibility — v4+ uses
+        # the GHES 3.10+ artifact protocol that Gitea 1.22.x does NOT
+        # implement (see ci.yml upload step for the canonical error
+        # cite). Drop this pin when Gitea ships the v4 protocol.
+        uses: actions/upload-artifact@c6a366c94c3e0affe28c06c8df20a878f24da3cf # v3.2.2
+        with:
+          name: playwright-report-staging
+          path: canvas/playwright-report-staging/
+          retention-days: 14
+
+      - name: Upload screenshots on failure
+        if: failure() && needs.detect-changes.outputs.canvas == 'true'
+        # Pinned to v3 for Gitea act_runner v0.6 compatibility (see above).
+        uses: actions/upload-artifact@c6a366c94c3e0affe28c06c8df20a878f24da3cf # v3.2.2
+        with:
+          name: playwright-screenshots
+          path: canvas/test-results/
+          retention-days: 14
+
+      # Safety-net teardown — fires only when Playwright's globalTeardown
+      # didn't (worker crash, runner cancel). Reads the slug from
+      # canvas/.playwright-staging-state.json (written by staging-setup
+      # as its first action, before any CP call) and deletes only that
+      # slug.
+      #
+      # Earlier versions of this step pattern-swept `e2e-canvas-<today>-*`
+      # orgs to compensate for setup-crash-before-state-file-write. That
+      # over-aggressive cleanup raced concurrent canvas-E2E runs and
+      # poisoned each other's tenants — observed 2026-04-30 when three
+      # real-test runs killed each other mid-test, surfacing as
+      # `getaddrinfo ENOTFOUND` once CP had cleaned up the just-deleted
+      # DNS record. Pattern-sweep removed; setup now writes the state
+      # file before any CP work, so the slug is always recoverable.
+      - name: Teardown safety net
+        if: always() && needs.detect-changes.outputs.canvas == 'true'
+        env:
+          ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+        run: |
+          set +e
+          STATE_FILE=".playwright-staging-state.json"
+          if [ ! -f "$STATE_FILE" ]; then
+            echo "::notice::No state file at canvas/$STATE_FILE — Playwright globalTeardown handled it (or setup never ran)."
+            exit 0
+          fi
+          slug=$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('slug',''))")
+          if [ -z "$slug" ]; then
+            echo "::warning::State file present but slug missing; nothing to clean up."
+            exit 0
+          fi
+          echo "Deleting orphan tenant: $slug"
+          # Verify HTTP 2xx instead of `>/dev/null || true` swallowing
+          # failures. A 5xx or timeout previously looked identical to
+          # success, leaving the tenant alive for up to ~45 min until
+          # sweep-stale-e2e-orgs caught it. Surface failures as
+          # workflow warnings naming the slug. Don't `exit 1` — a single
+          # cleanup miss shouldn't fail-flag the canvas test when the
+          # actual smoke check passed; the sweeper is the safety net.
+          # See molecule-controlplane#420.
+          # Tempfile-routed -w + set +e/-e prevents curl-exit-code
+          # pollution of the captured status (lint-curl-status-capture.yml).
+          set +e
+          curl -sS -o /tmp/canvas-cleanup.out -w "%{http_code}" \
+            -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"confirm\":\"$slug\"}" >/tmp/canvas-cleanup.code
+          set -e
+          code=$(cat /tmp/canvas-cleanup.code 2>/dev/null || echo "000")
+          if [ "$code" = "200" ] || [ "$code" = "204" ]; then
+            echo "[teardown] deleted $slug (HTTP $code)"
+          else
+            echo "::warning::canvas teardown for $slug returned HTTP $code — sweep-stale-e2e-orgs will catch it within ~45 min. Body: $(head -c 300 /tmp/canvas-cleanup.out 2>/dev/null)"
+          fi
+          exit 0

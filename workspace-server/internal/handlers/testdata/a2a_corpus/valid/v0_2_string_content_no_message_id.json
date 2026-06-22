@@ -1,0 +1,14 @@
+{
+  "_comment": "v0.2 without messageId — normalizeA2APayload must add a generated UUID. Some early senders omitted messageId entirely and relied on the platform to generate one.",
+  "_added": "2026-04-30",
+  "_source": "Synthetic, covers the messageId-injection branch",
+  "jsonrpc": "2.0",
+  "method": "message/send",
+  "id": "msg-test-v02-no-id",
+  "params": {
+    "message": {
+      "role": "user",
+      "content": "no message id supplied"
+    }
+  }
+}

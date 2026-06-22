@@ -1,0 +1,25 @@
+{
+  "_comment": "v0.3 multimodal: text Part + file Part. Used by chat-attachment flow (PR #114).",
+  "_added": "2026-04-30",
+  "_source": "Real shape from agent-to-agent file attachment path",
+  "jsonrpc": "2.0",
+  "method": "message/send",
+  "id": "msg-test-v03-file",
+  "params": {
+    "message": {
+      "messageId": "msg-5",
+      "role": "user",
+      "parts": [
+        {"kind": "text", "text": "Please review the attached log."},
+        {
+          "kind": "file",
+          "file": {
+            "name": "incident.log",
+            "mimeType": "text/plain",
+            "uri": "https://staging-api.moleculesai.app/files/abc123"
+          }
+        }
+      ]
+    }
+  }
+}

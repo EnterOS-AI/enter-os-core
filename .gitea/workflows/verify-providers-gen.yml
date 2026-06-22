@@ -1,0 +1,122 @@
+name: verify-providers-gen
+
+# Provider-registry SSOT enforcement gate — molecule-core side (internal#718
+# P2-A, CTO 2026-05-27 "Distribution = SDK via codegen + verify-CI").
+#
+# The canonical schema SSOT is molecule-controlplane
+# internal/providers/providers.yaml. molecule-core carries a SYNCED COPY at
+# workspace-server/internal/providers/providers.yaml (kept in sync by the
+# companion sync-providers-yaml.yml gate), and cmd/gen-providers emits the
+# checked-in Go projection workspace-server/internal/providers/gen/registry_gen.go.
+#
+# This workflow regenerates the artifact into the working tree and fails RED if
+# it differs from what is committed — catching BOTH:
+#   * a providers.yaml (synced-copy) change that wasn't followed by `go generate ./...`, and
+#   * a hand-edit of the generated artifact (it carries a DO NOT EDIT header).
+#
+# It is the molecule-core mirror of molecule-controlplane's verify-providers-gen
+# workflow. Together with sync-providers-yaml (canonical↔synced-copy drift) it
+# closes the codegen-checked-into-each-repo + verify-CI loop the RFC mandates.
+#
+# ENFORCEMENT GATING (deliberate, per dev-SOP "implementation gating"):
+# this is a STANDALONE workflow, NOT a job inside ci.yml, and is NOT yet in any
+# branch-protection status_check_contexts. Rationale (identical to the CP P0
+# rollout):
+#   * It runs + reports RED on every PR/push immediately (visible signal).
+#   * It is intentionally absent from ci.yml's job set so the ci-required-drift
+#     sentinel (jobs ↔ branch-protection ↔ audit-env) does NOT fire on it, and
+#     from branch protection (turning it into a hard merge gate has blast radius
+#     — operator GO required, same pattern as sop-checklist / verify-providers-gen
+#     on controlplane). Promote it into branch protection in a follow-up once
+#     P2 has soaked.
+# Until then it behaves like secret-scan / block-internal-paths: a standalone
+# advisory-to-hard gate the author is expected to keep green.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    # CI-scheduler-overload fix (fix/ci-scheduler-fanout, 2026-06-01):
+    # this gate only verifies that the generated providers artifact is in
+    # sync with the schema SSOT. Its verdict can ONLY change when one of
+    # the codegen inputs/outputs changes, so firing the Go toolchain on
+    # every unrelated PR (docs, canvas, scripts) is pure fan-out cost.
+    # Scoped to the codegen surface. SAFE because this workflow is NOT a
+    # branch-protection status_check_context (see header §ENFORCEMENT
+    # GATING) — lint-required-no-paths only forbids paths filters on
+    # REQUIRED workflows; this is advisory, so a paths filter is allowed.
+    # Mirrors the sibling sync-providers-yaml.yml scoping convention.
+    paths:
+      - 'workspace-server/internal/providers/**'
+      - 'workspace-server/cmd/gen-providers/**'
+      - '.gitea/workflows/verify-providers-gen.yml'
+  push:
+    branches: [main, staging]
+    paths:
+      - 'workspace-server/internal/providers/**'
+      - 'workspace-server/cmd/gen-providers/**'
+      - '.gitea/workflows/verify-providers-gen.yml'
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-providers-gen-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # bp-required: pending #718 — soak-then-promote, not in BP yet.
+  verify:
+    name: Regenerate providers artifact and fail on drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    defaults:
+      run:
+        working-directory: workspace-server
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: 'stable'
+          # cache:false — the self-hosted runner bind-mounts a persistent
+          # GOCACHE/GOMODCACHE (/var/cache/ci-go-{build,mod}); actions/cache is
+          # redundant and corrupts it by untarring over the bind mount ("File
+          # exists" -> "Failed to restore" -> partial cache -> linker/typecheck
+          # errors on heavy jobs, e.g. test -race link "too many errors" and
+          # go-arch-lint "without types"). Fleet sweep after the cp ci.yml find.
+          cache: false
+          cache-dependency-path: workspace-server/go.sum
+
+      - name: Verify generated artifact is in sync with providers.yaml
+        run: |
+          set -euo pipefail
+          # -check regenerates in memory and byte-compares against the
+          # checked-in artifact; exit 1 (RED) on any drift. This is the
+          # single source of the gate's verdict — the same code path
+          # `go test ./cmd/gen-providers` exercises.
+          if ! go run ./cmd/gen-providers -check; then
+            echo "::error::workspace-server/internal/providers/gen/registry_gen.go is stale (drifted from providers.yaml)."
+            echo "Regenerate and commit it (run from repo root):"
+            echo "  make gen          # native (needs a local Go toolchain)"
+            echo "  make gen-docker   # Docker only — no local Go needed"
+            exit 1
+          fi
+
+      - name: Belt-and-braces — regenerate in place and assert clean tree
+        run: |
+          set -euo pipefail
+          # Independent confirmation that does not trust the -check path:
+          # actually write the artifact and assert git sees no change. If
+          # this and the step above ever disagree, the gate is suspect.
+          go generate ./...
+          if ! git diff --quiet -- internal/providers/gen/registry_gen.go; then
+            echo "::error::workspace-server/internal/providers/gen/registry_gen.go drifted from providers.yaml."
+            echo "Regenerate and commit it. No local Go? Use Docker (run from repo root):"
+            echo "  make gen          # native (needs a local Go toolchain)"
+            echo "  make gen-docker   # Docker only — no local Go needed"
+            git --no-pager diff -- internal/providers/gen/registry_gen.go | head -80
+            exit 1
+          fi
+          echo "OK — generated providers artifact is in sync with the schema SSOT."

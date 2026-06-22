@@ -1,0 +1,534 @@
+"use client";
+
+import { useMemo, useState, useCallback, useEffect, useRef } from "react";
+import { api } from "@/lib/api";
+import { useCanvasStore } from "@/store/canvas";
+import { WORKSPACE_KIND } from "@/lib/workspace-kind";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { showToast } from "@/components/Toaster";
+import { statusDotClass } from "@/lib/design-tokens";
+import { KeyboardShortcutsDialog } from "@/components/KeyboardShortcutsDialog";
+
+export function Toolbar() {
+  const nodes = useCanvasStore((s) => s.nodes);
+  const wsStatus = useCanvasStore((s) => s.wsStatus);
+  const showA2AEdges = useCanvasStore((s) => s.showA2AEdges);
+  const setShowA2AEdges = useCanvasStore((s) => s.setShowA2AEdges);
+  const selectedNodeId = useCanvasStore((s) => s.selectedNodeId);
+  const setPanelTab = useCanvasStore((s) => s.setPanelTab);
+  const sidePanelWidth = useCanvasStore((s) => s.sidePanelWidth);
+
+  // Toolbar is fixed + centred on the viewport. When a workspace is
+  // selected the SidePanel (z-50, fixed right-0) opens and covers the
+  // right edge of the viewport — without this adjustment, the right
+  // half of the Toolbar (Audit / Search / Help / Settings) hides
+  // behind the panel. Shifting the toolbar LEFT by half the panel
+  // width re-centres it on the remaining canvas area.
+  const toolbarOffsetStyle = selectedNodeId
+    ? { marginLeft: `-${sidePanelWidth / 2}px` }
+    : undefined;
+
+  const [stopping, setStopping] = useState(false);
+  const [restartingAll, setRestartingAll] = useState(false);
+  const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const helpRef = useRef<HTMLDivElement>(null);
+
+  // Suppress toast on the very first connect at page load; only fire on reconnects.
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    const t = setTimeout(() => { mountedRef.current = true; }, 2000);
+    return () => clearTimeout(t);
+  }, []);
+
+  const prevWsStatus = useRef<string>("connecting");
+  useEffect(() => {
+    if (prevWsStatus.current === "connecting" && wsStatus === "connected") {
+      if (mountedRef.current) {
+        showToast("Live updates restored", "success");
+      }
+    }
+    prevWsStatus.current = wsStatus;
+  }, [wsStatus]);
+
+  const counts = useMemo(() => {
+    // Exclude the org-level platform agent (the concierge) — it's the
+    // undeletable org root surfaced in the shell, not a counted map workspace.
+    const mapNodes = nodes.filter((n) => n.data.kind !== WORKSPACE_KIND.Platform);
+    const c = { total: mapNodes.length, roots: 0, children: 0, online: 0, offline: 0, failed: 0, provisioning: 0, activeTasks: 0 };
+    for (const n of mapNodes) {
+      if (n.data.parentId) c.children++; else c.roots++;
+      const s = n.data.status;
+      if (s === "online") c.online++;
+      else if (s === "offline") c.offline++;
+      else if (s === "failed") c.failed++;
+      else if (s === "provisioning") c.provisioning++;
+      if ((n.data.activeTasks as number) > 0) c.activeTasks++;
+    }
+    return c;
+  }, [nodes]);
+
+  /**
+   * Stop All - task #377 fix.
+   *
+   * BEFORE this PR: directly POSTed `/workspaces/:id/restart`, which tears
+   * the container down and back up. That kills in-flight tool subprocesses
+   * (e.g. `bash -c 'sleep 600'`) but is heavy and discards any in-progress
+   * agent state. It also bypasses the runtime-side fast cancel path (task
+   * #377 PR#40 in template-claude-code) - meaning flipping
+   * `MOLECULE_STOP_PROPAGATE=true` would produce zero canary signal because
+   * nothing ever invokes `executor.cancel()` in production.
+   *
+   * AFTER this PR (two-phase polite cancel):
+   *
+   * 1. POST `tasks/cancel` (A2A JSON-RPC) to each active workspace's
+   *    `/workspaces/:id/a2a` proxy. The platform proxies the envelope to
+   *    the workspace runtime; the a2a-sdk framework dispatches `tasks/cancel`
+   *    to `AgentExecutor.cancel()` (a2a-sdk 1.0.3
+   *    `a2a/compat/v0_3/types.py` line 1125 pins the wire literal as
+   *    `Literal["tasks/cancel"]`; A2A protocol spec section 9.4.5 maps the
+   *    abstract `CancelTask` operation to that wire string). The runtime's
+   *    executor cancel path signals the CLI subprocess group with
+   *    SIGTERM/grace/SIGKILL (template-claude-code PR#40 `stop_propagate.py`).
+   *
+   * 2. Poll the canvas store (the platform pushes `TASK_UPDATED` over WS
+   *    on `active_tasks` changes - `canvas-events.ts` line 400) for up to
+   *    `STOP_ALL_DRAIN_TIMEOUT_MS`. A workspace whose `activeTasks` drops
+   *    to 0 is considered drained and is NOT restarted.
+   *
+   * 3. For any workspace that DID NOT drain inside the timeout - runtime
+   *    is on an old image without the cancel path, or the cancel
+   *    propagation is stuck - fall back to the original heavy
+   *    `/workspaces/:id/restart`. The original behavior is preserved as a
+   *    floor so a stuck workspace still gets stopped; the polite path is
+   *    a fast top-up that lets well-behaved workspaces cancel without
+   *    losing context.
+   *
+   * The polite-cancel envelope mirrors `ScheduleTab.handleRunNow` (line 168)
+   * which is the only other place in canvas that POSTs `/workspaces/:id/a2a`
+   * directly. Method string `tasks/cancel` and empty `params` match the
+   * a2a-sdk shape verified above. The proxy adds `jsonrpc:"2.0"` and `id`
+   * via `normalizeA2APayload` server-side, so the canvas envelope omits them.
+   */
+  const stopAll = useCallback(async () => {
+    setStopping(true);
+    const active = nodes.filter((n) => (n.data.activeTasks as number) > 0);
+    const activeIds = active.map((n) => n.id);
+
+    // Phase 1 - polite cancel on every active workspace in parallel.
+    // Errors are swallowed (same shape as the pre-fix /restart
+    // Promise.all): a 4xx/5xx on tasks/cancel just means we fall through
+    // to /restart for that workspace below.
+    await Promise.all(
+      activeIds.map((id) =>
+        api
+          .post(`/workspaces/${id}/a2a`, {
+            method: "tasks/cancel",
+            params: {},
+          })
+          .catch(() => {})
+      )
+    );
+
+    // Phase 2 - poll the store for activeTasks reaching 0, with a hard
+    // timeout. STOP_ALL_DRAIN_TIMEOUT_MS is sized to cover the runtime's
+    // own SIGTERM-grace (5s in template-claude-code stop_propagate.py
+    // `_SIGTERM_GRACE_S`) plus a small WS round-trip buffer for the
+    // TASK_UPDATED push. STOP_ALL_POLL_INTERVAL_MS keeps the poll cheap
+    // (no animation jitter, no busy-wait).
+    const STOP_ALL_DRAIN_TIMEOUT_MS = 8000;
+    const STOP_ALL_POLL_INTERVAL_MS = 250;
+    const deadline = Date.now() + STOP_ALL_DRAIN_TIMEOUT_MS;
+    let undrained = new Set(activeIds);
+    while (undrained.size > 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, STOP_ALL_POLL_INTERVAL_MS));
+      const fresh = useCanvasStore.getState().nodes;
+      const stillActive = new Set<string>();
+      for (const id of undrained) {
+        const n = fresh.find((x) => x.id === id);
+        // Missing node (workspace deleted mid-cancel) is treated as
+        // drained - there's nothing left to restart and reporting it as
+        // "still running" would be a lie.
+        if (n && (n.data.activeTasks as number) > 0) stillActive.add(id);
+      }
+      undrained = stillActive;
+    }
+
+    // Phase 3 - hard-restart anything that did not drain. This is the
+    // same call shape as the pre-fix Stop All, so behavior is strictly a
+    // superset: undrained workspaces still get the heavy stop, drained
+    // ones are spared.
+    if (undrained.size > 0) {
+      await Promise.all(
+        Array.from(undrained).map((id) =>
+          api.post(`/workspaces/${id}/restart`).catch(() => {})
+        )
+      );
+    }
+    setStopping(false);
+  }, [nodes]);
+
+  // Workspaces flagged as needing restart (config edited, global secret changed, etc.)
+  const needsRestartNodes = useMemo(
+    () => nodes.filter((n) => n.data.needsRestart),
+    [nodes]
+  );
+
+  const restartAll = useCallback(async () => {
+    setRestartConfirmOpen(false);
+    setRestartingAll(true);
+    const targets = needsRestartNodes;
+    const results = await Promise.allSettled(
+      targets.map((n) => api.post(`/workspaces/${n.id}/restart`))
+    );
+    const failed = results.filter((r) => r.status === "rejected").length;
+    setRestartingAll(false);
+    // Clear needsRestart on successfully-restarted workspaces
+    const store = useCanvasStore.getState();
+    targets.forEach((n, i) => {
+      if (results[i].status === "fulfilled") {
+        store.updateNodeData(n.id, { needsRestart: false });
+      }
+    });
+    if (failed === 0) {
+      showToast(`Restarted ${targets.length} workspace${targets.length === 1 ? "" : "s"}`, "success");
+    } else if (failed === targets.length) {
+      showToast(`Failed to restart any workspaces`, "error");
+    } else {
+      showToast(`Restarted ${targets.length - failed} of ${targets.length} (${failed} failed)`, "error");
+    }
+  }, [needsRestartNodes]);
+
+  useEffect(() => {
+    const onPointerDown = (event: MouseEvent) => {
+      if (helpRef.current && !helpRef.current.contains(event.target as Node)) {
+        setHelpOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setHelpOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, []);
+
+  // Global ? shortcut opens the shortcuts dialog (mirrors the help button).
+  // Skip when the user is typing in an input so ? in a text field doesn't
+  // steal focus. Also skip when a modal/dialog is already open.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "?") return;
+      const target = e.target as HTMLElement;
+      if (target.closest?.('[data-display-stream="true"]')) return;
+      const tag = target.tagName;
+      const inInput =
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        target.isContentEditable;
+      if (inInput) return;
+      // Don't fire when a modal/dialog is already mounted (canvas modals,
+      // side panel, etc. use z-50 or above).
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      e.preventDefault();
+      setShortcutsOpen(true);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  return (
+    <div
+      className="fixed top-3 z-20 flex items-center gap-3 bg-surface-sunken/80 backdrop-blur-md border border-line/60 rounded-xl px-3 sm:px-4 py-2 shadow-xl shadow-black/20 transition-[margin-left] duration-200 left-2 right-2 translate-x-0 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 overflow-x-auto sm:overflow-visible [&>*]:shrink-0"
+      style={toolbarOffsetStyle}
+    >
+      {/* Logo / Title — title text drops on mobile to reclaim space */}
+      <div className="flex items-center gap-2 sm:pr-3 sm:border-r sm:border-line/60">
+        <img src="/molecule-icon.png" alt="Molecule AI" className="w-5 h-5" />
+        <span className="hidden sm:inline text-[11px] font-semibold text-ink-mid tracking-wide">Molecule AI</span>
+      </div>
+
+      {/* Status pills + workspace total in one segment — previously two
+          separate border-delimited cells; merged to drop a redundant
+          divider and keep the count compact. `whitespace-nowrap` prevents
+          "+ N sub" from wrapping onto a second line when the toolbar
+          gets tight. */}
+      <div className="flex items-center gap-2.5">
+        <StatusPill color={statusDotClass("online")} count={counts.online} label="online" />
+        {counts.offline > 0 && (
+          <StatusPill color={statusDotClass("offline")} count={counts.offline} label="offline" />
+        )}
+        {counts.provisioning > 0 && (
+          <StatusPill color={statusDotClass("provisioning")} count={counts.provisioning} label="starting" />
+        )}
+        {counts.failed > 0 && (
+          <StatusPill color={statusDotClass("failed")} count={counts.failed} label="failed" />
+        )}
+        <span className="hidden sm:inline text-ink-mid" aria-hidden="true">·</span>
+        <span className="hidden sm:inline text-[10px] text-ink-mid whitespace-nowrap">
+          {counts.roots} workspace{counts.roots !== 1 ? "s" : ""}
+          {counts.children > 0 && <span className="text-ink-mid"> + {counts.children} sub</span>}
+        </span>
+      </div>
+
+      {/* WebSocket connection status */}
+      <div className="sm:pl-3 sm:border-l sm:border-line/60">
+        <WsStatusPill status={wsStatus} />
+      </div>
+
+      {/* Stop All — visible when agents have active tasks */}
+      {counts.activeTasks > 0 && (
+        <button
+          type="button"
+          onClick={stopAll}
+          disabled={stopping}
+          className="flex items-center gap-1.5 px-2.5 py-1 bg-bad/10 hover:bg-bad/20 border border-bad/40 rounded-lg transition-colors disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-bad/40"
+          title={`Stop all running tasks (${counts.activeTasks} active)`}
+          aria-label={stopping ? "Stopping all running tasks" : `Stop all running tasks (${counts.activeTasks} active)`}
+        >
+          <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" className="text-bad" aria-hidden="true">
+            <rect x="2" y="2" width="12" height="12" rx="2" />
+          </svg>
+          <span className="text-[10px] text-bad font-medium">
+            {stopping ? "Stopping..." : `Stop All (${counts.activeTasks})`}
+          </span>
+        </button>
+      )}
+
+      {/* Restart All — only shows when workspaces are flagged as needsRestart */}
+      {needsRestartNodes.length > 0 && (
+        <button
+          type="button"
+          onClick={() => setRestartConfirmOpen(true)}
+          disabled={restartingAll}
+          className="flex items-center gap-1.5 px-2.5 py-1 bg-warm/10 hover:bg-warm/20 border border-warm/40 rounded-lg transition-colors disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-warm/40"
+          title={`Restart ${needsRestartNodes.length} workspace${needsRestartNodes.length === 1 ? "" : "s"} that need to pick up config or secret changes`}
+          aria-label={restartingAll ? "Restarting workspaces" : `Restart ${needsRestartNodes.length} workspace${needsRestartNodes.length === 1 ? "" : "s"} pending config or secret changes`}
+        >
+          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" className="text-warm" aria-hidden="true">
+            <path d="M2 8a6 6 0 1 1 1.76 4.24M2 13v-3h3" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <span className="text-[10px] text-warm font-medium">
+            {restartingAll ? "Restarting..." : `Restart Pending (${needsRestartNodes.length})`}
+          </span>
+        </button>
+      )}
+
+      {/* Secondary tools below are icon-only (Figma/Linear pattern) — text
+          label is exposed via title + aria-label for hover/screen-reader
+          users. The primary Stop All / Restart Pending buttons above keep
+          their text because they are urgent + conditional. */}
+
+      {/* A2A topology overlay toggle */}
+      <button
+        type="button"
+        onClick={() => setShowA2AEdges(!showA2AEdges)}
+        aria-pressed={showA2AEdges}
+        aria-label={showA2AEdges ? "Hide A2A edges" : "Show A2A edges"}
+        title={showA2AEdges ? "Hide A2A delegation edges" : "Show A2A delegation edges (last 60 min)"}
+        className={`flex items-center justify-center w-7 h-7 border rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+          showA2AEdges
+            ? "bg-accent/15 hover:bg-accent/25 border-accent/50 text-accent"
+            : "bg-surface-card hover:bg-surface-card/70 border-line text-ink-mid hover:text-ink"
+        }`}
+      >
+        {/* Mesh / network icon */}
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 16 16"
+          fill="none"
+          className="shrink-0"
+          aria-hidden="true"
+        >
+          <circle cx="3" cy="3" r="2" stroke="currentColor" strokeWidth="1.4" />
+          <circle cx="13" cy="3" r="2" stroke="currentColor" strokeWidth="1.4" />
+          <circle cx="8" cy="13" r="2" stroke="currentColor" strokeWidth="1.4" />
+          <path
+            d="M5 3h6M3.7 5l3.3 6M12.3 5l-3.3 6"
+            stroke="currentColor"
+            strokeWidth="1.3"
+            strokeLinecap="round"
+          />
+        </svg>
+      </button>
+
+      {/* Audit trail shortcut — switches selected workspace's panel to the Audit tab */}
+      <button
+        type="button"
+        onClick={() => {
+          if (selectedNodeId) {
+            setPanelTab("audit");
+          } else {
+            showToast("Select a workspace to view its audit trail", "info");
+          }
+        }}
+        aria-label="Open audit trail for selected workspace"
+        title="Audit — view ledger for the selected workspace"
+        className="flex items-center justify-center w-7 h-7 bg-surface-card hover:bg-surface-card/70 border border-line rounded-lg transition-colors text-ink-mid hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+      >
+        {/* Scroll / ledger icon */}
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 16 16"
+          fill="none"
+          className="shrink-0"
+          aria-hidden="true"
+        >
+          <rect x="3" y="2" width="10" height="12" rx="1.5" stroke="currentColor" strokeWidth="1.4" />
+          <path d="M6 5.5h4M6 8h4M6 10.5h2.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+        </svg>
+      </button>
+
+      {/* Search shortcut */}
+      <button
+        type="button"
+        onClick={() => useCanvasStore.getState().setSearchOpen(true)}
+        aria-label="Search workspaces"
+        title="Search (⌘K)"
+        className="flex items-center justify-center w-7 h-7 bg-surface-card hover:bg-surface-card/70 border border-line rounded-lg transition-colors text-ink-mid hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.5" />
+          <path d="M11 11l3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
+      </button>
+
+      {/* Quick help */}
+      <div ref={helpRef} className="relative">
+        <button
+          type="button"
+          onClick={() => setHelpOpen(true)}
+          className="flex items-center justify-center w-7 h-7 bg-surface-card hover:bg-surface-card/70 border border-line rounded-lg transition-colors text-ink-mid hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          aria-expanded={helpOpen}
+          aria-label="Open shortcuts and tips"
+          title="Help — shortcuts & quick start"
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M8 12v.5M6.5 6.3A1.9 1.9 0 1 1 9 8.1c-.7.4-1 .8-1 1.7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.2" />
+          </svg>
+        </button>
+
+        {helpOpen && (
+          <div
+            role="dialog"
+            aria-label="Shortcuts and tips"
+            aria-modal="false"
+            className="absolute right-0 top-full mt-2 w-80 rounded-xl border border-line/60 bg-surface/95 p-3 shadow-2xl shadow-black/50 backdrop-blur-md z-50"
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.24em] text-ink-mid">Shortcuts & tips</span>
+              <button
+                type="button"
+                onClick={() => setHelpOpen(false)}
+                aria-label="Close help dialog"
+                className="text-[10px] text-ink-mid hover:text-ink transition-colors focus:outline-none focus-visible:underline"
+              >
+                Close
+              </button>
+            </div>
+            <div className="space-y-1.5">
+              <HelpRow shortcut="⌘K" text="Search workspaces and jump straight into Details or Chat." />
+              <HelpRow shortcut="Esc" text="Clear selection, close menus, dismiss dialogs." />
+              <HelpRow shortcut="Enter" text="Zoom into selected team and select its first child node." />
+              <HelpRow shortcut="Shift+Enter" text="Select the parent of the selected node." />
+              <HelpRow shortcut="⌘]" text="Bring selected node forward in the z-order." />
+              <HelpRow shortcut="⌘[" text="Send selected node backward in the z-order." />
+              <HelpRow shortcut="Z" text="Zoom canvas to fit a team node and all its sub-workspaces." />
+              <HelpRow shortcut="Palette" text="Open the template palette to deploy a new workspace." />
+              <HelpRow shortcut="Right-click" text="Use node actions for duplicate, export, restart, or delete." />
+              <HelpRow shortcut="Dbl-click" text="On a team node: expand and zoom to show all sub-workspaces." />
+              <HelpRow shortcut="Shift+click" text="Multi-select: add or remove a node from the batch selection." />
+            </div>
+            {/* Link to the full keyboard shortcuts dialog */}
+            <button
+              type="button"
+              onClick={() => { setHelpOpen(false); setShortcutsOpen(true); }}
+              className="mt-3 w-full text-center text-[10px] text-ink-mid hover:text-accent transition-colors focus:outline-none focus-visible:underline"
+            >
+              See all shortcuts →
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Theme picker + settings gear removed from the map toolbar — both now
+          live in the concierge global Settings (left rail) + topbar. */}
+
+      <ConfirmDialog
+        open={restartConfirmOpen}
+        title={`Restart ${needsRestartNodes.length} workspace${needsRestartNodes.length === 1 ? "" : "s"}?`}
+        message="These workspaces have pending config or secret changes that need a restart to take effect."
+        confirmLabel="Restart"
+        confirmVariant="warning"
+        onConfirm={restartAll}
+        onCancel={() => setRestartConfirmOpen(false)}
+      />
+
+      <KeyboardShortcutsDialog
+        open={shortcutsOpen}
+        onClose={() => setShortcutsOpen(false)}
+      />
+    </div>
+  );
+}
+
+function StatusPill({ color, count, label }: { color: string; count: number; label: string }) {
+  return (
+    <div className="flex items-center gap-1.5" title={`${count} ${label}`} aria-label={`${count} ${label}`}>
+      <div className={`w-1.5 h-1.5 rounded-full ${color}`} aria-hidden="true" />
+      <span className="text-[10px] text-ink-mid tabular-nums" aria-hidden="true">{count}</span>
+    </div>
+  );
+}
+
+function WsStatusPill({ status }: { status: "connected" | "connecting" | "disconnected" }) {
+  if (status === "connected") {
+    return (
+      <div className="flex items-center gap-1.5" title="Real-time updates: connected">
+        {/* Decorative dot — not meaningful content for screen readers */}
+        <div className={`w-1.5 h-1.5 rounded-full ${statusDotClass("online")}`} aria-hidden="true" />
+        {/* Status text exposed to screen readers (aria-hidden removed) */}
+        <span className="text-[10px] text-ink-mid">Live</span>
+      </div>
+    );
+  }
+  if (status === "connecting") {
+    return (
+      <div className="flex items-center gap-1.5" title="Real-time updates: reconnecting…">
+        {/* Decorative dot — not meaningful content for screen readers */}
+        <div className="w-1.5 h-1.5 rounded-full bg-amber-400 motion-safe:animate-pulse" aria-hidden="true" />
+        {/* Status text exposed to screen readers (aria-hidden removed) */}
+        <span className="text-[10px] text-warm">Reconnecting</span>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-1.5" title="Real-time updates: disconnected">
+      {/* Decorative dot — not meaningful content for screen readers */}
+      <div className={`w-1.5 h-1.5 rounded-full ${statusDotClass("failed")}`} aria-hidden="true" />
+      {/* Status text exposed to screen readers (aria-hidden removed) */}
+      <span className="text-[10px] text-bad">Offline</span>
+    </div>
+  );
+}
+
+function HelpRow({ shortcut, text }: { shortcut: string; text: string }) {
+  return (
+    <div className="flex items-start gap-3 rounded-lg border border-line/70 bg-surface-sunken/45 px-3 py-2">
+      <span className="shrink-0 rounded-md border border-line/60 bg-surface/70 px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.18em] text-ink-mid">
+        {shortcut}
+      </span>
+      <p className="text-[11px] leading-relaxed text-ink-mid">{text}</p>
+    </div>
+  );
+}

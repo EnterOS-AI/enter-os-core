@@ -1,0 +1,40 @@
+# reserved-paths.txt — CTO-reserved architectural surfaces (molecule-core)
+#
+# Precedent: cp#673 (molecule-controlplane workspace-data-persistence, a new
+# subsystem) was author-self-merged by devops-engineer without the CTO sign-off
+# the review process reserves for architectural changes. Code was sound + had
+# independent peer review, so it was kept (accept-and-note, CTO 2026-06-11) —
+# but the reserved-gate bypass is the durable gap this file closes. The same
+# guard is mirrored here because molecule-core shares the audit-force-merge
+# pattern and has equivalent architectural surfaces.
+#
+# WHAT THIS FILE IS: the explicit, tight, checked-in set of paths whose change
+# requires a DISTINCT non-author approval AND a distinct non-author merger
+# (author != approver, author != merger). Read by:
+#   - PREVENTIVE: .gitea/workflows/reserved-path-review.yml (required CI gate).
+#   - DETECTIVE:  .gitea/scripts/audit-force-merge.sh (incident.reserved_self_merge).
+#
+# FORMAT: one gitignore-style pattern per line. Blank + #-comment lines ignored.
+# Trailing "/" = dir prefix; "*" = glob; otherwise exact-or-dir-prefix.
+#
+# KEEP TIGHT. Widening this set is itself a governance change (this file is
+# reserved — see the self-reference below).
+
+# --- Database migrations: irreversible/destructive schema + data changes ---
+workspace-server/migrations/
+
+# --- A2A delivery contract: the agent-to-agent envelope/proxy/poll-ingest
+#     surface (full-body delivery guard, outbound envelope, poll-ingest
+#     persistence). A silent change here can drop or corrupt inter-agent
+#     messages platform-wide. ---
+workspace-server/internal/handlers/a2a_proxy.go
+workspace-server/internal/handlers/a2a_proxy_helpers.go
+
+# --- Branch-protection / CI + SOP-gate config: the merge gate itself. A change
+#     here can disable every OTHER gate, so it must never self-merge. ---
+.gitea/workflows/
+.gitea/scripts/
+.gitea/reserved-paths.txt
+
+# --- RFC-governed design dirs: architectural decisions of record. ---
+docs/design/

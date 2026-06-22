@@ -1,0 +1,489 @@
+import { useCanvasStore } from "./canvas";
+import { deriveWsBaseUrl } from "@/lib/ws-url";
+import { emitSocketEvent } from "./socket-events";
+
+// If explicit WS_URL is set, use it as-is (may include custom path).
+// Otherwise derive base + append /ws.
+export const WS_URL = process.env.NEXT_PUBLIC_WS_URL || (deriveWsBaseUrl() + "/ws");
+
+export interface WSMessage {
+  event: string;
+  workspace_id: string;
+  timestamp: string;
+  payload: Record<string, unknown>;
+}
+
+/** Window during which a freshly-completed rehydrate is reused
+ *  instead of firing a new GET. Picked to absorb the connect→health-
+ *  check sequence (rehydrate runs once on onopen, then the first
+ *  health-check tick fires immediately after — both should share the
+ *  same fetch) without holding back legitimately-spaced rehydrates
+ *  triggered by genuine WS silence later. */
+const REHYDRATE_DEDUP_WINDOW_MS = 1_500;
+
+/** Pure dedup gate for rehydrate(). Tracks two states:
+ *
+ *    - in-flight (between beginFetch and completeFetch): every
+ *      shouldSkip returns true.
+ *    - post-completion window (now < completedAt + windowMs):
+ *      shouldSkip returns true.
+ *
+ *  Extracted from ReconnectingSocket so the gate is unit-testable
+ *  without mocking dynamic imports or fake timers. The class itself
+ *  is stateful but tiny — instances are not shared across sockets. */
+export class RehydrateDedup {
+  private inFlight = false;
+  // -Infinity so the very first shouldSkip(now) call always passes
+  // (now - (-Infinity) > windowMs). Initializing to 0 would false-
+  // trip on test runs where now is also 0 (vi.useFakeTimers default
+  // clock) AND on real runs in the first 1.5s after epoch on
+  // clock-skewed systems.
+  private completedAt = Number.NEGATIVE_INFINITY;
+  constructor(private readonly windowMs: number) {}
+
+  shouldSkip(now: number): boolean {
+    if (this.inFlight) return true;
+    if (now - this.completedAt < this.windowMs) return true;
+    return false;
+  }
+
+  beginFetch(): void {
+    this.inFlight = true;
+  }
+
+  completeFetch(now: number = Date.now()): void {
+    this.inFlight = false;
+    this.completedAt = now;
+  }
+}
+
+/** Cadence for the HTTP fallback rehydrate that runs while the WS is
+ *  in connecting/disconnected limbo. 10s is short enough that the user
+ *  sees STARTING → ONLINE within one tick after the platform finishes
+ *  provisioning, but long enough to not pound /workspaces if the
+ *  network truly is down. The dedup gate inside rehydrate() collapses
+ *  this against the post-onopen rehydrate, so reconnect doesn't pay
+ *  for a duplicate fetch. */
+export const FALLBACK_POLL_MS = 10_000;
+
+/** Maximum time to wait for a WebSocket handshake before giving up and
+ *  scheduling a reconnect. Without this the browser can leave a socket in
+ *  CONNECTING for ~75s (Chrome SYN-SENT behavior), leaving the UI silently
+ *  stuck. The fallback poll keeps /workspaces fresh in parallel. */
+const CONNECT_TIMEOUT_MS = 10_000;
+
+class ReconnectingSocket {
+  private ws: WebSocket | null = null;
+  private attempt = 0;
+  private url: string;
+  private lastEventTime = 0;
+  private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
+  // Polls /workspaces while the WS is unhealthy so the canvas reflects
+  // truth even when realtime events aren't arriving. Without this the
+  // store can stay frozen for minutes — e.g. workspaces transition
+  // STARTING → ONLINE on the platform but the canvas keeps showing
+  // STARTING until the WS finally reconnects, triggering false
+  // "Provisioning Timeout" banners on already-online workspaces.
+  private fallbackPollTimer: ReturnType<typeof setInterval> | null = null;
+  // disposed signals that disconnect() has been called. Any in-flight
+  // reconnect / handshake must abort early rather than attach to a
+  // socket the caller no longer owns — otherwise React StrictMode's
+  // effect double-invoke (and any future intentional disconnect)
+  // leaves a zombie WebSocket alive forever.
+  private disposed = false;
+  // In-flight singleton + dedup window for rehydrate. Two reasons to
+  // collapse rapid calls:
+  //   1. connect.onopen fires rehydrate immediately, and the very next
+  //      health-check tick may fire it again before the first GET
+  //      returns — wasted round trip + rebuild churn that resets the
+  //      mid-flight UI state (auto-rescue heuristics, grow passes).
+  //   2. Future call sites (a manual "Refresh" button, post-import
+  //      hydrate, error-recovery rehydrate) might pile up.
+  // Keeping rehydrate idempotent at the call-site level means each
+  // caller can fire-and-forget without coordinating.
+  private rehydrateInFlight: Promise<void> | null = null;
+  private rehydrateDedup = new RehydrateDedup(REHYDRATE_DEDUP_WINDOW_MS);
+
+  constructor(url: string) {
+    this.url = url;
+  }
+
+  connect() {
+    if (this.disposed) return;
+    useCanvasStore.getState().setWsStatus("connecting");
+    // Start the HTTP fallback poll up-front, not just on onclose. Two
+    // scenarios this guards against:
+    //   1. The very first connect attempt — onclose hasn't fired yet
+    //      because we never had a successful onopen.
+    //   2. A failed handshake where the browser takes tens of seconds
+    //      to surface as onclose (Chrome can hold a SYN-SENT WebSocket
+    //      open for ~75s before giving up).
+    // Idempotent — startFallbackPoll early-returns if a timer is
+    // already running, so calling it from both places is cheap.
+    this.startFallbackPoll();
+    const ws = new WebSocket(this.url);
+    this.ws = ws;
+    this.startConnectTimeout(ws);
+
+    ws.onopen = () => {
+      if (this.disposed || this.ws !== ws) {
+        // Late-open on an abandoned socket. Close it cleanly; the
+        // caller already moved on.
+        try { ws.close(); } catch { /* noop */ }
+        return;
+      }
+      this.clearConnectTimeout();
+      this.attempt = 0;
+      this.lastEventTime = Date.now();
+      useCanvasStore.getState().setWsStatus("connected");
+      this.stopFallbackPoll();
+      this.rehydrate();
+      this.startHealthCheck();
+    };
+
+    ws.onmessage = (event) => {
+      if (this.disposed || this.ws !== ws) return;
+      this.lastEventTime = Date.now();
+      try {
+        const msg: WSMessage = JSON.parse(event.data);
+        useCanvasStore.getState().applyEvent(msg);
+        // Fan out to component-level subscribers so panels (Agent
+        // Comms, MyChat activity feed) don't have to open their own
+        // raw WebSocket — that pattern silently dropped events on
+        // any reconnect because the per-component sockets had no
+        // onclose / no backoff. See store/socket-events.ts.
+        emitSocketEvent(msg);
+      } catch {
+        // Malformed WS message — skip silently
+      }
+    };
+
+    ws.onclose = () => {
+      // Fired on intentional close (disposed) OR server/network drop.
+      // Only schedule a reconnect when the socket is still live AND
+      // corresponds to the WS we just tore down (prevents a stale
+      // onclose from a zombie socket from re-arming the loop).
+      if (this.disposed || this.ws !== ws) return;
+      this.clearConnectTimeout();
+      this.stopHealthCheck();
+      useCanvasStore.getState().setWsStatus("connecting");
+      this.startFallbackPoll();
+      this.scheduleReconnect();
+    };
+
+    ws.onerror = () => {
+      // Suppressed — onclose handles reconnection. onerror fires before onclose
+      // and the Event object doesn't contain useful info (serializes to {}).
+    };
+  }
+
+  /** Periodically re-fetch state in case WebSocket events were missed (e.g. agent
+   *  status changed while the socket stayed open but no event was emitted). */
+  private startHealthCheck() {
+    this.stopHealthCheck();
+    this.healthCheckTimer = setInterval(() => {
+      const silenceSec = (Date.now() - this.lastEventTime) / 1000;
+      // If no events for 30s, re-hydrate to catch missed status changes
+      if (silenceSec > 30) {
+        this.rehydrate();
+        this.lastEventTime = Date.now(); // prevent rapid re-fetches
+      }
+    }, 30_000);
+  }
+
+  private stopHealthCheck() {
+    if (this.healthCheckTimer) {
+      clearInterval(this.healthCheckTimer);
+      this.healthCheckTimer = null;
+    }
+  }
+
+  private startConnectTimeout(ws: WebSocket) {
+    this.clearConnectTimeout();
+    this.connectTimeoutTimer = setTimeout(() => {
+      this.handleConnectTimeout(ws);
+    }, CONNECT_TIMEOUT_MS);
+  }
+
+  private clearConnectTimeout() {
+    if (this.connectTimeoutTimer) {
+      clearTimeout(this.connectTimeoutTimer);
+      this.connectTimeoutTimer = null;
+    }
+  }
+
+  private handleConnectTimeout(ws: WebSocket) {
+    if (this.disposed || this.ws !== ws) return;
+    // Abandon this socket before closing it so the real onclose doesn't
+    // double-schedule a reconnect.
+    this.ws = null;
+    try { ws.close(); } catch { /* noop */ }
+    useCanvasStore.getState().setWsStatus("connecting");
+    this.startFallbackPoll();
+    this.scheduleReconnect();
+  }
+
+  private scheduleReconnect() {
+    const delay = Math.min(1000 * 2 ** this.attempt, 30000);
+    this.attempt++;
+    this.reconnectTimer = setTimeout(() => this.connect(), delay);
+  }
+
+  /** While the WS is in connecting/disconnected limbo, poll /workspaces
+   *  so the store stays fresh. The reconnect attempts continue in
+   *  parallel; whichever recovers first wins. rehydrate()'s own dedup
+   *  gate prevents this from racing with the open-time rehydrate. */
+  private startFallbackPoll() {
+    if (this.fallbackPollTimer) return;
+    this.fallbackPollTimer = setInterval(() => {
+      if (this.disposed) {
+        this.stopFallbackPoll();
+        return;
+      }
+      void this.rehydrate();
+    }, FALLBACK_POLL_MS);
+  }
+
+  private stopFallbackPoll() {
+    if (this.fallbackPollTimer) {
+      clearInterval(this.fallbackPollTimer);
+      this.fallbackPollTimer = null;
+    }
+  }
+
+  private rehydrate(): Promise<void> {
+    // Reuse an in-flight fetch — a second caller during the GET
+    // shouldn't kick off a parallel one.
+    if (this.rehydrateInFlight) return this.rehydrateInFlight;
+    if (this.rehydrateDedup.shouldSkip(Date.now())) {
+      return Promise.resolve();
+    }
+
+    // beginFetch lives INSIDE the IIFE's try so any future code added
+    // between gate-check and IIFE-construction can't throw and leave
+    // the gate stuck at inFlight=true forever. Today there's nothing
+    // that can throw here, but the cost of being defensive is one
+    // extra microtask of "in flight" status — negligible.
+    const promise = (async () => {
+      this.rehydrateDedup.beginFetch();
+      try {
+        const { api } = await import("@/lib/api");
+        const workspaces = await api.get<WorkspaceData[]>("/workspaces");
+        if (this.disposed) return;
+        useCanvasStore.getState().hydrate(workspaces);
+      } catch {
+        // Rehydration failed — will retry on next health check cycle.
+      } finally {
+        this.rehydrateDedup.completeFetch(Date.now());
+        this.rehydrateInFlight = null;
+      }
+    })();
+    this.rehydrateInFlight = promise;
+    return promise;
+  }
+
+  disconnect() {
+    this.disposed = true;
+    this.stopHealthCheck();
+    this.stopFallbackPoll();
+    this.clearConnectTimeout();
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.ws) {
+      // Detach listeners before close() so we don't route the close
+      // event through our onclose → scheduleReconnect path. Belt +
+      // braces on top of the `disposed` check, because StrictMode
+      // cycles through so fast that an attached onclose can fire
+      // after disposed=true is set but before this assignment runs.
+      this.ws.onopen = null;
+      this.ws.onmessage = null;
+      this.ws.onclose = null;
+      this.ws.onerror = null;
+      try { this.ws.close(); } catch { /* noop */ }
+      this.ws = null;
+    }
+    useCanvasStore.getState().setWsStatus("disconnected");
+  }
+
+  /** Force a reconnect attempt now, skipping the backoff window.
+   *  Used by the visibilitychange / pageshow handler: when a mobile
+   *  browser backgrounds the tab, the OS silently kills the WebSocket
+   *  but the in-page onclose either fires very late or never fires at
+   *  all (iOS Safari, Chrome on Android in deep-sleep). Once the user
+   *  brings the tab back, the canvas needs to reconnect within human
+   *  perception — not on whatever backoff delay was last scheduled,
+   *  which can be up to 30s. (#223 / #228)
+   *
+   *  Idempotent: if the socket is already OPEN we leave it alone; the
+   *  WebSocket is still healthy and a reconnect would just churn. */
+  wake() {
+    if (this.disposed) return;
+    // OPEN === 1. Use the numeric literal so we don't have to import
+    // WebSocket type values; the runtime constant is well-defined.
+    if (this.ws && this.ws.readyState === 1) {
+      // Healthy. Run a rehydrate to catch any events we may have missed
+      // while the tab was backgrounded — the OS does deliver some
+      // packets late, but it can also drop them, and the dedup gate
+      // collapses this with any subsequent health-check rehydrate.
+      void this.rehydrate();
+      return;
+    }
+    // CONNECTING === 0 means a handshake is already in flight. Don't
+    // pile another one on; the existing attempt or its onclose-driven
+    // reconnect will resolve.
+    if (this.ws && this.ws.readyState === 0) return;
+    // Otherwise (CLOSING, CLOSED, or null) we're in limbo. Cancel any
+    // pending backoff and reconnect now.
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    // Reset attempt counter so the *next* failure (if any) starts from
+    // a short delay again — we just had a real user interaction, not
+    // an unattended-tab failure cascade.
+    this.attempt = 0;
+    this.connect();
+  }
+}
+
+export interface WorkspaceData {
+  id: string;
+  name: string;
+  role: string;
+  tier: number;
+  status: string;
+  agent_card: Record<string, unknown> | null;
+  url: string;
+  parent_id: string | null;
+  /** Workspace kind: 'platform' = the org-level concierge (the undeletable org
+   *  root, hidden from the map graph); 'workspace' = an ordinary agent. Absent
+   *  on older ws-server builds that predate the kind column — treat as
+   *  'workspace'. (migration 20260606000000_workspaces_kind) */
+  kind?: string;
+  active_tasks: number;
+  max_concurrent_tasks?: number | null;
+  last_error_rate: number;
+  last_sample_error: string;
+  uptime_seconds: number;
+  current_task: string;
+  runtime: string;
+  workspace_access?: string | null;
+  x: number;
+  y: number;
+  collapsed: boolean;
+  /** USD spend ceiling set by the user; null = unlimited. Added by issue #541. */
+  budget_limit: number | null;
+  /** Cumulative USD spend for this workspace. Present when the platform tracks spend. */
+  budget_used?: number | null;
+  /** Server-declared provisioning-timeout override in milliseconds (#2054).
+   *  Sourced from the workspace's template manifest at provision time —
+   *  lets a slow runtime declare its cold-boot expectation without a
+   *  canvas release. Falls through to the per-runtime profile in
+   *  `@/lib/runtimeProfiles` when absent (the default behavior for any
+   *  template that hasn't yet declared the field). */
+  provision_timeout_ms?: number | null;
+  /** Workspace ability flags (migration 20260514). */
+  broadcast_enabled?: boolean;
+  talk_to_user_enabled?: boolean;
+  /** A2A delivery mode for inbound messages — "push" (default, synchronous
+   *  HTTP dispatch to `url`) or "poll" (queued to activity_logs, agent
+   *  picks up via `wait_for_message` / GET /activity?since_id=). Surfaced
+   *  in the GET /workspaces response since #2339 PR 1; older platform
+   *  versions return it absent so the canvas treats absent as "push" (the
+   *  documented default in `lookupDeliveryMode`). Used by the chat UI to
+   *  render an "agent will pick up on next poll" indicator instead of
+   *  collapsing the spinner the moment the synchronous queued-200 returns
+   *  (task #227 — external/MCP workspaces had no progress UX). */
+  delivery_mode?: string;
+  compute?: WorkspaceCompute;
+}
+
+export interface WorkspaceCompute {
+  instance_type?: string;
+  volume?: {
+    root_gb?: number;
+  };
+  display?: {
+    mode?: string;
+    protocol?: string;
+    width?: number;
+    height?: number;
+  };
+  // internal#734: per-workspace durable-data choice. "persist" | "ephemeral" |
+  // undefined (auto). Controls whether the data volume survives recreate.
+  data_persistence?: string;
+  // Cloud/compute backend for this workspace box (multi-provider, per-workspace):
+  // "aws" (default EC2) | "gcp" | "hetzner". Distinct from the LLM/model provider.
+  // Set at create time; routed by CP to the matching WorkspaceProvisioner. A
+  // workspace whose provider differs from its tenant's cloud is reached over a
+  // per-workspace Cloudflare tunnel (runtime#95).
+  provider?: string;
+}
+
+let socket: ReconnectingSocket | null = null;
+
+/** visibilitychange / pageshow handler. Mobile browsers (iOS Safari,
+ *  Chrome on Android in deep-sleep) silently drop the WebSocket when
+ *  the tab is backgrounded — the in-page `onclose` fires very late or
+ *  never. Without this listener, the canvas appears frozen after the
+ *  user backgrounds the PWA and returns to it: status events, agent
+ *  messages, and cross-device chat broadcast don't arrive until a
+ *  manual refresh (#223 / #228).
+ *
+ *  Both events are wired: `visibilitychange` covers tab-switch on a
+ *  live page; `pageshow` covers Safari's bfcache restore, where the
+ *  page comes back from cache without firing visibilitychange. */
+function onPageWake() {
+  // document is undefined in SSR; the listener never installs there,
+  // but defensively guard anyway in case this code is run via a test
+  // harness that doesn't shim it.
+  if (typeof document !== "undefined" && document.hidden) return;
+  socket?.wake();
+}
+let visibilityHandlerInstalled = false;
+function installVisibilityHandler() {
+  if (visibilityHandlerInstalled) return;
+  if (typeof document === "undefined" || typeof window === "undefined") return;
+  document.addEventListener("visibilitychange", onPageWake);
+  // `pageshow` with `event.persisted === true` is the bfcache restore
+  // signal — relevant on iOS Safari. We don't need to inspect
+  // `persisted` because waking an OPEN socket is a no-op.
+  window.addEventListener("pageshow", onPageWake);
+  visibilityHandlerInstalled = true;
+}
+function uninstallVisibilityHandler() {
+  if (!visibilityHandlerInstalled) return;
+  if (typeof document === "undefined" || typeof window === "undefined") return;
+  document.removeEventListener("visibilitychange", onPageWake);
+  window.removeEventListener("pageshow", onPageWake);
+  visibilityHandlerInstalled = false;
+}
+
+export function connectSocket() {
+  if (!socket) {
+    socket = new ReconnectingSocket(WS_URL);
+  }
+  socket.connect();
+  installVisibilityHandler();
+}
+
+export function disconnectSocket() {
+  if (socket) {
+    socket.disconnect();
+    socket = null;
+  }
+  uninstallVisibilityHandler();
+}
+
+/** Manually trigger the visibility-wake path. Exported so the test suite
+ *  can exercise `ReconnectingSocket.wake()` without depending on a
+ *  jsdom DOM (the rest of this file's tests run under the node env).
+ *  Real-world callers don't need this — the visibility/pageshow listener
+ *  drives it. */
+export function wakeSocket() {
+  socket?.wake();
+}

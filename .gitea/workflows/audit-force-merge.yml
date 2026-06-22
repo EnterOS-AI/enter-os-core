@@ -1,0 +1,77 @@
+# audit-force-merge — emit `incident.force_merge` to runner stdout when
+# a PR is merged with required-status-checks not green. ALSO emits
+# `incident.reserved_self_merge` when a PR that touched a CTO-reserved path
+# (.gitea/reserved-paths.txt) was merged by its own author (author==merger) —
+# the DETECTIVE backstop for the reserved-path-review preventive gate, since a
+# force-merge bypasses any pre-merge gate (cp#673 precedent). Vector picks the
+# JSON line off docker_logs and ships to Loki on molecule-canonical-obs (per
+# `reference_obs_stack_phase1`); query as:
+#
+#   {host="operator"} |= "event_type" |= "incident.force_merge" | json
+#   {host="operator"} |= "event_type" |= "incident.reserved_self_merge" | json
+#
+# Closes the §SOP-6 audit gap (the doc says force-merges write to
+# `structure_events`, but that table lives in the platform DB, not
+# Gitea-side; Loki is the practical equivalent for Gitea Actions
+# events). When the credential / observability stack converges later,
+# this can sync into structure_events from Loki via a backfill job —
+# the structured JSON shape is forward-compatible.
+#
+# Logic in `.gitea/scripts/audit-force-merge.sh` per the same script-
+# extract pattern as sop-checklist.
+
+name: audit-force-merge
+
+# pull_request_target loads from the base branch — same security model
+# as sop-checklist. Without this, an attacker could rewrite the
+# workflow on a PR and skip the audit emission for their own
+# force-merge. See `.gitea/workflows/sop-checklist.yml` for the full
+# rationale.
+on:
+  pull_request_target:
+    types: [closed]
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    # Skip when PR is closed without merge — saves a runner.
+    if: github.event.pull_request.merged == true
+    steps:
+      - name: Check out base branch (for the script)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+      - name: Detect force-merge + emit audit event
+        env:
+          # Same org-level secret the sop-checklist workflow uses.
+          GITEA_TOKEN: ${{ secrets.SOP_CHECKLIST_GATE_TOKEN }}
+          GITEA_HOST: git.moleculesai.app
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          # Required-status-check contexts to evaluate at merge time.
+          # Branch-aware JSON dict: keys are protected branch names,
+          # values are arrays of context names that branch protection
+          # requires for that branch. Mirror this against branch
+          # protection (settings → branches → protected branch →
+          # required checks) for each branch listed here.
+          #
+          # Declared here rather than fetched from /branch_protections
+          # because that endpoint requires admin write — sop-checklist-bot is
+          # read-only by design (least-privilege).
+          REQUIRED_CHECKS_JSON: |
+            {
+              "main": [
+                "CI / all-required (pull_request)",
+                "E2E API Smoke Test / E2E API Smoke Test (pull_request)",
+                "Handlers Postgres Integration / Handlers Postgres Integration (pull_request)",
+                "Secret scan / Scan diff for credential-shaped strings (pull_request)"
+              ],
+              "staging": [
+                "CI / all-required (pull_request)",
+                "sop-checklist / all-items-acked (pull_request)"
+              ]
+            }
+        run: bash .gitea/scripts/audit-force-merge.sh

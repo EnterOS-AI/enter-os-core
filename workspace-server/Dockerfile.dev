@@ -1,0 +1,44 @@
+# Dockerfile.dev — local-development image with air-driven live reload.
+#
+# Selected by docker-compose.dev.yml (overlay over docker-compose.yml).
+# Production stays on workspace-server/Dockerfile (static binary, no air).
+#
+# Workflow:
+#   1. docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#   2. Edit any .go file under workspace-server/
+#   3. air detects, rebuilds, kills old binary, starts new one (~3-5s)
+#   4. No `docker compose up --build` needed
+#
+# Templates + plugins are NOT pre-cloned here — air-mode assumes the
+# developer's filesystem has the workspace-configs-templates/ + plugins/
+# dirs available, mounted at runtime via docker-compose.dev.yml.
+
+FROM golang:1.25-alpine@sha256:c4ea15b4a7912716eb362a022e2b12317762eca387423760bc59c0f9ae69423c
+
+# air + git (for go mod) + ca-certs (for TLS) + tzdata (for time-zone DB)
+# + docker-cli + docker-cli-buildx so the platform binary can shell out to
+# /var/run/docker.sock (bind-mounted from host) for local-build provisioning.
+# docker-cli alone is insufficient: alpine's docker-cli enables BuildKit by
+# default but ships without buildx, producing
+# `ERROR: BuildKit is enabled but the buildx component is missing or broken`
+# on every `docker build`. docker-cli-buildx provides the buildx subcommand.
+RUN apk add --no-cache git ca-certificates tzdata wget docker-cli docker-cli-buildx \
+ && go install github.com/air-verse/air@latest
+
+WORKDIR /app/workspace-server
+
+# Pre-fetch deps so the first `air` rebuild on a fresh container is fast.
+# These are bind-mount-overridden at runtime, so the COPY here is just
+# to warm the module cache.
+COPY workspace-server/go.mod workspace-server/go.sum ./
+RUN go mod download
+
+# Source is bind-mounted at runtime (see docker-compose.dev.yml volumes
+# block) so the Dockerfile doesn't need to COPY it. air watches the
+# bind-mounted dir for changes.
+
+ENV CGO_ENABLED=0
+ENV GOFLAGS="-buildvcs=false"
+
+# Run air with the .air.toml in the bind-mounted source dir.
+CMD ["air", "-c", ".air.toml"]

@@ -1,0 +1,17 @@
+{
+  "_comment": "content as bool is not a valid type. Same rejection class as integer — pinned separately so the test failure message identifies WHICH wrong type is the regression.",
+  "_added": "2026-04-30",
+  "_source": "Synthetic — type-rejection branch coverage",
+  "_expect_error": "invalid params.message.content type",
+  "_expect_status": 400,
+  "jsonrpc": "2.0",
+  "method": "message/send",
+  "id": "msg-test-invalid-bool",
+  "params": {
+    "message": {
+      "messageId": "msg-bad-3",
+      "role": "user",
+      "content": true
+    }
+  }
+}

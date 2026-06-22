@@ -1,0 +1,18 @@
+{
+  "_comment": "v0.3 with multiple text parts. Used by senders that interleave system + user text or that segment a long input.",
+  "_added": "2026-04-30",
+  "_source": "Synthetic — pins multi-Part list handling",
+  "jsonrpc": "2.0",
+  "method": "message/send",
+  "id": "msg-test-v03-multi",
+  "params": {
+    "message": {
+      "messageId": "msg-4",
+      "role": "user",
+      "parts": [
+        {"kind": "text", "text": "Context: you are a helpful assistant."},
+        {"kind": "text", "text": "Question: what is 2+2?"}
+      ]
+    }
+  }
+}

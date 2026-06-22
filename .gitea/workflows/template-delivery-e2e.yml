@@ -1,0 +1,127 @@
+name: template-delivery-e2e
+
+# RFC #2843 regression gate — provisions a fresh tenant + fresh seo-agent and
+# asserts BOTH delivery channels work end to end. This is the gate that would
+# have caught the 2026-06-15 incident family (#2919 model/identity drop + #32
+# skill drop): nothing else in CI provisions a fresh agent and inspects the
+# DELIVERED /configs.
+#
+# TWO CHANNELS (post-decoupling, RFC #2843 #32):
+#   - TEMPLATE-ASSET channel (provisioning-time): config.yaml + prompts + model.
+#   - DYNAMIC PLUGIN channel (post-online): agent-skills are PLUGINS — the
+#     seo-agent declares seo-all and the post-online reconcile installs it to
+#     /configs/plugins/seo-all/. The e2e asserts the skill arrives via the
+#     PLUGIN channel and NOT the asset channel (negative control).
+#
+# STAGED ROLLOUT (now COMPLETE — this gate is merge-blocking):
+#   Phase 1 (done): advisory — asserted the new two-channel contract.
+#   Phase 2a (done, f6155d68): HARDENED the asset-channel assertions (C
+#                  config.yaml, D prompts) to poll within E2E_ASSET_SETTLE_SECS,
+#                  killing the false stub from a transient /configs read
+#                  (`curl: (28) ... 0 bytes`). Banked a green main run, which
+#                  lint-pre-flip-continue-on-error requires before the flip.
+#   Phase 2b (THIS change, mc#2996): FLIP to merge-blocking —
+#                  • continue-on-error removed → a real delivery regression fails;
+#                  • `on: paths:` removed (required workflows must not be
+#                    path-filtered); path-scoping moved to the detect-changes job
+#                    (profile `template-delivery`) and applied per-step;
+#                  • the emitted context is added to .gitea/required-contexts.txt
+#                    and to branch-protection required_status_checks (as
+#                    "... (pull_request)") so a delivery PR cannot merge unless a
+#                    fresh seo-agent provisions and BOTH channels verify.
+#
+# Cost: provisions ONE throwaway tenant + ONE seo-agent (real EC2), teardown
+# trap deletes the org even on failure. The workflow has NO `on: paths:` filter:
+# a REQUIRED-check workflow must not carry one (lint-required-no-paths.py /
+# feedback_path_filtered_workflow_cant_be_required — a docs-only PR would never
+# emit the context, Gitea reports it `pending`, and the PR wedges forever).
+# Instead the detect-changes job applies the same path-scoping at RUNTIME, and
+# the delivery job's real steps are gated on its output: a non-delivery PR emits
+# SUCCESS cheaply (no provision), while a delivery PR runs the full e2e and
+# BLOCKS on failure. Mirrors the e2e-api / peer-visibility required-gate shape.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: template-delivery-e2e-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  # Runtime path-scoping (replaces the removed `on: paths:`). Mirrors the
+  # e2e-api / peer-visibility detect-changes shape. Outputs `delivery=true`
+  # when the diff touches the delivery surface; the gate job runs the real e2e
+  # only then. bp-exempt: helper job; the REQUIRED context is the `delivery`
+  # job below, not this one.
+  detect-changes:
+    runs-on: ubuntu-latest
+    continue-on-error: false
+    outputs:
+      delivery: ${{ steps.decide.outputs.delivery }}
+      debug: ${{ steps.decide.outputs.debug }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: decide
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          python3 .gitea/scripts/detect-changes.py \
+            --profile template-delivery \
+            --event-name "${{ github.event_name }}" \
+            --pr-base-sha "$PR_BASE_SHA" \
+            --base-ref "$PR_BASE_REF" \
+            --push-before "$PUSH_BEFORE" || {
+            # Script crash → fail OPEN so the gate runs rather than silently
+            # no-oping a potentially-breaking delivery PR.
+            echo "delivery=true" >> "$GITHUB_OUTPUT"
+            echo "debug=detect-script-error event=${{ github.event_name }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          echo "debug=profile=template-delivery event=${{ github.event_name }}" >> "$GITHUB_OUTPUT"
+
+  # ONE job (no job-level `if:`) that ALWAYS runs and reports under the
+  # required-check name. Real work is gated per-step on
+  # `needs.detect-changes.outputs.delivery` — a non-delivery PR runs only the
+  # no-op step and emits SUCCESS (branch-protection-clean; a job-level `if:`
+  # would emit a SKIPPED check run that fails the required-check eval — see
+  # e2e-api.yml's PR#2264 note). A delivery PR runs the full e2e and, with no
+  # continue-on-error, BLOCKS the merge on failure.
+  # bp-required: yes — mc#2996 / RFC#2843 #37: this context is merge-blocking;
+  # branch protection lists "<this> (pull_request)".
+  delivery:
+    needs: detect-changes
+    # No colon in the name — lint-required-context's PyYAML AST parse rejects an
+    # unquoted scalar containing a colon.
+    name: Template-asset delivery (fresh seo-agent — config+prompts via asset channel, seo-all via plugin reconcile)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MOLECULE_CP_URL: ${{ vars.CP_URL || 'https://staging-api.moleculesai.app' }}
+      MOLECULE_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_API_TOKEN }}
+      E2E_EXPECTED_MODEL: moonshot/kimi-k2.6
+    steps:
+      - name: No-op pass (delivery surface unchanged in this diff)
+        if: needs.detect-changes.outputs.delivery != 'true'
+        run: |
+          echo "No delivery-surface changes — gate satisfied without provisioning."
+          echo "::notice::template-delivery-e2e no-op pass (detect-changes: ${{ needs.detect-changes.outputs.debug }})."
+      - if: needs.detect-changes.outputs.delivery == 'true'
+        uses: actions/checkout@v4
+      - name: Verify required secret present
+        if: needs.detect-changes.outputs.delivery == 'true'
+        run: |
+          if [ -z "${MOLECULE_ADMIN_TOKEN:-}" ]; then
+            echo "::error::CP_ADMIN_API_TOKEN secret not set — cannot run delivery e2e"
+            exit 2
+          fi
+      - name: Run template-asset delivery e2e
+        if: needs.detect-changes.outputs.delivery == 'true'
+        run: bash tests/e2e/test_template_delivery_e2e.sh

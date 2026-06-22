@@ -1,0 +1,104 @@
+# main-red-watchdog — hourly sentinel for post-merge CI red on `main`.
+#
+# RFC: hongming "main NEVER goes red" directive, Option C of the four-
+# option ladder (B = auto-revert is explicitly rejected per
+# `feedback_no_such_thing_as_flakes` + `feedback_fix_root_not_symptom`).
+# Tracking issue: molecule-core#420.
+#
+# What it does:
+#   1. GET branches/main → HEAD SHA
+#   2. GET commits/{SHA}/status → combined status
+#   3. If combined is `failure` (or any individual status is `failure`):
+#      open or PATCH an idempotent `[main-red] {repo}: {SHA[:10]}` issue
+#      with each failed context + target_url + description.
+#   4. If combined is `success` and a prior `[main-red] ...` issue exists,
+#      close it with a "main returned to green at SHA ..." comment.
+#   5. Emit a Loki-shaped JSON line via `logger -t main-red-watchdog` for
+#      `reference_obs_stack_phase1` ingestion via Vector.
+#
+# What it does NOT do:
+#   - Auto-revert anything. Option B is rejected by directive.
+#   - Mutate branch protection. (See AGENTS.md boundaries.)
+#   - Fail the workflow on red. The issue IS the alarm — failing the
+#     watchdog would create a silent-loop where a flake in the watchdog
+#     itself hides actual main-red signal. Exit 0 unless api() raises
+#     ApiError (transient Gitea outage → fail loudly per
+#     `feedback_api_helper_must_raise_not_return_dict`).
+#
+# Pattern source: molecule-controlplane `0adf2098`'s ci-required-drift.yml
+# (just merged 2026-05-11). Same shape (cron + dispatch + sidecar Python +
+# idempotent-by-title issue), simpler scope (1 source, not 3).
+
+name: main-red-watchdog
+
+# IMPORTANT — Gitea 1.22.6 parser quirk per
+# `feedback_gitea_workflow_dispatch_inputs_unsupported`: do NOT add an
+# `inputs:` block here. Gitea 1.22.6 rejects the whole workflow as
+# "unknown on type" when `workflow_dispatch.inputs.X` is present. Revisit
+# when Gitea ≥ 1.23 is fleet-wide.
+on:
+  # SCHEDULE RE-ENABLED 2026-05-12 rev3 — interim disable (mc#645) reverted alongside
+  # status-reaper rev3 (widen-window). Job-level timeout-minutes raised 5 → 15 below
+  # to absorb runner-saturation latency without spurious cancels (the original cascade
+  # cause). If runner-saturation root persists, the dedicated-runner-label split
+  # remains the structural next step (tracked separately).
+  schedule:
+    # Hourly at :05 — task spec calls for "off-zero" (`5 * * * *`),
+    # offset from :17 (ci-required-drift) and :00 (peak cron load).
+    - cron: '5 * * * *'
+  workflow_dispatch:
+
+# Read commit status + branch ref + issues; write issues (open/PATCH/close).
+permissions:
+  contents: read
+  issues: write
+
+# Workflow-scoped serialisation — two simultaneous runs would race on the
+# `[main-red] {SHA}` open/PATCH path. Idempotent by title, but parallel
+# POSTs can produce duplicates before the title search dedup wins.
+concurrency:
+  group: main-red-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    # rev3 (2026-05-12, mc#645 revert): raised 5 → 15 to absorb runner-saturation
+    # latency. Original 5min cap was producing 124-style cancels under load,
+    # which fed the very `[main-red]` issues this workflow files (self-poisoning).
+    # 15min is still well below Gitea-default 6h job ceiling; if a real hang
+    # occurs the issue-file path is still the alarm surface.
+    timeout-minutes: 15
+    steps:
+      - name: Check out repo (script lives at .gitea/scripts/)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up Python (stdlib only — no PyYAML needed here)
+        # The script uses stdlib urllib + json. No PyYAML required (CP's
+        # drift detector needs it for AST parsing; we don't). Pin to the
+        # same 3.12 hermetic interpreter CP uses so the test/runtime
+        # versions stay aligned across watchdog suites.
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - name: Run main-red watchdog
+        env:
+          # GITEA_TOKEN reads commit status + writes issues. Falls back
+          # to the auto-injected GITHUB_TOKEN if the org-level secret
+          # isn't set (transitional repos), matching the same pattern
+          # used by deploy-pipeline.yml + ci-required-drift.yml.
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN || secrets.GITHUB_TOKEN }}
+          GITEA_HOST: git.moleculesai.app
+          REPO: ${{ github.repository }}
+          # Branch under watch. `main` per directive; staging not
+          # included here — staging green is a separate gate
+          # (`feedback_staging_e2e_merge_gate`).
+          WATCH_BRANCH: 'main'
+          # Issue label applied on file/open. `ci-bp-drift` exists in the
+          # molecule-core label set (verified 2026-05-11, label id 9).
+          # Rationale for high: main red blocks the promotion train and
+          # poisons every PR's auto-rebase base; treat as a fire even
+          # if intermittent.
+          RED_LABEL: 'ci-bp-drift'
+        run: python3 .gitea/scripts/main-red-watchdog.py

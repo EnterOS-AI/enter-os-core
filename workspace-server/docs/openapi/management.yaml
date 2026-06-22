@@ -1,0 +1,1995 @@
+openapi: 3.1.0
+
+# =============================================================================
+# Molecule Platform — Management API (SSOT)
+#
+# This is the hand-authored, authoritative OpenAPI 3.1 contract for the
+# Molecule platform MANAGEMENT surface. It is the single source of truth from
+# which all management tooling derives: the management MCP server, the
+# management CLI (molecule-cli), and the human-facing API docs (RFC #1706 /
+# the gap closed by PLATFORM-MANAGEMENT-API.md §5c).
+#
+# It deliberately covers TWO services behind ONE spec (see README.md in this
+# directory for the full split):
+#
+#   1. Control plane (CP)  — molecule-controlplane @ api.moleculesai.app.
+#      Owns orgs, members, billing, provisioning, fleet/admin ops.
+#      Routes: /api/v1/* (stable) — the /cp/* mirror is sunset-headed and is
+#      NOT modelled here (identical shapes, RFC #61 Deprecation/Sunset headers).
+#
+#   2. Tenant workspace-server — molecule-core/workspace-server, ONE EC2 per
+#      org @ <slug>.moleculesai.app. Owns workspaces, secrets, templates,
+#      org-tokens, bundles. Reached either directly at the tenant host or via
+#      the CP edge reverse-proxy (subdomain or X-Molecule-Org-Slug routing).
+#
+# The existing swaggo-generated swagger.{json,yaml} in this directory only
+# covers /schedules and is OpenAPI 2.0; this file supersedes it for the
+# management surface. Schedules/agent/registry/a2a (the per-workspace RUNTIME
+# surface) are intentionally out of scope here.
+#
+# Grounding: every path, body and security scheme below was read from the
+# router + handler sources (controlplane internal/router/router.go +
+# internal/handlers/*, workspace-server internal/router/router.go +
+# internal/handlers/*). Where a body field is best-effort it is flagged.
+# =============================================================================
+
+info:
+  title: Molecule Platform Management API
+  version: "1.0.0"
+  description: |
+    Authoritative management contract for the Molecule platform. Two services,
+    two auth stacks, one spec. See `docs/openapi/README.md` for the
+    service-split + per-tier security matrix. MCP and CLI tooling are
+    generated/derived from this document — treat it as SSOT.
+
+    **Security tiers (summary — full matrix in README):**
+    - `workosSession`  — WorkOS AuthKit session cookie (`mcp_session`), + org-membership/ownership checks. CP org/member/billing surface.
+    - `cpAdminBearer`  — `CP_ADMIN_API_TOKEN` operator bearer. CP `/api/v1/admin/*` fleet/tenant/pin/env surface.
+    - `provisionSecret` — CP `PROVISION_SHARED_SECRET` bearer (+ tenant admin_token for deprovision). CP `/api/v1/workspaces/provision|deprovision`.
+    - `orgApiKey`      — tenant Org API Key (`Authorization: Bearer <key>` + `X-Molecule-Org-Id`). Full tenant-admin; CANNOT reach CP.
+    - `workspaceToken` — per-workspace bearer, bound to one workspace id (+ tenant routing header).
+
+    **Guards:** mutating CP admin ops carry confirm/dry-run guards — flagged
+    per-operation. The Org API Key is full-tenant-admin and self-minting
+    (treat as tenant root; no scope-down yet — TODO in `orgtoken`).
+  contact:
+    name: Molecule AI Core Platform
+    url: https://github.com/EnterOS-AI/enter-os-core
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Molecule-AI-Proprietary
+
+servers:
+  - url: https://api.moleculesai.app
+    description: Control plane (CP). Org/member/billing/provisioning/admin surface under /api/v1.
+  - url: https://{slug}.moleculesai.app
+    description: |
+      Tenant workspace-server, one per org. Workspace/secret/template/org-token/
+      bundle surface. Requests may also be sent to the CP host with an
+      X-Molecule-Org-Slug header; the CP edge reverse-proxies to this host.
+    variables:
+      slug:
+        default: agents-team
+        description: Org slug (subdomain segment).
+
+tags:
+  - name: cp-orgs
+    description: "[CP] Organization lifecycle (session-owned)."
+  - name: cp-billing
+    description: "[CP] Billing — invoices, checkout, portal, top-up (session-owned)."
+  - name: cp-admin
+    description: "[CP] Operator admin — org create, tenant teardown, workspace env, ListOrgWorkspaces, pins (admin bearer)."
+  - name: cp-provision
+    description: "[CP] Workspace EC2 provisioning (provision shared-secret)."
+  - name: tenant-workspaces
+    description: "[Tenant] Workspace lifecycle + secrets + budget + billing-mode."
+  - name: tenant-org
+    description: "[Tenant] Org import, templates, Org API Key (org-token) management."
+  - name: tenant-secrets
+    description: "[Tenant] Org-wide (global) secrets."
+  - name: tenant-bundles
+    description: "[Tenant] Bundle export/import."
+
+# -----------------------------------------------------------------------------
+# Security schemes — the five tiers from PLATFORM-MANAGEMENT-API.md §1.
+# Each operation declares the scheme(s) it accepts under its own `security`.
+# -----------------------------------------------------------------------------
+components:
+  securitySchemes:
+    workosSession:
+      type: apiKey
+      in: cookie
+      name: mcp_session
+      description: |
+        WorkOS AuthKit session cookie. Set by the CP /api/v1/auth/callback flow.
+        Handlers additionally enforce org_members ownership/membership, so a
+        generic "logged in" cookie cannot read another org's data. CP org,
+        member, and billing surface only — never authorizes CP admin or the
+        tenant surface.
+    cpAdminBearer:
+      type: http
+      scheme: bearer
+      description: |
+        Operator bearer = the CP `CP_ADMIN_API_TOKEN`. Gates every
+        /api/v1/admin/* route via AdminGate (constant-time compare). Also
+        accepts an admin-allowlisted WorkOS session, but server-to-server
+        callers (CI, ops scripts, the CP-admin MCP) use this bearer. Disabled
+        (routes still mounted, all 401) when the token is unset in prod.
+    provisionSecret:
+      type: http
+      scheme: bearer
+      description: |
+        CP `PROVISION_SHARED_SECRET` bearer. Gates /api/v1/workspaces/provision
+        (constant-time compare). The routes are not mounted at all when the
+        secret is unset (an unauth'd provision endpoint is an unauth RCE).
+        DELETE /workspaces/:id (deprovision) additionally requires a per-tenant
+        admin_token + X-Molecule-Org-Id (issue #118) — see `tenantAdminToken`.
+    tenantAdminToken:
+      type: apiKey
+      in: header
+      name: X-Molecule-Admin-Token
+      description: |
+        Per-tenant admin_token, presented to CP deprovision alongside the
+        provision shared secret so a leaked shared secret can't terminate
+        OTHER tenants' workspaces (issue #118). Carried in the
+        `X-Molecule-Admin-Token` header (NOT Authorization) — the handler
+        (controlplane internal/handlers/workspace_provision.go
+        authenticateTenant) reads this header and derives the org from the
+        token (SELECT org_id FROM org_instances WHERE admin_token = $1), so no
+        X-Molecule-Org-Id is needed on deprovision.
+    orgApiKey:
+      type: http
+      scheme: bearer
+      description: |
+        Tenant Org API Key (dashboard "Org API Keys"; `org_api_tokens` —
+        sha256-hashed, prefixed, revocable, FULL tenant-admin, self-minting).
+        Authorizes the entire tenant-admin surface of its own org via the
+        tenant AdminAuth/WorkspaceAuth gates. Present as `Authorization:
+        Bearer <key>` to the tenant host. MUST be paired with the
+        `orgRoutingHeader` (X-Molecule-Org-Id or X-Molecule-Org-Slug) so the
+        platform edge routes to the correct tenant. CANNOT reach any CP route
+        (org create/delete, billing, members, provisioning all 401/403 it).
+    workspaceToken:
+      type: http
+      scheme: bearer
+      description: |
+        Per-workspace bearer token (`workspace_auth_tokens`), bound to a single
+        workspace id by the tenant WorkspaceAuth middleware — workspace A's
+        token cannot hit workspace B's sub-routes. Sent with the
+        `orgRoutingHeader`. Rejected on admin-list/create/delete routes when an
+        ADMIN_TOKEN is configured (use orgApiKey there).
+    orgRoutingHeaderId:
+      type: apiKey
+      in: header
+      name: X-Molecule-Org-Id
+      description: |
+        Tenant routing + TenantGuard match (org UUID). Required on tenant-host
+        requests so the CP edge / TenantGuard route to and authorize against
+        the correct org. Either this or X-Molecule-Org-Slug must be present.
+    orgRoutingHeaderSlug:
+      type: apiKey
+      in: header
+      name: X-Molecule-Org-Slug
+      description: |
+        Tenant routing header (human-readable slug, e.g. "agents-team").
+        Alternative to X-Molecule-Org-Id; slug is preferred for client code.
+
+  parameters:
+    OrgSlug:
+      name: slug
+      in: path
+      required: true
+      description: Org slug (subdomain segment, ^[a-z][a-z0-9-]{2,31}$).
+      schema:
+        type: string
+        pattern: "^[a-z][a-z0-9-]{2,31}$"
+    WorkspaceId:
+      name: id
+      in: path
+      required: true
+      description: Workspace UUID.
+      schema:
+        type: string
+        format: uuid
+    OrgIdHeader:
+      name: X-Molecule-Org-Id
+      in: header
+      required: false
+      description: Tenant routing/TenantGuard header (org UUID). Send this or X-Molecule-Org-Slug.
+      schema:
+        type: string
+    OrgSlugHeader:
+      name: X-Molecule-Org-Slug
+      in: header
+      required: false
+      description: Tenant routing header (slug). Send this or X-Molecule-Org-Id.
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: Invalid request body or parameters.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Missing or invalid credential for the required tier.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: Authenticated but not authorized (wrong tier, or not a member/owner).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Resource not found (also returned to avoid leaking existence).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: Slug taken / resource already exists.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Human-readable error message.
+      required: [error]
+
+    # ---- CP: orgs ----
+    Organization:
+      type: object
+      description: One paying customer. Slug is immutable after creation.
+      properties:
+        id: { type: string, format: uuid }
+        slug: { type: string }
+        name: { type: string }
+        plan: { type: string }
+        status: { type: string, description: "e.g. active | provisioning | suspended | deleted" }
+        stripe_customer_id: { type: string }
+        credits_balance: { type: integer, format: int64 }
+        plan_monthly_credits: { type: integer, format: int64 }
+        overage_used_credits: { type: integer, format: int64 }
+        overage_cap_credits: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, slug, name, plan, status]
+
+    CreateOrgRequest:
+      type: object
+      description: Session-authed org creation (POST /api/v1/orgs).
+      properties:
+        slug: { type: string, pattern: "^[a-z][a-z0-9-]{2,31}$" }
+        name: { type: string }
+      required: [slug, name]
+
+    AdminCreateOrgRequest:
+      type: object
+      description: |
+        Admin server-to-server org creation. Strict-decoded — unknown fields
+        are a 400 (a stale `is_staging` key would otherwise silently provision
+        a prod org). Skips terms/quota/billing gates.
+      additionalProperties: false
+      properties:
+        slug: { type: string, pattern: "^[a-z][a-z0-9-]{2,31}$" }
+        name: { type: string }
+        owner_user_id:
+          type: string
+          description: Opaque membership owner. Convention "e2e-runner:<slug>" for CI orgs.
+      required: [slug, name, owner_user_id]
+
+    AdminCreateOrgDryRun:
+      type: object
+      description: Response when POST /api/v1/admin/orgs?dry_run=true.
+      properties:
+        dry_run: { type: boolean, const: true }
+        slug: { type: string }
+        name: { type: string }
+        owner_user_id: { type: string }
+
+    AdminTenantTokenResponse:
+      type: object
+      properties:
+        slug: { type: string }
+        admin_token: { type: string, description: "Per-tenant admin token (sensitive)." }
+
+    ProvisionStatus:
+      type: object
+      description: Org provisioning progress (GET /api/v1/orgs/:slug/provision-status).
+      properties:
+        status: { type: string, enum: [provisioning, running, failed] }
+        stage:
+          type: string
+          description: |
+            UI checklist step. `failed` is emitted on a failed/deprovisioning/
+            deprovisioned instance; `ready` on a healthy instance; the rest are
+            the boot-progress stages (controlplane internal/handlers/orgs.go +
+            orgs_progress.go bootProgressOrder/estimateBootProgress).
+          enum: [launching, installing, starting, configuring_https, ready, failed]
+        progress: { type: integer, minimum: 0, maximum: 100 }
+        message: { type: string }
+        eta_seconds: { type: integer }
+        url: { type: string }
+      required: [status, stage, progress, message, eta_seconds]
+
+    OrgExport:
+      type: object
+      description: GDPR data-portability export (best-effort field list).
+      properties:
+        schema_version: { type: string }
+        exported_at: { type: string, format: date-time }
+        exported_by: { type: string, description: "Requesting session user id." }
+        subject:
+          type: object
+          properties:
+            user_id: { type: string }
+        organization:
+          $ref: "#/components/schemas/Organization"
+        infrastructure:
+          type: object
+          description: Omitted for failed-provision orgs.
+          additionalProperties: true
+        members:
+          type: array
+          items: { type: object, additionalProperties: true }
+        notes:
+          type: object
+          additionalProperties: true
+
+    DeleteTenantRequest:
+      type: object
+      description: Confirm-gated admin tenant teardown. `confirm` must equal the URL slug.
+      properties:
+        confirm:
+          type: string
+          description: Must exactly equal the path slug or the request 400s before any teardown.
+      required: [confirm]
+
+    UpdateWorkspaceEnvRequest:
+      type: object
+      description: |
+        Admin env mutation for a running workspace (SSM + restart). Keys
+        matching the secret-keyword guard (TOKEN/SECRET/KEY/PASSWORD) require
+        force=true. Prefer Infisical per-persona paths for real secrets.
+      properties:
+        env:
+          type: object
+          additionalProperties: { type: string }
+          description: At least one key required.
+        merge:
+          type: boolean
+          default: true
+          description: true = merge into existing env; false = replace (destructive).
+        force:
+          type: boolean
+          default: false
+          description: Bypass the secret-keyword guard.
+      required: [env]
+
+    UpdateWorkspaceEnvResponse:
+      type: object
+      properties:
+        ok: { type: boolean }
+        workspace_id: { type: string }
+        instance_id: { type: string }
+        ssm_status: { type: string }
+        ssm_exit_code: { type: integer, format: int32 }
+        container_restarted: { type: boolean }
+        applied_keys: { type: array, items: { type: string } }
+        env_keys_after: { type: array, items: { type: string } }
+
+    PinPromoteRequest:
+      type: object
+      description: |
+        Generic pin-table promote body. Shape is per-resource (thin-ami:
+        region+ami_id; runtime-image: template+digest). `promoted_by` is filled
+        server-side from the admin actor. additionalProperties allowed because
+        the dispatcher validates per-resource.
+      additionalProperties: true
+
+    # ---- CP: provisioning ----
+    WorkspaceProvisionRequest:
+      type: object
+      description: Provision a workspace EC2 instance (called by tenant platforms).
+      properties:
+        org_id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        runtime: { type: string, description: "claude-code | codex | langgraph | ..." }
+        tier: { type: integer }
+        instance_type: { type: string }
+        disk_gb: { type: integer, format: int32 }
+        platform_url: { type: string, format: uri }
+        env:
+          type: object
+          additionalProperties: { type: string }
+        config_files:
+          type: object
+          additionalProperties: { type: string }
+        display:
+          type: object
+          properties:
+            mode: { type: string }
+            width: { type: integer }
+            height: { type: integer }
+            protocol: { type: string }
+      required: [org_id, workspace_id, runtime, platform_url]
+
+    WorkspaceProvisionResponse:
+      type: object
+      properties:
+        instance_id: { type: string }
+        public_ip: { type: string }
+        private_ip: { type: string }
+        state: { type: string }
+        runtime: { type: string }
+        domain: { type: string }
+
+    WorkspaceProvisionStatus:
+      type: object
+      properties:
+        instance_id: { type: string }
+        state: { type: string }
+        public_ip: { type: string }
+        private_ip: { type: string }
+
+    RuntimePinMissing:
+      type: object
+      description: 422 when no runtime image pin exists for (runtime).
+      properties:
+        error: { type: string, const: RUNTIME_PIN_MISSING }
+      required: [error]
+
+    # ---- Tenant: workspaces ----
+    CreateWorkspaceRequest:
+      type: object
+      description: |
+        Tenant workspace creation (POST /workspaces, AdminAuth). Best-effort —
+        full struct is models.CreateWorkspacePayload. Only `name` is required.
+      properties:
+        name: { type: string }
+        role: { type: string }
+        template: { type: string, description: "workspace-configs-templates folder name." }
+        tier: { type: integer }
+        model: { type: string }
+        llm_provider: { type: string }
+        runtime: { type: string, description: "Default claude-code; derived from template if empty." }
+        external: { type: boolean, description: "true = registered URL only, no Docker container." }
+        url: { type: string, description: "External A2A endpoint (push mode)." }
+        delivery_mode: { type: string, enum: [push, poll] }
+        workspace_dir: { type: string }
+        workspace_access: { type: string, enum: [none, read_only, read_write] }
+        parent_id: { type: [string, "null"], format: uuid }
+        budget_limit:
+          type: [integer, "null"]
+          format: int64
+          description: Monthly spend ceiling in USD cents; null = no limit.
+        secrets:
+          type: object
+          additionalProperties: { type: string }
+          description: Optional key→value secrets persisted (encrypted) at creation.
+        max_concurrent_tasks: { type: integer }
+      required: [name]
+
+    Workspace:
+      type: object
+      description: A workspace row (best-effort — see models.Workspace).
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        role: { type: [string, "null"] }
+        tier: { type: integer }
+        runtime: { type: string }
+        status: { type: string }
+        parent_id: { type: [string, "null"], format: uuid }
+      additionalProperties: true
+
+    PeriodBudget:
+      type: object
+      description: |
+        Per-period budget view (workspace-server budget.go periodBudget):
+        configured ceiling (null = no limit), rolling-window spend, and
+        remaining headroom (null when no limit; may go negative).
+      properties:
+        limit: { type: [integer, "null"], format: int64, description: "USD cents; null = no limit." }
+        spend: { type: integer, format: int64, description: "Rolling-window spend, USD cents." }
+        remaining: { type: [integer, "null"], format: int64, description: "limit - spend; null when no limit; may be negative." }
+      required: [spend]
+
+    BudgetResponse:
+      type: object
+      description: |
+        Canonical budget view (workspace-server budget.go budgetResponse), same
+        shape for GET and PATCH. `periods` is the multi-period SSOT; the
+        top-level `budget_limit`/`monthly_spend`/`budget_remaining` are
+        back-compat mirrors of the monthly period for pre-multi-period clients.
+      properties:
+        periods:
+          type: object
+          description: |
+            Per-period budgets keyed by period name. Canonical multi-period
+            view (internal#734 / budget_periods.go).
+          additionalProperties: { $ref: "#/components/schemas/PeriodBudget" }
+          propertyNames: { enum: [hourly, daily, weekly, monthly] }
+        budget_limit: { type: [integer, "null"], format: int64, description: "Back-compat: monthly limit (USD cents); null = no limit." }
+        monthly_spend: { type: integer, format: int64, description: "Back-compat: monthly rolling spend (USD cents)." }
+        budget_remaining: { type: [integer, "null"], format: int64, description: "Back-compat: monthly remaining (USD cents); null = no limit." }
+
+    PatchBudgetRequest:
+      type: object
+      description: |
+        Set workspace budget limits. `budget_limits` is canonical (multi-period
+        map); legacy scalar `budget_limit` is kept for back-compat. Exactly one
+        of the two must be present (an empty body is a 400). A per-period value
+        of null/absent clears that period; a non-negative int (USD cents) sets
+        it. When `budget_limit` is used, it sets the monthly period and is kept
+        synced to the budget_limits monthly key server-side.
+      minProperties: 1
+      properties:
+        budget_limits:
+          type: object
+          description: |
+            CANONICAL. Period → USD-cents-or-null. Allowed keys: hourly, daily,
+            weekly, monthly (an unknown key is a 400).
+          additionalProperties: { type: [integer, "null"], format: int64, minimum: 0 }
+          propertyNames: { enum: [hourly, daily, weekly, monthly] }
+        budget_limit:
+          type: [integer, "null"]
+          format: int64
+          minimum: 0
+          description: "Legacy single-monthly limit (USD cents, >=0); null clears it."
+
+    BillingModeResponse:
+      type: object
+      properties:
+        mode: { type: string, enum: [platform_managed, byok, disabled] }
+        effective_mode: { type: string }
+        source: { type: string, description: "workspace | org | default" }
+      additionalProperties: true
+
+    PutBillingModeRequest:
+      type: object
+      description: |
+        {"mode":"byok"} sets the override; {"mode":null} clears it; {} is a 400
+        (caller must be explicit).
+      properties:
+        mode:
+          type: [string, "null"]
+          enum: [platform_managed, byok, disabled, null]
+      required: [mode]
+
+    # ---- Tenant: secrets ----
+    SecretSummary:
+      type: object
+      description: Secret metadata (keys only — values never returned by List).
+      properties:
+        key: { type: string }
+        created_at: { type: string }
+        updated_at: { type: string }
+        source: { type: string, description: "workspace | global override info." }
+      additionalProperties: true
+
+    SetSecretRequest:
+      type: object
+      description: |
+        Upserts AES-256-GCM, emits secret.set audit, auto-restarts the
+        workspace. platform-managed billing strips vendor-LLM keys unless
+        billing-mode is byok; GIT_HTTP_* are never stripped.
+      properties:
+        key: { type: string }
+        value: { type: string }
+      required: [key, value]
+
+    # ---- Tenant: org tokens (Org API Keys) ----
+    CreateOrgTokenRequest:
+      type: object
+      description: Optional body — an empty POST mints an unnamed token.
+      properties:
+        name: { type: string, maxLength: 100 }
+
+    CreateOrgTokenResponse:
+      type: object
+      description: Plaintext token returned exactly ONCE.
+      properties:
+        id: { type: string }
+        prefix: { type: string }
+        name: { type: string }
+        auth_token: { type: string, description: "Plaintext — shown once; copy now." }
+        warning: { type: string }
+      required: [id, prefix, auth_token]
+
+    OrgTokenList:
+      type: object
+      properties:
+        tokens:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              prefix: { type: string }
+              name: { type: string }
+              created_at: { type: string }
+            additionalProperties: true
+        count: { type: integer }
+
+    # ---- Tenant: org import / templates / bundles ----
+    OrgImportRequest:
+      type: object
+      description: |
+        Create workspaces from an org template. Provide `dir` (server-side org
+        template dir, traversal-guarded) OR an inline `template`. `mode`
+        controls cleanup of pre-existing workspaces.
+      properties:
+        dir: { type: string, description: "Org template directory name." }
+        template:
+          type: object
+          description: Inline OrgTemplate (best-effort; see OrgTemplate YAML schema).
+          additionalProperties: true
+        mode: { type: string, enum: ["", merge, reconcile], default: merge }
+
+    TemplateImportRequest:
+      type: object
+      description: Import a workspace template (writes config files into configsDir).
+      properties:
+        name: { type: string }
+        files:
+          type: object
+          additionalProperties: { type: string }
+      required: [name, files]
+
+    BundleImportRequest:
+      type: object
+      description: Import a workspace bundle (CRITICAL surface — admin-gated). Best-effort body.
+      properties:
+        name: { type: string }
+      additionalProperties: true
+      required: [name]
+
+# =============================================================================
+# Paths
+# =============================================================================
+paths:
+
+  # ------------------------------------------------------------------ CP: ORGS
+  /api/v1/orgs:
+    post:
+      tags: [cp-orgs]
+      summary: Create an organization (session-owned)
+      operationId: createOrg
+      security: [{ workosSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateOrgRequest" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Organization" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402":
+          description: Quota/credit gate — payment required.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "412":
+          description: Terms of Service not yet accepted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      tags: [cp-orgs]
+      summary: List the caller's organizations
+      operationId: listOrgs
+      security: [{ workosSession: [] }]
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Organization" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/orgs/{slug}:
+    parameters: [{ $ref: "#/components/parameters/OrgSlug" }]
+    get:
+      tags: [cp-orgs]
+      summary: Get an organization (membership-checked)
+      operationId: getOrg
+      security: [{ workosSession: [] }]
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Organization" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [cp-orgs]
+      summary: Delete an organization (owner-only GDPR purge cascade)
+      description: |
+        Owner-only. Cascade purges Stripe + EC2 + Cloudflare + DB rows, writes
+        an org_purges audit row. Returns 204 on success. Irreversible.
+      operationId: deleteOrg
+      security: [{ workosSession: [] }]
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/orgs/{slug}/export:
+    parameters: [{ $ref: "#/components/parameters/OrgSlug" }]
+    get:
+      tags: [cp-orgs]
+      summary: Export an organization (GDPR data portability)
+      operationId: exportOrg
+      security: [{ workosSession: [] }]
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrgExport" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/orgs/{slug}/provision-status:
+    parameters: [{ $ref: "#/components/parameters/OrgSlug" }]
+    get:
+      tags: [cp-orgs]
+      summary: Org provisioning progress
+      operationId: getProvisionStatus
+      security: [{ workosSession: [] }]
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProvisionStatus" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/orgs/{slug}/instance:
+    parameters: [{ $ref: "#/components/parameters/OrgSlug" }]
+    get:
+      tags: [cp-orgs]
+      summary: Public tenant-routing lookup (NO AUTH)
+      description: |
+        Public, unauthenticated routing lookup used by the Cloudflare Worker.
+        Returns {slug, status, ip, org_id}. Rate-limited to prevent
+        enumeration. (This is the "200 with no key" in the audit — not the Org
+        API Key.)
+      operationId: getOrgInstance
+      security: []
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  slug: { type: string }
+                  status: { type: string }
+                  ip: { type: string }
+                  org_id: { type: string }
+                additionalProperties: true
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------------------------- CP: BILLING
+  /api/v1/billing/invoices:
+    get:
+      tags: [cp-billing]
+      summary: List invoices
+      operationId: listInvoices
+      security: [{ workosSession: [] }]
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { type: array, items: { type: object, additionalProperties: true } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/billing/checkout:
+    post:
+      tags: [cp-billing]
+      summary: Create a Stripe Checkout session
+      operationId: billingCheckout
+      security: [{ workosSession: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200":
+          description: OK (checkout url).
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/billing/portal:
+    post:
+      tags: [cp-billing]
+      summary: Create a Stripe billing-portal session
+      operationId: billingPortal
+      security: [{ workosSession: [] }]
+      responses:
+        "200":
+          description: OK (portal url).
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/billing/topup:
+    post:
+      tags: [cp-billing]
+      summary: Credit top-up
+      operationId: billingTopup
+      security: [{ workosSession: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ------------------------------------------------------------------ CP: ADMIN
+  /api/v1/admin/orgs:
+    get:
+      tags: [cp-admin]
+      summary: List all organizations (operator)
+      operationId: adminListOrgs
+      security: [{ cpAdminBearer: [] }]
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Organization" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [cp-admin]
+      summary: Admin-create an organization (server-to-server)
+      description: |
+        Skips terms/quota/billing gates. Strict-decoded (unknown fields → 400).
+        **Dry-run guard:** `?dry_run=true` validates + echoes without creating.
+      operationId: adminCreateOrg
+      security: [{ cpAdminBearer: [] }]
+      parameters:
+        - name: dry_run
+          in: query
+          required: false
+          description: When true, validate + echo only; no org created.
+          schema: { type: boolean }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminCreateOrgRequest" }
+      responses:
+        "200":
+          description: Dry-run echo (when ?dry_run=true).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminCreateOrgDryRun" }
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Organization" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/admin/orgs/{slug}/admin-token:
+    parameters: [{ $ref: "#/components/parameters/OrgSlug" }]
+    get:
+      tags: [cp-admin]
+      summary: Get the per-tenant admin token (operator)
+      operationId: adminGetTenantToken
+      security: [{ cpAdminBearer: [] }]
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminTenantTokenResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Tenant admin token not yet provisioned.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/orgs/{slug}/workspaces:
+    parameters: [{ $ref: "#/components/parameters/OrgSlug" }]
+    get:
+      tags: [cp-admin]
+      summary: List a tenant's workspaces + health (CP-side proxy)
+      description: |
+        CP proxies to the tenant's admin GET /workspaces so ops scripts get one
+        CP surface without holding per-tenant tokens or setting the WAF Origin
+        header. 502 on tenant-layer failure (carries http_status); 503 when the
+        WorkspaceLister is unwired.
+      operationId: adminListOrgWorkspaces
+      security: [{ cpAdminBearer: [] }]
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502":
+          description: Tenant-layer failure (auth/network/parse) — carries http_status.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "503":
+          description: WorkspaceLister not configured on this CP.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/tenants/{slug}:
+    parameters: [{ $ref: "#/components/parameters/OrgSlug" }]
+    delete:
+      tags: [cp-admin]
+      summary: Admin-delete a tenant (confirm-gated teardown)
+      description: |
+        **Confirm guard:** body `confirm` MUST equal the URL slug or the
+        request 400s before any teardown. Reuses the executeOrgPurge cascade
+        (Stripe + EC2 + CF + DB rows + audit). 503 when no provisioner is wired.
+      operationId: adminDeleteTenant
+      security: [{ cpAdminBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeleteTenantRequest" }
+      responses:
+        "200":
+          description: Teardown completed.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "400":
+          description: Confirm token missing or != slug.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503":
+          description: Provisioner not configured in this environment.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/tenants/{slug}/scrub-artifacts:
+    parameters: [{ $ref: "#/components/parameters/OrgSlug" }]
+    post:
+      tags: [cp-admin]
+      summary: Scrub tenant artifacts (destructive, confirm-gated)
+      description: "**Confirm guard:** confirm-token body must equal the URL slug."
+      operationId: adminScrubTenantArtifacts
+      security: [{ cpAdminBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeleteTenantRequest" }
+      responses:
+        "200":
+          description: Scrubbed.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/admin/tenants/{slug}/diagnostics:
+    parameters: [{ $ref: "#/components/parameters/OrgSlug" }]
+    get:
+      tags: [cp-admin]
+      summary: Tenant diagnostics (read-only)
+      operationId: adminTenantDiagnostics
+      security: [{ cpAdminBearer: [] }]
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/admin/tenants/{slug}/redeploy:
+    parameters: [{ $ref: "#/components/parameters/OrgSlug" }]
+    post:
+      tags: [cp-admin]
+      summary: Redeploy a single tenant container
+      operationId: adminRedeployTenant
+      security: [{ cpAdminBearer: [] }]
+      responses:
+        "200":
+          description: Redeploy dispatched.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503":
+          description: Redeployer not wired (dev CP without AWS SSM).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/tenants/redeploy-fleet:
+    post:
+      tags: [cp-admin]
+      summary: Redeploy the whole tenant fleet (post-merge CI)
+      operationId: adminRedeployFleet
+      security: [{ cpAdminBearer: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200":
+          description: Fleet rollout dispatched.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/admin/workspaces/{id}/env:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    post:
+      tags: [cp-admin]
+      summary: Mutate a running workspace's env (SSM + restart)
+      description: |
+        Merge (default) or replace env on a running workspace via SSM, then
+        restart. **Force guard:** keys matching TOKEN/SECRET/KEY/PASSWORD
+        require force=true. 503 when SSM/EC2 wiring is absent.
+      operationId: adminUpdateWorkspaceEnv
+      security: [{ cpAdminBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateWorkspaceEnvRequest" }
+      responses:
+        "200":
+          description: Applied.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UpdateWorkspaceEnvResponse" }
+        "400":
+          description: Bad body, or secret-keyword guard hit without force=true.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503":
+          description: SSM/EC2 wiring not present.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/thin-ami/promote:
+    post:
+      tags: [cp-admin]
+      summary: Promote a thin-AMI pin (host AMI per region)
+      operationId: adminPromoteThinAmi
+      security: [{ cpAdminBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PinPromoteRequest" }
+      responses:
+        "200":
+          description: Promoted.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    get:
+      tags: [cp-admin]
+      summary: List thin-AMI pins
+      operationId: adminListThinAmi
+      security: [{ cpAdminBearer: [] }]
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { type: array, items: { type: object, additionalProperties: true } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/admin/runtime-image/promote:
+    post:
+      tags: [cp-admin]
+      summary: Promote a runtime-image pin (per-template GHCR/ECR digest)
+      operationId: adminPromoteRuntimeImage
+      security: [{ cpAdminBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PinPromoteRequest" }
+      responses:
+        "200":
+          description: Promoted.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    get:
+      tags: [cp-admin]
+      summary: List runtime-image pins
+      operationId: adminListRuntimeImage
+      security: [{ cpAdminBearer: [] }]
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { type: array, items: { type: object, additionalProperties: true } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/admin/workspaces/{id}/llm-billing-mode:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [cp-admin]
+      summary: Get a workspace LLM billing mode (CP-admin proxy)
+      description: |
+        CP-side operator proxy to the per-tenant
+        /admin/workspaces/:id/llm-billing-mode. **Requires `?org_slug=`** — CP
+        has no workspace_id→org_id index, so the slug tells CP which tenant to
+        dispatch to (controlplane internal/handlers/admin_workspace_billing_mode.go).
+      operationId: adminGetWorkspaceBillingMode
+      security: [{ cpAdminBearer: [] }]
+      parameters:
+        - name: org_slug
+          in: query
+          required: true
+          description: Org slug — resolves which tenant CP proxies to.
+          schema: { type: string, pattern: "^[a-z][a-z0-9-]{2,31}$" }
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BillingModeResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Slug doesn't resolve to an org.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502":
+          description: Per-tenant call failed (auth/network/parse).
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "503":
+          description: Billing-mode client unwired on this CP (dev / no Secrets).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    put:
+      tags: [cp-admin]
+      summary: Set/clear a workspace LLM billing mode (CP-admin proxy)
+      description: |
+        CP-side operator proxy. **Requires `?org_slug=`.** Body
+        {"mode": "byok"|"platform_managed"|"disabled"|null}; mode is validated
+        against the credits enum BEFORE the per-tenant call.
+      operationId: adminPutWorkspaceBillingMode
+      security: [{ cpAdminBearer: [] }]
+      parameters:
+        - name: org_slug
+          in: query
+          required: true
+          description: Org slug — resolves which tenant CP proxies to.
+          schema: { type: string, pattern: "^[a-z][a-z0-9-]{2,31}$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PutBillingModeRequest" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BillingModeResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Slug doesn't resolve to an org.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502":
+          description: Per-tenant call failed (auth/network/parse).
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "503":
+          description: Billing-mode client unwired on this CP (dev / no Secrets).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ------------------------------------------------------------- CP: PROVISION
+  /api/v1/workspaces/provision:
+    post:
+      tags: [cp-provision]
+      summary: Provision a workspace EC2 instance
+      description: |
+        Called by tenant platforms (server-to-server). SSRF + provider-env +
+        runtime-pin gated. **Returns 422 RUNTIME_PIN_MISSING** when no runtime
+        image pin exists. Mounted only when PROVISION_SHARED_SECRET is set.
+      operationId: provisionWorkspace
+      security: [{ provisionSecret: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkspaceProvisionRequest" }
+      responses:
+        "201":
+          description: Provisioned.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceProvisionResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422":
+          description: RUNTIME_PIN_MISSING — no runtime image pin for this runtime.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RuntimePinMissing" }
+
+  /api/v1/workspaces/{workspace_id}:
+    parameters:
+      - name: workspace_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      tags: [cp-provision]
+      summary: Deprovision (terminate) a workspace EC2 + DNS
+      description: |
+        Requires the provision shared secret AND a per-tenant admin_token
+        (X-Molecule-Admin-Token, issue #118) so a leaked shared secret can't
+        kill other tenants' workspaces. The org is derived from the admin token
+        server-side, so no X-Molecule-Org-Id header is read here. `?prune=`
+        controls data-volume pruning.
+      operationId: deprovisionWorkspace
+      security:
+        - provisionSecret: []
+          tenantAdminToken: []
+      parameters:
+        - name: prune
+          in: query
+          required: false
+          description: |
+            Only the literal string `true` triggers a PERMANENT data delete
+            (the data volume is tagged for immediate erase — destructive,
+            internal#734). Any other value (including absent) terminates the
+            instance but preserves the data volume for the grace-period sweep.
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: Terminated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: terminated }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/workspaces/{workspace_id}/status:
+    parameters:
+      - name: workspace_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [cp-provision]
+      summary: Workspace instance status
+      operationId: getProvisionWorkspaceStatus
+      security: [{ provisionSecret: [] }]
+      parameters:
+        - name: instance_id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceProvisionStatus" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ----------------------------------------------------- TENANT: WORKSPACES
+  /workspaces:
+    get:
+      tags: [tenant-workspaces]
+      summary: List workspaces in the org (tenant-admin)
+      operationId: tenantListWorkspaces
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+        - workosSession: []
+          orgRoutingHeaderSlug: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Workspace" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [tenant-workspaces]
+      summary: Create a workspace (tenant-admin)
+      description: |
+        AdminAuth. Rejected for a bare per-workspace token when ADMIN_TOKEN is
+        set — use the Org API Key. POST/secrets-at-create auto-restart applies.
+      operationId: tenantCreateWorkspace
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+        - workosSession: []
+          orgRoutingHeaderSlug: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateWorkspaceRequest" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workspace" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /workspaces/{id}:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [tenant-workspaces]
+      summary: Get a workspace (INTENTIONALLY UNAUTHENTICATED)
+      description: |
+        Intentionally open — registered outside every auth group
+        (workspace-server internal/router/router.go) so canvas nodes can fetch
+        their own state without a token (WorkspaceNode polling + health checks).
+      operationId: tenantGetWorkspace
+      security: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workspace" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [tenant-workspaces]
+      summary: Delete a workspace (cascade; tenant-admin)
+      operationId: tenantDeleteWorkspace
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /workspaces/{id}/restart:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    post:
+      tags: [tenant-workspaces]
+      summary: Restart a workspace
+      operationId: tenantRestartWorkspace
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+        - workspaceToken: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      responses:
+        "200": { description: Restart dispatched. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /workspaces/{id}/pause:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    post:
+      tags: [tenant-workspaces]
+      summary: Pause a workspace (stops container)
+      operationId: tenantPauseWorkspace
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+        - workspaceToken: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      responses:
+        "200": { description: Paused. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /workspaces/{id}/resume:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    post:
+      tags: [tenant-workspaces]
+      summary: Resume a paused workspace
+      operationId: tenantResumeWorkspace
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+        - workspaceToken: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      responses:
+        "200": { description: Resumed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /workspaces/{id}/budget:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [tenant-workspaces]
+      summary: Get workspace budget + spend
+      operationId: tenantGetBudget
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+        - workspaceToken: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BudgetResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [tenant-workspaces]
+      summary: Set workspace budget limit (tenant-admin)
+      operationId: tenantPatchBudget
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PatchBudgetRequest" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BudgetResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /admin/workspaces/{id}/llm-billing-mode:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [tenant-workspaces]
+      summary: Get workspace LLM billing mode
+      operationId: tenantGetBillingMode
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BillingModeResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      tags: [tenant-workspaces]
+      summary: Set/clear workspace LLM billing mode (tenant-admin)
+      description: '{"mode":"byok"} sets override; {"mode":null} clears; {} → 400.'
+      operationId: tenantPutBillingMode
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PutBillingModeRequest" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BillingModeResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ------------------------------------------------------ TENANT: WS SECRETS
+  /workspaces/{id}/secrets:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [tenant-workspaces]
+      summary: List workspace secrets (keys only)
+      operationId: tenantListWorkspaceSecrets
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+        - workspaceToken: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      responses:
+        "200":
+          description: OK (values masked).
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/SecretSummary" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [tenant-workspaces]
+      summary: Set a workspace secret (auto-restarts the workspace)
+      description: |
+        THE secret/env lever. Upserts AES-256-GCM, emits secret.set audit,
+        auto-restarts the workspace. platform-managed billing strips vendor-LLM
+        keys unless billing-mode=byok; GIT_HTTP_* never stripped.
+      operationId: tenantSetWorkspaceSecret
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+        - workspaceToken: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SetSecretRequest" }
+      responses:
+        "200": { description: Set. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      tags: [tenant-workspaces]
+      summary: Upsert a workspace secret (alias of POST)
+      operationId: tenantPutWorkspaceSecret
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+        - workspaceToken: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SetSecretRequest" }
+      responses:
+        "200": { description: Set. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /workspaces/{id}/secrets/{key}:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - name: key
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      tags: [tenant-workspaces]
+      summary: Delete a workspace secret (auto-restarts)
+      operationId: tenantDeleteWorkspaceSecret
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+        - workspaceToken: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      responses:
+        "200": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # -------------------------------------------------- TENANT: GLOBAL SECRETS
+  /settings/secrets:
+    get:
+      tags: [tenant-secrets]
+      summary: List org-wide (global) secrets (keys only)
+      operationId: tenantListGlobalSecrets
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      responses:
+        "200":
+          description: OK (values masked).
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/SecretSummary" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [tenant-secrets]
+      summary: Set an org-wide secret (fan-out auto-restart)
+      description: |
+        Sets a global secret; auto-restarts every non-paused/non-removed/
+        non-external workspace that doesn't shadow the key (issue #15).
+      operationId: tenantSetGlobalSecret
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SetSecretRequest" }
+      responses:
+        "200": { description: Set. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      tags: [tenant-secrets]
+      summary: Upsert an org-wide secret (alias of POST)
+      operationId: tenantPutGlobalSecret
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SetSecretRequest" }
+      responses:
+        "200": { description: Set. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /settings/secrets/{key}:
+    parameters:
+      - name: key
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      tags: [tenant-secrets]
+      summary: Delete an org-wide secret (fan-out auto-restart)
+      operationId: tenantDeleteGlobalSecret
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      responses:
+        "200": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ------------------------------------------------- TENANT: ORG TOKENS / KEYS
+  /org/tokens:
+    get:
+      tags: [tenant-org]
+      summary: List Org API Keys (prefix + metadata)
+      operationId: tenantListOrgTokens
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrgTokenList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [tenant-org]
+      summary: Mint an Org API Key (full tenant-admin; plaintext shown once)
+      description: |
+        Mints a new Org API Key. Plaintext is returned exactly ONCE. The key is
+        full-tenant-admin and can itself mint/revoke more keys (treat as tenant
+        root). Empty body mints an unnamed token.
+      operationId: tenantCreateOrgToken
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateOrgTokenRequest" }
+      responses:
+        "200":
+          description: Minted (plaintext shown once).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreateOrgTokenResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /org/tokens/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      tags: [tenant-org]
+      summary: Revoke an Org API Key
+      operationId: tenantRevokeOrgToken
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      responses:
+        "200":
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revoked: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ------------------------------------------------- TENANT: ORG IMPORT / TMPL
+  /org/import:
+    post:
+      tags: [tenant-org]
+      summary: Create workspaces from an org template (tenant-admin)
+      description: |
+        AdminAuth. Provide `dir` (server-side org template, traversal-guarded)
+        OR an inline `template`. `mode=reconcile` cascade-deletes zombie
+        workspaces left by a prior import.
+      operationId: tenantOrgImport
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OrgImportRequest" }
+      responses:
+        "200":
+          description: Imported (workspace result set).
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /org/templates:
+    get:
+      tags: [tenant-org]
+      summary: List available org templates (tenant-admin)
+      operationId: tenantListOrgTemplates
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { type: array, items: { type: object, additionalProperties: true } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /templates:
+    get:
+      tags: [tenant-org]
+      summary: List workspace templates (tenant-admin)
+      operationId: tenantListTemplates
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { type: array, items: { type: object, additionalProperties: true } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /templates/import:
+    post:
+      tags: [tenant-org]
+      summary: Import a workspace template (writes config files; tenant-admin)
+      operationId: tenantImportTemplate
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TemplateImportRequest" }
+      responses:
+        "201":
+          description: Imported.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  id: { type: string }
+                  name: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  # ----------------------------------------------------------- TENANT: BUNDLES
+  /bundles/export/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [tenant-bundles]
+      summary: Export a workspace bundle (tenant-admin)
+      description: HIGH-sensitivity — full system prompts + memory. Admin-gated (#165).
+      operationId: tenantExportBundle
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      responses:
+        "200":
+          description: OK (bundle).
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /bundles/import:
+    post:
+      tags: [tenant-bundles]
+      summary: Import a workspace bundle (tenant-admin)
+      description: CRITICAL — anon creation of arbitrary workspaces if unguarded. Admin-gated (#164).
+      operationId: tenantImportBundle
+      security:
+        - orgApiKey: []
+          orgRoutingHeaderId: []
+      parameters:
+        - { $ref: "#/components/parameters/OrgIdHeader" }
+        - { $ref: "#/components/parameters/OrgSlugHeader" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BundleImportRequest" }
+      responses:
+        "201":
+          description: Imported.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }

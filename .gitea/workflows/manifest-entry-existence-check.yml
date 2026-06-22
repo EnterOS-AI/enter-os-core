@@ -1,0 +1,52 @@
+name: manifest-entry-existence-check
+
+# PR-time defense against bad manifest.json entries (#2185).
+#
+# A manifest entry whose `repo` does not exist on Gitea only surfaces
+# as a failure in publish-workspace-server-image.yml *after* merge,
+# which fires the main-red watchdog. This workflow checks every
+# (plugin + workspace_template + org_template) entry at PR-review
+# time so broken entries are caught before they reach main.
+#
+# Design notes
+# ------------
+# - Uses the same AUTO_SYNC_TOKEN secret that publish-workspace-server-image.yml
+#   uses for cloning manifest deps. Some entries are platform-private, so an
+#   anonymous API check would 404 on valid entries; auth is required.
+# - Only checks repo existence, not ref resolvability (#2185 scope).
+# - Mirrors clone-manifest.sh retry behavior (3 attempts, backoff).
+# - Triggers only when manifest.json changes to keep CI load minimal.
+#
+# Related: #2183 (incident), #2184 (fix), #2185 (this gate).
+
+on:
+  pull_request:
+    branches: [main, staging]
+    paths:
+      - 'manifest.json'
+
+permissions:
+  contents: read
+
+jobs:
+  # bp-required: pending #2185 — new PR-time gate; branch-protection update tracked in the same issue.
+  check-entries:
+    name: Verify manifest entries exist on Gitea
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out PR head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Verify each manifest entry resolves on Gitea
+        env:
+          GITEA_HOST: git.moleculesai.app
+          GITEA_TOKEN: ${{ secrets.AUTO_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          bash scripts/manifest-entry-existence-check.sh
+
+      - name: Regression test manifest-entry-existence-check script
+        run: |
+          set -euo pipefail
+          bash scripts/test-manifest-entry-existence-check.sh

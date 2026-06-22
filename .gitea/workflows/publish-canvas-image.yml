@@ -1,0 +1,359 @@
+name: publish-canvas-image
+
+# Ported from .github/workflows/publish-canvas-image.yml on 2026-05-11 per RFC
+# internal#219 §1 sweep. Differences from the GitHub version:
+#   - Dropped `workflow_dispatch.inputs` (Gitea 1.22.6 parser rejects them
+#     per feedback_gitea_workflow_dispatch_inputs_unsupported).
+#   - Dropped `merge_group:` (no Gitea merge queue).
+#   - Dropped `environment:` blocks (Gitea has no environments).
+#   - Workflow-level env.GITHUB_SERVER_URL pinned per
+#     feedback_act_runner_github_server_url.
+#   - `continue-on-error: true` on each job (RFC §1 contract).
+#   - Retargeted the image push from GHCR to ECR. GHCR was retired during
+#     the 2026-05-06 Gitea migration, and Gitea's GITHUB_TOKEN cannot
+#     authenticate to ghcr.io.
+#
+
+# Builds, pushes, and (ordered) deploys the standalone canvas Docker image to
+# ECR whenever a commit lands on main that touches canvas code.
+#
+# Ordered deploy (core#2226) — mirrors publish-workspace-server-image.yml so the
+# standalone `molecule-ai/canvas` image is deterministic + verifiable, not a
+# side effect of the platform fleet pulling a mutable `:latest`:
+#
+#   build-and-push:  build → push :staging-<sha> + :staging-latest + :sha-<sha>
+#                    (does NOT move :latest — an unpromoted build must never
+#                    become the prod-blessed tag).
+#   promote-canvas:  waits for green main CI on this SHA, then re-points
+#                    :latest to the verified :staging-<sha> by digest
+#                    (imagetools create — no rebuild). So `:latest` == the
+#                    current prod-blessed canvas, byte-identical to staging-<sha>.
+#
+# Tag scheme produced (parallels platform-tenant):
+#   :staging-<sha> — per-commit immutable digest, what docker-compose pins to.
+#   :staging-latest — most recent BUILD on main (last-writer-wins, NOT gated).
+#   :sha-<sha>     — kept for back-compat with any consumer pinning the old tag.
+#   :latest        — most recent CI-GREEN build. Only moved by promote-canvas.
+#
+# WHY this is the canvas analogue of the platform's deploy-production, not a
+# literal copy: the standalone canvas co-deploys with the platform on the same
+# host via the root docker-compose.yml (`docker compose pull && up -d`). Gating
+# the canvas `:latest` promotion on the SAME green-main-CI signal the platform
+# deploy waits on makes platform + canvas roll together by the same SHA. The
+# canvas has no per-tenant fleet of its own and no /buildinfo endpoint, so there
+# is no fleet-rollout / per-tenant verify step to mirror here — CI-green +
+# digest-pin + immutable :staging-<sha> is the determinism contract. (A future
+# canvas /buildinfo would let this assert the served SHA like the platform does;
+# tracked in core#2226.)
+#
+# Mirror of publish-platform-image.yml, adapted for the Next.js canvas layer.
+# See that workflow for inline notes on macOS Keychain isolation and QEMU.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # Only rebuild when canvas source changes — saves GHA minutes on
+      # platform-only / docs-only / MCP-only merges.
+      - 'canvas/**'
+      - '.gitea/workflows/publish-canvas-image.yml'
+  workflow_dispatch:
+  # NOTE (Gitea port): the original GitHub workflow had a
+  # `workflow_dispatch:` manual trigger for the
+  # non-canvas-merge-but-need-fresh-image scenario. Dropped in the
+  # Gitea port (1.22.6 parser-finicky). Manual rebuilds require
+  # pushing an empty commit to canvas/ or running the operator-host
+  # build directly.
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # SSOT-Instance-10 (#333): ECR registry triplet (account.dkr.ecr.region.amazonaws.com)
+  # sourced from org/repo var `ECR_REGISTRY` with the current prod-account literal as
+  # bootstrap fallback. When the org var is set, the fallback becomes dead code and
+  # switching accounts/regions is a one-line change at the org level (instead of
+  # touching every workflow). Pattern mirrors `vars.CP_URL || 'literal'` already in
+  # use below in this repo's staging-verify.yml.
+  IMAGE_NAME: ${{ vars.ECR_REGISTRY || '<AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com' }}/molecule-ai/canvas
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  # bp-exempt: post-merge image publication side effect; CI / all-required gates source changes.
+  build-and-push:
+    name: Build & push canvas image
+    # Dedicated publish/release lane (internal#462 / #394 / #399). Ship
+    # path (on: push:main, canvas/**) — reserved capacity so a merged
+    # canvas fix's image build never FIFO-queues behind PR required-CI.
+    # The `publish` label resolves ONLY to the molecule-runner-publish-*
+    # sub-pool (config.publish.yaml). HARD DEPENDENCY: this MUST land
+    # AFTER the publish-lane runners are registered/advertising `publish`
+    # — the earlier #599 `docker` label attempt queued indefinitely with
+    # zero eligible runners precisely because the label was targeted
+    # before any runner advertised it (see #576). The lane is registered
+    # in this rollout (internal#462) so the precondition holds.
+    runs-on: publish
+    timeout-minutes: 45
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#2654: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true
+    outputs:
+      # Exposed so promote-canvas re-points :latest to the EXACT per-commit tag
+      # this build produced (digest-level), never a re-resolved mutable tag.
+      staging_sha: ${{ steps.tags.outputs.staging_sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Keep Docker auth/buildx state inside the job temp dir. Publish
+      # runners can inherit a HOME/DOCKER_CONFIG path that is host-owned
+      # and not writable from the job container; docker login otherwise
+      # fails before the image build starts.
+      - name: Prepare writable Docker config
+        run: |
+          set -euo pipefail
+          export DOCKER_CONFIG="$RUNNER_TEMP/docker-config"
+          mkdir -p "$DOCKER_CONFIG/buildx/certs"
+          echo "DOCKER_CONFIG=$DOCKER_CONFIG" >> "$GITHUB_ENV"
+
+      - name: Log in to ECR
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-2
+        run: |
+          set -euo pipefail
+          ECR_REGISTRY="${IMAGE_NAME%%/*}"
+          aws ecr get-login-password --region us-east-2 | \
+            docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Ensure ECR repository exists
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-2
+        run: |
+          set -euo pipefail
+          repo_path="${IMAGE_NAME#*/}"
+          if ! aws ecr describe-repositories --repository-names "${repo_path}" --region us-east-2 >/dev/null 2>&1; then
+            aws ecr create-repository \
+              --repository-name "${repo_path}" \
+              --image-scanning-configuration scanOnPush=true \
+              --region us-east-2 >/dev/null
+          fi
+
+      # Health check: verify Docker daemon is accessible before attempting any
+      # build steps. This fails loudly at step 1 when the runner's docker.sock
+      # is inaccessible rather than silently continuing to the build step
+      # where docker build fails deep in ECR auth with a cryptic error.
+      - name: Verify Docker daemon access
+        run: |
+          set -euo pipefail
+          echo "::group::Docker daemon health check"
+          echo "Runner: ${HOSTNAME:-unknown}"
+          docker_info="$(docker info 2>&1)" || {
+            echo "::error::Docker daemon is not accessible at /var/run/docker.sock"
+            echo "::error::Runner: ${HOSTNAME:-unknown}"
+            printf '%s\n' "${docker_info}"
+            echo "::error::Check: (1) daemon running, (2) runner user in docker group, (3) sock perms 660+"
+            exit 1
+          }
+          printf '%s\n' "${docker_info}" | sed -n '1,5p'
+          echo "Docker daemon OK"
+          echo "::endgroup::"
+
+      - name: Compute tags
+        id: tags
+        shell: bash
+        run: |
+          echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "staging_sha=staging-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve build args
+        id: build_args
+        # Priority: workflow_dispatch input > repo secret > hardcoded default.
+        # NEXT_PUBLIC_* env vars are baked into the JS bundle at build time by
+        # Next.js — they cannot be changed at runtime without a full rebuild.
+        # For local docker-compose deployments the defaults (localhost:8080)
+        # work as-is; production deployments should set CANVAS_PLATFORM_URL
+        # and CANVAS_WS_URL as repository secrets.
+        #
+        # Inputs are passed via env vars (not direct ${{ }} interpolation) to
+        # prevent shell injection from workflow_dispatch string inputs.
+        shell: bash
+        env:
+          INPUT_PLATFORM_URL: ${{ github.event.inputs.platform_url }}
+          SECRET_PLATFORM_URL: ${{ secrets.CANVAS_PLATFORM_URL }}
+          INPUT_WS_URL: ${{ github.event.inputs.ws_url }}
+          SECRET_WS_URL: ${{ secrets.CANVAS_WS_URL }}
+          # Exact generated-image R2 origin baked into the CSP img-src at build
+          # time (config, not a secret — it is a public CSP directive value).
+          # Falls back to the production-derived host. prod + staging share the
+          # R2 bucket + account so a single value is correct for both.
+          VAR_IMAGE_GEN_R2_HOST: ${{ vars.IMAGE_GEN_R2_HOST }}
+        run: |
+          PLATFORM_URL="${INPUT_PLATFORM_URL:-${SECRET_PLATFORM_URL:-http://localhost:8080}}"
+          WS_URL="${INPUT_WS_URL:-${SECRET_WS_URL:-ws://localhost:8080/ws}}"
+          IMAGE_GEN_R2_HOST="${VAR_IMAGE_GEN_R2_HOST:-https://molecule-workspace-data.bfa4e604e168a938e565600b27e2828c.r2.cloudflarestorage.com}"
+
+          echo "platform_url=${PLATFORM_URL}" >> "$GITHUB_OUTPUT"
+          echo "ws_url=${WS_URL}" >> "$GITHUB_OUTPUT"
+          echo "image_gen_r2_host=${IMAGE_GEN_R2_HOST}" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push canvas image to ECR
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: ./canvas
+          file: ./canvas/Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            NEXT_PUBLIC_PLATFORM_URL=${{ steps.build_args.outputs.platform_url }}
+            NEXT_PUBLIC_WS_URL=${{ steps.build_args.outputs.ws_url }}
+            NEXT_PUBLIC_IMAGE_GEN_R2_HOST=${{ steps.build_args.outputs.image_gen_r2_host }}
+            # Bake the merge SHA into the image so /api/buildinfo reports the
+            # served canvas SHA (core#2235). Mirrors how the platform image
+            # surfaces GIT_SHA at /buildinfo. Full 40-char SHA (not the
+            # 7-char tag) so the fleet redeploy verification can match exactly.
+            BUILD_SHA=${{ github.sha }}
+          # Ordered deploy (core#2226): the build job pushes the immutable
+          # per-commit tag + the build-tracking staging-latest + the legacy
+          # back-compat :sha-<sha> tag. It does NOT push :latest — :latest is
+          # the prod-blessed tag and is only re-pointed by promote-canvas after
+          # green main CI, so an unpromoted/red build can never become :latest.
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.tags.outputs.staging_sha }}
+            ${{ env.IMAGE_NAME }}:staging-latest
+            ${{ env.IMAGE_NAME }}:sha-${{ steps.tags.outputs.sha }}
+          # Gitea artifact-cache reachability is best-effort on the operator
+          # runner network. Do not let cache export fail an image that already
+          # built and pushed successfully.
+          labels: |
+            org.opencontainers.image.source=https://git.moleculesai.app/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.description=Molecule AI canvas (Next.js 15 + React Flow)
+
+      # Keep the prod ECR storage bill bounded: declare the canonical image
+      # lifecycle policy on the canvas repo we just pushed. Idempotent +
+      # fail-soft (never fails the publish). SSOT JSON lives in the script.
+      - name: Ensure ECR lifecycle policy (canvas)
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-2
+        run: |
+          set -uo pipefail
+          # Strip the registry host; pass the bare molecule-ai/<repo> name.
+          REPO_NAME="${IMAGE_NAME#*/}"
+          bash scripts/ops/ensure-ecr-lifecycle.sh "${REPO_NAME}"
+
+  # bp-exempt: post-merge canvas promote side-effect; merge is gated by CI /
+  # all-required and this job waits for green push CI on the SHA before acting.
+  promote-canvas:
+    name: Promote canvas :latest to CI-green build
+    needs: build-and-push
+    # Only on a real main push — workflow_dispatch / non-main never promotes.
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    # Side-effect deploy only; the image publish above is the durable artifact.
+    # mc#2654: do NOT renew this mask silently — it mirrors deploy-production's
+    # contract (a flaky promote must not red the ship lane), tracked in core#2226.
+    continue-on-error: true
+    runs-on: publish
+    timeout-minutes: 60
+    env:
+      # Same green-main-CI gate the platform deploy-production waits on, so
+      # platform + canvas advance :latest off the identical signal/SHA.
+      GITEA_HOST: git.moleculesai.app
+      GITEA_TOKEN: ${{ secrets.PROD_AUTO_DEPLOY_CONTROL_TOKEN || secrets.AUTO_SYNC_TOKEN }}
+      CI_STATUS_TIMEOUT_SECONDS: "3600"
+      # Re-uses the platform's disable kill-switch: when prod auto-deploy is
+      # paused, the canvas :latest promote pauses too (correct — an unpromoted
+      # build must not become :latest while the fleet is frozen).
+      PROD_AUTO_DEPLOY_DISABLED: ${{ vars.PROD_AUTO_DEPLOY_DISABLED || secrets.PROD_AUTO_DEPLOY_DISABLED || '' }}
+    steps:
+      # The publish runner's default HOME (/home/hongming) is not writable, so
+      # docker credential saves fail and halt the promote (#2193 on the platform
+      # side). Point HOME + DOCKER_CONFIG at the writable job temp dir.
+      - name: Prepare writable HOME + Docker config
+        run: |
+          set -euo pipefail
+          H="$RUNNER_TEMP/canvas-promote-home"
+          mkdir -p "$H/.docker"
+          echo "HOME=$H" >> "$GITHUB_ENV"
+          echo "DOCKER_CONFIG=$H/.docker" >> "$GITHUB_ENV"
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Resolve promote gate
+        id: gate
+        env:
+          PROD_AUTO_DEPLOY_DISABLED: ${{ env.PROD_AUTO_DEPLOY_DISABLED }}
+        run: |
+          set -euo pipefail
+          if [ -n "${PROD_AUTO_DEPLOY_DISABLED:-}" ]; then
+            case "$(printf '%s' "$PROD_AUTO_DEPLOY_DISABLED" | tr '[:upper:]' '[:lower:]')" in
+              1|true|yes|on|disabled|disable)
+                echo "enabled=false" >> "$GITHUB_OUTPUT"
+                echo "::notice::Canvas :latest promote skipped: PROD_AUTO_DEPLOY_DISABLED=$PROD_AUTO_DEPLOY_DISABLED"
+                {
+                  echo "## Canvas :latest promote skipped"
+                  echo ""
+                  echo "Reason: \`PROD_AUTO_DEPLOY_DISABLED=$PROD_AUTO_DEPLOY_DISABLED\`. The CI-green build is published as \`:staging-${GITHUB_SHA::7}\`; \`:latest\` was left unchanged."
+                } >> "$GITHUB_STEP_SUMMARY"
+                exit 0 ;;
+            esac
+          fi
+          if [ -z "${GITEA_TOKEN:-}" ]; then
+            echo "::error::AUTO_SYNC_TOKEN/PROD_AUTO_DEPLOY_CONTROL_TOKEN is required so the canvas promote can wait for green CI."
+            exit 1
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for green main CI on this SHA
+        if: ${{ steps.gate.outputs.enabled == 'true' }}
+        run: |
+          set -euo pipefail
+          # Same SSOT wait the platform deploy uses: blocks until the required
+          # push contexts (CI / all-required (push) + Secret scan) go green on
+          # THIS sha, and fails closed if any required context terminally fails.
+          python3 .gitea/scripts/prod-auto-deploy.py wait-ci
+
+      - name: Promote canvas :latest to the CI-green image
+        if: ${{ steps.gate.outputs.enabled == 'true' }}
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          STAGING_SHA_TAG: ${{ needs.build-and-push.outputs.staging_sha }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-2
+        run: |
+          set -euo pipefail
+          # Fail-safe: if the build job's output didn't propagate, recompute the
+          # immutable per-commit tag from the SHA so we never promote a guess.
+          SHA_TAG="${STAGING_SHA_TAG:-staging-${GITHUB_SHA::7}}"
+          ECR_REGISTRY="${IMAGE_NAME%%/*}"
+          aws ecr get-login-password --region us-east-2 | \
+            docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+
+          # Digest-level re-tag (no pull/rebuild): :latest becomes byte-identical
+          # to the verified :staging-<sha> for this commit.
+          docker buildx imagetools create \
+            --tag "${IMAGE_NAME}:latest" \
+            "${IMAGE_NAME}:${SHA_TAG}"
+
+          {
+            echo "## Canvas :latest promoted"
+            echo ""
+            echo "Re-pointed \`molecule-ai/canvas:latest\` → \`${SHA_TAG}\` (by digest)."
+            echo ":latest now tracks the CI-green canvas build for commit \`${GITHUB_SHA::7}\`."
+            echo ""
+            echo "Tenants/hosts that \`docker compose pull canvas\` now get the same build the platform deploy rolled for this SHA."
+          } >> "$GITHUB_STEP_SUMMARY"

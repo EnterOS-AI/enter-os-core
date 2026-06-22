@@ -1,0 +1,480 @@
+package handlers
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
+)
+
+// Tests for the idempotency helper added in #2859 (RFC #2857 Phase 3).
+//
+// Background: org_import.createWorkspaceTree was non-idempotent —
+// every call INSERTed a fresh row for every workspace in the tree,
+// regardless of whether matching workspaces already existed. Calling
+// /org/import twice with the same template duplicated the entire tree;
+// in a 4-day window tenant-hongming accumulated 72 stale child
+// workspaces this way.
+//
+// The fix routes through lookupExistingChild before INSERT. These
+// tests pin the helper's three observable behaviors plus an AST gate
+// that catches future re-introductions of the un-checked INSERT.
+
+// lookupChildSQLRE anchors the sqlmock ExpectQuery on every load-bearing
+// token of lookupExistingChild's SELECT (org_import.go:639-645). A loose
+// substring match (the prior shape, just `SELECT id FROM workspaces`)
+// would silent-pass a regression that drops `IS NOT DISTINCT FROM`
+// (breaks NULL-parent matching), drops `parent_id` entirely (hijacks
+// siblings of the same name across different parents), or drops the
+// `status != 'removed'` filter (blocks re-import after Collapse).
+// RFC #2872 Important-2.
+//
+// The four anchored tokens are exactly the predicates the bug shapes
+// would tamper with. Whitespace is `\s+` so a future formatter pass
+// doesn't churn this string.
+const lookupChildSQLRE = `(?s)SELECT id FROM workspaces\s+WHERE name = \$1\s+AND parent_id IS NOT DISTINCT FROM \$2\s+AND status != 'removed'`
+
+func TestLookupExistingChild_NotFound_ReturnsFalseNoError(t *testing.T) {
+	mock := setupTestDB(t)
+	// 0-row result → driver returns sql.ErrNoRows on Scan.
+	parent := "parent-1"
+	mock.ExpectQuery(lookupChildSQLRE).
+		WithArgs("Alpha", &parent).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	h := &OrgHandler{}
+	id, found, err := h.lookupExistingChild(context.Background(), "Alpha", &parent)
+
+	if err != nil {
+		t.Fatalf("expected nil error on no-rows, got: %v", err)
+	}
+	if found {
+		t.Errorf("expected found=false on no-rows, got found=true")
+	}
+	if id != "" {
+		t.Errorf("expected empty id on no-rows, got %q", id)
+	}
+}
+
+func TestLookupExistingChild_Found_ReturnsIDAndTrue(t *testing.T) {
+	mock := setupTestDB(t)
+	parent := "parent-1"
+	mock.ExpectQuery(lookupChildSQLRE).
+		WithArgs("Alpha", &parent).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ws-existing-uuid"))
+
+	h := &OrgHandler{}
+	id, found, err := h.lookupExistingChild(context.Background(), "Alpha", &parent)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !found {
+		t.Errorf("expected found=true when row exists")
+	}
+	if id != "ws-existing-uuid" {
+		t.Errorf("expected id=ws-existing-uuid, got %q", id)
+	}
+}
+
+func TestLookupExistingChild_NilParent_MatchesRoot(t *testing.T) {
+	// `parent_id IS NOT DISTINCT FROM NULL` is the load-bearing trick —
+	// a plain `=` would never match a NULL row. Pin that roots
+	// (parent_id=NULL) are still found by the lookup.
+	mock := setupTestDB(t)
+	mock.ExpectQuery(lookupChildSQLRE).
+		WithArgs("RootAgent", (*string)(nil)).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ws-root-uuid"))
+
+	h := &OrgHandler{}
+	id, found, err := h.lookupExistingChild(context.Background(), "RootAgent", nil)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !found || id != "ws-root-uuid" {
+		t.Errorf("expected found=true id=ws-root-uuid, got found=%v id=%q", found, id)
+	}
+}
+
+func TestLookupExistingChild_DBError_Propagates(t *testing.T) {
+	// A real DB error must NOT be silently swallowed. If the SELECT
+	// can't run, the caller fails fast — never falls back to creating
+	// a duplicate. That fallback is the failure mode the helper exists
+	// to prevent.
+	mock := setupTestDB(t)
+	parent := "parent-1"
+	connFail := errors.New("simulated postgres unavailable")
+	mock.ExpectQuery(lookupChildSQLRE).
+		WithArgs("Alpha", &parent).
+		WillReturnError(connFail)
+
+	h := &OrgHandler{}
+	id, found, err := h.lookupExistingChild(context.Background(), "Alpha", &parent)
+
+	if err == nil {
+		t.Fatalf("expected DB error to propagate, got nil")
+	}
+	// Helper returns the raw error, not a wrap — match by string for
+	// portability across error wrapping conventions.
+	if !strings.Contains(err.Error(), "simulated postgres unavailable") {
+		t.Errorf("expected the original DB error to surface, got: %v", err)
+	}
+	if found {
+		t.Errorf("expected found=false on DB error, got found=true")
+	}
+	if id != "" {
+		t.Errorf("expected empty id on DB error, got %q", id)
+	}
+}
+
+// TestLookupExistingChild_WrappedNoRows_TreatedAsNotFound — pins the
+// wrap-safety of the errors.Is(err, sql.ErrNoRows) check. The previous
+// `err == sql.ErrNoRows` equality would fall through to the
+// "real DB error" branch on a wrapped no-rows error, aborting the
+// import for what is in fact the no-rows happy path. driver/sql
+// wrapping is currently a non-issue but a future driver change or a
+// caller that wraps the result via fmt.Errorf("…: %w", err) would
+// silently break the equality check. errors.Is unwraps.
+func TestLookupExistingChild_WrappedNoRows_TreatedAsNotFound(t *testing.T) {
+	mock := setupTestDB(t)
+	parent := "parent-1"
+	wrapped := fmt.Errorf("driver-wrapped: %w", sql.ErrNoRows)
+	mock.ExpectQuery(lookupChildSQLRE).
+		WithArgs("Alpha", &parent).
+		WillReturnError(wrapped)
+
+	h := &OrgHandler{}
+	id, found, err := h.lookupExistingChild(context.Background(), "Alpha", &parent)
+
+	if err != nil {
+		t.Fatalf("expected wrapped no-rows to be treated as not-found (err=nil), got: %v", err)
+	}
+	if found {
+		t.Errorf("expected found=false on wrapped no-rows, got found=true")
+	}
+	if id != "" {
+		t.Errorf("expected empty id on wrapped no-rows, got %q", id)
+	}
+}
+
+// workspacesInsertRE matches a SQL literal that begins (after optional
+// leading whitespace) with `INSERT INTO workspaces` followed by `(` —
+// requiring the open-paren rules out lookalikes like
+// `INSERT INTO workspaces_audit`, `INSERT INTO workspace_secrets`,
+// `INSERT INTO workspace_channels`, `INSERT INTO canvas_layouts`. The
+// previous bytes.Index gate accepted `workspaces_audit` as a prefix
+// match — see RFC #2872 Important-1 for the silent-false-pass shape.
+var workspacesInsertRE = regexp.MustCompile(`(?s)^\s*INSERT\s+INTO\s+workspaces\s*\(`)
+
+// findLookupAndWorkspacesInsertPos walks the AST of `src` and returns
+// the source positions of (a) the first call to `lookupExistingChild`
+// and (b) the first CallExpr whose argument list contains a STRING
+// BasicLit matching workspacesInsertRE. Either may be token.NoPos if
+// not found.
+//
+// Extracted as a helper so the gate logic can be exercised against
+// synthetic source — TestGate_FailsWhenLookupAfterInsert below proves
+// the gate actually catches the bug shape, not just the happy path.
+func findLookupAndWorkspacesInsertPos(t *testing.T, fname string, src []byte) (lookupPos, insertPos token.Pos, fset *token.FileSet) {
+	t.Helper()
+	fset = token.NewFileSet()
+	file, err := parser.ParseFile(fset, fname, src, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse %s: %v", fname, err)
+	}
+	lookupPos, insertPos = token.NoPos, token.NoPos
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+			if sel.Sel.Name == "lookupExistingChild" && lookupPos == token.NoPos {
+				lookupPos = call.Pos()
+			}
+		}
+		for _, arg := range call.Args {
+			lit, ok := arg.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				continue
+			}
+			raw := lit.Value
+			if unq, err := strconv.Unquote(raw); err == nil {
+				raw = unq
+			}
+			if workspacesInsertRE.MatchString(raw) && insertPos == token.NoPos {
+				insertPos = call.Pos()
+			}
+		}
+		return true
+	})
+	return
+}
+
+// onConflictDoNothingRE pins the TOCTOU-safe shape introduced by
+// migration 20260506000000_workspaces_unique_parent_name.up.sql +
+// the org_import.go INSERT swap (#2872 Critical 1). The workspaces
+// INSERT MUST funnel concurrent collisions through the partial unique
+// index — `ON CONFLICT (...) WHERE status != 'removed' DO NOTHING`
+// is the literal pg statement form that achieves it.
+//
+// The pattern intentionally requires both the COALESCE expression
+// (so root-workspace NULL parents collide) AND the partial-index WHERE
+// clause (so 'removed' rows don't block re-imports). A regression that
+// drops either piece would make the index target a different shape
+// than the migration created, and Postgres would emit
+// "no unique or exclusion constraint matching the ON CONFLICT
+// specification" at runtime — but only on the FIRST collision attempt
+// in production, not in CI without a live race. This regex catches
+// the shape in source so the bug never ships.
+var onConflictDoNothingRE = regexp.MustCompile(
+	`(?s)ON\s+CONFLICT\s*\(\s*COALESCE\s*\(\s*parent_id\s*,\s*'00000000-0000-0000-0000-000000000000'::uuid\s*\)\s*,\s*name\s*\).*?WHERE\s+status\s*!=\s*'removed'.*?DO\s+NOTHING`,
+)
+
+// Source-level guard — pins that org_import.go's INSERT INTO workspaces
+// uses the TOCTOU-safe ON CONFLICT DO NOTHING pattern.
+//
+// Per memory feedback_behavior_based_ast_gates.md: pin the behavior
+// (atomic conflict resolution at the DB), not just function names.
+// If a future refactor reintroduces the un-checked INSERT (the original
+// bug shape that leaked 72 workspaces in 4 days at tenant-hongming),
+// this test fails BEFORE the broken code reaches production where the
+// race window opens.
+//
+// Replaces an earlier "lookup-before-insert" gate that became obsolete
+// when this swap moved idempotency into the database. The earlier
+// gate would silent-false-pass against ON CONFLICT — even though that
+// shape is correct — because lookupExistingChild now runs AFTER the
+// INSERT (only on the skip path, to retrieve the existing id).
+func TestCreateWorkspaceTree_InsertUsesOnConflictDoNothing(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	src, err := os.ReadFile(filepath.Join(wd, "org_import.go"))
+	if err != nil {
+		t.Fatalf("read org_import.go: %v", err)
+	}
+	insertSQL := findWorkspacesInsertSQL(t, "org_import.go", src)
+	if insertSQL == "" {
+		t.Fatalf("AST: no SQL literal matching `^\\s*INSERT INTO workspaces\\s*\\(` in any CallExpr in org_import.go — schema change or rename?")
+	}
+	if !onConflictDoNothingRE.MatchString(insertSQL) {
+		t.Errorf("workspaces INSERT SQL does NOT use the TOCTOU-safe ON CONFLICT shape — concurrent /org/import POSTs will silently double-insert. Required pattern:\n  ON CONFLICT (COALESCE(parent_id, '00000000-...'::uuid), name) WHERE status != 'removed' DO NOTHING\n\nActual SQL:\n%s", insertSQL)
+	}
+}
+
+// TestGate_FailsWhenInsertOmitsOnConflict proves the gate actually
+// catches the bug it's named after — running it against synthetic Go
+// source where the workspaces INSERT lacks the ON CONFLICT clause must
+// fail the regex match. Without this test the gate could regress to
+// "always pass" and the TOCTOU window would silently reopen.
+//
+// Per memory feedback_assert_exact_not_substring.md: verify the
+// tightened test FAILS on the bug shape before merging.
+func TestGate_FailsWhenInsertOmitsOnConflict(t *testing.T) {
+	const buggySrc = `package handlers
+
+import "context"
+
+type fakeDB struct{}
+
+func (fakeDB) ExecContext(ctx context.Context, sql string, args ...interface{}) {}
+
+type fakeOrgHandler struct{}
+
+func buggyCreate(h *fakeOrgHandler, db fakeDB, ctx context.Context, name string, parentID *string) {
+	// Bug shape: bare INSERT, no ON CONFLICT. Two concurrent calls
+	// race past the unique-index check before either completes the
+	// transaction; constraint failure surfaces as a 500 to the
+	// caller (not graceful skip). Pre-#2872 this would silently
+	// duplicate-insert.
+	db.ExecContext(ctx, ` + "`INSERT INTO workspaces (id, name) VALUES ($1, $2)`" + `, "x", name)
+}
+`
+	insertSQL := findWorkspacesInsertSQL(t, "buggy.go", []byte(buggySrc))
+	if insertSQL == "" {
+		t.Fatalf("synthetic buggy source missing workspaces INSERT — helper logic regression")
+	}
+	if onConflictDoNothingRE.MatchString(insertSQL) {
+		t.Fatalf("synthetic bug shape (bare INSERT, no ON CONFLICT) was MATCHED by the gate — regression: gate would not flag the actual bug. SQL:\n%s", insertSQL)
+	}
+}
+
+// findWorkspacesInsertSQL walks `src` and returns the unquoted SQL of
+// the first string literal matching workspacesInsertRE inside any
+// CallExpr's argument list. Returns "" if none found. Helper for the
+// ON CONFLICT gate above.
+func findWorkspacesInsertSQL(t *testing.T, fname string, src []byte) string {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, fname, src, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse %s: %v", fname, err)
+	}
+	var sql string
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		for _, arg := range call.Args {
+			lit, ok := arg.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				continue
+			}
+			raw := lit.Value
+			if unq, err := strconv.Unquote(raw); err == nil {
+				raw = unq
+			}
+			if workspacesInsertRE.MatchString(raw) && sql == "" {
+				sql = raw
+			}
+		}
+		return true
+	})
+	return sql
+}
+
+// TestGate_IgnoresAuditTableShadow proves the regex tightening
+// actually ignores `INSERT INTO workspaces_audit` literals — the
+// specific shape #2872 cited as the silent-false-pass failure mode
+// for the previous bytes.Index gate.
+func TestGate_IgnoresAuditTableShadow(t *testing.T) {
+	// Synthetic source with audit-table INSERT at line 1 (would be
+	// position 0 under prefix-match) and lookup + real INSERT at later
+	// positions. With the tightened regex, the audit literal is
+	// ignored: insertPos points at the REAL INSERT, lookup precedes it,
+	// gate passes correctly.
+	const src = `package handlers
+
+import "context"
+
+type fakeDB struct{}
+
+func (fakeDB) ExecContext(ctx context.Context, sql string, args ...interface{}) {}
+
+type fakeOrgHandler struct{}
+
+func (h *fakeOrgHandler) lookupExistingChild(ctx context.Context, name string, parentID *string) (string, bool, error) {
+	return "", false, nil
+}
+
+func okCreateWithAudit(h *fakeOrgHandler, db fakeDB, ctx context.Context, name string, parentID *string) {
+	// Audit-table INSERT — should be IGNORED by the tightened regex.
+	db.ExecContext(ctx, ` + "`INSERT INTO workspaces_audit (id, action) VALUES ($1, $2)`" + `, "x", "create_attempt")
+	// Lookup BEFORE real INSERT — correct order.
+	h.lookupExistingChild(ctx, name, parentID)
+	// Real INSERT.
+	db.ExecContext(ctx, ` + "`INSERT INTO workspaces (id, name) VALUES ($1, $2)`" + `, "x", name)
+}
+`
+	lookupPos, insertPos, fset := findLookupAndWorkspacesInsertPos(t, "shadow.go", []byte(src))
+	if lookupPos == token.NoPos || insertPos == token.NoPos {
+		t.Fatalf("expected to find lookup + real INSERT, got lookupPos=%v insertPos=%v", lookupPos, insertPos)
+	}
+	// The audit-table INSERT is at line ~16 (column ~20-ish), the
+	// lookup is at line 19, the real INSERT is at line 21. If the
+	// regex regressed to prefix-match, insertPos would point at the
+	// audit literal at line 16, and the gate would falsely fail
+	// (lookup at 19 > "insert" at 16). With the tightened regex,
+	// insertPos correctly points at line 21, and the gate passes.
+	insertLine := fset.Position(insertPos).Line
+	lookupLine := fset.Position(lookupPos).Line
+	if insertLine < lookupLine {
+		t.Errorf("regex regressed: audit shadow at line %d swallowed real INSERT (lookup at line %d). insertPos should point at the real INSERT (line ~21), not the audit literal.",
+			insertLine, lookupLine)
+	}
+	if lookupPos > insertPos {
+		t.Errorf("synthetic source has lookup at line %d before real INSERT at line %d, gate should pass (lookupPos < insertPos), got lookupPos=%d > insertPos=%d",
+			lookupLine, insertLine, lookupPos, insertPos)
+	}
+}
+
+// TestWorkspacesInsertRE_RejectsLookalikes pins the regex that
+// discriminates the real workspaces INSERT from prefix-matching
+// lookalikes. If this regex regresses to a substring match, the
+// AST gate above silently false-passes when a future refactor
+// shadows the real INSERT with a workspaces_audit / workspace_secrets
+// / canvas_layouts literal placed earlier in source.
+func TestWorkspacesInsertRE_RejectsLookalikes(t *testing.T) {
+	cases := []struct {
+		sql     string
+		want    bool
+		comment string
+	}{
+		{"INSERT INTO workspaces (id, name) VALUES ($1, $2)", true, "real target"},
+		{"\n\t\tINSERT INTO workspaces (id, name)\n\t\tVALUES ($1, $2)", true, "real target with leading whitespace + newlines (raw string literal shape)"},
+		{"INSERT INTO workspaces_audit (id) VALUES ($1)", false, "underscore-suffix lookalike (the #2872 specific failure mode)"},
+		{"INSERT INTO workspace_secrets (key, value) VALUES ($1, $2)", false, "prefix without trailing 's' (workspace_*)"},
+		{"INSERT INTO workspace_channels (id) VALUES ($1)", false, "another workspace_* prefix"},
+		{"INSERT INTO canvas_layouts (workspace_id, x, y) VALUES ($1, $2, $3)", false, "unrelated table that contains 'workspace' in a column ref"},
+		{"UPDATE workspaces SET status='running' WHERE id=$1", false, "UPDATE shouldn't match"},
+		{"SELECT * FROM workspaces WHERE id=$1", false, "SELECT shouldn't match"},
+		{"-- comment about INSERT INTO workspaces (\nSELECT 1", false, "comment shouldn't match"},
+	}
+	for _, c := range cases {
+		got := workspacesInsertRE.MatchString(c.sql)
+		if got != c.want {
+			t.Errorf("workspacesInsertRE.MatchString(%q) = %v, want %v (%s)", c.sql, got, c.want, c.comment)
+		}
+	}
+}
+
+// Confirm the regex actually matches the literal currently in
+// org_import.go. Pins the shape so `gofmt` reflows or trivial edits
+// to the SQL string don't silently disable the gate above.
+func TestWorkspacesInsertRE_MatchesActualSourceLiteral(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	src, err := os.ReadFile(filepath.Join(wd, "org_import.go"))
+	if err != nil {
+		t.Fatalf("read org_import.go: %v", err)
+	}
+	// Strip backtick strings, find any whose content matches.
+	// Walk the source via parser.ParseFile to avoid string-search
+	// drift if the literal is reflowed.
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filepath.Join(wd, "org_import.go"), src, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse org_import.go: %v", err)
+	}
+	var matched bool
+	ast.Inspect(file, func(n ast.Node) bool {
+		lit, ok := n.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+		raw := lit.Value
+		if unq, err := strconv.Unquote(raw); err == nil {
+			raw = unq
+		}
+		if workspacesInsertRE.MatchString(raw) {
+			matched = true
+		}
+		return true
+	})
+	if !matched {
+		t.Fatalf("no SQL literal in org_import.go matches workspacesInsertRE — gate is dead. Either the INSERT was renamed (update the regex) or the file was restructured (review the gate logic).")
+	}
+	// strings.Contains keeps the test informative: if the regex
+	// stopped matching but the literal source still contains the
+	// magic phrase, that's a regex-side failure (test the fix above).
+	if !strings.Contains(string(src), "INSERT INTO workspaces") {
+		t.Fatalf("org_import.go has no `INSERT INTO workspaces` substring at all — schema change?")
+	}
+}

@@ -1,0 +1,505 @@
+name: E2E Peer Visibility (literal MCP list_peers)
+
+# WHY A DEDICATED WORKFLOW (not folded into e2e-staging-saas.yml)
+# --------------------------------------------------------------
+# This is the systemic fix for a real trust failure. Hermes and OpenClaw
+# were reported "fleet-verified / cascade-complete" because the *proxy*
+# signals were green (registry registration + heartbeat for Hermes; model
+# round-trip 200 for OpenClaw). A freshly-provisioned workspace asked on
+# canvas "can you see your peers" actually FAILS:
+#   - Hermes: 401 on the molecule MCP `list_peers` call
+#   - OpenClaw: native `sessions_list` fallback, sees no platform peers
+# Tasks #142/#159 were even marked "completed" under this proxy flaw.
+#
+# A dedicated workflow (vs extending e2e-staging-saas.yml) because:
+#   - It must provision MULTIPLE distinct runtimes (hermes, openclaw,
+#     claude-code) in ONE org and assert each sees the others. The
+#     full-saas script is single-runtime-per-run (E2E_RUNTIME) and folding
+#     a multi-runtime matrix into it would conflate concerns and bloat its
+#     already-45-min run.
+#   - It needs its own concurrency group so it doesn't fight full-saas /
+#     canvas for the staging org-creation quota.
+#   - It needs an independent, non-required status-context name so it can
+#     be RED today (the in-flight Hermes-401 / OpenClaw-MCP-wiring fixes
+#     have not landed) WITHOUT wedging unrelated merges — and flipped to
+#     REQUIRED in one branch-protection edit once it goes green
+#     (flip-to-required checklist: molecule-core#1296).
+#
+# THE ASSERTION IS NOT A PROXY. The driving script
+# tests/e2e/test_peer_visibility_mcp_staging.sh issues the byte-for-byte
+# JSON-RPC `tools/call name=list_peers` envelope to `POST
+# /workspaces/:id/mcp` using each workspace's OWN bearer token, through
+# the real WorkspaceAuth + MCPRateLimiter middleware chain — the exact
+# call mcp_molecule_list_peers makes from a canvas agent. It does NOT
+# read a registry row, /health, the heartbeat table, or
+# GET /registry/:id/peers.
+#
+# HONEST GATE — NO continue-on-error. Per feedback_fix_root_not_symptom a
+# fake-green mask would defeat the entire purpose. This workflow goes red
+# on today's broken behavior and green only when the root-cause fixes
+# actually land. It is intentionally NOT in branch_protections — see PR
+# body for the required-vs-not decision + flip tracking issue.
+#
+# Gitea 1.22.6 / act_runner notes honored:
+#   - No cross-repo `uses:` (feedback_gitea_cross_repo_uses_blocked). The
+#     actions/checkout SHA is the one e2e-staging-canvas.yml already uses
+#     successfully (a mirrored SHA — see #1277/PR#1292 root-cause).
+#   - 2026-05-21 retrigger: verify fresh platform-tenant image after the
+#     publish Buildx DOCKER_CONFIG fix restored staging-latest image updates.
+#   - Per-SHA concurrency, not global (feedback_concurrency_group_per_sha).
+#   - Workflow-level GITHUB_SERVER_URL pinned
+#     (feedback_act_runner_github_server_url).
+#   - pr-validate posts a status under the same check name so a
+#     workflow-only PR is not silently statusless and the context is
+#     flip-to-required-ready (mirrors e2e-staging-saas.yml's proven shape;
+#     real EC2-provisioning E2E is push/dispatch/cron only — it is 30+ min
+#     and cannot run per-PR-update).
+#
+# LOCAL BACKEND (added 2026-05-15 — feedback_local_must_mimic_production,
+# feedback_mandatory_local_e2e_before_ship, feedback_local_test_before_
+# staging_e2e)
+# --------------------------------------------------------------------
+# The standing rule is that the local prod-mimic stack runs a MANDATORY
+# local-Postgres E2E BEFORE staging E2E. A staging-only peer-visibility
+# gate caught regressions late + expensively (cold EC2). The
+# `peer-visibility-local` job below runs the SAME byte-identical
+# assertion (tests/e2e/lib/peer_visibility_assert.sh) against the local
+# docker-compose stack — built + booted exactly like e2e-api.yml's
+# proven E2E API Smoke Test job (ephemeral pg/redis ports, go build,
+# background platform-server). It runs on PR + push (local boot is
+# minutes, not the 30+ min cold-EC2 path), so peer-visibility is part of
+# the local gate that fires before the staging E2E.
+#
+# It is its OWN non-required status context `E2E Peer Visibility (local)`.
+# The local backend uses external-mode workspaces by default so it tests
+# the literal platform MCP list_peers path without depending on local
+# template container boot/heartbeat. Container-mode runtime boot remains
+# available via PV_LOCAL_PROVISION_MODE=container for targeted debugging.
+
+# NO `paths:` FILTER — REQUIRED-CHECK CONTRACT (#1296, 2026-06-13).
+# The `E2E Peer Visibility` context is now a REQUIRED status check on
+# branch_protections/main. A required-check workflow must NOT carry an
+# `on: paths:` (or `paths-ignore:`) filter — lint-required-no-paths.py
+# hard-fails it, because a docs-only PR that doesn't match the glob would
+# never fire the workflow and the required context would sit `pending`
+# forever, wedging the PR (feedback_path_filtered_workflow_cant_be_required).
+#
+# Path-scoping is NOT lost — it moved into the `changes` detect job below
+# (detect-changes.py --profile peer-visibility → `peervis`) and is applied
+# PER-STEP inside the single always-running `peer-visibility` job. That job
+# emits exactly ONE check run under the required name `E2E Peer Visibility`
+# regardless of which paths changed — branch-protection-clean, exactly like
+# handlers-postgres-integration.yml (PR #2264 check_name_parity incident).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # 07:30 UTC daily — catches AMI / template-hermes / template-openclaw
+    # drift even on quiet days. Offset 30m from e2e-staging-saas (07:00)
+    # so the two don't collide on the staging org-creation quota.
+    - cron: '30 7 * * *'
+
+concurrency:
+  # Per-SHA (feedback_concurrency_group_per_sha). A single global group
+  # would let a queued staging/main push behind a PR run get cancelled,
+  # leaving any gate that reads "completed run at SHA" stuck.
+  group: e2e-peer-visibility-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  # Path-scoping for the required `E2E Peer Visibility` gate. Replaces the
+  # old `on: paths:` filter (which a required check may not carry — see the
+  # `on:` header). Emits `peervis=true` when any peer-visibility-relevant
+  # file changed. On workflow_dispatch / schedule / a zero/unknown base SHA
+  # the detect helper fails OPEN (peervis=true) so manual + cron runs always
+  # exercise the real staging E2E. Mirrors ci.yml's `Detect changes` job.
+  changes:
+    name: detect-changes
+    runs-on: ubuntu-latest
+    continue-on-error: false
+    outputs:
+      peervis: ${{ steps.filter.outputs.peervis }}
+      debug: ${{ steps.filter.outputs.debug }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # depth:2 covers the common push case; detect-changes.py fetches the
+          # exact PR base SHA itself when the shallow checkout lacks it.
+          fetch-depth: 2
+      - id: filter
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          BASE_SHA="${PR_BASE_SHA:-$PUSH_BEFORE}"
+          python3 .gitea/scripts/detect-changes.py \
+            --profile peer-visibility \
+            --event-name "${{ github.event_name }}" \
+            --pr-base-sha "$PR_BASE_SHA" \
+            --base-ref "$PR_BASE_REF" \
+            --push-before "${GITHUB_EVENT_BEFORE:-$PUSH_BEFORE}" || {
+            # Script crash / uncaught error: fail open so the E2E gate runs
+            # rather than silently no-oping a potentially-breaking PR.
+            echo "peervis=true" >> "$GITHUB_OUTPUT"
+            echo "debug=detect-script-error event=${{ github.event_name }} base=$BASE_SHA" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          echo "debug=profile=peer-visibility event=${{ github.event_name }} base=$BASE_SHA" >> "$GITHUB_OUTPUT"
+
+  # THE required-check emitter. ONE always-running job (no job-level `if:`)
+  # named `E2E Peer Visibility`, so it posts EXACTLY ONE check run under the
+  # required context regardless of event/paths — branch-protection-clean
+  # (feedback_branch_protection_check_name_parity; a job-level `if:` that
+  # skips would post a SKIPPED check run that fails the required eval even
+  # beside a SUCCESS sibling — the PR #2264 / handlers-postgres lesson).
+  # Exactly one of three per-step paths determines the result:
+  #   - pull_request           → validate the driving scripts' bash syntax
+  #                              (cheap; the 30+min EC2 E2E can't run per-PR).
+  #   - push/dispatch/cron + peervis → the REAL staging fresh-provision
+  #                              list_peers E2E (the objective proof).
+  #   - push + !peervis        → no-op pass (paths filter excluded this push).
+  # The LOCAL backend's real assertion runs in peer-visibility-local below.
+  peer-visibility:
+    name: E2E Peer Visibility
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    # SECURITY (RC #11317): NO secrets at job level. This job runs on
+    # pull_request (it is the always-running required-context emitter) and a
+    # job-level secret would be present in the env of the pull_request run —
+    # exfiltratable by an untrusted/fork PR even though the PR path only runs
+    # the secret-free bash-syntax validation step. The staging secrets
+    # (CP_STAGING_ADMIN_API_TOKEN + the three MOLECULE_STAGING_*_API_KEY) are
+    # therefore bound PER-STEP on the push/dispatch/cron-only steps below,
+    # each already guarded by `if: github.event_name != 'pull_request'`. Only
+    # non-secret env (URLs, run id, runtime list) lives at job level.
+    env:
+      MOLECULE_CP_URL: https://staging-api.moleculesai.app
+      E2E_RUN_ID: "${{ github.run_id }}-${{ github.run_attempt }}"
+      PV_RUNTIMES: "hermes openclaw claude-code"
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # --- PR path: cheap syntax validation (was the pr-validate job) ------
+      - name: Validate driving scripts + shared assertion lib
+        if: github.event_name == 'pull_request'
+        run: |
+          bash -n tests/e2e/lib/peer_visibility_assert.sh
+          echo "lib/peer_visibility_assert.sh — bash syntax OK"
+          bash -n tests/e2e/test_peer_visibility_mcp_staging.sh
+          echo "test_peer_visibility_mcp_staging.sh — bash syntax OK"
+          bash -n tests/e2e/test_peer_visibility_token_mint_staging.sh
+          echo "test_peer_visibility_token_mint_staging.sh — bash syntax OK"
+          bash -n tests/e2e/test_peer_visibility_mcp_local.sh
+          echo "test_peer_visibility_mcp_local.sh — bash syntax OK"
+          legacy_token_suffix="test""-token"
+          if rg -n "$legacy_token_suffix" tests/e2e/test_*staging*.sh; then
+            echo "::error::staging E2E must use production-safe admin token minting"
+            exit 1
+          fi
+          echo "Staging fresh-provision MCP list_peers E2E runs on push to"
+          echo "main / workflow_dispatch / daily cron (30+ min EC2 boot)."
+          echo "The LOCAL backend runs in the peer-visibility-local job"
+          echo "below on this same PR (local docker-compose stack)."
+
+      # --- push/dispatch/cron, no relevant paths changed: no-op pass -------
+      - name: No-op pass (paths filter excluded this push)
+        if: github.event_name != 'pull_request' && needs.changes.outputs.peervis != 'true'
+        run: |
+          echo "No peer-visibility-relevant changes — E2E Peer Visibility gate satisfied without running the staging E2E."
+          echo "::notice::E2E Peer Visibility no-op pass (detect-changes profile peer-visibility excluded this push)."
+          echo "::notice::detect-changes debug: ${{ needs.changes.outputs.debug }}"
+
+      # --- push/dispatch/cron + relevant change: the REAL staging E2E ------
+      - name: Verify admin token present
+        if: github.event_name != 'pull_request' && needs.changes.outputs.peervis == 'true'
+        env:
+          MOLECULE_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+        run: |
+          if [ -z "$MOLECULE_ADMIN_TOKEN" ]; then
+            echo "::error::CP_STAGING_ADMIN_API_TOKEN secret not set (Railway staging CP_ADMIN_API_TOKEN)"
+            exit 2
+          fi
+          echo "Admin token present"
+
+      - name: Verify an LLM key present
+        if: github.event_name != 'pull_request' && needs.changes.outputs.peervis == 'true'
+        env:
+          E2E_MINIMAX_API_KEY: ${{ secrets.MOLECULE_STAGING_MINIMAX_API_KEY }}
+          E2E_ANTHROPIC_API_KEY: ${{ secrets.MOLECULE_STAGING_ANTHROPIC_API_KEY }}
+          E2E_OPENAI_API_KEY: ${{ secrets.MOLECULE_STAGING_OPENAI_API_KEY }}
+        run: |
+          if [ -z "${E2E_MINIMAX_API_KEY:-}" ] && [ -z "${E2E_ANTHROPIC_API_KEY:-}" ] && [ -z "${E2E_OPENAI_API_KEY:-}" ]; then
+            echo "::error::No LLM provider key set — workspaces fail at boot with 'No provider API key found'. Set MOLECULE_STAGING_MINIMAX_API_KEY (or ANTHROPIC / OPENAI)."
+            exit 2
+          fi
+          echo "LLM key present"
+
+      - name: CP staging health preflight
+        if: github.event_name != 'pull_request' && needs.changes.outputs.peervis == 'true'
+        run: |
+          code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$MOLECULE_CP_URL/health")
+          if [ "$code" != "200" ]; then
+            echo "::error::Staging CP unhealthy (HTTP $code) — infra, not a workspace bug. Failing loud per feedback_fix_root_not_symptom."
+            exit 1
+          fi
+          echo "Staging CP healthy"
+
+      - name: Run fresh-provision peer-visibility E2E (literal MCP list_peers)
+        if: github.event_name != 'pull_request' && needs.changes.outputs.peervis == 'true'
+        env:
+          MOLECULE_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+          E2E_MINIMAX_API_KEY: ${{ secrets.MOLECULE_STAGING_MINIMAX_API_KEY }}
+          E2E_ANTHROPIC_API_KEY: ${{ secrets.MOLECULE_STAGING_ANTHROPIC_API_KEY }}
+          E2E_OPENAI_API_KEY: ${{ secrets.MOLECULE_STAGING_OPENAI_API_KEY }}
+        run: bash tests/e2e/test_peer_visibility_mcp_staging.sh
+
+      # Belt-and-braces scoped teardown: the script installs an EXIT/INT/
+      # TERM trap, but if the runner itself is cancelled the trap may not
+      # fire. This always() step deletes ONLY the e2e-pv-<run_id> org this
+      # run created — never a cluster-wide sweep
+      # (feedback_never_run_cluster_cleanup_tests_on_live_platform). The
+      # admin DELETE is idempotent so double-invoking is safe;
+      # sweep-stale-e2e-orgs is the final net (slug starts with 'e2e-').
+      - name: Teardown safety net (runs on cancel/failure)
+        if: always() && github.event_name != 'pull_request' && needs.changes.outputs.peervis == 'true'
+        env:
+          ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+        run: |
+          set +e
+          orgs=$(curl -sS "$MOLECULE_CP_URL/cp/admin/orgs?limit=500" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" 2>/dev/null \
+            | python3 -c "
+          import json, sys, os, datetime
+          run_id = os.environ.get('GITHUB_RUN_ID', '')
+          try:
+              d = json.load(sys.stdin)
+          except Exception:
+              print(''); sys.exit(0)
+          # ONLY sweep slugs from THIS run. e2e-pv-<YYYYMMDD>-<run_id>-...
+          # Sweep today AND yesterday's UTC date so a midnight-crossing run
+          # still matches its own slug (same bug class as the saas/canvas
+          # safety nets).
+          today = datetime.date.today()
+          yest = today - datetime.timedelta(days=1)
+          dates = (today.strftime('%Y%m%d'), yest.strftime('%Y%m%d'))
+          if run_id:
+              prefixes = tuple(f'e2e-pv-{dt}-{run_id}-' for dt in dates)
+          else:
+              prefixes = tuple(f'e2e-pv-{dt}-' for dt in dates)
+          orgs = d if isinstance(d, list) else d.get('orgs', [])
+          cands = [o['slug'] for o in orgs
+                   if any(o.get('slug','').startswith(p) for p in prefixes)
+                   and o.get('instance_status') not in ('purged',)]
+          print('\n'.join(cands))
+          " 2>/dev/null)
+          for slug in $orgs; do
+            echo "Safety-net teardown: $slug"
+            set +e
+            curl -sS -o /tmp/pv-cleanup.out -w "%{http_code}" \
+              -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
+              -H "Authorization: Bearer $ADMIN_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"confirm\":\"$slug\"}" >/tmp/pv-cleanup.code
+            set -e
+            code=$(cat /tmp/pv-cleanup.code 2>/dev/null || echo "000")
+            if [ "$code" = "200" ] || [ "$code" = "204" ]; then
+              echo "[teardown] deleted $slug (HTTP $code)"
+            else
+              echo "::warning::pv teardown for $slug returned HTTP $code — sweep-stale-e2e-orgs will catch it within MAX_AGE_MINUTES. Body: $(head -c 300 /tmp/pv-cleanup.out 2>/dev/null)"
+            fi
+          done
+          exit 0
+
+  # LOCAL gate: same byte-identical assertion against the local prod-mimic
+  # docker-compose stack — the MANDATORY local-E2E that must run BEFORE
+  # the staging E2E (feedback_mandatory_local_e2e_before_ship,
+  # feedback_local_test_before_staging_e2e). Bootstrap mirrors
+  # e2e-api.yml's proven E2E API Smoke Test job (per-run container names +
+  # ephemeral host ports so concurrent host-network act_runner runs don't
+  # collide; go build; background platform-server). Its OWN non-required
+  # status context `E2E Peer Visibility (local)` — non-required-by-design
+  # exactly like the staging job (flip-to-required tracked at
+  # molecule-core#1296). HONEST gate, NO continue-on-error mask
+  # (feedback_fix_root_not_symptom). Runs on PR +
+  # push (local boot is minutes, not the 30+ min cold-EC2 path).
+  # bp-required: pending #1296
+  peer-visibility-local:
+    name: E2E Peer Visibility (local)
+    needs: changes
+    # Cost-gate the heavy local docker-compose E2E to peer-visibility-relevant
+    # changes (dispatch/cron fail OPEN to peervis=true). NON-required context,
+    # so a SKIPPED check run on an unrelated PR is harmless — only the
+    # `E2E Peer Visibility` job (above) is branch-protection-required.
+    #
+    # SECURITY (RC #11317): this job binds secrets at job level
+    # (E2E_CLAUDE_CODE_OAUTH_TOKEN + the three MOLECULE_STAGING_*_API_KEY), so
+    # it must NOT run on pull_request — an untrusted/fork PR run would have
+    # those secrets in its env. Excluding pull_request here mirrors the
+    # `github.event_name != 'pull_request'` guard on the staging steps above.
+    # Being non-required, the resulting SKIPPED check on PRs does not wedge
+    # branch protection.
+    if: github.event_name != 'pull_request' && needs.changes.outputs.peervis == 'true'
+    runs-on: docker-host
+    timeout-minutes: 30
+    env:
+      # Per-run names + ephemeral ports — same collision-avoidance as
+      # e2e-api.yml (host-network act_runner; feedback_act_runner_*).
+      PG_CONTAINER: pg-e2e-pv-${{ github.run_id }}-${{ github.run_attempt }}
+      REDIS_CONTAINER: redis-e2e-pv-${{ github.run_id }}-${{ github.run_attempt }}
+      # LLM keys so hermes/openclaw can actually boot. The local script
+      # SKIPs (not fails) any runtime whose key is absent, so a partially
+      # keyed CI env still exercises whatever it can.
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.E2E_CLAUDE_CODE_OAUTH_TOKEN }}
+      E2E_MINIMAX_API_KEY: ${{ secrets.MOLECULE_STAGING_MINIMAX_API_KEY }}
+      E2E_ANTHROPIC_API_KEY: ${{ secrets.MOLECULE_STAGING_ANTHROPIC_API_KEY }}
+      E2E_OPENAI_API_KEY: ${{ secrets.MOLECULE_STAGING_OPENAI_API_KEY }}
+      PV_RUNTIMES: "hermes openclaw claude-code"
+      PV_LOCAL_PROVISION_MODE: external
+      ADMIN_TOKEN: local-e2e-admin-token
+      MOLECULE_ADMIN_TOKEN: local-e2e-admin-token
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 'stable'
+          # cache:false — the self-hosted runner bind-mounts a persistent
+          # GOCACHE/GOMODCACHE (/var/cache/ci-go-{build,mod}); actions/cache is
+          # redundant and corrupts it by untarring over the bind mount ("File
+          # exists" -> "Failed to restore" -> partial cache -> linker/typecheck
+          # errors on heavy jobs, e.g. test -race link "too many errors" and
+          # go-arch-lint "without types"). Fleet sweep after the cp ci.yml find.
+          cache: false
+          cache-dependency-path: workspace-server/go.sum
+      - name: Pre-pull alpine + ensure provisioner network
+        run: |
+          docker pull alpine:latest >/dev/null
+          docker network create molecule-core-net >/dev/null 2>&1 || true
+          echo "alpine:latest pre-pulled; molecule-core-net ensured."
+      - name: Start Postgres (docker, ephemeral port)
+        run: |
+          docker rm -f "$PG_CONTAINER" 2>/dev/null || true
+          docker run -d --name "$PG_CONTAINER" \
+            -e POSTGRES_USER=dev -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=molecule \
+            -p 0:5432 postgres:16 >/dev/null
+          PG_PORT=$(docker port "$PG_CONTAINER" 5432/tcp | awk -F: '/^0\.0\.0\.0:/ {print $2; exit}')
+          [ -n "$PG_PORT" ] || PG_PORT=$(docker port "$PG_CONTAINER" 5432/tcp | head -1 | awk -F: '{print $NF}')
+          if [ -z "$PG_PORT" ]; then
+            echo "::error::Could not resolve host port for $PG_CONTAINER"
+            docker logs "$PG_CONTAINER" || true; exit 1
+          fi
+          echo "DATABASE_URL=postgres://dev:dev@127.0.0.1:${PG_PORT}/molecule?sslmode=disable" >> "$GITHUB_ENV"
+          for i in $(seq 1 30); do
+            docker exec "$PG_CONTAINER" pg_isready -U dev >/dev/null 2>&1 && { echo "Postgres ready after ${i}s"; exit 0; }
+            sleep 1
+          done
+          echo "::error::Postgres did not become ready in 30s"; docker logs "$PG_CONTAINER" || true; exit 1
+      - name: Start Redis (docker, ephemeral port)
+        run: |
+          docker rm -f "$REDIS_CONTAINER" 2>/dev/null || true
+          docker run -d --name "$REDIS_CONTAINER" -p 0:6379 redis:7 >/dev/null
+          REDIS_PORT=$(docker port "$REDIS_CONTAINER" 6379/tcp | awk -F: '/^0\.0\.0\.0:/ {print $2; exit}')
+          [ -n "$REDIS_PORT" ] || REDIS_PORT=$(docker port "$REDIS_CONTAINER" 6379/tcp | head -1 | awk -F: '{print $NF}')
+          if [ -z "$REDIS_PORT" ]; then
+            echo "::error::Could not resolve host port for $REDIS_CONTAINER"
+            docker logs "$REDIS_CONTAINER" || true; exit 1
+          fi
+          echo "REDIS_URL=redis://127.0.0.1:${REDIS_PORT}" >> "$GITHUB_ENV"
+          for i in $(seq 1 15); do
+            docker exec "$REDIS_CONTAINER" redis-cli ping 2>/dev/null | grep -q PONG && { echo "Redis ready after ${i}s"; exit 0; }
+            sleep 1
+          done
+          echo "::error::Redis did not become ready in 15s"; docker logs "$REDIS_CONTAINER" || true; exit 1
+      - name: Build platform
+        working-directory: workspace-server
+        run: go build -o platform-server ./cmd/server
+      - name: Pick platform port
+        run: |
+          PLATFORM_PORT=$(python3 - <<'PY'
+          import socket
+          with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+              s.bind(("127.0.0.1", 0))
+              print(s.getsockname()[1])
+          PY
+          )
+          echo "PORT=${PLATFORM_PORT}" >> "$GITHUB_ENV"
+          echo "BASE=http://127.0.0.1:${PLATFORM_PORT}" >> "$GITHUB_ENV"
+          echo "Platform host port: ${PLATFORM_PORT}"
+      - name: Kill stale platform-server before start
+        run: |
+          killed=0
+          for pid in $(grep -l "platform-serve" /proc/[0-9]*/comm 2>/dev/null); do
+            kpid="${pid%/comm}"; kpid="${kpid##*/}"
+            cmdline=$(cat "/proc/${kpid}/cmdline" 2>/dev/null | tr '\0' ' ')
+            if echo "$cmdline" | grep -q "platform-server"; then
+              echo "Killing stale platform-server pid ${kpid}"
+              kill "$kpid" 2>/dev/null || true; killed=$((killed + 1))
+            fi
+          done
+          [ "$killed" -gt 0 ] && sleep 2 || true
+          echo "stale-kill done ($killed killed)"
+      - name: Start platform (background)
+        working-directory: workspace-server
+        run: |
+          ./platform-server > platform.log 2>&1 &
+          echo $! > platform.pid
+      - name: Wait for /health
+        run: |
+          # Readiness signal: the platform binds /health only AFTER the full
+          # migration chain has been applied on cold start (it prints
+          # "Platform starting on :PORT" at that point). So a 200 from /health
+          # is the real "migrations done + server listening" signal.
+          #
+          # The migration chain grows every release, so a fixed ~30s budget is
+          # brittle by construction. Use a generous wall-clock budget that
+          # comfortably exceeds cold-start + full-migration time, polling fast.
+          # Robust to a growing chain WITHOUT masking a dead platform: if the
+          # background platform-server process has exited, fail loudly at once.
+          DEADLINE_SECS=180          # cold-start + full migration chain headroom
+          PLATFORM_PID="$(cat workspace-server/platform.pid 2>/dev/null || true)"
+          start=$(date +%s)
+          while :; do
+            if curl -sf "$BASE/health" > /dev/null; then
+              echo "Platform healthy after $(( $(date +%s) - start ))s"
+              exit 0
+            fi
+            if [ -n "$PLATFORM_PID" ] && ! kill -0 "$PLATFORM_PID" 2>/dev/null; then
+              echo "::error::platform-server (pid ${PLATFORM_PID}) exited before /health became reachable — see log below"
+              cat workspace-server/platform.log || true
+              exit 1
+            fi
+            if [ "$(( $(date +%s) - start ))" -ge "$DEADLINE_SECS" ]; then
+              echo "::error::Platform did not become healthy within ${DEADLINE_SECS}s — see log below"
+              cat workspace-server/platform.log || true
+              exit 1
+            fi
+            sleep 1
+          done
+      - name: Run LOCAL fresh-provision peer-visibility E2E (literal MCP list_peers)
+        # HONEST gate — NO continue-on-error. The local backend uses
+        # external-mode workspaces so this context tests the literal MCP
+        # peer-visibility path without coupling to template container boot.
+        run: bash tests/e2e/test_peer_visibility_mcp_local.sh
+      - name: Dump platform log on failure
+        if: failure()
+        run: cat workspace-server/platform.log || true
+      - name: Stop platform
+        if: always()
+        run: |
+          if [ -f workspace-server/platform.pid ]; then
+            kill "$(cat workspace-server/platform.pid)" 2>/dev/null || true
+          fi
+      - name: Stop service containers
+        if: always()
+        run: |
+          docker rm -f "$PG_CONTAINER" 2>/dev/null || true
+          docker rm -f "$REDIS_CONTAINER" 2>/dev/null || true

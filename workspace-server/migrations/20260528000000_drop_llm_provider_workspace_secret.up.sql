@@ -1,0 +1,22 @@
+-- internal#718 P4 closure — drop any straggler LLM_PROVIDER rows.
+--
+-- The LLM_PROVIDER workspace_secret is retired. The provider is now DERIVED
+-- at every decision point from (runtime, model) via the registry
+-- (internal/providers.Manifest.DeriveProvider). No consumer reads the row
+-- anymore:
+--
+--   - core handlers GetProvider / SetProvider — removed (route returns 410)
+--   - core handlers WorkspaceHandler.Create setProviderSecret write — removed
+--   - core handlers deriveProviderFromModelSlug — removed
+--   - core loadWorkspaceSecrets — still hydrates the env map (a defence-
+--     in-depth filter in handlers/workspace_provision.go drops the key
+--     before envVars is passed to the CP provisioner, so existing rows
+--     are idempotent until this migration removes them on the next
+--     deploy)
+--   - CP provisioner resolveModelAndProvider — replaced with a registry
+--     derivation; env["LLM_PROVIDER"] is no longer read
+--
+-- This migration removes any straggler rows so the table is in the same
+-- state as a freshly-provisioned tenant. Idempotent: a fresh tenant
+-- with zero LLM_PROVIDER rows produces a 0-row delete.
+DELETE FROM workspace_secrets WHERE key = 'LLM_PROVIDER';

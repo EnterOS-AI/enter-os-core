@@ -1,0 +1,202 @@
+# sop-checklist — peer-ack merge gate for SOP-checklist items.
+#
+# RFC#351 Step 2 of 6 (implementation MVP).
+#
+# === CONSOLIDATION (issue #1280) ===
+#
+# This workflow is the SINGLE `issue_comment` subscriber — the logic from
+# `review-refire-comments.yml` has been merged in. Before this change:
+#   - sop-checklist.yml (pre-2026-05-16) → issue_comment:[created,edited,deleted] → runner slot used, job no-oped
+#   - review-refire-comments.yml           → issue_comment:[created]            → runner slot used, job no-oped
+#   → every non-refire comment occupied 2 runner slots for ~800 s each
+#      (~650 no-op runs/day, ~1,300 runner-slot-occupancy-hours/day).
+#
+# Fix (PR #1345 / issue #1280):
+#   - ONE workflow, ONE issue_comment:[created] subscription (no edited/deleted)
+#   - all-items-acked job: pull_request_target OR sop slash-command comments
+#   - review-refire job: qa/security refire slash commands
+#   → ~50% reduction in comment-triggered runner occupancy vs pre-fix.
+#
+# Trust boundary (mirrors RFC#324 §A4 + sop-checklist security note):
+#   `pull_request_target` (not `pull_request`) — workflow def is loaded
+#   from BASE branch, so a PR cannot rewrite this workflow to exfiltrate
+#   the token. The `actions/checkout` step pins `ref: base.sha` so the
+#   script ALSO comes from BASE. PR-HEAD code is never executed in the
+#   runner.
+#
+# Token scope:
+#   - read:repository, read:organization for PR + comments + team probes
+#   - write:repository for POST /statuses/{sha}
+#   - The token owner MUST be a member of every team referenced by the
+#     config's required_teams (else /teams/{id}/members/{login} returns
+#     403 — see review-check.sh same-gotcha doc). For the MVP we use
+#     the dev-lead token (a member of engineers, managers, qa, security)
+#     via a repo secret `SOP_CHECKLIST_GATE_TOKEN`. Provisioning of that
+#     secret is a follow-up authorization step (separate from this PR).
+#
+# Slash-command contract (RFC#351 v1 + §A1.1-style notes from RFC#324):
+#
+#   /sop-ack <slug-or-numeric-alias> [optional note]
+#       — register a peer-ack for one checklist item.
+#       — slug accepts kebab-case, snake_case, or natural-spaces
+#         (all normalized to canonical kebab-case).
+#       — numeric 1..7 maps via config.items[*].numeric_alias.
+#       — most-recent (user, slug) directive wins.
+#
+#   /sop-revoke <slug-or-numeric-alias> [reason]
+#       — invalidate the commenter's own prior /sop-ack for this slug.
+#       — does NOT affect other peers' acks on the same slug.
+#       — most-recent (user, slug) directive wins, so a later /sop-ack
+#         re-restores the ack.
+#
+#   /sop-n/a <gate> [reason]
+#       — declare a gate (qa-review, security-review) N/A.
+#       — see sop-checklist-config.yaml n/a_gates section.
+#
+#   /qa-recheck /security-recheck
+#       — refire the corresponding status check on the PR head.
+#
+# The eval is read-only + idempotent (read PR + comments + team
+# membership, compute, post status). Re-running on any event is safe —
+# the new status overwrites the previous one for the same context.
+
+name: sop-checklist
+
+# Cancel any in-progress runs for the same PR to prevent
+# stale runs from overwriting newer status contexts.
+concurrency:
+  group: ${{ github.repository }}-${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+  cancel-in-progress: true
+
+# bp-required: yes  ← emits sop-checklist / all-items-acked (pull_request)
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
+  issue_comment:
+    types: [created]   # NOT [created, edited, deleted] — Gitea 1.22.6 holds a runner slot
+    # at job-parsing time, before job-level if: guards run. edited/deleted events
+    # occupied ~1,300 runner-slot-hours/day on this workflow alone during the
+    # 2026-05-16 freeze. Per PR #1345 fix.
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+  secrets: read
+
+jobs:
+  # sop-checklist gate: runs on PR lifecycle events OR sop slash commands.
+  # All other comment types (no-op text comments) no longer assign a runner
+  # because this job's if: guard short-circuits before runner assignment.
+  all-items-acked:
+    if: |
+      github.event_name == 'pull_request_target' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request != null &&
+       (contains(github.event.comment.body, '/sop-ack') ||
+        contains(github.event.comment.body, '/sop-revoke') ||
+        contains(github.event.comment.body, '/sop-n/a')))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out BASE ref (trust boundary — never PR-head)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # For pull_request_target, the default branch is the trust
+          # anchor. For issue_comment the PR base may differ from the
+          # default branch (PR targeting `staging`), so we use the
+          # default-branch ref explicitly — same approach as
+          # qa-review.yml so the script source is always trusted.
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Run sop-checklist
+        env:
+          GITEA_TOKEN: ${{ secrets.SOP_CHECKLIST_GATE_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          python3 .gitea/scripts/sop-checklist.py \
+            --owner "$OWNER" \
+            --repo "$REPO_NAME" \
+            --pr "$PR_NUMBER" \
+            --config .gitea/sop-checklist-config.yaml \
+            --gitea-host git.moleculesai.app
+
+  # bp-exempt: informational refire handler, not a merge gate. Emits
+  # qa-review/security-review status updates on /qa-recheck et al slash commands.
+  review-refire:
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request != null
+    runs-on: ubuntu-latest
+    steps:
+      - name: Classify comment
+        id: classify
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          {
+            echo "run_qa=false"
+            echo "run_security=false"
+          } >> "$GITHUB_OUTPUT"
+          first_line=$(printf '%s\n' "$COMMENT_BODY" | sed -n '1p')
+          case "$first_line" in
+            /qa-recheck*)
+              echo "run_qa=true" >> "$GITHUB_OUTPUT"
+              ;;
+            /security-recheck*)
+              echo "run_security=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::notice::no supported review refire slash command; no-op"
+              ;;
+          esac
+
+      - name: Check out BASE ref for trusted scripts
+        if: |
+          steps.classify.outputs.run_qa == 'true' ||
+          steps.classify.outputs.run_security == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Refire qa-review status
+        if: steps.classify.outputs.run_qa == 'true'
+        env:
+          # Evaluator (review-check.sh + GET /pulls) stays on read-scoped token.
+          GITEA_TOKEN: ${{ secrets.SOP_CHECKLIST_GATE_TOKEN }}
+          # Explicit POST /statuses uses narrow-scoped write:repository token.
+          STATUS_POST_TOKEN: ${{ secrets.STATUS_POST_TOKEN }}
+          GITEA_HOST: git.moleculesai.app
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TEAM: qa
+          TEAM_ID: '20'
+          REVIEW_CHECK_DEBUG: '0'
+          REVIEW_CHECK_STRICT: '0'
+        run: |
+          set -euo pipefail
+          .gitea/scripts/review-refire-status.sh
+
+      - name: Refire security-review status
+        if: steps.classify.outputs.run_security == 'true'
+        env:
+          # Evaluator (review-check.sh + GET /pulls) stays on read-scoped token.
+          GITEA_TOKEN: ${{ secrets.SOP_CHECKLIST_GATE_TOKEN }}
+          # Explicit POST /statuses uses narrow-scoped write:repository token.
+          STATUS_POST_TOKEN: ${{ secrets.STATUS_POST_TOKEN }}
+          GITEA_HOST: git.moleculesai.app
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TEAM: security
+          TEAM_ID: '21'
+          REVIEW_CHECK_DEBUG: '0'
+          REVIEW_CHECK_STRICT: '0'
+        run: |
+          set -euo pipefail
+          .gitea/scripts/review-refire-status.sh

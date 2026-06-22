@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+# Pre-commit hook — enforces Molecule AI codebase conventions.
+# Install: git config core.hooksPath .githooks
+#
+# Checks run ONLY on staged files to keep commits fast.
+# If any check fails, the commit is rejected — the agent must fix it.
+
+set -euo pipefail
+
+ERRORS=0
+
+# ──────────────────────────────────────────────────────────
+# 1. Canvas: 'use client' directive on hook-using components
+# ──────────────────────────────────────────────────────────
+
+STAGED_TSX=$(git diff --cached --name-only --diff-filter=ACM | grep '\.tsx$' | grep 'canvas/src/' || true)
+
+if [ -n "$STAGED_TSX" ]; then
+  for f in $STAGED_TSX; do
+    # Skip test files
+    if echo "$f" | grep -q "__tests__\|\.test\."; then
+      continue
+    fi
+    # Check if file uses hooks/handlers
+    if grep -qE "useState|useEffect|useCallback|useMemo|useRef|useStore|onClick|onChange" "$f" 2>/dev/null; then
+      # Check if 'use client' is in the first 3 lines
+      if ! head -3 "$f" | grep -qE "use client" 2>/dev/null; then
+        echo "❌ MISSING 'use client': $f"
+        echo "   This file uses React hooks but lacks the 'use client' directive."
+        echo "   Add \"'use client';\" as the very first line."
+        ERRORS=$((ERRORS + 1))
+      fi
+    fi
+  done
+fi
+
+# ──────────────────────────────────────────────────────────
+# 2. Canvas: No light theme colors in new/changed components
+# ──────────────────────────────────────────────────────────
+
+if [ -n "$STAGED_TSX" ]; then
+  for f in $STAGED_TSX; do
+    # Check staged diff (not full file) for white/light colors
+    DIFF=$(git diff --cached "$f" | grep '^+' | grep -v '^+++' || true)
+    if echo "$DIFF" | grep -qiE 'background:\s*#fff|background:\s*white|bg-white|bg-gray-[12]00' 2>/dev/null; then
+      echo "⚠️  LIGHT THEME COLOR in $f — use zinc-900/950 backgrounds, not white/gray"
+      ERRORS=$((ERRORS + 1))
+    fi
+  done
+fi
+
+STAGED_CSS=$(git diff --cached --name-only --diff-filter=ACM | grep '\.css$' | grep 'canvas/src/' || true)
+if [ -n "$STAGED_CSS" ]; then
+  for f in $STAGED_CSS; do
+    DIFF=$(git diff --cached "$f" | grep '^+' | grep -v '^+++' || true)
+    if echo "$DIFF" | grep -qiE 'background:\s*#fff|background:\s*white' 2>/dev/null; then
+      echo "⚠️  LIGHT THEME COLOR in $f — use zinc-900 (#18181b), not white"
+      ERRORS=$((ERRORS + 1))
+    fi
+  done
+fi
+
+# ──────────────────────────────────────────────────────────
+# 3. Python: No bare except pass (silent swallowing)
+# ──────────────────────────────────────────────────────────
+
+STAGED_PY=$(git diff --cached --name-only --diff-filter=ACM | grep '\.py$' | grep 'workspace/' || true)
+
+if [ -n "$STAGED_PY" ]; then
+  for f in $STAGED_PY; do
+    DIFF=$(git diff --cached "$f" | grep '^+' | grep -v '^+++' || true)
+    if echo "$DIFF" | grep -qE '^\+\s*except.*:\s*$' 2>/dev/null; then
+      NEXT_LINE=$(echo "$DIFF" | grep -A1 '^\+\s*except.*:\s*$' | tail -1)
+      if echo "$NEXT_LINE" | grep -qE '^\+\s*pass\s*$' 2>/dev/null; then
+        echo "⚠️  SILENT EXCEPTION SWALLOW in $f — add logger.debug() instead of bare 'pass'"
+      fi
+    fi
+  done
+fi
+
+# ──────────────────────────────────────────────────────────
+# 4. Go: No string-concatenated SQL
+# ──────────────────────────────────────────────────────────
+
+STAGED_GO=$(git diff --cached --name-only --diff-filter=ACM | grep '\.go$' | grep 'workspace-server/' || true)
+
+if [ -n "$STAGED_GO" ]; then
+  for f in $STAGED_GO; do
+    DIFF=$(git diff --cached "$f" | grep '^+' | grep -v '^+++' || true)
+    if echo "$DIFF" | grep -qE 'fmt\.Sprintf.*SELECT|fmt\.Sprintf.*INSERT|fmt\.Sprintf.*UPDATE|fmt\.Sprintf.*DELETE' 2>/dev/null; then
+      echo "❌ SQL INJECTION RISK in $f — use parameterized queries (\$1, \$2), not fmt.Sprintf"
+      ERRORS=$((ERRORS + 1))
+    fi
+  done
+fi
+
+# ──────────────────────────────────────────────────────────
+# 5. Go: build check — catches bot-generated structurally-invalid Go (#1770)
+# ──────────────────────────────────────────────────────────
+#
+# Background: bot agents have produced syntactically-broken Go that the
+# patch tool happily applied (e.g. PR #1769 commit 66ea0b64 — function
+# declaration nested inside another function's body). Compilation failed,
+# staging Platform(Go) was red for hours. CI catches this AT PR-time but
+# by then the malformed commit is already shared.
+#
+# Pre-commit guard: when ANY .go file in workspace-server/ is staged, run
+# `go build ./...` from workspace-server. If it fails, reject the commit.
+# Cost: ~5-10s on a warm cache; acceptable for the class of bug it
+# catches. Skip when go isn't available (CI runners that need to bypass).
+
+if [ -n "$STAGED_GO" ]; then
+  if command -v go >/dev/null 2>&1; then
+    if ! (cd workspace-server && go build ./... >/tmp/precommit-go-build.log 2>&1); then
+      echo "❌ GO BUILD FAILED — staged Go changes don't compile (workspace-server/)."
+      echo "   Output:"
+      sed 's/^/     /' /tmp/precommit-go-build.log | head -20
+      echo "   Fix the build error before committing. See #1770 for context."
+      ERRORS=$((ERRORS + 1))
+    fi
+  else
+    # Bots and CI runners may bypass when go isn't installed — surface a
+    # warning so the absence is visible, but don't block. Humans hit this
+    # only if they didn't run setup.sh.
+    echo "⚠️  go not installed — skipping go-build pre-commit check (#1770)"
+  fi
+fi
+
+# ──────────────────────────────────────────────────────────
+# 6. Secrets: No tokens/keys in staged files
+# ──────────────────────────────────────────────────────────
+#
+# Pattern set MUST match .github/workflows/secret-scan.yml SECRET_PATTERNS
+# and molecule-ai-workspace-runtime/molecule_runtime/scripts/pre-commit-checks.sh —
+# .github/workflows/secret-pattern-drift.yml lints this invariant. Rebuilt
+# against canonical 2026-05-02 after #1569 Phase 1 discovery surfaced
+# real ghs_*/github_pat_* leaks that the prior pattern set
+# ('sk-ant-|sk-proj-|ghp_|gho_|AKIA|mol_pk_|cfut_') would have missed:
+# (a) it lacked ghs_ / ghu_ / ghr_ / github_pat_ / sk-svcacct- / sk-cp- /
+# xox[baprs]- / ASIA prefixes, (b) it skipped *.md and docs/* — but the
+# actual leaks lived in tick-reflections-temp.md, qa-audit-2026-04-21.md,
+# docs/incidents/INCIDENT_LOG.md.
+SECRET_PATTERNS=(
+  'ghp_[A-Za-z0-9]{36,}'           # GitHub PAT (classic)
+  'ghs_[A-Za-z0-9]{36,}'           # GitHub App installation token
+  'gho_[A-Za-z0-9]{36,}'           # GitHub OAuth user-to-server
+  'ghu_[A-Za-z0-9]{36,}'           # GitHub OAuth user
+  'ghr_[A-Za-z0-9]{36,}'           # GitHub OAuth refresh
+  'github_pat_[A-Za-z0-9_]{82,}'   # GitHub fine-grained PAT
+  'sk-ant-[A-Za-z0-9_-]{40,}'      # Anthropic API key
+  'sk-proj-[A-Za-z0-9_-]{40,}'     # OpenAI project key
+  'sk-svcacct-[A-Za-z0-9_-]{40,}'  # OpenAI service-account key
+  'sk-cp-[A-Za-z0-9_-]{60,}'       # MiniMax API key (F1088 vector — caught only after the fact)
+  'xox[baprs]-[A-Za-z0-9-]{20,}'   # Slack tokens (bot/app/user/refresh)
+  'AKIA[0-9A-Z]{16}'               # AWS access key ID
+  'ASIA[0-9A-Z]{16}'               # AWS STS temp access key ID
+)
+
+ALL_STAGED=$(git diff --cached --name-only --diff-filter=ACM || true)
+if [ -n "$ALL_STAGED" ]; then
+  for f in $ALL_STAGED; do
+    # Skip ONLY binary + lockfiles + the hook itself. Markdown +
+    # docs/* are NOT skipped — that was the bug (#1569 leaks were
+    # all in *.md). If a doc legitimately needs a token-shaped
+    # placeholder, use ghs_EXAMPLE_TOKEN_DO_NOT_USE — short enough
+    # to dodge the {36,} length suffix.
+    if echo "$f" | grep -qE '\.png$|\.jpg$|\.ico$|\.woff|node_modules|\.lock$|\.githooks/'; then
+      continue
+    fi
+    DIFF=$(git diff --cached --no-color --unified=0 -- "$f" 2>/dev/null | grep -E '^\+[^+]' || true)
+    [ -z "$DIFF" ] && continue
+    for pattern in "${SECRET_PATTERNS[@]}"; do
+      if echo "$DIFF" | grep -qE "$pattern"; then
+        echo "❌ POSSIBLE SECRET in $f (matched: ${pattern})"
+        echo "   The actual matched value is NOT echoed here — round-tripping a"
+        echo "   leaked credential into scrollback widens the blast radius."
+        echo "   If false positive (test/docs example), use a short placeholder"
+        echo "   like ghs_EXAMPLE_TOKEN_DO_NOT_USE that doesn't satisfy the length."
+        ERRORS=$((ERRORS + 1))
+        break
+      fi
+    done
+  done
+fi
+
+# ──────────────────────────────────────────────────────────
+# Result
+# ──────────────────────────────────────────────────────────
+
+if [ "$ERRORS" -gt 0 ]; then
+  echo ""
+  echo "🚫 Pre-commit check failed with $ERRORS error(s). Fix them and try again."
+  exit 1
+fi

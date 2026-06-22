@@ -1,0 +1,44 @@
+{
+  "_doc": [
+    "SSOT for the core -> control-plane provision request wire shape.",
+    "Endpoint: POST {cp}/cp/workspaces/provision  (core sender = cpProvisionRequest in cp_provisioner.go;",
+    "CP receiver = wsProvisionRequest in molecule-controlplane internal/handlers/workspace_provision.go).",
+    "",
+    "WHY THIS EXISTS: core and the CP define the request as two DUPLICATED structs in two repos with no",
+    "shared compile unit, so a field added on the sender silently does nothing if the receiver lacks it.",
+    "That is exactly how `template_assets` was dropped for weeks (config.yaml/prompts never materialized on",
+    "SaaS via that channel) -- see memory project_saas_restart_re_stub_config / RFC #2843.",
+    "",
+    "TWO GUARDS keep the channels honest:",
+    "  1. PRODUCER PIN (molecule-core provisioner/provision_request_contract_test.go): cpProvisionRequest's",
+    "     JSON tags MUST equal `fields` keys exactly. Adding/removing a wire field forces a deliberate edit.",
+    "  2. CONSUMER COMPLETENESS (molecule-controlplane handlers/provision_request_contract_test.go):",
+    "     wsProvisionRequest MUST have a json tag for every field marked cp_consumes:true. A field with",
+    "     cp_consumes:false is a DEAD wire field (sent but ignored) -- it must carry a `note` justifying why,",
+    "     so dead channels are explicit, not silent.",
+    "",
+    "  This file is the SSOT; the copy in the other repo MUST stay byte-identical (a CI diff-check is a follow-up)."
+  ],
+  "endpoint": "POST /cp/workspaces/provision",
+  "fields": {
+    "org_id":           {"type": "string", "cp_consumes": true},
+    "workspace_id":     {"type": "string", "cp_consumes": true},
+    "runtime":          {"type": "string", "cp_consumes": true},
+    "template":         {"type": "string", "cp_consumes": true},
+    "tier":             {"type": "int",    "cp_consumes": true},
+    "instance_type":    {"type": "string", "cp_consumes": true},
+    "disk_gb":          {"type": "int",    "cp_consumes": true},
+    "provider":         {"type": "string", "cp_consumes": true},
+    "data_persistence": {"type": "string", "cp_consumes": true},
+    "kind":             {"type": "string", "cp_consumes": true},
+    "display":          {"type": "object", "cp_consumes": true},
+    "platform_url":     {"type": "string", "cp_consumes": true},
+    "env":              {"type": "map",    "cp_consumes": true},
+    "config_files":     {"type": "map",    "cp_consumes": true},
+    "template_assets":  {
+      "type": "map",
+      "cp_consumes": true,
+      "note": "CONSUMED as of internal#33 (2026-06-21): wsProvisionRequest now decodes `template_assets` and the workspace-provision handler routes it to a backend implementing provisioner.WorkspaceTemplateAssetProvisioner (EC2 + LocalDocker). The backend materializes the concierge persona as /configs/system-prompt.md -- what the claude-code executor's get_system_prompt actually reads (NOT config.yaml prompt_files) -- shipped through the same config-files channel. Previously DROPPED (RFC #2843 #24), which left SaaS concierges booting identity-less on create AND restart. See project_saas_restart_re_stub_config."
+    }
+  }
+}

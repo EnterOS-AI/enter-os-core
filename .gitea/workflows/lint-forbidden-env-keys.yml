@@ -1,0 +1,337 @@
+name: Lint forbidden tenant-env keys
+
+# RFC#523 Layer 3 (task #146): scan workspace_secrets-writer Go code
+# under workspace-server/ for new code that hardcodes a forbidden
+# operator-scope env var NAME (GITEA_TOKEN, CP_ADMIN_API_TOKEN,
+# RAILWAY_TOKEN, INFISICAL_OPERATOR_TOKEN, MOLECULE_OPERATOR_*, …).
+#
+# Catches the class "a new writer accidentally widens the propagation
+# set" — e.g. a future env-mutator plugin that sets envVars["GITEA_TOKEN"]
+# directly. Today the L1 runtime guard would abort the provision, but
+# this lint surfaces the offending code at PR review time instead of
+# at first provision attempt.
+#
+# Companion layers:
+#   - L1: workspace-server/internal/handlers/workspace_provision_forbidden_env.go
+#         (fail-closed abort at provision time)
+#   - L2: workspace/entrypoint.sh top-of-file env-grep + exit 1
+#
+# Open-source-template-friendly: the deny pattern is generic. A fork
+# can copy this workflow and replace OPERATOR_KEY_PATTERN with its
+# own operator-scope key names.
+#
+# Path-filter discipline:
+#   This workflow runs on every PR (no paths: filter — see
+#   feedback_path_filtered_workflow_cant_be_required). The scan itself
+#   targets workspace_secrets-writer paths via grep -r; it's fast
+#   (sub-second) so unconditional run is fine.
+#
+# ── 2026-06-01 CI-scheduler-fanout consolidation (fix/ci-scheduler-fanout) ──
+# The RFC#523 sibling lint formerly in its own file
+# `lint-no-tenant-gitea-token.yml` (the broader "no repo-host token into
+# any tenant-writer surface" scan) is now a SECOND job in THIS workflow
+# (`scan-tenant-token-write`). Both are sub-second Go-source greps that
+# fired as two separate workflow runs on every PR — pure scheduler
+# fan-out. Folding the sibling in here drops one workflow run + one
+# checkout per PR while keeping BOTH scans firing unconditionally on
+# every PR (the no-paths discipline above is preserved — neither job is
+# paths-filtered). The moved job keeps its exact `name:` so its emitted
+# status context is unchanged in substance; its `# bp-exempt:` directive
+# moves with it (Tier 2g). The old `Lint no tenant GITEA or GITHUB token
+# write / …` context is retired (a disappearing context needs no
+# directive; only NEW emitters do).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main, staging]
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  scan:
+    name: Scan workspace_secrets writers for forbidden env keys
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+
+      - name: Scan for forbidden operator-scope env key NAMES in writer paths
+        run: |
+          set -euo pipefail
+
+          # Forbidden EXACT-MATCH env var names. Kept in lockstep with
+          # workspace-server/internal/handlers/workspace_provision_forbidden_env.go
+          # forbiddenTenantEnvKeys. The Go-side test
+          # TestIsForbiddenTenantEnvKey_ExactMatches is the source of
+          # truth — if Go-side adds a key, also add it here (and
+          # vice-versa). Drift between the two is the failure mode this
+          # entire 3-layer guardrail is designed to catch.
+          FORBIDDEN_KEYS=(
+            "GITEA_TOKEN" "GITEA_PAT"
+            "GITHUB_TOKEN" "GITHUB_PAT" "GH_TOKEN"
+            "GITLAB_TOKEN" "GL_TOKEN"
+            "BITBUCKET_TOKEN"
+            "CP_ADMIN_API_TOKEN" "CP_ADMIN_TOKEN"
+            "INFISICAL_OPERATOR_TOKEN" "INFISICAL_BOOTSTRAP_TOKEN"
+            "RAILWAY_TOKEN" "RAILWAY_PERSONAL_API_TOKEN"
+            "HETZNER_TOKEN" "HETZNER_API_TOKEN"
+          )
+
+          # Forbidden PREFIX patterns — operator-scope families.
+          FORBIDDEN_PREFIXES=(
+            "MOLECULE_OPERATOR_"
+          )
+
+          # Writer paths: Go source under workspace-server/ that
+          # writes to the env-vars map or to workspace_secrets DB rows.
+          # Tests, the forbidden-env source itself, and the silent-
+          # strip denylist are exempt (they LIST the keys by design).
+          SCAN_ROOT="workspace-server/internal"
+          # Exempt paths fall in two classes:
+          #   1. The deny-set definitions + the silent-strip denylist:
+          #      they LIST the forbidden names by design.
+          #   2. Pre-RFC#523 persona-merge / config-read paths that
+          #      already handle these names correctly (the silent-
+          #      strip downstream + the new L1 fail-closed cover the
+          #      runtime risk; these reads are unchanged).
+          # New code MUST NOT be added to this list without reviewer
+          # signoff and a one-line justification in this diff.
+          EXEMPT_PATHS=(
+            # Class 1 — deny-set definitions
+            "workspace-server/internal/handlers/workspace_provision_forbidden_env.go"
+            "workspace-server/internal/handlers/workspace_provision_forbidden_env_test.go"
+            "workspace-server/internal/provisioner/provisioner.go"
+            "workspace-server/internal/provisioner/provisioner_test.go"
+            # Class 3 — secret redaction table: the quoted forbidden names here
+            # are category labels for regexps that *strip* secrets from memory
+            # content, not env-var injection sinks. core#2918.
+            "workspace-server/internal/handlers/memories.go"
+            # Class 2 — pre-existing persona-fallback / org-helper paths
+            # that set the GITEA_TOKEN fallback lane (stripped downstream
+            # by provisioner.buildContainerEnv per forensic #145). The
+            # new L1 fail-closed runs BEFORE these writers, so any
+            # operator-scope leak via global/workspace_secrets is
+            # already caught. See applyAgentGitHTTPCreds doc-comment.
+            "workspace-server/internal/handlers/agent_git_identity.go"
+            "workspace-server/internal/handlers/org_helpers.go"
+            "workspace-server/internal/handlers/org.go"
+            # Class 2 — CP→platform admin auth (NOT a tenant env write;
+            # this is the control-plane HTTP auth header source).
+            "workspace-server/internal/provisioner/cp_provisioner.go"
+          )
+
+          # Build a single grep -F pattern: every forbidden key wrapped
+          # in quotes (Go string-literal form, which is how env-map
+          # writes appear). e.g. envVars["GITEA_TOKEN"] = ... or
+          # `"GITEA_TOKEN":` in a literal-map declaration.
+          #
+          # We deliberately match the quoted form so a comment that
+          # happens to spell the name without quotes (e.g. "see
+          # GITEA_TOKEN below") doesn't trip the lint.
+          PATTERN=""
+          for k in "${FORBIDDEN_KEYS[@]}"; do
+            PATTERN="${PATTERN}\"${k}\"\n"
+          done
+          for p in "${FORBIDDEN_PREFIXES[@]}"; do
+            # Prefix match needs a regex; switch to grep -E below for
+            # this slice. Kept conceptually here so the deny set lives
+            # in one place; scan is run twice (literal + prefix).
+            true
+          done
+
+          # Build exempt-paths grep filter — `grep -v -f` style.
+          EXEMPT_FILTER=$(mktemp)
+          trap 'rm -f "$EXEMPT_FILTER"' EXIT
+          for p in "${EXEMPT_PATHS[@]}"; do
+            echo "$p" >> "$EXEMPT_FILTER"
+          done
+
+          # --- Exact-match scan ---
+          HITS=""
+          for k in "${FORBIDDEN_KEYS[@]}"; do
+            # Only .go files; skip _test.go for the writer-path scan
+            # since tests legitimately reference the names. The
+            # writer-path lint targets PRODUCTION code only.
+            found=$(grep -rn --include='*.go' --exclude='*_test.go' "\"${k}\"" "$SCAN_ROOT" 2>/dev/null \
+                    | grep -v -F -f "$EXEMPT_FILTER" || true)
+            if [ -n "$found" ]; then
+              # Filter out the LABEL side of a redaction regexp-tuple —
+              # {regexp.MustCompile(`<re>`), "<KEY>"} — which is a
+              # security CONTROL (the label is just the canonical
+              # deny-listed env-var name used to tag what the redaction
+              # strips), not an actual env-injection. The pattern is
+              # anchored on the per-iteration $k; lines that don't
+              # contain the regexp.MustCompile(...), "<k>" shape
+              # (envVars["<k>"] = ..., os.Getenv("<k>"), etc.) pass
+              # through unchanged. core#2918.
+              found=$(echo "$found" | grep -vE 'regexp\.MustCompile\([^)]+\)\s*,\s*"'"${k}"'"' || true)
+            fi
+            if [ -n "$found" ]; then
+              HITS="${HITS}${found}\n"
+            fi
+          done
+
+          # --- Prefix scan ---
+          for prefix in "${FORBIDDEN_PREFIXES[@]}"; do
+            found=$(grep -rnE --include='*.go' --exclude='*_test.go' "\"${prefix}[A-Z0-9_]+\"" "$SCAN_ROOT" 2>/dev/null \
+                    | grep -v -F -f "$EXEMPT_FILTER" || true)
+            if [ -n "$found" ]; then
+              # Same redaction-tuple-LABEL filter as the exact-match scan
+              # (the deny-prefix family can show up in redaction labels too).
+              found=$(echo "$found" | grep -vE 'regexp\.MustCompile\([^)]+\)\s*,\s*"'"${prefix}"'[A-Z0-9_]+"' || true)
+            fi
+            if [ -n "$found" ]; then
+              HITS="${HITS}${found}\n"
+            fi
+          done
+
+          if [ -n "$HITS" ]; then
+            echo "::error::RFC#523 Layer 3: forbidden operator-scope env var name(s) hardcoded in tenant-workspace writer paths:"
+            printf "$HITS"
+            echo ""
+            echo "These env-var NAMES are on the operator-scope deny list (see"
+            echo "workspace-server/internal/handlers/workspace_provision_forbidden_env.go)."
+            echo "If your code legitimately needs to inject one of these for a"
+            echo "non-tenant code path, add the file to EXEMPT_PATHS in this"
+            echo "workflow with a one-line justification — reviewer signoff required."
+            exit 1
+          fi
+
+          echo "OK No forbidden operator-scope env key names hardcoded in writer paths."
+
+  # bp-exempt: advisory RFC#523 lint; PR review gate is review-driven, not BP-driven.
+  # (Carried with the workflow-name rename in PR mc#1593 so the renamed
+  # context emission satisfies lint_required_context_exists_in_bp Tier 2g.)
+  scan-tenant-token-write:
+    name: Scan for repo-host token write into tenant workspace surface
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+
+      - name: Find Go files referencing a tenant-writer surface AND a repo-host token
+        run: |
+          set -euo pipefail
+
+          # Repo-host token NAMES — the threat-model subset. Operator-fleet
+          # tokens (CP_ADMIN_API_TOKEN, RAILWAY_TOKEN, INFISICAL_*) are
+          # caught by lint-forbidden-env-keys.yml's broader deny set; this
+          # lint focuses on the git-host class so a single co-occurrence
+          # match has a low false-positive rate.
+          FORBIDDEN_KEYS=(
+            "GITEA_TOKEN"
+            "GITEA_PAT"
+            "GITHUB_TOKEN"
+            "GITHUB_PAT"
+            "GH_TOKEN"
+          )
+
+          # Tenant-writer surface markers. A file matches the surface set
+          # if it references ANY of these strings. This is the "is this
+          # code path writing into a tenant workspace?" heuristic.
+          # Curated to catch the actual code shapes used in this repo
+          # (verified by grep against current main 2026-05-19):
+          #   - "workspace_secrets" / "global_secrets"  → DB table writes
+          #   - "seedAllowList"                          → CP-side seed table
+          #   - "/settings/secrets"                      → tenant HTTP API write
+          #   - "envVars["                               → in-memory env map write
+          #   - "containerEnv"                           → docker-run env-set
+          #   - "userData"                               → EC2 user-data script
+          #   - "provisionPayload" / "provisionContext"  → provision-request shape
+          SURFACE_PATTERN='workspace_secrets|global_secrets|seedAllowList|/settings/secrets|envVars\[|containerEnv|userData|provisionPayload|provisionContext'
+
+          # Files that legitimately reference these names AND a surface
+          # marker, but do so for guard / strip / test / doc-comment
+          # reasons. New entries require reviewer signoff and a one-line
+          # justification in the diff.
+          EXEMPT_FILES=(
+            # RFC#523 L1 deny-set source-of-truth + tests
+            "workspace-server/internal/handlers/workspace_provision_forbidden_env.go"
+            "workspace-server/internal/handlers/workspace_provision_forbidden_env_test.go"
+            # Forensic-#145 silent-strip denylist (defense-in-depth, by design lists the names)
+            "workspace-server/internal/provisioner/provisioner.go"
+            "workspace-server/internal/provisioner/provisioner_test.go"
+            # Pre-RFC#523 persona-fallback / org-helper paths. The L1
+            # fail-closed runs BEFORE these writers; downstream silent-strip
+            # also covers them. See applyAgentGitHTTPCreds doc-comment.
+            "workspace-server/internal/handlers/agent_git_identity.go"
+            "workspace-server/internal/handlers/org_helpers.go"
+            "workspace-server/internal/handlers/org.go"
+            # CP→platform admin auth (NOT a tenant env write).
+            "workspace-server/internal/provisioner/cp_provisioner.go"
+          )
+
+          # Build an extended-regex alternation of forbidden keys.
+          KEY_ALT="$(IFS='|'; echo "${FORBIDDEN_KEYS[*]}")"
+
+          # Find candidate files: Go non-test sources that contain a
+          # tenant-writer surface marker.
+          mapfile -t CANDIDATES < <(
+            grep -rlE --include='*.go' --exclude='*_test.go' \
+              "${SURFACE_PATTERN}" . 2>/dev/null \
+            | sed 's|^\./||' \
+            | sort -u
+          )
+
+          if [ "${#CANDIDATES[@]}" -eq 0 ]; then
+            echo "OK No tenant-writer-surface files found in tree (unexpected, but not a lint failure)."
+            exit 0
+          fi
+
+          HITS=""
+          for f in "${CANDIDATES[@]}"; do
+            # Skip exempt files.
+            skip=0
+            for ex in "${EXEMPT_FILES[@]}"; do
+              if [ "$f" = "$ex" ]; then skip=1; break; fi
+            done
+            [ "$skip" = "1" ] && continue
+
+            # File contains a surface marker; now grep for a forbidden
+            # key NAME. We require a QUOTED-literal match to avoid
+            # firing on a comment like "// also handle GITEA_TOKEN".
+            #
+            # The literal form catches:
+            #   - os.Getenv("GITEA_TOKEN")
+            #   - envVars["GITEA_TOKEN"] = ...
+            #   - {envKey: "GITEA_TOKEN", tenantKey: "GITEA_TOKEN"}
+            # but not:
+            #   - // see GITEA_TOKEN below   (no quotes)
+            found=$(grep -nE "\"(${KEY_ALT})\"" "$f" 2>/dev/null || true)
+            # Filter out the LABEL side of a redaction regexp-tuple —
+            # {regexp.MustCompile(`<re>`), "<KEY>"} — which is a
+            # security CONTROL, not an actual tenant-writer surface
+            # injection. Same rationale as the scan job's
+            # LABEL_EXCLUDE filter (core#2918). The per-iteration
+            # KEY_ALT is the alternation; the LABEL_EXCLUDE alternation
+            # matches any of them in the redaction-tuple-LABEL slot.
+            if [ -n "$found" ]; then
+              found=$(echo "$found" | grep -vE 'regexp\.MustCompile\([^)]+\)\s*,\s*"('"${KEY_ALT}"')"' || true)
+            fi
+            if [ -n "$found" ]; then
+              HITS="${HITS}--- ${f} ---\n${found}\n"
+            fi
+          done
+
+          if [ -n "$HITS" ]; then
+            echo "::error::Task #146 lint: repo-host token name(s) quoted in a tenant-writer-surface file:"
+            printf "$HITS"
+            echo ""
+            echo "These files reference a tenant-writer surface (workspace_secrets,"
+            echo "seedAllowList, /settings/secrets, containerEnv, userData, etc.)"
+            echo "AND quote a repo-host token name (GITEA_TOKEN/GITHUB_TOKEN/…)."
+            echo "Per RFC#523 threat model, tenant workspaces MUST NOT receive"
+            echo "operator-scope repo-host tokens. If your code legitimately needs"
+            echo "to reference one of these names in a tenant-writer file (e.g."
+            echo "a deny-set definition or silent-strip list), add the file to"
+            echo "EXEMPT_FILES with a one-line justification — reviewer signoff"
+            echo "required."
+            exit 1
+          fi
+
+          echo "OK No tenant-writer-surface file co-mentions a repo-host token literal."

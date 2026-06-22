@@ -1,0 +1,17 @@
+{
+  "_comment": "content as integer is not a valid type. The compat shim accepts string (v0.2 plain text) or list (v0.2 Part list); anything else is rejected with HTTP 400 and a hint.",
+  "_added": "2026-04-30",
+  "_source": "Synthetic — pins the type-rejection branch",
+  "_expect_error": "invalid params.message.content type",
+  "_expect_status": 400,
+  "jsonrpc": "2.0",
+  "method": "message/send",
+  "id": "msg-test-invalid-int",
+  "params": {
+    "message": {
+      "messageId": "msg-bad-2",
+      "role": "user",
+      "content": 42
+    }
+  }
+}

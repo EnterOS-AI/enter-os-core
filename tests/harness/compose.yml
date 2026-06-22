@@ -1,0 +1,245 @@
+# Production-shape harness for local E2E. Multi-tenant.
+#
+# Reproduces the SaaS tenant topology on localhost using the SAME
+# images that ship to production:
+#
+#   client → cf-proxy (nginx, mimics CF tunnel headers, routes by Host)
+#          ├─ Host: harness-tenant-alpha.localhost → tenant-alpha
+#          │   ↓ (CP_UPSTREAM_URL=http://cp-stub:9090)
+#          │   tenant-alpha (workspace-server/Dockerfile.tenant)
+#          │   ↓
+#          │   postgres-alpha (per-tenant DB, matches prod)
+#          ├─ Host: harness-tenant-beta.localhost  → tenant-beta
+#          │   ↓
+#          │   tenant-beta + postgres-beta
+#          └─ cp-stub + redis (shared infra; CP is Railway-singleton in prod,
+#                              redis is shared cluster)
+#
+# The two-tenant topology catches:
+#   - TenantGuard cross-tenant escape (alpha-org token shouldn't see
+#     beta-tenant data even with a valid bearer)
+#   - cf-proxy Host-header routing correctness
+#   - Per-tenant DB isolation (workspaces table, activity_logs)
+#   - Concurrent multi-tenant operation (no shared mutable state)
+#
+# Quickstart (no /etc/hosts edits — see README):
+#   cd tests/harness && ./up.sh && ./seed.sh
+#   ./replays/peer-discovery-404.sh
+#   ./run-all-replays.sh
+#
+# Env config:
+#   GIT_SHA — passed to BOTH tenant builds for /buildinfo verification.
+#   CP_STUB_PEERS_MODE — peers failure mode for replay scripts.
+
+services:
+  # ─── Shared infra (matches prod: CP is Railway-singleton, redis shared) ───
+  redis:
+    image: redis:7-alpine
+    networks: [harness-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  cp-stub:
+    build:
+      context: ./cp-stub
+    environment:
+      PORT: "9090"
+      CP_STUB_PEERS_MODE: "${CP_STUB_PEERS_MODE:-}"
+    # #2867 address-fix: replays run on the host (./run-all-replays.sh),
+    # not inside a harness-net container, so the cp-stub's port 9090
+    # MUST be published to the host loopback. Without this, the
+    # canary-smoke-org-create-400-capture replay gets "could not
+    # resolve host cp-stub" / HTTP 000 (the harness job 501121
+    # round-7 failure). Note: the cf-proxy (line ~212) already does
+    # this for port 8080; the cp-stub was the only service missing
+    # a host-side mapping.
+    ports:
+      - "9090:9090"
+    networks: [harness-net]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:9090/healthz || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  # ─── Tenant alpha: postgres + workspace-server ────────────────────────
+  postgres-alpha:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: harness
+      POSTGRES_PASSWORD: harness
+      POSTGRES_DB: molecule
+    networks: [harness-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U harness -d molecule"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  tenant-alpha:
+    build:
+      context: ../..
+      dockerfile: workspace-server/Dockerfile.tenant
+      args:
+        GIT_SHA: "${GIT_SHA:-harness}"
+    depends_on:
+      postgres-alpha:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      cp-stub:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://harness:harness@postgres-alpha:5432/molecule?sslmode=disable"
+      REDIS_URL: "redis://redis:6379"
+      PORT: "8080"
+      PLATFORM_URL: "http://tenant-alpha:8080"
+      MOLECULE_ENV: "production"
+      SECRETS_ENCRYPTION_KEY: "${SECRETS_ENCRYPTION_KEY:?must be set — run via tests/harness/up.sh, which generates one per run}"
+      ADMIN_TOKEN: "harness-admin-token-alpha"
+      MOLECULE_ORG_ID: "harness-org-alpha"
+      CP_UPSTREAM_URL: "http://cp-stub:9090"
+      # Phase 1 of the #2863 burn-down: CPProvisioner
+      # (workspace-server/internal/provisioner/cp_provisioner.go:78-86)
+      # reads CP_PROVISION_URL first, then MOLECULE_CP_URL, then
+      # defaults to real prod. CP_UPSTREAM_URL alone is NOT in the
+      # read order, so the harness provision call flew past cp-stub
+      # to real prod → 401 → 30s provisioning stall. Add both names
+      # (belt-and-suspenders — same value either way) so the harness
+      # provision + config calls land on cp-stub. NO
+      # MOLECULE_CP_SHARED_SECRET / ADMIN_TOKEN — cp-stub is permissive.
+      CP_PROVISION_URL: "http://cp-stub:9090"
+      MOLECULE_CP_URL: "http://cp-stub:9090"
+      RATE_LIMIT: "1000"
+      CANVAS_PROXY_URL: "http://localhost:3000"
+      # LLM-proxy env vars required by assertManagedTenantHasLLMEnv
+      # (workspace-server/cmd/server/cp_config.go). With MOLECULE_ORG_ID
+      # + ADMIN_TOKEN both set, the boot assertion requires all 4
+      # LLM-proxy keys — otherwise it aborts the tenant boot with
+      # MISSING_CP_LLM_ENV and the harness healthcheck marks the
+      # container unhealthy. The harness doesn't exercise the LLM
+      # proxy (replays use hermes echo runtime or the cp-stub's
+      # canned replies), so the values are local-fixture placeholders
+      # that satisfy the assertion without resolving to a real proxy.
+      MOLECULE_LLM_USAGE_TOKEN: "harness-llm-usage-token"
+      MOLECULE_LLM_USAGE_URL: "http://cp-stub:9090/llm/usage"
+      MOLECULE_LLM_BASE_URL: "http://cp-stub:9090/llm/openai/v1"
+      MOLECULE_LLM_ANTHROPIC_BASE_URL: "http://cp-stub:9090/llm/anthropic/v1"
+      # Memory v2 sidecar (PR #2906) bundles the plugin into the
+      # tenant image and starts it before the main server. The plugin
+      # runs `CREATE EXTENSION vector` on first boot, which fails on
+      # the harness's plain postgres:15-alpine (no pgvector). The
+      # harness doesn't exercise memory features, so disable the
+      # sidecar via the entrypoint's documented escape hatch.
+      MEMORY_PLUGIN_DISABLE: "1"
+    networks: [harness-net]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ─── Tenant beta: postgres + workspace-server (parallel to alpha) ─────
+  postgres-beta:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: harness
+      POSTGRES_PASSWORD: harness
+      POSTGRES_DB: molecule
+    networks: [harness-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U harness -d molecule"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  tenant-beta:
+    build:
+      context: ../..
+      dockerfile: workspace-server/Dockerfile.tenant
+      args:
+        GIT_SHA: "${GIT_SHA:-harness}"
+    depends_on:
+      postgres-beta:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      cp-stub:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://harness:harness@postgres-beta:5432/molecule?sslmode=disable"
+      REDIS_URL: "redis://redis:6379"
+      PORT: "8080"
+      PLATFORM_URL: "http://tenant-beta:8080"
+      MOLECULE_ENV: "production"
+      SECRETS_ENCRYPTION_KEY: "${SECRETS_ENCRYPTION_KEY:?must be set — run via tests/harness/up.sh, which generates one per run}"
+      # Distinct ADMIN_TOKEN — replays use this to verify TenantGuard
+      # blocks alpha-token presented at beta's URL.
+      ADMIN_TOKEN: "harness-admin-token-beta"
+      MOLECULE_ORG_ID: "harness-org-beta"
+      CP_UPSTREAM_URL: "http://cp-stub:9090"
+      # Phase 1 of the #2863 burn-down (see tenant-alpha block above
+      # for rationale). Belt-and-suspenders: both env var names point
+      # at cp-stub so the provision + config calls land on the stub
+      # rather than flying past to real prod.
+      CP_PROVISION_URL: "http://cp-stub:9090"
+      MOLECULE_CP_URL: "http://cp-stub:9090"
+      RATE_LIMIT: "1000"
+      CANVAS_PROXY_URL: "http://localhost:3000"
+      # LLM-proxy env vars (see assertManagedTenantHasLLMEnv in
+      # workspace-server/cmd/server/cp_config.go) — same placeholders
+      # as tenant-alpha; the harness doesn't exercise the LLM proxy.
+      MOLECULE_LLM_USAGE_TOKEN: "harness-llm-usage-token"
+      MOLECULE_LLM_USAGE_URL: "http://cp-stub:9090/llm/usage"
+      MOLECULE_LLM_BASE_URL: "http://cp-stub:9090/llm/openai/v1"
+      MOLECULE_LLM_ANTHROPIC_BASE_URL: "http://cp-stub:9090/llm/anthropic/v1"
+      # Memory v2 sidecar (PR #2906) bundles the plugin into the
+      # tenant image and starts it before the main server. The plugin
+      # runs `CREATE EXTENSION vector` on first boot, which fails on
+      # the harness's plain postgres:15-alpine (no pgvector). The
+      # harness doesn't exercise memory features, so disable the
+      # sidecar via the entrypoint's documented escape hatch.
+      MEMORY_PLUGIN_DISABLE: "1"
+    networks: [harness-net]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ─── cf-proxy: routes by Host to the right tenant container ───────────
+  # Production shape: same single CF tunnel front-doors every tenant
+  # subdomain — the Host header carries the tenant identity, not the
+  # routing destination. Local cf-proxy mirrors this exactly.
+  #
+  # nginx.conf delivery: built into a custom image via cf-proxy/Dockerfile
+  # (a thin nginx:1.27-alpine + COPY). NOT a bind mount and NOT a
+  # compose `configs:` block, both of which break under Gitea's
+  # act_runner: the runner talks to the OUTER docker daemon over the
+  # host socket, and runc resolves bind sources on the outer host
+  # filesystem, where `/workspace/.../tests/harness/cf-proxy/nginx.conf`
+  # is invisible. Compose `configs:` falls back to bind mounts without
+  # swarm, so it hits the same gap. A build context, by contrast, is
+  # uploaded to the daemon as a tarball at build time — no bind. See
+  # issue #88 item 2.
+  cf-proxy:
+    build:
+      context: ./cf-proxy
+      dockerfile: Dockerfile
+    depends_on:
+      tenant-alpha:
+        condition: service_healthy
+      tenant-beta:
+        condition: service_healthy
+    # Bind to 127.0.0.1 only — hardcoded ADMIN_TOKENs make 0.0.0.0
+    # exposure unsafe even on a local network.
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks: [harness-net]
+
+networks:
+  harness-net:
+    name: molecule-harness-net

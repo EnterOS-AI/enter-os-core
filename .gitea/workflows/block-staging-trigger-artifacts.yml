@@ -1,0 +1,102 @@
+name: Block integration-tester contamination artifacts
+
+# Prevent the recurring force-rerun contamination tracked in #313:
+#   - .staging-trigger files
+#   - invalid-JSON manifest.json (usually injected with a // comment)
+#
+# These artifacts leak into unrelated PRs when the integration-tester
+# force-rerun path writes them to the working tree and commits them.
+# This gate blocks them at PR time and on main/staging pushes.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main, staging]
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  # bp-required: pending #313 — new merge-blocking contamination gate;
+  # branch protection must require `Block integration-tester contamination artifacts / check (pull_request)` once it has posted green on 3 PRs.
+  check:
+    name: Block staging-trigger / invalid manifest contamination
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 2
+
+      - name: Fetch PR base SHA (pull_request events only)
+        if: github.event_name == 'pull_request'
+        run: git fetch --depth=1 origin ${{ github.event.pull_request.base.sha }}
+
+      - name: Detect contaminated files
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+
+          case "${{ github.event_name }}" in
+            pull_request)
+              BASE="$PR_BASE_SHA"
+              HEAD="$PR_HEAD_SHA"
+              ;;
+            *)
+              BASE="$PUSH_BEFORE"
+              HEAD="$PUSH_AFTER"
+              ;;
+          esac
+
+          if [ -n "$BASE" ] && ! echo "$BASE" | grep -qE '^0+$'; then
+            if ! git cat-file -e "$BASE" 2>/dev/null; then
+              git fetch --depth=1 origin "$BASE" 2>/dev/null || true
+            fi
+          fi
+
+          if [ -z "$BASE" ] || echo "$BASE" | grep -qE '^0+$' || ! git cat-file -e "$BASE" 2>/dev/null; then
+            CHANGED=$(git ls-tree -r --name-only HEAD)
+          else
+            CHANGED=$(git diff --name-only --diff-filter=AM "$BASE" "$HEAD")
+          fi
+
+          if [ -z "$CHANGED" ]; then
+            echo "No changed files to inspect."
+            exit 0
+          fi
+
+          FAIL=0
+
+          # 1) Reject any file whose name contains .staging-trigger.
+          while IFS= read -r path; do
+            case "$path" in
+              *.staging-trigger* | .staging-trigger)
+                echo "::error::Forbidden contamination file detected: $path"
+                echo "::error::The integration-tester force-rerun path must not write .staging-trigger files. See #313."
+                FAIL=1
+                ;;
+            esac
+          done <<< "$CHANGED"
+
+          # 2) Reject manifest.json if it is not valid JSON.
+          if echo "$CHANGED" | grep -qx 'manifest.json'; then
+            if [ -f "manifest.json" ]; then
+              if ! python3 -m json.tool manifest.json >/dev/null 2>&1; then
+                echo "::error::manifest.json is not valid JSON (often caused by injected // comments)."
+                echo "::error::See #313. Remove the invalid content or regenerate manifest.json from source."
+                FAIL=1
+              else
+                echo "OK manifest.json is valid JSON."
+              fi
+            fi
+          fi
+
+          if [ "$FAIL" -ne 0 ]; then
+            exit 1
+          fi
+
+          echo "OK No integration-tester contamination detected."

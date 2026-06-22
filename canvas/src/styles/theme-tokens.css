@@ -1,0 +1,69 @@
+/**
+ * Canvas theme tokens — single source of truth for colors, durations,
+ * easings, and sizes used by every animated / stateful canvas
+ * component. Importable from any stylesheet; individual feature
+ * modules (org-deploy.css, settings-panel.css, ...) only reference
+ * variables defined here so a future theme swap touches this one
+ * file.
+ *
+ * Adding a theme:
+ *   Put a scoped override block like `[data-theme="light"] { ... }`
+ *   and set only the tokens whose values differ from the default
+ *   dark theme. Unset tokens inherit the default.
+ *
+ * Naming convention:
+ *   --mol-<feature>-<semantic-role>       → values the user sees
+ *   --mol-duration-<name>                 → motion timings
+ *   --mol-easing-<name>                   → motion curves
+ * Prefix `mol-` avoids collisions with Tailwind / React Flow vars.
+ */
+
+:root {
+  /* ────────────────────────────────────────────────────────
+     Motion primitives — pick one of these; don't hardcode ms
+     values in feature stylesheets. If a new feature genuinely
+     needs a bespoke duration, add a token here and reference it.
+     ──────────────────────────────────────────────────────── */
+  --mol-duration-fast: 150ms;
+  --mol-duration-base: 300ms;
+  --mol-duration-spawn: 350ms;
+  --mol-duration-root-complete: 700ms;
+  --mol-duration-fit-view: 800ms;
+
+  --mol-easing-standard: cubic-bezier(0.2, 0, 0, 1);
+  --mol-easing-bounce-out: cubic-bezier(0.2, 0.8, 0.2, 1.05);
+  --mol-easing-emphasize: cubic-bezier(0.3, 0, 0, 1);
+
+  /* ────────────────────────────────────────────────────────
+     Org-deploy animation palette (dark theme defaults)
+     ──────────────────────────────────────────────────────── */
+
+  /* Root-complete moment — one-shot glow when the last child lands. */
+  --mol-deploy-root-glow: 0 0 36px 6px rgba(59, 130, 246, 0.55);
+  --mol-deploy-root-scale-peak: 1.05;
+
+  /* Locked-child visual — non-root nodes during deploy cannot be
+     dragged; this dims them so the user's attention stays on the
+     active spawn. Saturation + opacity instead of a badge keeps
+     the card recognisable while signalling "not available". */
+  --mol-deploy-locked-saturation: 0.55;
+  --mol-deploy-locked-opacity: 0.78;
+
+  /* Cancel-deployment pill attached to the root node. Red, pulsing,
+     one button that kills the whole tree. */
+  --mol-deploy-cancel-bg: rgba(220, 38, 38, 0.92);     /* red-600/92 */
+  --mol-deploy-cancel-bg-hover: rgba(239, 68, 68, 1);  /* red-500 */
+  --mol-deploy-cancel-ring: rgba(239, 68, 68, 0.45);
+  --mol-deploy-cancel-text: #fff;
+}
+
+/* Example template for a future light theme. Intentionally empty
+   — product hasn't shipped a light theme yet but this shows the
+   override surface any future theme must fill. Uncomment + tune
+   when the light theme lands.
+[data-theme="light"] {
+  --mol-deploy-shimmer-from: rgba(37, 99, 235, 0.08);
+  --mol-deploy-shimmer-to:   rgba(37, 99, 235, 0.9);
+  ...
+}
+*/

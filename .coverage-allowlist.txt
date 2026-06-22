@@ -1,0 +1,41 @@
+# Coverage allowlist — security-critical files that are currently below
+# the 10% per-file floor and are being tracked for remediation.
+#
+# Format: one path per line, relative to workspace-server/.
+# Lines starting with # and blank lines are ignored.
+#
+# Process:
+#   - A path in this list is WARNED on each CI run, not failed.
+#   - Each entry must reference a tracking issue and expiry date.
+#   - On expiry, either the coverage is fixed OR the path graduates to
+#     hard-fail (revert the allowlist entry).
+#
+# See #1823 for the gate design and ratchet plan.
+
+# ============== Active exceptions ==============
+
+# Filed 2026-04-23 — expiry 2026-05-23 (30 days). Tracking: #1823.
+# These are the files flagged by the first run of the critical-path gate.
+# QA team + platform team share ownership of test coverage remediation.
+
+internal/handlers/a2a_proxy.go
+internal/handlers/a2a_proxy_helpers.go
+internal/handlers/registry.go
+internal/handlers/secrets.go
+internal/handlers/tokens.go
+internal/handlers/workspace_provision.go
+internal/middleware/wsauth_middleware.go
+
+# The following paths matched via looser CRITICAL_PATH substrings
+# (e.g. "registry" matched both internal/registry/ and internal/channels/registry.go).
+# Adding them here so the gate can land without blocking staging merges;
+# a follow-up PR will tighten CRITICAL_PATHS to exact prefixes so these
+# graduate to hard-fail precisely where security-critical.
+
+internal/channels/registry.go
+internal/crypto/aes.go
+internal/registry/access.go
+internal/registry/healthsweep.go
+internal/registry/hibernation.go
+internal/registry/provisiontimeout.go
+internal/wsauth/tokens.go

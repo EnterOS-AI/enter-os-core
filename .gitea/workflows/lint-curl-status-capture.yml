@@ -1,0 +1,58 @@
+name: Lint curl status-code capture
+
+# Ported from .github/workflows/lint-curl-status-capture.yml on 2026-05-11
+# per RFC internal#219 §1 sweep.
+#
+# Differences from the GitHub version:
+#   - on.paths and the lint scanner target .gitea/workflows/**.yml (the
+#     active Gitea workflow directory) instead of .github/workflows/**.yml
+#     (which the rest of this sweep is emptying out).
+#   - Self-skip path updated to the .gitea/ version of this file.
+#   - Dropped `merge_group:` trigger.
+#   - Workflow-level env.GITHUB_SERVER_URL set per
+#     feedback_act_runner_github_server_url.
+#   - `continue-on-error: true` on the job (RFC §1 contract).
+#
+# Pins the workflow-bash anti-pattern that produced "HTTP 000000" on the
+# 2026-05-04 redeploy-tenants-on-main run for sha 2b862f6:
+#
+#   HTTP_CODE=$(curl ... -w '%{http_code}' ... || echo "000")
+#
+# When curl exits non-zero (connection reset -> 56, --fail-with-body 4xx/5xx
+# -> 22), the `-w '%{http_code}'` already wrote a status to stdout — usually
+# "000" for connection failures or the actual code for HTTP errors. The
+# `|| echo "000"` then fires AND appends ANOTHER "000" to the captured
+# stdout, producing values like "000000" or "409000" that fail string
+# comparisons against "200" while looking superficially right.
+#
+# Same class of bug the synth-E2E §7c gate hit twice (PRs #2779/#2783 +
+# #2797). Memory: feedback_curl_status_capture_pollution.md.
+
+on:
+  pull_request:
+    paths:
+      - '.gitea/workflows/**'
+      - '.gitea/scripts/lint-curl-status-capture.py'
+      - 'tests/test_lint_curl_status_capture.py'
+  push:
+    branches: [main, staging]
+    paths:
+      - '.gitea/workflows/**'
+      - '.gitea/scripts/lint-curl-status-capture.py'
+      - 'tests/test_lint_curl_status_capture.py'
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  scan:
+    name: Scan workflows for curl status-capture pollution
+    runs-on: ubuntu-latest
+    # Phase 4 (RFC #219 §1): 22 days green since 2026-05-11 port.
+    # mc#1982 mask removed — no surfaced defects in this lane.
+    continue-on-error: false
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Find curl ... -w '%{http_code}' ... || echo "000" subshells
+        run: |
+          python3 .gitea/scripts/lint-curl-status-capture.py

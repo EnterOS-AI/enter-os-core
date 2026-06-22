@@ -1,0 +1,116 @@
+name: Ops Scripts Tests
+
+# Ported from .github/workflows/test-ops-scripts.yml on 2026-05-11 per
+# RFC internal#219 §1 sweep.
+#
+# Differences from the GitHub version:
+#   - Dropped `merge_group:` trigger (no Gitea merge queue).
+#   - on.paths references .gitea/workflows/test-ops-scripts.yml (this
+#     file) instead of the .github/ one.
+#   - Workflow-level env.GITHUB_SERVER_URL set.
+#   - `continue-on-error: true` on the job (RFC §1 contract).
+#
+# Runs the unittest suite for scripts/ on every PR + push that touches
+# anything under scripts/ or .gitea/scripts/. Kept separate from the main CI
+# so a script-only change doesn't trigger the heavier Go/Canvas/Python
+# pipelines.
+#
+# Discovery layout: tests sit alongside the code they test (see
+# scripts/ops/test_sweep_cf_decide.py for the pattern; scripts/
+# test_build_runtime_package.py for the rewriter coverage). The job
+# below runs `unittest discover` TWICE — once from `scripts/`, once
+# from `scripts/ops/` — because neither dir has an `__init__.py`, so
+# a single discover from `scripts/` doesn't recurse into the ops
+# subdir. Two passes is simpler than retrofitting namespace packages.
+
+on:
+  push:
+    branches: [main, staging]
+    paths:
+      - 'scripts/**'
+      - '.gitea/scripts/**'
+      - '.gitea/workflows/test-ops-scripts.yml'
+  pull_request:
+    branches: [main, staging]
+    paths:
+      - 'scripts/**'
+      - '.gitea/scripts/**'
+      - '.gitea/workflows/test-ops-scripts.yml'
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Ops scripts (unittest)
+    runs-on: ubuntu-latest
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#2654: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.11'
+      - name: Install .gitea script test dependencies
+        run: python -m pip install --quiet 'pytest==9.0.2' 'PyYAML==6.0.2'
+      - name: Run scripts/ unittests (fail-closed on 0 collected)
+        # Top-level scripts/ tests live alongside their target file. The
+        # runtime packaging tests moved to molecule-ai-workspace-runtime, so
+        # this pass may legitimately find NO test files today.
+        #
+        # Gate-integrity fix: the previous guard keyed off `rc==5` to detect
+        # "no tests collected", but Python 3.12's unittest exits 0 (not 5)
+        # when discovery finds 0 tests ("NO TESTS RAN"). The guard therefore
+        # never fired, so any test_*.py added here would silently run 0 tests
+        # while this step stayed GREEN. A green step that runs 0 tests is
+        # worse than a red one. We now fail-closed:
+        #   - genuinely NO test_*.py present  -> loud SKIP (legitimate no-op)
+        #   - test_*.py present but 0 collected -> FAIL (broken import/empty)
+        working-directory: scripts
+        run: |
+          set -euo pipefail
+          # Non-recursive count: scripts/ has no __init__.py, so unittest
+          # discover does not recurse into subdirs (ops/ is run separately
+          # below) — top-level files are the entire discovery scope here.
+          nfiles=$(find . -maxdepth 1 -name 'test_*.py' | wc -l | tr -d ' ')
+          if [ "$nfiles" -eq 0 ]; then
+            echo "SKIP: no top-level scripts/ test_*.py files present (genuine no-op)."
+            exit 0
+          fi
+          echo "Found $nfiles top-level scripts/ test_*.py file(s); asserting they collect >0 tests."
+          ncollected=$(python -c "import unittest; print(unittest.TestLoader().discover('.', pattern='test_*.py', top_level_dir='.').countTestCases())")
+          echo "Collected $ncollected test case(s)."
+          if [ "$ncollected" -eq 0 ]; then
+            echo "FAIL: test_*.py file(s) present but 0 tests collected (broken import / empty file / discovery error)."
+            exit 1
+          fi
+          python -m unittest discover -t . -p 'test_*.py' -v
+      - name: Run scripts/ops/ unittests (sweep_cf_decide, ...)
+        # Real gate: scripts/ops/ must always run tests. Assert >0 collected so
+        # deleting all test files (or breaking an import) can't pass GREEN by
+        # running 0 tests — same gate-integrity class as the scripts/ step.
+        working-directory: scripts/ops
+        run: |
+          set -euo pipefail
+          ncollected=$(python -c "import unittest; print(unittest.TestLoader().discover('.', pattern='test_*.py').countTestCases())")
+          echo "scripts/ops/ collected $ncollected test case(s)."
+          if [ "$ncollected" -eq 0 ]; then
+            echo "FAIL: scripts/ops/ collected 0 tests — this gate must run real tests (deleted/broken import?)."
+            exit 1
+          fi
+          python -m unittest discover -p 'test_*.py' -v
+      - name: Run .gitea/scripts pytest suite
+        run: python -m pytest .gitea/scripts/tests -q
+
+      - name: all-required-check.sh fail-closed contract
+        # Regression lock for molecule-core#656 / #2615. The CI / all-required
+        # aggregation logic was extracted to .gitea/scripts/all-required-check.sh;
+        # this step runs its shell unit test so a weakening of the fail-closed
+        # contract (e.g. accepting skipped/failure as success, or re-inlining
+        # the logic into ci.yml) fails CI.
+        run: bash .gitea/scripts/tests/test_all_required_check.sh

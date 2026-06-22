@@ -1,0 +1,39 @@
+# DEPRECATED — superseded by `.gitea/workflows/sop-checklist.yml`.
+#
+# The review-refire logic (qa/security/tier slash-command dispatch) has been
+# merged into sop-checklist.yml as the `review-refire` job. This workflow
+# is kept as a no-op stub to avoid a gap during the transition window where
+# this file may be deleted while sop-checklist.yml has not yet been merged.
+#
+# After sop-checklist.yml lands, this file will be deleted (issue #1280).
+#
+# Historical behavior (superseded):
+# Gitea 1.22 queues one run per workflow subscribed to `issue_comment` before
+# evaluating job-level `if:`. Previously this workflow was the single
+# non-SOP comment subscriber for qa/security/tier refire slash commands.
+
+name: review-refire-comments
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.workflow }}-${{ github.event.issue.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # No-op stub — all refire logic moved to sop-checklist.yml review-refire job.
+  # Kept to avoid transition gap; will be deleted after sop-checklist.yml merges.
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deprecated — refire logic moved to sop-checklist.yml
+        run: |
+          echo "::warning::review-refire-comments.yml is deprecated. Refire logic is now in sop-checklist.yml review-refire job. This workflow is a no-op stub pending deletion (issue #1280)."
+          exit 0

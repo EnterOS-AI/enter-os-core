@@ -1,0 +1,146 @@
+name: Block internal-flavored paths
+
+# Ported from .github/workflows/block-internal-paths.yml on 2026-05-11 per
+# RFC internal#219 §1 sweep.
+#
+# Differences from the GitHub version:
+#   - Dropped `merge_group: { types: [checks_requested] }` (Gitea has no
+#     merge queue; no `gh-readonly-queue/...` refs).
+#   - Workflow-level env.GITHUB_SERVER_URL set per
+#     feedback_act_runner_github_server_url.
+#   - `continue-on-error: true` on the job (RFC §1 contract — surface
+#     defects without blocking; follow-up PR flips after triage).
+#
+# Hard CI gate. Internal content (positioning, competitive briefs, sales
+# playbooks, PMM/press drip, draft campaigns) lives in molecule-ai/internal —
+# this public monorepo must never re-acquire those paths. CEO directive
+# 2026-04-23 after a fleet-wide audit found 79 internal files leaked here.
+#
+# Failure mode without this gate: agents (PMM, Research, DevRel, Sales) drop
+# briefs into the easiest path their cwd resolves to (root /research,
+# /marketing, /docs/marketing) and gitignore alone won't catch a `git add -f`
+# or a stale gitignore line. This workflow is the mechanical backstop.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main, staging]
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  check:
+    name: Block forbidden paths
+    runs-on: ubuntu-latest
+    # Hard gate — detected internal-path leaks fail the workflow.
+    # continue-on-error removed per directive (fail-open → fail-closed).
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 2  # need previous commit to diff against on push events
+
+      # For pull_request events the diff base is github.event.pull_request.base.sha,
+      # which may be many commits behind HEAD and therefore absent from the
+      # shallow clone above. Fetch it explicitly (depth=1 keeps it fast).
+      - name: Fetch PR base SHA (pull_request events only)
+        if: github.event_name == 'pull_request'
+        run: git fetch --depth=1 origin ${{ github.event.pull_request.base.sha }}
+
+      - name: Refuse if forbidden paths appear
+        env:
+          # Plumb event-specific SHAs through env so the script doesn't
+          # need conditional `${{ ... }}` interpolation per event type.
+          # github.event.before/after only exist on push events;
+          # pull_request has pull_request.base.sha / pull_request.head.sha.
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.event.after }}
+        run: |
+          # Paths that must NEVER live in the public monorepo. Add to this
+          # list narrowly — broader patterns belong in .gitignore so day-to-day
+          # docs work isn't accidentally blocked.
+          FORBIDDEN_PATTERNS=(
+            "^research/"
+            "^marketing/"
+            "^docs/marketing/"
+            "^comment-[0-9]+\.json$"
+            "^test-pmm.*\.(txt|md)$"
+            "^tick-reflections.*\.(txt|md)$"
+            ".*-temp\.(md|txt)$"
+          )
+
+          # Determine the diff base. Each event type stores its SHAs in
+          # a different place — see the env block above.
+          case "${{ github.event_name }}" in
+            pull_request)
+              BASE="$PR_BASE_SHA"
+              HEAD="$PR_HEAD_SHA"
+              ;;
+            *)
+              BASE="$PUSH_BEFORE"
+              HEAD="$PUSH_AFTER"
+              ;;
+          esac
+
+          # On push events with shallow clones, BASE may be present in
+          # the event payload but absent from the local object DB
+          # (fetch-depth=2 doesn't always reach the previous commit
+          # across true merges). Try fetching it on demand. If the
+          # fetch fails — e.g. the SHA was force-overwritten — we fall
+          # through to the empty-BASE branch below, which scans the
+          # entire tree as if every file were new. Correct, just slow.
+          if [ -n "$BASE" ] && ! echo "$BASE" | grep -qE '^0+$'; then
+            if ! git cat-file -e "$BASE" 2>/dev/null; then
+              git fetch --depth=1 origin "$BASE" 2>/dev/null || true
+            fi
+          fi
+
+          # Files added or modified in this change.
+          if [ -z "$BASE" ] || echo "$BASE" | grep -qE '^0+$' || ! git cat-file -e "$BASE" 2>/dev/null; then
+            # New branch / no previous SHA / BASE unreachable — check
+            # the entire tree as if every file were new. Slower but
+            # correct on first push or post-fetch-failure recovery.
+            CHANGED=$(git ls-tree -r --name-only HEAD)
+          else
+            CHANGED=$(git diff --name-only --diff-filter=AM "$BASE" "$HEAD")
+          fi
+
+          if [ -z "$CHANGED" ]; then
+            echo "No changed files to inspect."
+            exit 0
+          fi
+
+          OFFENDING=""
+          for path in $CHANGED; do
+            for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
+              if echo "$path" | grep -qE "$pattern"; then
+                OFFENDING="${OFFENDING}${path} (matched: ${pattern})\n"
+                break
+              fi
+            done
+          done
+
+          if [ -n "$OFFENDING" ]; then
+            echo "::error::Forbidden internal-flavored paths detected:"
+            printf "$OFFENDING"
+            echo ""
+            echo "These paths belong in molecule-ai/internal, not this public repo."
+            echo "See docs/internal-content-policy.md for canonical locations."
+            echo ""
+            echo "If your file is genuinely public-facing (e.g. a blog post"
+            echo "ready to ship), use one of these alternatives instead:"
+            echo "  - Public-bound blog posts:  docs/blog/<slug>.md"
+            echo "  - Public-bound tutorials:   docs/tutorials/<slug>.md"
+            echo "  - Public devrel content:    docs/devrel/<slug>.md"
+            echo ""
+            echo "If you legitimately need to add a new top-level path that"
+            echo "happens to match a forbidden pattern, edit"
+            echo ".gitea/workflows/block-internal-paths.yml and update the"
+            echo "FORBIDDEN_PATTERNS list with reviewer signoff."
+            exit 1
+          fi
+
+          echo "OK No forbidden paths in this change."

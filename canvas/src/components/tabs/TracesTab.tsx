@@ -1,0 +1,179 @@
+"use client";
+
+import { useState, useEffect, useCallback } from "react";
+import { api } from "@/lib/api";
+
+interface Props {
+  workspaceId: string;
+}
+
+interface Trace {
+  id: string;
+  name: string;
+  timestamp: string;
+  latency?: number;
+  input?: Record<string, unknown> | string;
+  output?: Record<string, unknown> | string;
+  status?: string;
+  totalCost?: number;
+  usage?: {
+    input?: number;
+    output?: number;
+    total?: number;
+  };
+}
+
+export function TracesTab({ workspaceId }: Props) {
+  const [traces, setTraces] = useState<Trace[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadTraces = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await api.get<{ data?: Trace[] }>(`/workspaces/${workspaceId}/traces`);
+      setTraces(res.data || []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load traces");
+      setTraces([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [workspaceId]);
+
+  useEffect(() => {
+    loadTraces();
+  }, [loadTraces]);
+
+  if (loading) {
+    return <div className="p-4 text-xs text-ink-mid">Loading traces...</div>;
+  }
+
+  return (
+    <div className="p-4 space-y-2">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs text-ink-mid">{traces.length} traces</span>
+        <button
+          type="button"
+          onClick={loadTraces}
+          // Added focus-visible ring; previous version was hover-only,
+          // invisible to keyboard users.
+          className="text-[10px] text-ink-mid hover:text-ink-mid rounded-sm px-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+        >
+          Refresh
+        </button>
+      </div>
+
+      {error && (
+        <div role="alert" aria-live="assertive" className="px-3 py-1.5 bg-red-900/30 border border-red-800 rounded text-xs text-bad">
+          {error}
+        </div>
+      )}
+
+      {traces.length === 0 && !error ? (
+        <div className="text-center py-8">
+          <div className="text-2xl opacity-20 mb-2" aria-hidden="true">--</div>
+          <p className="text-xs text-ink-mid">No traces yet</p>
+          <details className="mt-2 text-[10px] text-ink-mid">
+            <summary className="cursor-pointer text-ink-mid hover:text-ink-mid">How to enable tracing</summary>
+            <p className="mt-1">
+              Set <code className="font-mono text-ink-mid">LANGFUSE_HOST</code>, <code className="font-mono text-ink-mid">LANGFUSE_PUBLIC_KEY</code>, <code className="font-mono text-ink-mid">LANGFUSE_SECRET_KEY</code> as workspace secrets to enable tracing.
+            </p>
+          </details>
+        </div>
+      ) : (
+        <div className="space-y-1">
+          {traces.map((trace) => {
+            const isOpen = expanded === trace.id;
+            const panelId = `trace-detail-${trace.id}`;
+            return (
+              <div key={trace.id} className="bg-surface-card/40 border border-line/40 rounded-lg overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setExpanded(isOpen ? null : trace.id)}
+                  // aria-expanded + aria-controls so SR announces the
+                  // open/closed state and links the row to its detail
+                  // panel. Same pattern shipped on EventsTab.
+                  aria-expanded={isOpen}
+                  aria-controls={panelId}
+                  className="w-full px-3 py-2 flex items-center gap-2 text-left hover:bg-surface-card/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 transition-colors"
+                >
+                  {/* Status dot uses semantic bad/good tokens — was hardcoded
+                      bg-red-400 / bg-emerald-400 which doesn't pin to the
+                      canvas-wide ramp. */}
+                  <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                    trace.status === "ERROR" ? "bg-bad" : "bg-good"
+                  }`} />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[11px] text-ink truncate">{trace.name || "trace"}</div>
+                    <div className="text-[9px] text-ink-mid">{formatTime(trace.timestamp)}</div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {trace.latency != null && (
+                      <span className="text-[9px] text-ink-mid tabular-nums">
+                        {trace.latency > 1000 ? `${(trace.latency / 1000).toFixed(1)}s` : `${trace.latency}ms`}
+                      </span>
+                    )}
+                    {trace.usage?.total != null && (
+                      <span className="text-[9px] text-ink-mid tabular-nums">
+                        {trace.usage.total} tok
+                      </span>
+                    )}
+                    <span aria-hidden="true" className="text-[9px] text-ink-mid">
+                      {isOpen ? "▼" : "▶"}
+                    </span>
+                  </div>
+                </button>
+
+                {isOpen && (
+                  <div id={panelId} className="px-3 pb-2 space-y-2 border-t border-line/30">
+                    {trace.input && (
+                      <div>
+                        <div className="text-[9px] text-ink-mid uppercase tracking-wider mt-2 mb-1">Input</div>
+                        <pre className="text-[9px] text-ink-mid bg-surface-sunken rounded p-2 overflow-x-auto max-h-32">
+                          {String(typeof trace.input === "string" ? trace.input : JSON.stringify(trace.input, null, 2))}
+                        </pre>
+                      </div>
+                    )}
+                    {trace.output && (
+                      <div>
+                        <div className="text-[9px] text-ink-mid uppercase tracking-wider mb-1">Output</div>
+                        <pre className="text-[9px] text-ink-mid bg-surface-sunken rounded p-2 overflow-x-auto max-h-32">
+                          {String(typeof trace.output === "string" ? trace.output : JSON.stringify(trace.output, null, 2))}
+                        </pre>
+                      </div>
+                    )}
+                    {trace.totalCost != null && (
+                      <div className="text-[9px] text-ink-mid">
+                        Cost: ${trace.totalCost.toFixed(6)}
+                      </div>
+                    )}
+                    <div className="text-[8px] text-ink-mid font-mono select-all">
+                      {trace.id}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatTime(iso: string): string {
+  try {
+    const d = new Date(iso);
+    const now = new Date();
+    const diff = now.getTime() - d.getTime();
+    if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`;
+    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+    return d.toLocaleDateString();
+  } catch {
+    return iso;
+  }
+}

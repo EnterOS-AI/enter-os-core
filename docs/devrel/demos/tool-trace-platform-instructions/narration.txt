@@ -1,0 +1,25 @@
+# TTS Narration Script — Tool Trace + Platform Instructions Demo
+# ~90-second screencast, 2–3 sentences per moment
+# Voice: en-US-AriaNeural (or comparable neutral-professional voice)
+
+---
+
+MOMENT 1 — Admin creates global instruction via curl
+
+Admins create platform-wide instructions in seconds. A single POST to the instructions endpoint with scope "global" applies to every workspace on the platform automatically. No configuration files, no restarts.
+
+MOMENT 2 — Admin creates workspace-scoped instruction
+
+Or target a specific workspace with a workspace-scoped instruction. Great for onboarding rules, per-project operational policies, or defaulting a workspace to a specific configuration. The scope and scope target are flexible.
+
+MOMENT 3 — Workspace boot, instructions fetched
+
+When a workspace boots, it calls the resolve endpoint using its own workspace token. The response merges global and workspace-scoped instructions into one string. The call is gated by WorkspaceAuth and uses a short timeout so a platform outage never blocks agent startup.
+
+MOMENT 4 — System prompt, # Platform Instructions section
+
+That resolved string is injected as the very first section of the agent's system prompt, ahead of all other content. Because it goes first, it has highest precedence. Agents receive these instructions at boot and on every periodic refresh — they cannot be overridden by the agent.
+
+MOMENT 5 — Activity log query, tool_trace in JSONB
+
+After every A2A call, the platform stores which tools were actually invoked in the activity log. Admins can query the activity endpoint and see the full tool trace for each call — the tool name, the input, and a sanitized output preview. This is useful for debugging, compliance, and verifying that agents did what they claimed they did.

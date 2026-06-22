@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "molecule": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@molecule-ai/mcp-server@1.0.0"],
+      "env": {
+        "MOLECULE_URL": "http://localhost:8080"
+      }
+    }
+  }
+}

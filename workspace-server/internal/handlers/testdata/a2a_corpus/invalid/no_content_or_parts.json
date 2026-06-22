@@ -1,0 +1,16 @@
+{
+  "_comment": "params.message has neither content nor parts. Pre-PR-2349 the SDK silently rejected this post-handler-dispatch and the rejection was invisible to the sender. Now normalizeA2APayload returns a loud HTTP 400.",
+  "_added": "2026-04-30",
+  "_source": "PR #2349 incident edge case",
+  "_expect_error": "params.message must contain either 'parts' (v0.3) or 'content' (v0.2 compat)",
+  "_expect_status": 400,
+  "jsonrpc": "2.0",
+  "method": "message/send",
+  "id": "msg-test-invalid-empty",
+  "params": {
+    "message": {
+      "messageId": "msg-bad-1",
+      "role": "user"
+    }
+  }
+}

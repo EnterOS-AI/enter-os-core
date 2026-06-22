@@ -1,0 +1,165 @@
+# Dockerfile.tenant — combined platform (Go) + canvas (Next.js) image.
+#
+# Serves both the API (Go on :8080) and the UI (Node.js on :3000) in a
+# single container. Go reverse-proxies unknown routes to canvas.
+#
+# Templates + plugins are NOT cloned at build time. They are pre-cloned
+# in the trusted CI context (or operator host) by
+# `scripts/clone-manifest.sh` into `.tenant-bundle-deps/` and COPYed in.
+# The reason: post-2026-05-06, every workspace-template-* repo on Gitea
+# (codex, crewai, deepagents, gemini-cli, langgraph) plus all 7
+# org-template-* repos are private, so the Docker build can't `git clone`
+# from inside the build context — there's no auth path that doesn't leak
+# the Gitea token into an image layer. Pre-cloning keeps the token in
+# the CI environment only; the resulting image carries the cloned trees
+# with `.git` already stripped (see clone-manifest.sh).
+#
+# Build context: repo root, with `.tenant-bundle-deps/` populated by:
+#
+#     MOLECULE_GITEA_TOKEN=<persona-PAT> scripts/clone-manifest.sh \
+#       manifest.json \
+#       .tenant-bundle-deps/workspace-configs-templates \
+#       .tenant-bundle-deps/org-templates \
+#       .tenant-bundle-deps/plugins
+#
+# In CI this happens in publish-workspace-server-image.yml's "Pre-clone
+# manifest deps" step (uses AUTO_SYNC_TOKEN = devops-engineer persona).
+# For a manual operator-host build, source the same token from
+# /etc/molecule-bootstrap/agent-secrets.env first.
+#
+#   docker buildx build --platform linux/amd64 \
+#     -f workspace-server/Dockerfile.tenant \
+#     -t <ECR>/molecule-ai/platform-tenant:latest \
+#     --build-arg GIT_SHA=<sha> --build-arg NEXT_PUBLIC_PLATFORM_URL= \
+#     --push .
+
+# ── Stage 1: Go platform binary ──────────────────────────────────────
+FROM golang:1.25-alpine@sha256:c4ea15b4a7912716eb362a022e2b12317762eca387423760bc59c0f9ae69423c AS go-builder
+WORKDIR /app
+COPY workspace-server/go.mod workspace-server/go.sum ./
+# github-app-auth plugin removed 2026-05-07 (#157): per-agent Gitea
+# identities replaced GitHub-App tokens post-suspension. The sibling
+# COPY + replace directive are gone.
+RUN go mod download
+COPY workspace-server/ .
+
+# GIT_SHA is baked into the binary via -ldflags so /buildinfo can return
+# it at runtime. CI passes ${{ github.sha }}; local builds default to
+# "dev" so an unset value never reads as a real SHA.
+#
+# Why this matters: the redeploy verification step compares each tenant's
+# /buildinfo against the SHA the workflow expects. If GIT_SHA isn't
+# threaded through here, every tenant returns "dev" and the verification
+# fails closed — which is the correct fail-direction (#2395 root fix).
+ARG GIT_SHA=dev
+# Build flags (RFC#563):
+#   -trimpath           strip absolute build-host paths from the binary
+#   -ldflags "-s -w"    omit symbol table (-s) and DWARF debug info (-w)
+#   -X ...GitSHA=...    preserved — /buildinfo still returns the SHA at
+#                       runtime. -s removes the symbol *table* but not
+#                       -X-injected string vars (they live in static
+#                       data, not in the symtab).
+# Empirical local measurement: ~29% smaller (87→61MB) for /platform.
+# Mirrors the pattern already in molecule-controlplane/Dockerfile.
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -trimpath \
+    -ldflags "-s -w -X github.com/EnterOS-AI/enter-os-core/workspace-server/internal/buildinfo.GitSHA=${GIT_SHA}" \
+    -o /platform ./cmd/server
+# Memory v2 sidecar binary (Memory v2 #2728). Bundled so an operator
+# can activate cutover by flipping MEMORY_V2_CUTOVER=true without
+# provisioning a separate service. See entrypoint-tenant.sh for the
+# launch logic.
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -trimpath \
+    -ldflags "-s -w -X github.com/EnterOS-AI/enter-os-core/workspace-server/internal/buildinfo.GitSHA=${GIT_SHA}" \
+    -o /memory-plugin ./cmd/memory-plugin-postgres
+
+# Phase A2 memory-backfill CLI was bundled here briefly (#1796) to
+# migrate agent_memories rows into the v2 plugin. After Phase A3 (#1809)
+# dropped the source table, the binary is permanently inert — running
+# it now hits `pq: relation "agent_memories" does not exist`. Removed
+# the build to drop ~7MB from the image and remove the foot-gun.
+# Source still lives in cmd/memory-backfill/ for history; safe to
+# delete entirely in a future cleanup PR.
+
+# ── Stage 2: Canvas Next.js standalone ────────────────────────────────
+FROM node:20-alpine@sha256:afdf98210b07b586eb71fa22ba2e432e058e4cd1304d31ed60888755b8c865fb AS canvas-builder
+WORKDIR /canvas
+COPY canvas/package.json canvas/package-lock.json* ./
+RUN npm install
+COPY canvas/ .
+ARG NEXT_PUBLIC_PLATFORM_URL=""
+ARG NEXT_PUBLIC_WS_URL=""
+# NEXT_PUBLIC_IMAGE_GEN_R2_HOST pins the EXACT generated-image R2 origin into
+# the canvas CSP img-src (buildImgSrc() in canvas/src/middleware.ts). Next.js
+# inlines NEXT_PUBLIC_* at BUILD time, so it MUST be present here, not at
+# runtime. Unset → buildImgSrc() falls back to the wildcard
+# https://*.r2.cloudflarestorage.com (still functional, just looser). CI passes
+# the exact `<bucket>.<cf-account-hash>.r2.cloudflarestorage.com` host, derived
+# from the same Infisical SSOT the CP uses (MOLECULE_IMAGE_GEN_BUCKET /
+# MOLECULE_IMAGE_GEN_ENDPOINT, with the MOLECULE_WORKSPACE_DATA_* fallbacks);
+# see publish-workspace-server-image.yml. prod + staging share the bucket +
+# R2 account, so a single baked value is correct for both.
+ARG NEXT_PUBLIC_IMAGE_GEN_R2_HOST=""
+ENV NEXT_PUBLIC_PLATFORM_URL=$NEXT_PUBLIC_PLATFORM_URL
+ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
+ENV NEXT_PUBLIC_IMAGE_GEN_R2_HOST=$NEXT_PUBLIC_IMAGE_GEN_R2_HOST
+RUN npm run build
+
+# ── Stage 3: Runtime ──────────────────────────────────────────────────
+FROM node:20-alpine@sha256:afdf98210b07b586eb71fa22ba2e432e058e4cd1304d31ed60888755b8c865fb
+RUN apk add --no-cache ca-certificates git tzdata openssh-client aws-cli
+
+# Non-root runtime for the Node.js canvas process.
+# The Go binary (started by entrypoint.sh) is also non-root — the
+# entrypoint runs as root only long enough to set volume ownership,
+# then exec's as the 'canvas' user via su-exec / setpriv.
+# The Go platform itself drops privileges after init.
+#
+# node:20-alpine ships with uid/gid 1000 already taken by `node`. Delete
+# it first so we can recreate `canvas` at the same uid/gid without
+# conflict. Previously plain addgroup/adduser at 1000 failed with
+# "group 'node' in use" — blocked the tenant image build for hours
+# 2026-04-21. Picking a different uid would break mounted volumes
+# that expect 1000, so we keep the slot and rename the user.
+RUN deluser --remove-home node 2>/dev/null || true; \
+    delgroup node 2>/dev/null || true; \
+    addgroup -g 1000 canvas && adduser -u 1000 -G canvas -s /bin/sh -D canvas
+
+# Go platform binary + Memory v2 sidecar + v1→v2 backfill CLI
+COPY --from=go-builder /platform /platform
+COPY --from=go-builder /memory-plugin /memory-plugin
+COPY workspace-server/migrations /migrations
+COPY manifest.json /app/manifest.json
+
+# Templates + plugins (pre-cloned by scripts/clone-manifest.sh in the
+# trusted CI / operator-host context, .git already stripped — see
+# .tenant-bundle-deps/ in the build context). The Gitea token used to
+# clone them never enters this image.
+COPY .tenant-bundle-deps/workspace-configs-templates /workspace-configs-templates
+COPY .tenant-bundle-deps/org-templates /org-templates
+COPY .tenant-bundle-deps/plugins /plugins
+
+# Canvas standalone
+WORKDIR /canvas
+COPY --from=canvas-builder /canvas/.next/standalone ./
+COPY --from=canvas-builder /canvas/.next/static ./.next/static
+COPY --from=canvas-builder /canvas/public ./public
+
+COPY workspace-server/entrypoint-tenant.sh /entrypoint.sh
+# /org-templates must be writable by the canvas user — the !external
+# resolver mkdirs <orgBaseDir>/.external-cache/<repo>/<sha>/ on first
+# import to cache cross-repo subtree fetches (org_external.go,
+# internal#77 / task #222). Without this chown the resolver fails with
+# "mkdir cache root: permission denied" and POST /org/import returns
+# 400 "org template expansion failed" for any template that uses
+# !external (e.g. molecule-dev → dev-lead). Caught on staging-cplead-2
+# 2026-05-10 — see internal incident debrief.
+RUN chmod +x /entrypoint.sh && \
+    chown -R canvas:canvas /canvas /platform /memory-plugin /migrations /org-templates
+
+EXPOSE 8080
+# entrypoint.sh starts as root to fix volume perms, then drops to
+# canvas user. The Go binary (PID 1 replacement) runs as non-root.
+USER canvas
+CMD ["/entrypoint.sh"]

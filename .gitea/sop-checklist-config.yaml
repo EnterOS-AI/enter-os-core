@@ -1,0 +1,197 @@
+# SOP-Checklist gate — per-item required reviewer teams.
+#
+# RFC#351 v1 starter set. Each item lists:
+#   slug              — canonical kebab-case form used in /sop-ack <slug>
+#   pr_section_marker — substring matched in the PR body to detect that
+#                       the author filled in this item (case-insensitive)
+#   required_teams    — list of Gitea team names; an ack from ANY one of
+#                       these teams (logical OR) satisfies the item.
+#                       Membership is probed at gate-time via
+#                       GET /api/v1/teams/{id}/members/{login}.
+#                       Team-id resolution happens at script start via
+#                       GET /api/v1/orgs/{org}/teams (cheap, one call).
+#   numeric_alias     — 1..7; lets reviewers type `/sop-ack 3` as a
+#                       shortcut for `/sop-ack staging-smoke`.
+#
+# WHY THESE TEAM MAPPINGS:
+#   The RFC table referenced persona-role names like `core-qa`,
+#   `core-be`, `core-devops` — these are individual Gitea user logins,
+#   not teams. The Gitea team-membership API is /teams/{id}/members/{u},
+#   so we need actual teams. Orchestrator preflight 2026-05-12 verified
+#   only these teams exist on molecule-ai: ceo(5), engineers(2),
+#   managers(6), qa(20), security(21), Owners(1), and bot teams. We
+#   map the RFC roles to the closest existing team and surface the
+#   mapping explicitly so it's reviewable.
+#
+# HOW TO EDIT:
+#   - Tightening: replace `engineers` with a smaller team after creating
+#     it (e.g. a new `senior-engineers` team if needed).
+#   - Loosening: add another team to required_teams (OR semantics).
+#   - Add an item: append to items list and document the slug below.
+#
+# AUTHOR SELF-ACK IS FORBIDDEN regardless of which team contains them
+# — the gate script enforces commenter != PR author before checking
+# team membership.
+#
+# AI-SOP-ACK TEAM (internal#760 ceremony design, CTO-approved):
+#   The `ai-sop-ack` team contains AI agent identities that can ack
+#   SOP-checklist items ON BEHALF OF automated evidence.  An AI ack is
+#   only valid when:
+#     1. the item has `ai_ack_eligible: true`
+#     2. the item is NOT in the human-only carve-out (migration/schema)
+#     3. for testing-class items, CI / all-required (pull_request) is
+#        green on the current head SHA
+#
+#   AI acks NEVER count toward qa-review or security-review gates —
+#   those remain human-team-only (enforced by review-check.sh team
+#   probe against TEAM_ID 20/21).
+#
+#   INITIAL ai_ack_eligible allowlist (CTO-controlled, msg 1388c76f):
+#     comprehensive-testing, local-postgres-e2e, staging-smoke,
+#     five-axis-review, memory-consulted
+#   HUMAN-ONLY carve-out:
+#     root-cause, no-backwards-compat
+#   Any widening requires an explicit config change reviewed by CTO.
+
+version: 1
+
+# Uniform hard-fail mode (CTO 2026-06-07):
+#   Every PR uses the same gate — no tier branching.
+#   Missing acks → status `failure`, blocks merge via branch protection.
+
+# High-risk class (RFC#450 Option C, governance-fix for internal#442).
+#
+# A PR is "high-risk" when ANY of the listed labels are applied.
+# High-risk items use `required_teams_high_risk` (when present on the
+# item); non-high-risk items use the default `required_teams`.
+#
+# Risk-classed two-eyes shape:
+#   - Default class (not high-risk): a non-author engineers/managers/ceo
+#     ack satisfies the item — 25+ live identities, no dependency on a
+#     dead/inactive senior persona token.
+#   - High-risk class (any high_risk_label): still requires a non-author
+#     ceo ack (durable human team).
+#
+# Tightening: add labels to high_risk_labels.
+# Loosening: remove labels.
+high_risk_labels:
+  - "risk:high"
+  - "area:security"
+  - "area:schema"
+  - "area:fleet-image"
+  - "area:identity"
+  - "area:gate-meta"
+
+items:
+  - slug: comprehensive-testing
+    numeric_alias: 1
+    pr_section_marker: "Comprehensive testing performed"
+    required_teams: [qa, engineers]
+    ai_ack_eligible: true
+    description: >-
+      What was tested, how, edge cases covered. Ack from any qa-team
+      member (or engineers fallback while qa is small). AI ack valid
+      only when CI / all-required (pull_request) is green.
+
+  - slug: local-postgres-e2e
+    numeric_alias: 2
+    pr_section_marker: "Local-postgres E2E run"
+    required_teams: [engineers]
+    ai_ack_eligible: true
+    description: >-
+      Link to local CI artifact, or "N/A: pure-frontend change". Ack
+      from any engineer who can verify the local DB test actually ran.
+      AI ack valid only when CI / all-required (pull_request) is green.
+
+  - slug: staging-smoke
+    numeric_alias: 3
+    pr_section_marker: "Staging-smoke verified or pending"
+    required_teams: [engineers]
+    ai_ack_eligible: true
+    description: >-
+      Link to canary run, or "scheduled post-merge". Ack from any
+      engineer (core-devops/infra-sre are members of engineers team).
+      AI ack valid only when CI / all-required (pull_request) is green.
+
+  - slug: root-cause
+    numeric_alias: 4
+    pr_section_marker: "Root-cause not symptom"
+    required_teams: [engineers, managers, ceo]
+    required_teams_high_risk: [ceo]
+    description: >-
+      One-sentence root-cause statement. Default class: non-author
+      engineers/managers/ceo ack suffices (engineers can attest
+      root-cause-vs-symptom for routine fixes). High-risk class
+      (see `high_risk_labels`): non-author ceo ack required —
+      senior judgment for irreversible/security/identity/gate
+      changes. Closes internal#442 + tracks RFC#450.
+
+  - slug: five-axis-review
+    numeric_alias: 5
+    pr_section_marker: "Five-Axis review walked"
+    required_teams: [engineers]
+    ai_ack_eligible: true
+    description: >-
+      Correctness / readability / architecture / security / performance.
+      Ack from any non-author engineer.
+
+  - slug: no-backwards-compat
+    numeric_alias: 6
+    pr_section_marker: "No backwards-compat shim / dead code added"
+    required_teams: [engineers, managers, ceo]
+    required_teams_high_risk: [ceo]
+    description: >-
+      Yes/no + justification if no. Default class: non-author
+      engineers/managers/ceo ack suffices. High-risk class
+      (see `high_risk_labels`): non-author ceo ack required —
+      senior judgment for shim-versus-real-fix on irreversible
+      surfaces. Closes internal#442 + tracks RFC#450.
+
+  - slug: memory-consulted
+    numeric_alias: 7
+    # #1973: normalize marker so it matches the slug. Previously the
+    # slash produced a checklist status that never resolved because
+    # normalize_slug() collapses / to - and the Gitea PR body parser
+    # would not find the expected heading.
+    pr_section_marker: "Memory consulted"
+    required_teams: [engineers]
+    ai_ack_eligible: true
+    description: >-
+      List of feedback memories applicable to this change. Ack from
+      any engineer who has the same memory access.
+
+# N/A gate declarations (RFC#324 §N/A follow-up).
+# PRs where a gate genuinely does not apply (e.g., pure-infra with no
+# qa surface, or docs-only) can be declared N/A by a non-author peer
+# who is in one of the gate's required_teams. The sop-checklist
+# posts a `sop-checklist / na-declarations (pull_request)` status that
+# review-check.sh reads to skip the Gitea-APPROVE requirement.
+#
+# Usage: any PR commenter (peer) posts:
+#   /sop-n/a qa-review  <reason>
+#   /sop-n/a security-review  <reason>
+#
+# Slash commands:
+#   /sop-n/a <gate> [reason] — declare gate N/A (most-recent per-user wins)
+#   /sop-revoke <gate>      — revoke prior N/A declaration for that gate
+#
+# Gate names must match the context strings used by review-check.sh:
+#   qa-review      → qa-review / approved (<event>)        [TEAM_ID=20]
+#   security-review → security-review / approved (<event>)  [TEAM_ID=21]
+#
+# required_teams: OR semantics — any team member can declare N/A.
+# Authors cannot self-declare N/A (enforced by gate script).
+n/a_gates:
+  qa-review:
+    required_teams: [qa, security, engineers]
+    description: >-
+      QA review N/A when this change has no qa surface (pure-infra,
+      tooling-only, revert, dependency-only). A qa/eng/security member
+      must post /sop-n/a qa-review to activate.
+
+  security-review:
+    required_teams: [security, managers, ceo]
+    description: >-
+      Security review N/A when this change has no security surface
+      (docs-only, pure-frontend, dependency-only). A security/managers/ceo
+      member must post /sop-n/a security-review to activate.

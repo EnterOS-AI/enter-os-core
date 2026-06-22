@@ -1,0 +1,174 @@
+name: Sweep stale ws-* workspace orphans (runner host)
+
+# Standing janitor for ws-<uuid> workspace containers (and their
+# molecule-local/* images' running containers) left behind on the docker-host
+# CI runners by the local-provision E2E lane (local-provision-e2e.yml). This is
+# the belt-and-braces SECOND layer behind that workflow's own run-scoped
+# always() teardown — see #2883.
+#
+# Why a standing sweeper in addition to the per-run teardown
+# ---------------------------------------------------------
+# Per-run teardown is best-effort by definition (mirrors the rationale in
+# sweep-stale-e2e-orgs.yml). The local-provision lane provisions ws-<uuid>
+# SIBLING containers from a HOST platform binary via docker.sock. Two failure
+# modes leak a container the in-workflow teardown cannot reliably catch:
+#   * The job is CANCELLED / TIMED-OUT — act_runner SIGKILLs the job container,
+#     so neither the e2e script's bash EXIT trap NOR the workflow's own
+#     always() teardown step is guaranteed to run to completion.
+#   * The platform-server crashes mid-provision and orphans a half-started
+#     ws-<uuid> container whose owning workspace row never reached a state the
+#     script's delete path covers.
+# An accumulation of these forever-running containers pegs CPU and exhausts the
+# shared docker-host runner — the likely root cause of the advisory-lane
+# intermittent reds (#2693 / #2680 / #2739). 13 such orphans were found on the
+# retired ded-1 box (2-3 days old) and 11+3 on the production robots.
+#
+# Why a separate workflow vs the CP/AWS sweepers
+#   * sweep-stale-e2e-orgs / sweep-cf-* / sweep-aws-secrets operate at the
+#     control-plane / cloud-API layer (DELETE /cp/admin/..., CF zone, ASM).
+#     This leak is purely LOCAL docker state on the runner host — there is no
+#     CP org row or cloud resource to drive a cascade from. So this sweeper
+#     enumerates the runner's local docker daemon directly.
+#
+# Age-filter so in-flight runs are NEVER touched: only containers OLDER than
+# WS_MAX_AGE_HOURS are removed. The longest local-provision run is ~30 min
+# (lifecycle-real timeout-minutes: 30), so a 2-hour floor is well clear of any
+# legitimately-running workspace.
+#
+# SUBSTRATE: runs on `docker-host` (the operator-host molecule-runner-* lane)
+# because that is where the ws-<uuid> containers are provisioned and where the
+# molecule-core-net bridge + docker.sock live (same constraint as
+# local-provision-e2e.yml + handlers-postgres-integration.yml). A bare
+# ubuntu-latest run on a Windows act_runner would inspect the WRONG daemon.
+
+on:
+  schedule:
+    # Hourly. The 2-hour age floor (WS_MAX_AGE_HOURS) is the actual safety
+    # margin against catching an in-flight run; hourly cadence keeps the
+    # worst-case orphan lifetime to ~3h instead of multi-day.
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+# Don't let two sweeps fight over the same daemon. Cron + a manual dispatch
+# could overlap; queue rather than parallel-delete.
+concurrency:
+  group: sweep-stale-ws-orphans
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  sweep:
+    name: Sweep ws-* orphans
+    # Pin to docker-host: the orphans live on the operator-host runner daemon
+    # (where local-provision-e2e.yml provisions them). A ubuntu-latest Windows
+    # act_runner would target the wrong docker daemon. See SUBSTRATE above.
+    runs-on: docker-host
+    # Critical janitor — fail loud, don't mask. A silently-failing sweeper is
+    # how the orphans accumulated in the first place (mirrors the
+    # continue-on-error removal rationale in sweep-stale-e2e-orgs.yml).
+    continue-on-error: false
+    timeout-minutes: 10
+    env:
+      # Containers younger than this are assumed to belong to an in-flight run
+      # and are left alone. The longest local-provision job is ~30 min, so 2h
+      # is a wide safety margin. Overridable via repo/org variable if a future
+      # lane runs longer.
+      WS_MAX_AGE_HOURS: '2'
+      # Refuse to remove more than this many containers in one tick. If the
+      # daemon enumeration goes weird (e.g. clock skew makes everything look
+      # old), bail rather than nuke a surprising number of containers.
+      SAFETY_CAP: '100'
+      # Dry-run escape hatch for manual investigation (set via env edit + a
+      # workflow_dispatch run). Default false = actually remove.
+      DRY_RUN: 'false'
+
+    steps:
+      - name: Sweep stale ws-* / molecule-local workspace orphans
+        run: |
+          set -uo pipefail
+          if ! docker info >/dev/null 2>&1; then
+            echo "::error::docker daemon not reachable on this runner — cannot sweep ws-* orphans."
+            exit 2
+          fi
+
+          NOW=$(date +%s)
+          MAX_AGE_SECONDS=$(( WS_MAX_AGE_HOURS * 3600 ))
+          echo "Sweeping ws-* / molecule-local workspace containers older than ${WS_MAX_AGE_HOURS}h (${MAX_AGE_SECONDS}s). DRY_RUN=${DRY_RUN}"
+
+          # Enumerate candidate workspace containers two ways and de-dup:
+          #   1. name ^ws-<uuid>           (the provisioner's container name)
+          #   2. ancestor image molecule-local/* (the local workspace-template
+          #      + stub-runtime images this lane builds/tags) — catches a
+          #      container that (somehow) isn't named ws-* but is clearly ours.
+          candidates=$(
+            { docker ps -aq --filter "name=^ws-" 2>/dev/null
+              docker ps -aq --filter "ancestor=molecule-local/stub-runtime" 2>/dev/null
+              for img in $(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep '^molecule-local/' || true); do
+                docker ps -aq --filter "ancestor=$img" 2>/dev/null || true
+              done
+            } | sort -u
+          )
+
+          if [ -z "$candidates" ]; then
+            echo "No ws-* / molecule-local workspace containers present. Clean."
+            exit 0
+          fi
+
+          # Build the stale list (older than the age floor) first, so the
+          # safety cap can gate the actual removal.
+          stale=""
+          stale_n=0
+          for cid in $candidates; do
+            started=$(docker inspect -f '{{.State.StartedAt}}' "$cid" 2>/dev/null || true)
+            created=$(docker inspect -f '{{.Created}}' "$cid" 2>/dev/null || true)
+            ref="$started"
+            # A never-started (created-only) container has a zero StartedAt;
+            # fall back to Created so we still age it out.
+            case "$ref" in ''|0001-01-01*) ref="$created" ;; esac
+            [ -z "$ref" ] && continue
+            # GNU date on the Linux docker-host runner parses RFC3339 directly.
+            ts=$(date -d "$ref" +%s 2>/dev/null || echo 0)
+            [ "$ts" -eq 0 ] && continue
+            age=$(( NOW - ts ))
+            if [ "$age" -ge "$MAX_AGE_SECONDS" ]; then
+              name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's#^/##' || echo "$cid")
+              echo "  STALE (${age}s old): $name ($cid)"
+              stale="$stale $cid"
+              stale_n=$((stale_n + 1))
+            fi
+          done
+
+          if [ "$stale_n" -eq 0 ]; then
+            echo "Found $(echo "$candidates" | wc -w | tr -d ' ') workspace container(s) but none older than ${WS_MAX_AGE_HOURS}h. Nothing to remove."
+            exit 0
+          fi
+
+          if [ "$stale_n" -gt "$SAFETY_CAP" ]; then
+            echo "::error::Refusing to remove $stale_n containers in one sweep (cap=$SAFETY_CAP). Investigate manually — this usually means clock skew or a daemon-enumeration anomaly made everything look stale."
+            exit 1
+          fi
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "DRY RUN — would remove $stale_n stale workspace container(s). Set DRY_RUN=false to actually remove."
+            exit 0
+          fi
+
+          removed=0
+          for cid in $stale; do
+            docker rm -f "$cid" >/dev/null 2>&1 && removed=$((removed + 1)) || echo "  WARN: could not remove $cid (already gone?)"
+          done
+          echo "Sweep summary: removed=$removed of $stale_n stale workspace container(s)."
+
+      - name: Notify on sweep failure
+        # Fail-loud companion (mirrors sweep-stale-e2e-orgs.yml). A silently
+        # red sweeper is exactly how the orphans accumulated; tag the failure
+        # so the runs UI + any log-tail consumer flags it.
+        if: failure()
+        run: |
+          echo "::error::sweep-stale-ws-orphans FAILED — leaked ws-* workspace containers may be accumulating on a docker-host runner and pegging CPU (#2883). Check this runner's docker daemon manually (docker ps --filter name=^ws-) and prior step logs. Common causes: (a) docker daemon unreachable on the runner, (b) safety-cap tripped (clock skew / enumeration anomaly)."
+          exit 1

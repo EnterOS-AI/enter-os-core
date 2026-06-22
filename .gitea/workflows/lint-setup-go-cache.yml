@@ -1,0 +1,76 @@
+name: lint-setup-go-cache
+
+# Static workflow-shape lint: forbid `actions/setup-go` caching on the
+# self-hosted fleet. Every setup-go step must set `cache: false`.
+#
+# Forbidden shape
+# ---------------
+#   - `cache: true` (explicit), OR
+#   - `cache-dependency-path` / `cache-key` set with no `cache:` (the
+#     input DEFAULTS to true), OR
+#   - a bare setup-go with no `cache:` at all (still default-true).
+#
+# Why this rule exists (2026-06-09/10 cross-repo rollout)
+# ------------------------------------------------------
+# The molecule self-hosted runners bind-mount a persistent, host-shared
+# GOCACHE/GOMODCACHE (/var/cache/ci-go-{build,mod} — operator-config
+# ops/runners/config.dedicated.yaml + fleet template). When setup-go
+# turns on actions/cache, it untars its restored archive OVER that bind
+# mount -> "File exists" -> "Failed to restore" -> partial cache ->
+# downstream linker/typecheck failures on heavy jobs (test -race link
+# "too many errors", go-arch-lint "without types"). The runner-level
+# GOCACHE is the SSOT for caching; setup-go must not also cache.
+# Fix: add `cache: false` under the setup-go `with:` block.
+#
+# Coordination (sweep PRs)
+# ------------------------
+# The fleet sweep fix/setup-go-cache-vs-bind-mount (core#2524) removes
+# the remaining `cache: true` hits. Until it merges, this lint will
+# loudly list those hits — so it lands at `continue-on-error: true`
+# (advisory). FOLLOW-UP: after core#2524 merges and main is clean for
+# 3 days, flip continue-on-error -> false to make this a hard gate.
+# This PR already removes the default-true hits the sweep PR does not
+# touch (ci.yml, handlers-postgres-integration.yml,
+# weekly-platform-go.yml).
+
+on:
+  pull_request:
+    paths:
+      - '.gitea/workflows/**'
+      - '.gitea/scripts/lint_setup_go_cache.py'
+      - 'tests/test_lint_setup_go_cache.py'
+  push:
+    branches: [main, staging]
+    paths:
+      - '.gitea/workflows/**'
+      - '.gitea/scripts/lint_setup_go_cache.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-setup-go-cache-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # bp-exempt: advisory lint enforcing the cache:false convention on the
+  # self-hosted GOCACHE bind-mount fleet; flips to required after the
+  # core#2524 sweep merges (see header). Not a merge gate yet.
+  lint:
+    name: lint-setup-go-cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Hard gate: core#2524 sweep merged and main is clean (all setup-go steps
+    # set cache: false). The self-hosted fleet GOCACHE bind-mount is protected.
+    continue-on-error: false
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Run lint-setup-go-cache
+        run: python3 .gitea/scripts/lint_setup_go_cache.py
+      - name: Run lint-setup-go-cache unit tests
+        run: |
+          python -m pip install --quiet pytest
+          python3 -m pytest tests/test_lint_setup_go_cache.py -q

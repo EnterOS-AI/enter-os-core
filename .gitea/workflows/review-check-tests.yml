@@ -1,0 +1,106 @@
+name: review-check-tests
+
+# Runs review-check.sh regression tests on every PR + push that touches
+# the evaluator script or its test fixtures.
+#
+# Follows RFC#324 follow-up (issue #540):
+#   .gitea/scripts/review-check.sh is load-bearing for PR merge gates.
+#   It has ZERO production CI coverage. This workflow closes that gap.
+#
+# Design choices:
+#   - Bash test harness (not bats). The existing test_review_check.sh
+#     uses a custom assert_eq/assert_contains framework that is already
+#     working and covers all 13 acceptance criteria (issue #540 §Acceptance).
+#     Converting to bats would be refactoring, not closing the gap.
+#   - No bats dependency: the runner-base image needs no extra tooling.
+#   - continue-on-error: false — these tests must pass; a failure means
+#     the review-gate evaluator is broken and must not be merged.
+
+on:
+  push:
+    branches: [main, staging]
+    paths:
+      - '.gitea/scripts/review-check.sh'
+      - '.gitea/scripts/_approval_validator.py'
+      - '.gitea/scripts/_review_check_filter.py'
+      - '.gitea/scripts/tests/test_review_check.sh'
+      - '.gitea/scripts/tests/_review_check_fixture.py'
+      - '.gitea/scripts/tests/test_approval_validator.py'
+      - '.gitea/workflows/review-check-tests.yml'
+  pull_request:
+    branches: [main, staging]
+    paths:
+      - '.gitea/scripts/review-check.sh'
+      - '.gitea/scripts/_approval_validator.py'
+      - '.gitea/scripts/_review_check_filter.py'
+      - '.gitea/scripts/tests/test_review_check.sh'
+      - '.gitea/scripts/tests/_review_check_fixture.py'
+      - '.gitea/scripts/tests/test_approval_validator.py'
+      - '.gitea/workflows/review-check-tests.yml'
+  workflow_dispatch:
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # bp-exempt: review tooling regression suite; CI / all-required is the required aggregate.
+  test:
+    name: review-check.sh regression tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install jq
+        # Required for T12 jq-filter test case. Gitea Actions runners (ubuntu-latest
+        # label) do not bundle jq. Install via apt-get first (reliable for Ubuntu
+        # runners with internet access to package mirrors). Falls back to GitHub
+        # binary download. GitHub releases may be blocked on some runner networks
+        # (infra#241 follow-up).
+        #
+        # The install logic is extracted to scripts/lib/jq-install.sh so the
+        # fail-closed contract is unit-tested in tests/test_jq_install.sh.
+        # core#2460 (mc#1982 root-fix) removed the prior `continue-on-error:
+        # true` mask that swallowed install failures; this refactor preserves
+        # that root-fix and makes the regression testable.
+        run: |
+          . .gitea/scripts/lib/jq-install.sh
+          install_jq
+          jq --version
+
+      - name: Run review-check.sh regression suite
+        run: bash .gitea/scripts/tests/test_review_check.sh
+
+      - name: Install-jq fail-closed contract (core#2460 / mc#1982 root-fix)
+        # CTO-mandated regression test for the install-jq step's
+        # fail-closed contract. core#2460 (mc#1982 root-fix) removed
+        # the `continue-on-error: true` mask that swallowed install
+        # failures; this test locks in:
+        #   - happy path: apt-get succeeds → rc=0, ::notice::
+        #   - partial fail: apt-get fails but curl works → rc=0
+        #   - both fail: returns 1, emits ::error:: (NOT ::warning::
+        #     — the pre-#2460 mask was a warning that silently
+        #     continued, which is the regression we are guarding
+        #     against)
+        #   - anti-mask: the function body has no `|| true` / `|| echo`
+        #     / `continue-on-error` swallow patterns
+        #   - idempotent re-source is a no-op
+        # The lib is at .gitea/scripts/lib/jq-install.sh (extracted
+        # from this workflow's prior inline `run:` block in this PR).
+        run: bash .gitea/scripts/tests/test_jq_install.sh
+
+      - name: SSOT approval-validator unit tests (SEV-1 internal#812)
+        # The Python unit tests for _approval_validator.py are
+        # mutation-verified — every fail-closed branch has an explicit
+        # REJECT assertion. A reviewer who weakens the predicate trips
+        # these in CI.
+        run: |
+          # The test file lives in .gitea/scripts/tests/ with no __init__.py,
+          # so `unittest discover -s .gitea/scripts` finds 0 tests (the SEV-1
+          # suite silently never ran — a CI gap fixed alongside internal#812).
+          # Run the file directly; it self-inserts its sys.path and calls
+          # unittest.main(), so a failing assertion exits non-zero and fails CI.
+          python3 .gitea/scripts/tests/test_approval_validator.py -v

@@ -1,0 +1,1086 @@
+# Canonical providers manifest — single source of truth (SSOT) baseline.
+#
+# RFC: molecule-ai/molecule-controlplane#340 "Canonical Providers Manifest".
+# This file is PR-1: the git-tracked baseline only. NOTHING imports the
+# loader yet — no consumer is wired (proxy switch, canvas dropdown, and
+# adapter registry are migrated in later PRs). Reverting PR-1 = delete
+# this file + providers.go + providers_test.go. Zero runtime behavior
+# change.
+#
+# It transcribes the UNION of the four places that independently define
+# "which LLM providers exist" today, so later PRs can converge them:
+#   1. Proxy  — internal/handlers/llm_proxy.go
+#               resolveLLMProviderTargetForProtocol (4-arm switch:
+#               openai/moonshot/anthropic/minimax) + inferLLMProvider
+#               (prefix table: minimax / kimi->moonshot / claude->anthropic
+#               / default->openai).
+#   2. Canvas — molecule-core/canvas/src/components/ProviderModelSelector.tsx
+#               VENDOR_LABELS (28 rows) + BARE_VENDOR_PATTERNS.
+#   3. Adapter — molecule-ai-workspace-template-claude-code/config.yaml
+#               `providers:` block (8 entries) + adapter.py _BUILTIN_PROVIDERS.
+#               The same block is copy-pasted into the seo-agent template.
+#   4. DB     — migrations 037_llm_usage_billing + 039_minimax_llm_price_catalog
+#               seed llm_price_catalog with providers
+#               openai / anthropic / moonshot / minimax.
+#
+# Schema (RFC §2 superset; each consumer reads the subset it needs):
+#   name               stable key (intended == llm_price_catalog.provider)
+#   display_name       canvas dropdown label
+#   vendor_logo        canvas asset key
+#   protocol           openai | anthropic   (proxy wire format)
+#   auth_mode          anthropic_api | oauth | third_party_anthropic_compat |
+#                      wif_adc (keyless AWS→GCP WIF server-side mint; the one
+#                      value the proxy ACTS on — triggers vertexauth.Token)
+#   base_url_template  base URL for the openai-protocol surface (null = CLI/SDK
+#                      default). MAY contain {placeholder} tokens resolved at
+#                      resolution time from endpoint_vars (RFC vertex-provider-
+#                      ssot-endpoint §Design 1) — e.g. vertex's {location}/{project}.
+#   base_url_anthropic base URL for the anthropic-protocol surface (where applicable)
+#   endpoint_vars      OPTIONAL map placeholder -> {env, default}: how each
+#                      {placeholder} in base_url_template is resolved (env when
+#                      set + non-empty, else default — the structured form of the
+#                      proxy's envOr). Empty/absent = static URL (today's shape).
+#   wire_model_prefix  OPTIONAL publisher prefix the upstream expects on the wire
+#                      model id ("google/" for vertex). Empty = unprefixed.
+#   auth_env           env var names accepted (NAMES ONLY — never secrets); any one satisfies auth
+#   auth_token_env     env var the adapter projects the vendor key INTO (default ANTHROPIC_AUTH_TOKEN)
+#   model_prefix_match RE2 regex unifying proxy inferLLMProvider prefixes +
+#                      canvas BARE_VENDOR_PATTERNS + adapter model_prefixes
+#   model_aliases      canvas shortcut ids (sonnet/opus/haiku, etc.)
+#   deprecated         optional bool (RFC §8.2; default false)
+#   upstream_vendor    OPTIONAL (internal#718 P1, CONVERGED 2026-05-27). The
+#                      proxy's upstream-vendor key for this entry — the 4-name
+#                      vocabulary {openai, moonshot, anthropic, minimax} the
+#                      proxy's resolveLLMProviderTarget switch dispatches on to
+#                      pick the upstream base URL + key. Present ONLY on the
+#                      entries the proxy routes to an upstream; absent everywhere
+#                      else. It is a single PROPERTY of the entry (like protocol
+#                      or base_url_template), NOT a parallel routing block: the
+#                      upstream-vendor identity of "anthropic-api" is the
+#                      "anthropic" vendor; for moonshot/openai/minimax the entry
+#                      name and the vendor coincide. Manifest.ResolveUpstream is
+#                      the ONE resolution over these entries — it maps a platform
+#                      model id's NAMESPACE token (every live platform id is
+#                      `vendor/model`) to the entry whose upstream_vendor equals
+#                      it, then reads that entry's base_url_* / auth_env (the
+#                      SINGLE source) for the upstream target. Bare ids are
+#                      vestigial at the proxy (no live bare traffic) and resolve
+#                      via the proxy's retained legacy fallback, not here.
+#                      Must be UNIQUE across the catalog (load fails closed
+#                      otherwise — the namespace token must resolve to one entry).
+#
+# DRIFT NOTE on `name` vs DB `provider`: the RFC suggests name == the
+# llm_price_catalog.provider column. The DB actually seeds the row
+# `anthropic` (not `anthropic-api`), and has no rows for the OAuth /
+# platform / third-party providers. PR-1 keeps the RFC's `anthropic-api`
+# key and records the mismatch here; reconciling the join key is a
+# later-PR / migration concern, not a PR-1 routing change.
+
+schema_version: 1
+
+providers:
+  # ===========================================================================
+  # Anthropic — native. proxy + canvas + adapter + DB all know it.
+  # ===========================================================================
+  - name: anthropic-api
+    display_name: "Anthropic API"
+    vendor_logo: "anthropic"
+    protocol: anthropic
+    auth_mode: anthropic_api
+    base_url_template: "https://api.anthropic.com/v1"
+    base_url_anthropic: "https://api.anthropic.com/v1"
+    auth_env: [ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN]
+    auth_token_env: ANTHROPIC_API_KEY
+    # Proxy inferLLMProvider matches HasPrefix "claude"; canvas matches /^claude-/i.
+    model_prefix_match: "^claude"
+    model_aliases: []
+    # internal#718 P1 (CONVERGED): the proxy's upstream-vendor key. ResolveUpstream
+    # maps the `anthropic/` namespace token to THIS entry, then dials this entry's
+    # base_url_anthropic / base_url_template + auth (the SINGLE source). The vendor
+    # key is "anthropic" (NOT the registry provider name "anthropic-api"). The
+    # anthropic-oauth entry carries NO upstream_vendor — OAuth never traverses the
+    # proxy (the CLI talks to Anthropic directly). Bare `claude*` ids are vestigial
+    # at the proxy (no live bare traffic) and resolve via the legacy fallback.
+    upstream_vendor: anthropic
+
+  # Claude Code subscription via OAuth. Adapter + canvas know it; proxy
+  # never routes OAuth (the CLI talks to Anthropic directly). No base URL.
+  - name: anthropic-oauth
+    display_name: "Claude Code subscription"
+    vendor_logo: "anthropic"
+    protocol: anthropic
+    auth_mode: oauth
+    base_url_template: null
+    base_url_anthropic: null
+    auth_env: [CLAUDE_CODE_OAUTH_TOKEN]
+    auth_token_env: CLAUDE_CODE_OAUTH_TOKEN
+    # Matched by exact alias, not prefix — the bare ids sonnet/opus/haiku
+    # only count as OAuth when CLAUDE_CODE_OAUTH_TOKEN is the auth env
+    # (canvas gates on env; the manifest expresses the alias set here).
+    model_prefix_match: "^(sonnet|opus|haiku)$"
+    model_aliases: [sonnet, opus, haiku]
+
+  # ===========================================================================
+  # OpenAI / Codex — SPLIT into two providers, mirroring the anthropic-api /
+  # anthropic-oauth pair above. The codex runtime authenticates via EITHER a
+  # ChatGPT/Codex subscription (OAuth-style auth.json blob — the CLI talks to
+  # OpenAI directly, never the proxy) OR a direct OpenAI API key. The codex
+  # template/adapter registry
+  # (git.moleculesai.app/molecule-ai/molecule-ai-workspace-template-codex
+  # config.yaml `providers:`) uses the SPLIT names `openai-subscription`
+  # (auth_mode chatgpt_subscription) + `openai-api` (auth_mode openai_api); it
+  # does NOT accept a bare `openai`. The previous single `openai` SSOT entry
+  # derived bare `openai` for (codex, gpt-*), which the adapter rejected with
+  # "picks provider='openai' but it is not in the providers registry. Known
+  # providers: openai-subscription, openai-api" — leaving codex agents NOT
+  # CONFIGURED. The split below converges the SSOT onto the adapter's vocabulary.
+  #
+  # openai-subscription is the OAuth arm (mirror of anthropic-oauth): auth_mode
+  # oauth, NO upstream_vendor (OAuth never traverses the proxy — the CLI dials
+  # OpenAI directly), base_url null, the ChatGPT-OAuth auth.json env. It is the
+  # codex DEFAULT (the template adapter's resolve-provider precedence #1 picks
+  # the subscription when CODEX_AUTH_JSON is present), so it owns the bare gpt-*
+  # family by prefix + exact-list and DeriveProvider(codex, gpt-5.5) -> here.
+  # ===========================================================================
+  - name: openai-subscription
+    display_name: "OpenAI Codex subscription"
+    vendor_logo: "openai"
+    protocol: openai
+    auth_mode: oauth  # ChatGPT/Codex subscription — auth.json blob, not a bearer key.
+    base_url_template: null  # OAuth: the codex CLI talks to OpenAI directly (no proxy).
+    base_url_anthropic: null  # OpenAI exposes only the OpenAI protocol surface.
+    # The codex template's chatgpt_subscription auth_env, verbatim from the
+    # deployed config.yaml: CODEX_AUTH_JSON wins over the older
+    # CODEX_CHATGPT_AUTH_JSON alias when both are set.
+    auth_env: [CODEX_AUTH_JSON, CODEX_CHATGPT_AUTH_JSON]
+    auth_token_env: CODEX_AUTH_JSON
+    # Canvas matches /^gpt-/i. This is the codex DEFAULT arm, so it owns the
+    # bare gpt-* prefix (the codex runtime exact-lists the gpt-* ids under it).
+    model_prefix_match: "^gpt-"
+    model_aliases: []
+    # NO upstream_vendor — OAuth never traverses the proxy (mirror of
+    # anthropic-oauth). The proxy's `openai/` namespace token + Responses
+    # surface resolve to openai-api below (which carries upstream_vendor:
+    # openai), keeping proxy routing + billing byte-identical.
+
+  # ===========================================================================
+  # OpenAI API key — the BYOK direct-key arm AND the proxy arm (mirror of
+  # anthropic-api). Carries upstream_vendor: openai so ResolveUpstream still
+  # maps the `openai/` namespace token to THIS entry and the proxy's OpenAI
+  # Responses surface (codex platform-managed) routes upstream vendor "openai"
+  # exactly as before — proxy + billing are byte-identical to the pre-split
+  # `openai` entry. Its catalog model_prefix_match is a DISJOINT sentinel
+  # (`^openai-api[:/]`) so the bare gpt-* family stays owned by
+  # openai-subscription and the catalog overlap guard (no slug may match two
+  # providers) stays green — exactly as anthropic-oauth's `^(sonnet|opus|
+  # haiku)$` is disjoint from anthropic-api's `^claude`.
+  # ===========================================================================
+  - name: openai-api
+    display_name: "OpenAI API"
+    vendor_logo: "openai"
+    protocol: openai
+    auth_mode: anthropic_api  # openai-protocol; auth is a bearer API key (mirror of anthropic-api).
+    base_url_template: "https://api.openai.com/v1"
+    base_url_anthropic: null  # OpenAI exposes only the OpenAI protocol surface.
+    auth_env: [OPENAI_API_KEY]
+    auth_token_env: OPENAI_API_KEY
+    # DISJOINT sentinel prefix: openai-api is selected explicitly (the
+    # provisioner's LLM_PROVIDER=openai-api) or via the `openai/` proxy
+    # namespace (ResolveUpstream uses upstream_vendor, NOT this prefix). The
+    # bare gpt-* family is owned by openai-subscription (the codex default), so
+    # this prefix must NOT also claim `^gpt-` or the catalog overlap guard
+    # (TestNoAmbiguousModelMatch) would flag gpt-5.5 as matching two providers.
+    model_prefix_match: "^openai-api[:/]"
+    model_aliases: []
+    # internal#718 P1 (CONVERGED): the proxy's upstream-vendor key. ResolveUpstream
+    # maps the `openai/` namespace token to THIS entry, then dials its
+    # base_url_template + auth (the SINGLE source). openai is ALSO the proxy's
+    # historical catch-all (the legacy switch's `default:` arm) for bare/unknown
+    # ids — a VESTIGIAL bare-id behavior (no live bare traffic) retained in
+    # inferLLMProviderLegacy, NOT a registry flag. Live `openai/<m>` ids resolve
+    # here by namespace. The openai-subscription OAuth arm carries NO
+    # upstream_vendor (OAuth never traverses the proxy).
+    upstream_vendor: openai
+
+  # ===========================================================================
+  # Moonshot (Kimi) — proxy arm + DB catalog + canvas label "moonshot".
+  # Distinct from the adapter's `kimi-coding` gateway (different host + auth
+  # header); both are retained — see kimi-coding below.
+  # ===========================================================================
+  - name: moonshot
+    display_name: "Moonshot (Kimi)"
+    vendor_logo: "moonshot"
+    protocol: openai
+    auth_mode: third_party_anthropic_compat
+    base_url_template: "https://api.moonshot.ai/v1"
+    base_url_anthropic: "https://api.moonshot.ai/anthropic/v1"
+    auth_env: [MOONSHOT_API_KEY, KIMI_API_KEY]
+    auth_token_env: ANTHROPIC_API_KEY
+    # internal#718 P0 (CTO 2026-05-27, EMPIRICALLY VERIFIED): the moonshot
+    # endpoint (api.moonshot.ai) and the kimi-coding gateway
+    # (api.kimi.com/coding) serve DIFFERENT models on DIFFERENT hosts —
+    # moonshot serves the moonshot-namespaced ids (the proxy's platform path
+    # resolves `moonshot/kimi-k2.6` here and 404s `kimi-for-coding`), while
+    # the bare kimi-* ids are served by the separate `kimi-coding` gateway
+    # below (which 404s on api.moonshot.ai). They are NOT a single owner.
+    # `moonshot` therefore owns ONLY the moonshot-prefixed ids:
+    #   * "moonshot/..."  — the proxy/platform-namespaced form (claude-code +
+    #                       hermes + openclaw platform refs route here),
+    #   * "moonshot:..."  — openclaw's colon-namespaced BYOK form,
+    #   * "moonshot-..."  — a bare moonshot-v1* model id.
+    # It deliberately does NOT claim bare kimi-* (those are kimi-coding's, per
+    # the corrected serving split). RE2 has no negative lookahead; the prefix
+    # is positively scoped to the moonshot namespace so the two regexes are
+    # disjoint and DeriveProvider resolves each bare/namespaced id to exactly
+    # one owner. This removes the false kimi-* overlap RFC#340/PR-1 flagged.
+    model_prefix_match: "^moonshot[:/-]"
+    model_aliases: []
+    # internal#718 P1 (CONVERGED): the proxy's upstream-vendor key. ResolveUpstream
+    # maps the `moonshot/` (slash) + `moonshot:` (openclaw colon) namespace tokens
+    # to THIS entry — demo SEO's LIVE `moonshot/kimi-k2.6` + sibling `moonshot/...`
+    # ids dial this entry's base_url (api.moonshot.ai). The vendor key coincides
+    # with the entry name here.
+    #   NOTE on bare kimi-* (the convergence's key clarification): a BARE `kimi*`
+    #   id is NOT routed by this registry resolution. DeriveProvider (registry
+    #   semantics, P0) resolves bare kimi-* to the `kimi-coding` gateway
+    #   (api.kimi.com/coding) — which is NOT a valid proxy upstream — so routing a
+    #   bare kimi id through the shared registry matcher would MISROUTE. Bare ids
+    #   are vestigial at the proxy (zero live bare traffic; every platform id is
+    #   namespaced), so the converged path does not resolve them at all; a bare
+    #   `kimi*` falls through to the proxy's retained legacy switch, which routes
+    #   it to moonshot exactly as before (byte-identical). No moonshot bare-prefix
+    #   data block is recreated.
+    upstream_vendor: moonshot
+
+  # ===========================================================================
+  # MiniMax — proxy arm + DB catalog (7 models) + adapter + canvas.
+  # ===========================================================================
+  - name: minimax
+    display_name: "MiniMax"
+    vendor_logo: "minimax"
+    protocol: openai
+    auth_mode: third_party_anthropic_compat
+    base_url_template: "https://api.minimax.io/v1"
+    base_url_anthropic: "https://api.minimax.io/anthropic/v1"
+    # Adapter template uses api.minimax.io/anthropic (no /v1); proxy uses
+    # /anthropic/v1. Manifest follows the proxy's value (the routing layer);
+    # the adapter base_url is reconciled in PR-5.
+    auth_env: [MINIMAX_API_KEY, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    # Proxy: HasPrefix "minimax" (case-insensitive lower). Catalog ids are
+    # mixed-case "MiniMax-M2.7" — every catalog/canvas id starts "MiniMax-M".
+    # Anchored on "-m" (not bare "-") so it does NOT also claim the
+    # `minimax-cn/` slash-prefixed China sibling below (RE2 has no negative
+    # lookahead; the more-specific China entry owns its slash-prefix).
+    model_prefix_match: "(?i)^minimax-m"
+    model_aliases: []
+    # internal#718 P1 (CONVERGED): the proxy's upstream-vendor key. ResolveUpstream
+    # maps the `minimax/` namespace token to THIS entry — claude-code's LIVE
+    # `minimax/MiniMax-M2.7(-highspeed)` platform ids dial this entry's base_url
+    # (api.minimax.io). The `minimax-cn` China sibling carries NO upstream_vendor
+    # (the proxy has no arm for it; a bare minimax-cn id is vestigial and falls to
+    # the legacy fallback, unchanged). Bare `minimax*` ids are vestigial at the
+    # proxy and resolve via the legacy fallback (which keeps the broader
+    # HasPrefix "minimax" behavior verbatim), not here.
+    upstream_vendor: minimax
+
+  # ===========================================================================
+  # Platform — Molecule-managed LLM proxy. Adapter + canvas know it. It is
+  # the PROXY ITSELF as seen from a workspace, so the manifest entry is the
+  # client-facing endpoint, not an upstream vendor. proxy switch has no
+  # "platform" arm (it routes the underlying vendor model instead).
+  # ===========================================================================
+  - name: platform
+    display_name: "Platform"
+    vendor_logo: "molecule"
+    protocol: anthropic
+    auth_mode: third_party_anthropic_compat
+    # Dual-surface: the platform proxy exposes BOTH the OpenAI-compat
+    # (/openai/v1/chat/completions) and Anthropic-compat (/anthropic/v1/messages)
+    # wire formats. Anthropic-protocol runtimes (claude-code) use
+    # base_url_anthropic; OpenAI-protocol runtimes (hermes/codex/openclaw) use
+    # base_url_template. Previously both pointed at the anthropic surface — a
+    # PR-1 simplification when only claude-code referenced platform.
+    base_url_template: "https://api.moleculesai.app/api/v1/internal/llm/openai/v1"
+    base_url_anthropic: "https://api.moleculesai.app/api/v1/internal/llm/anthropic/v1"
+    auth_env: [MOLECULE_LLM_USAGE_TOKEN]
+    auth_token_env: ANTHROPIC_API_KEY
+    # Adapter routes kimi- / moonshot/ through platform by default. No bare
+    # vendor prefix of its own; it multiplexes other vendors' slugs. Match
+    # the explicit "platform/" slash-prefix only so it never steals another
+    # vendor's bare slug.
+    model_prefix_match: "^platform/"
+    model_aliases: []
+
+  # ===========================================================================
+  # Xiaomi MiMo — adapter + canvas (two canvas keys: "xiaomi-mimo" AND
+  # "xiaomi", both labelled "Xiaomi MiMo"). proxy has no arm; DB has no rows.
+  # ===========================================================================
+  - name: xiaomi-mimo
+    display_name: "Xiaomi MiMo"
+    vendor_logo: "xiaomi"
+    protocol: anthropic
+    auth_mode: third_party_anthropic_compat
+    base_url_template: "https://api.xiaomimimo.com/anthropic"
+    base_url_anthropic: "https://api.xiaomimimo.com/anthropic"
+    auth_env: [ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    # Adapter prefix "mimo-"; canvas /^mimo-/i. proxy routing TBD (PR-3).
+    # NOTE: canvas has a duplicate "xiaomi" VENDOR_LABELS key aliasing the
+    # same vendor — collapsed into this one entry.
+    model_prefix_match: "(?i)^(mimo-|xiaomi[:/])"
+    model_aliases: []
+
+  # ===========================================================================
+  # Z.ai (GLM) — adapter + canvas. proxy has no arm; DB has no rows.
+  # ===========================================================================
+  - name: zai
+    display_name: "Z.ai (GLM)"
+    vendor_logo: "zai"
+    protocol: anthropic
+    auth_mode: third_party_anthropic_compat
+    base_url_template: "https://api.z.ai/api/anthropic"
+    base_url_anthropic: "https://api.z.ai/api/anthropic"
+    auth_env: [GLM_API_KEY, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    # Adapter prefix "glm-" (lowercased match catches GLM-4.6); canvas /^GLM-/i.
+    # canvas-only + adapter-only today; proxy routing TBD (PR-3).
+    model_prefix_match: "(?i)^(glm-|zai[:/])"
+    model_aliases: []
+
+  # ===========================================================================
+  # Kimi For Coding — adapter ("kimi-coding") + canvas
+  # ("kimi-coding"="Moonshot Kimi (coding-tuned)"). Distinct host
+  # (api.kimi.com/coding/) + x-api-key auth from the `moonshot` entry above.
+  # DB seeds moonshot/kimi-for-coding as alias_for kimi-k2.6.
+  # ===========================================================================
+  - name: kimi-coding
+    display_name: "Moonshot Kimi (coding-tuned)"
+    vendor_logo: "moonshot"
+    protocol: anthropic
+    auth_mode: third_party_anthropic_compat
+    base_url_template: "https://api.kimi.com/coding/v1"
+    base_url_anthropic: "https://api.kimi.com/coding/v1"
+    auth_env: [KIMI_API_KEY, ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN]
+    # x-api-key header (NOT bearer) per kimi.com's Claude Code integration doc.
+    auth_token_env: ANTHROPIC_API_KEY
+    # internal#718 P0 (CTO 2026-05-27, EMPIRICALLY VERIFIED): the
+    # api.kimi.com/coding gateway is the owner of the BARE kimi-* ids. Per
+    # kimi.com's official Claude Code integration doc + the claude-code
+    # template's `kimi-coding` provider (model_prefixes: [kimi-]), this
+    # gateway authenticates with KIMI_API_KEY (sk-kimi-*) on the x-api-key
+    # header and "routes to the served K2.6 model regardless of the model
+    # name on the wire" — so every bare kimi-* id (kimi-for-coding,
+    # kimi-k2.6, kimi-k2.5, kimi-k2, kimi-latest, ...) is served HERE, while
+    # api.moonshot.ai 404s these. This OWNS bare "kimi-"; the moonshot-
+    # namespaced ids (moonshot/, moonshot:, moonshot-) belong to `moonshot`
+    # above. The two regexes are now disjoint (no negative lookahead needed),
+    # removing the false kimi-* overlap that RFC#340/PR-1 deferred — each id
+    # resolves to exactly one owner. Registry-data-only: NO production reader
+    # consumes model_prefix_match yet (the proxy keeps its own hardcoded
+    # inferLLMProvider), so this cannot change live routing.
+    model_prefix_match: "^kimi-"
+    model_aliases: []
+
+  # ===========================================================================
+  # DeepSeek — adapter + canvas. proxy has no arm; DB has no rows.
+  # ===========================================================================
+  - name: deepseek
+    display_name: "DeepSeek"
+    vendor_logo: "deepseek"
+    protocol: anthropic
+    auth_mode: third_party_anthropic_compat
+    base_url_template: "https://api.deepseek.com/anthropic"
+    base_url_anthropic: "https://api.deepseek.com/anthropic"
+    auth_env: [DEEPSEEK_API_KEY, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    # Adapter prefix "deepseek-"; canvas /^deepseek-/i. adapter+canvas only;
+    # proxy routing TBD (PR-3).
+    model_prefix_match: "^deepseek[-:/]"
+    model_aliases: []
+
+  # ===========================================================================
+  # CANVAS-ONLY vendors — present in ProviderModelSelector VENDOR_LABELS but
+  # NOT routed by the proxy, NOT in the adapter template, NOT in the DB.
+  # This is exactly the "canvas offered a provider the proxy can't route"
+  # drift the RFC targets. Transcribed here so PR-3/PR-4 converge them;
+  # base_url/auth are best-effort placeholders pending real routing in PR-3.
+  # Each is marked `proxy routing TBD`. model_prefix_match is the canvas
+  # heuristic (slash-prefix vendor key) where one exists, else a slash-prefix
+  # on the vendor key itself.
+  # ===========================================================================
+  - name: google
+    display_name: "Google Gemini"
+    vendor_logo: "google"
+    protocol: openai
+    auth_mode: third_party_anthropic_compat
+    base_url_template: "https://generativelanguage.googleapis.com/v1beta/openai"
+    base_url_anthropic: null
+    auth_env: [GEMINI_API_KEY, GOOGLE_API_KEY]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    # canvas-only today; proxy routing TBD. canvas /^gemini-/i.
+    # canvas also has a duplicate "gemini" label key aliasing the same vendor.
+    model_prefix_match: "^gemini-"
+    model_aliases: []
+
+  # Google Vertex AI — served via the Molecule CP LLM proxy (NOT on-box ADC).
+  # google-adk routes ALL Gemini through the proxy, which mints a Vertex token
+  # server-side over Workload Identity Federation (AWS -> GCP STS -> SA; see
+  # internal/vertexauth + llm_proxy.go google/vertex case) and meters usage to
+  # org credits. The former on-box ADC delivery (a NON-SECRET external_account
+  # cred-config written to /configs/gcp-adc.json via GOOGLE_APPLICATION_CREDENTIALS,
+  # injected by the provisioner) was REMOVED: a tenant has EC2 root and could
+  # have used that credential to call Vertex DIRECTLY, bypassing metering
+  # (keyless-Vertex billing leak — task #64 / RFC internal#763; provisioner
+  # force-off + template routes vertex: through the proxy). The `vertex:`
+  # namespace + this entry remain for proxy routing/billing of Vertex-upstream
+  # requests, distinct from the API-key `google` vendor's ^gemini-
+  # (TestNoAmbiguousModelMatch).
+  #
+  # NOTE: display_name ("keyless ADC") and auth_env (GOOGLE_APPLICATION_CREDENTIALS)
+  # are now VESTIGIAL — no consumer reads auth_env post-leak-fix, but it must stay
+  # non-empty (providers.go validate). Retiring them is a follow-up.
+  #
+  # RFC vertex-provider-ssot-endpoint (Phase 1): the endpoint that used to live
+  # ONLY in llm_proxy.go's `case "google", "vertex":` fmt.Sprintf is now
+  # expressed HERE as a templated base_url_template + endpoint_vars, and the
+  # keyless WIF mint is declared via auth_mode: wif_adc. The proxy resolves this
+  # row through Manifest.ResolveEndpoint — the interpolated URL is BYTE-IDENTICAL
+  # to the former fmt.Sprintf (drift-gated by TestProxyEndpointsMatchManifest).
+  # wire_model_prefix replaces the proxy's inline `if !HasPrefix(wireModel,
+  # "google/")`. (Phase 2 migrates the remaining static providers; out of scope.)
+  - name: vertex
+    display_name: "Google Vertex AI (keyless ADC)"
+    vendor_logo: "google"
+    protocol: openai
+    # wif_adc (AuthModeWIFADC): keyless AWS→GCP Workload Identity Federation
+    # server-side token mint (internal/vertexauth.Token). The ONE auth_mode the
+    # proxy acts on — it triggers the mint instead of a hardcoded `case "vertex"`.
+    auth_mode: wif_adc
+    # Templated endpoint: {location}/{project} interpolated from endpoint_vars
+    # below. Reproduces the proxy's former
+    # fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/openapi", loc, proj, loc).
+    base_url_template: "https://{location}-aiplatform.googleapis.com/v1beta1/projects/{project}/locations/{location}/endpoints/openapi"
+    base_url_anthropic: null
+    endpoint_vars:
+      location: { env: MOLECULE_VERTEX_LOCATION, default: us-central1 }
+      project: { env: MOLECULE_VERTEX_PROJECT, default: molecule-vertex }
+    # Vertex requires the publisher-prefixed model id on the wire (google/<model>).
+    wire_model_prefix: "google/"
+    auth_env: [GOOGLE_APPLICATION_CREDENTIALS]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    model_prefix_match: "^vertex:"
+    model_aliases: []
+
+  - name: alibaba
+    display_name: "Alibaba Qwen (DashScope)"
+    vendor_logo: "alibaba"
+    protocol: openai
+    auth_mode: third_party_anthropic_compat
+    base_url_template: null
+    base_url_anthropic: null
+    auth_env: [DASHSCOPE_API_KEY, ALIBABA_API_KEY]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    # canvas-only today; proxy routing TBD. canvas /^qwen-/i.
+    model_prefix_match: "(?i)^(qwen|alibaba[:/])"
+    model_aliases: []
+
+  - name: nousresearch
+    display_name: "Nous Research (Hermes)"
+    vendor_logo: "nousresearch"
+    protocol: openai
+    auth_mode: third_party_anthropic_compat
+    base_url_template: null
+    base_url_anthropic: null
+    auth_env: [NOUSRESEARCH_API_KEY]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    # canvas-only today; proxy routing TBD. Slash-prefix id
+    # (e.g. nousresearch/hermes-4-70b).
+    model_prefix_match: "^nousresearch[:/]"
+    model_aliases: []
+
+  - name: openrouter
+    display_name: "OpenRouter (any model)"
+    vendor_logo: "openrouter"
+    protocol: openai
+    auth_mode: third_party_anthropic_compat
+    base_url_template: "https://openrouter.ai/api/v1"
+    base_url_anthropic: null
+    auth_env: [OPENROUTER_API_KEY]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    # canvas-only today; proxy routing TBD. Wildcard: openrouter/<model>.
+    model_prefix_match: "^openrouter[:/]"
+    model_aliases: []
+
+  - name: huggingface
+    display_name: "Hugging Face Inference"
+    vendor_logo: "huggingface"
+    protocol: openai
+    auth_mode: third_party_anthropic_compat
+    base_url_template: null
+    base_url_anthropic: null
+    auth_env: [HUGGINGFACE_API_KEY, HF_TOKEN]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    # canvas-only today; proxy routing TBD. Wildcard: huggingface/<model>.
+    model_prefix_match: "^huggingface[:/]"
+    model_aliases: []
+
+  - name: ai-gateway
+    display_name: "Vercel AI Gateway"
+    vendor_logo: "ai-gateway"
+    protocol: openai
+    auth_mode: third_party_anthropic_compat
+    base_url_template: null
+    base_url_anthropic: null
+    auth_env: [AI_GATEWAY_API_KEY]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    # canvas-only today; proxy routing TBD.
+    model_prefix_match: "^ai-gateway[:/]"
+    model_aliases: []
+
+  - name: opencode-zen
+    display_name: "OpenCode Zen"
+    vendor_logo: "opencode-zen"
+    protocol: openai
+    auth_mode: third_party_anthropic_compat
+    base_url_template: null
+    base_url_anthropic: null
+    auth_env: [OPENCODE_ZEN_API_KEY]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    # canvas-only today; proxy routing TBD.
+    model_prefix_match: "^opencode-zen[:/]"
+    model_aliases: []
+
+  - name: opencode-go
+    display_name: "OpenCode Go"
+    vendor_logo: "opencode-go"
+    protocol: openai
+    auth_mode: third_party_anthropic_compat
+    base_url_template: null
+    base_url_anthropic: null
+    auth_env: [OPENCODE_GO_API_KEY]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    # canvas-only today; proxy routing TBD.
+    model_prefix_match: "^opencode-go[:/]"
+    model_aliases: []
+
+  - name: kilocode
+    display_name: "Kilo Code"
+    vendor_logo: "kilocode"
+    protocol: openai
+    auth_mode: third_party_anthropic_compat
+    base_url_template: null
+    base_url_anthropic: null
+    auth_env: [KILOCODE_API_KEY]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    # canvas-only today; proxy routing TBD.
+    model_prefix_match: "^kilocode[:/]"
+    model_aliases: []
+
+  - name: minimax-cn
+    display_name: "MiniMax China"
+    vendor_logo: "minimax"
+    protocol: openai
+    auth_mode: third_party_anthropic_compat
+    base_url_template: "https://api.minimaxi.com/v1"
+    base_url_anthropic: "https://api.minimaxi.com/anthropic"
+    auth_env: [MINIMAX_API_KEY, ANTHROPIC_AUTH_TOKEN]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    # canvas-only today; proxy routing TBD. China endpoint sibling of `minimax`
+    # (api.minimaxi.com). Matched only by the explicit slash-prefix so it does
+    # NOT collide with `minimax`'s (?i)^minimax- in the overlap guard.
+    model_prefix_match: "^minimax-cn[:/]"
+    model_aliases: []
+
+  - name: ollama-cloud
+    display_name: "Ollama Cloud"
+    vendor_logo: "ollama"
+    protocol: openai
+    auth_mode: third_party_anthropic_compat
+    base_url_template: null
+    base_url_anthropic: null
+    auth_env: [OLLAMA_CLOUD_API_KEY]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    # canvas-only today; proxy routing TBD.
+    model_prefix_match: "^ollama-cloud[:/]"
+    model_aliases: []
+
+  - name: ollama
+    display_name: "Ollama (self-hosted)"
+    vendor_logo: "ollama"
+    protocol: openai
+    auth_mode: third_party_anthropic_compat
+    base_url_template: "http://localhost:11434/v1"
+    base_url_anthropic: null
+    auth_env: [OLLAMA_HOST]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    # canvas-only today; proxy routing TBD. Self-hosted; no key (host only).
+    model_prefix_match: "^ollama/"
+    model_aliases: []
+
+  - name: nvidia
+    display_name: "NVIDIA NIM"
+    vendor_logo: "nvidia"
+    protocol: openai
+    auth_mode: third_party_anthropic_compat
+    base_url_template: "https://integrate.api.nvidia.com/v1"
+    base_url_anthropic: null
+    auth_env: [NVIDIA_API_KEY]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    # canvas-only today; proxy routing TBD.
+    model_prefix_match: "^nvidia[:/]"
+    model_aliases: []
+
+  - name: arcee
+    display_name: "Arcee"
+    vendor_logo: "arcee"
+    protocol: openai
+    auth_mode: third_party_anthropic_compat
+    base_url_template: null
+    base_url_anthropic: null
+    auth_env: [ARCEE_API_KEY]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    # canvas-only today; proxy routing TBD.
+    model_prefix_match: "^arcee[:/]"
+    model_aliases: []
+
+  - name: custom
+    display_name: "Custom OpenAI-compat endpoint"
+    vendor_logo: "custom"
+    protocol: openai
+    auth_mode: third_party_anthropic_compat
+    base_url_template: null  # operator-supplied via workspace runtime config
+    base_url_anthropic: null
+    auth_env: [CUSTOM_API_KEY, OPENAI_API_KEY]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    # canvas-only today; proxy routing TBD. Wildcard free-text: custom/<model>.
+    model_prefix_match: "^custom[:/]"
+    model_aliases: []
+
+  # ===========================================================================
+  # DEDICATED BYOK-VENDOR providers (cp#529). These exist so the NAMESPACED
+  # BYOK ids the hermes/openclaw/codex templates offer for the SHARED upstream
+  # vendors (anthropic, openai, gemini, minimax, groq) become routable with the
+  # TENANT's OWN vendor key — WITHOUT routing them through the platform-shared
+  # `platform` provider (which would bill the platform's key: a money bug).
+  #
+  # Each is NON-PLATFORM (name != "platform") -> IsPlatform()==false -> BYOK
+  # billing: the workspace env supplies the vendor key, never the platform key.
+  #
+  # COLLISION-FREE BY CONSTRUCTION: every matcher is NAMESPACED (anchored on the
+  # `vendor/` slash form or `vendor:` colon form) so it is DISJOINT from the
+  # platform vendors' BARE matchers (anthropic-api `^claude`, openai-subscription
+  # `^gpt-`, openai-api `^openai-api[:/]`, minimax `(?i)^minimax-m`,
+  # google `^gemini-`, minimax-cn `^minimax-cn[:/]`). DeriveProvider's overlap
+  # guard (no slug may match two native providers) stays green — verified for all
+  # 20 residual ids (cp#529).
+  #
+  # These siblings of the platform/upstream vendor entries point at the SAME
+  # PUBLIC upstream base URLs, but carry NO upstream_vendor (they are BYOK
+  # passthroughs, not proxy upstream targets — the proxy never dials a tenant's
+  # own key) and use the namespaced matchers above instead of the bare proxy
+  # prefixes.
+  # ===========================================================================
+  - name: byok-anthropic
+    display_name: "Anthropic (BYOK)"
+    vendor_logo: "anthropic"
+    protocol: anthropic
+    auth_mode: anthropic_api
+    base_url_template: "https://api.anthropic.com/v1"
+    base_url_anthropic: "https://api.anthropic.com/v1"
+    auth_env: [ANTHROPIC_API_KEY]
+    auth_token_env: ANTHROPIC_API_KEY
+    # Namespaced BYOK form `anthropic/<model>` (hermes). DISJOINT from
+    # anthropic-api's bare `^claude` and anthropic-oauth's alias set.
+    model_prefix_match: "^anthropic/"
+    model_aliases: []
+
+  - name: byok-openai
+    display_name: "OpenAI (BYOK)"
+    vendor_logo: "openai"
+    protocol: openai
+    auth_mode: anthropic_api  # openai-protocol; auth is a bearer API key.
+    base_url_template: "https://api.openai.com/v1"
+    base_url_anthropic: null
+    auth_env: [OPENAI_API_KEY]
+    auth_token_env: OPENAI_API_KEY
+    # Namespaced BYOK forms `openai/<model>` (hermes) + `openai:<model>`
+    # (openclaw). DISJOINT from openai-subscription's bare `^gpt-` and
+    # openai-api's `^openai-api[:/]` (the dash after `openai` keeps the two
+    # apart: `openai:` / `openai/` never start with `openai-api`).
+    model_prefix_match: "^openai[:/]"
+    model_aliases: []
+
+  - name: byok-gemini
+    display_name: "Google Gemini (BYOK)"
+    vendor_logo: "google"
+    protocol: openai
+    auth_mode: third_party_anthropic_compat
+    base_url_template: "https://generativelanguage.googleapis.com/v1beta/openai"
+    base_url_anthropic: null
+    auth_env: [GEMINI_API_KEY, GOOGLE_API_KEY]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    # Namespaced BYOK form `gemini/<model>` (hermes). DISJOINT from the `google`
+    # vendor's bare `^gemini-` and `vertex`'s `^vertex:`.
+    model_prefix_match: "^gemini/"
+    model_aliases: []
+
+  - name: byok-minimax
+    display_name: "MiniMax (BYOK)"
+    vendor_logo: "minimax"
+    protocol: openai
+    auth_mode: third_party_anthropic_compat
+    base_url_template: "https://api.minimax.io/v1"
+    base_url_anthropic: null
+    auth_env: [MINIMAX_API_KEY]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    # Namespaced BYOK forms `minimax:<model>` (openclaw) + `minimax/<model>`
+    # (hermes), PLUS the codex-runtime alias `codex-minimax-m2.7` (the codex
+    # template's `minimax-token-plan` route — same upstream api.minimax.io,
+    # tenant MINIMAX_API_KEY). The `codex-minimax-` leg is NARROWLY anchored so
+    # it resolves that one codex id WITHOUT a broad matcher: it is DISJOINT from
+    # `minimax` (?i)^minimax-m (which needs `minimax-m`, not `codex-`) and from
+    # `minimax-cn` ^minimax-cn[:/]. Verified collision-free for all 20 residual
+    # ids + codex-minimax-m2.7 (cp#529).
+    model_prefix_match: "(?i)^(minimax[:/]|codex-minimax-)"
+    model_aliases: []
+
+  - name: groq
+    display_name: "Groq"
+    vendor_logo: "groq"
+    protocol: openai
+    auth_mode: third_party_anthropic_compat
+    base_url_template: "https://api.groq.com/openai/v1"
+    base_url_anthropic: null
+    auth_env: [GROQ_API_KEY]
+    auth_token_env: ANTHROPIC_AUTH_TOKEN
+    # Namespaced BYOK form `groq:<model>` (openclaw). No other provider matches
+    # the `groq:` prefix.
+    model_prefix_match: "^groq:"
+    model_aliases: []
+
+# =============================================================================
+# RUNTIME NATIVE SUPPORT MATRIX  (RFC #340 — CTO correction 2026-05-26)
+# =============================================================================
+# The `providers:` list above is the full catalog (the union of proxy /
+# canvas / adapter / DB). It is NOT the support matrix. We do NOT support
+# every model on every provider.
+#
+# This `runtimes:` block is the SSOT for "which providers + models does
+# runtime R NATIVELY support". It constrains the catalog to each runtime's
+# native support matrix — the INVERSE of a superset. Canvas (PR-4) offers
+# ONLY a runtime's native models; the proxy (PR-3) routes ONLY native models
+# with NO protocol translation (matches the cp#334 "use the native endpoint,
+# don't translate" fix). A catalog provider that appears in NO runtime's
+# native set is over-offer drift: it stays in `providers:` only if another
+# runtime legitimately uses it, otherwise it is the drift this RFC prunes.
+#
+# AUTHORITATIVE MATRIX (provider level), encoded EXACTLY below:
+#   claude-code -> anthropic (oauth + api), kimi (kimi-coding), minimax
+#   hermes      -> kimi (kimi-coding)
+#   codex       -> openai (subscription + api — the split openai-subscription /
+#                  openai-api pair, mirroring anthropic oauth+api)
+#   openclaw    -> kimi (kimi-coding)
+#
+# Each runtime entry lists native provider NAMES (referencing `providers:`
+# above; Load fails closed on an unknown ref) plus the EXACT model ids that
+# runtime exposes for that provider. Model ids are transcribed verbatim from
+# each runtime template's config.yaml `runtime_config.models` block
+# (git.moleculesai.app/molecule-ai/molecule-ai-workspace-template-<rt>),
+# pruned to the native matrix above.
+#
+# DRIFT PRUNED (templates declare these, they are NOT in the native matrix,
+# so they are deliberately absent from the runtimes block below — flagged in
+# the RFC, carried in `providers:` only where another runtime needs them):
+#   * claude-code template also declares: xiaomi-mimo (mimo-*), zai (GLM-*),
+#     deepseek (deepseek-*). Outside {anthropic, kimi, minimax} -> pruned.
+#   * codex template also declares: minimax-token-plan (codex-minimax-*).
+#     Outside {openai} -> pruned. (Template itself notes the MiniMax
+#     token-plan leg 404s on /v1/responses — a vendor gap, reinforcing the
+#     prune.)
+#   * openclaw template also declares: minimax (the default!), openai (gpt-*),
+#     groq, openrouter. Outside {kimi} -> pruned. NOTE: openclaw's *default*
+#     model is minimax:MiniMax-M2.7, NOT kimi — the CTO matrix narrows
+#     openclaw to its native Kimi path (moonshot: prefix + KIMI_API_KEY ->
+#     api.kimi.com/coding gateway). See RFC #340 update for the rationale.
+#   * hermes template declares ~30 providers (nous, openrouter, anthropic,
+#     gemini, deepseek, zai, minimax, alibaba, xiaomi, arcee, nvidia, ...).
+#     The CTO matrix narrows hermes to {kimi} only -> all others pruned from
+#     the native set.
+runtimes:
+  # claude-code: native Anthropic-API / Claude-Code endpoints. Anthropic is
+  # split across two manifest providers (oauth + api) because the runtime
+  # exposes both auth paths natively; both count as "anthropic".
+  #
+  # internal#718 P4 PR-1 (2026-05-27): the colon-namespaced BYOK form
+  # `vendor:model` is the legacy spelling for explicit BYOK selection that
+  # predates the slash-namespaced platform form `vendor/model`. Both forms
+  # are LIVE across the workspace-create corpus (~44 test files +
+  # canvas/ConfigTab default + the openclaw template's native list).
+  # PRECEDENT: the openclaw runtime below already lists colon-form ids
+  # (`moonshot:kimi-k2.6`) as the BYOK kimi-coding native set — the
+  # adapter understands the colon form. P4 PR-1 extends the same precedent
+  # to claude-code so `DeriveProvider` / `Manifest.ModelsForRuntime`
+  # returns true for every legitimate BYOK model in the corpus. The
+  # canonical slash form (`anthropic/claude-opus-4-7`) is the
+  # platform-managed routing form (proxy upstream lookup); the colon
+  # form is the legacy BYOK selection form. Both are first-class
+  # registry entries on the runtime's native provider set.
+  claude-code:
+    providers:
+      - name: anthropic-oauth
+        # Colon-form aliases (`anthropic:sonnet`, ...) are the legacy BYOK
+        # spelling for the OAuth alias path that the live corpus carries.
+        # Per the same P4 PR-1 precedent (see colon-form comment above),
+        # these are first-class registry entries — DeriveProvider resolves
+        # them to anthropic-oauth deterministically.
+        models:
+          - sonnet
+          - opus
+          - haiku
+          - anthropic:sonnet
+          - anthropic:opus
+          - anthropic:haiku
+      - name: anthropic-api
+        # BYOK versioned API ids — bare form is the canonical id the
+        # Anthropic SDK accepts on the wire; colon form is the legacy
+        # BYOK selection spelling used across the create/test corpus
+        # (internal#718 P4 PR-1). Both forms route to anthropic-api.
+        models:
+          - claude-sonnet-4-6
+          - claude-opus-4-7
+          - claude-opus-4-8
+          - claude-haiku-4-5
+          - claude-sonnet-4-5
+          - anthropic:claude-sonnet-4-6
+          - anthropic:claude-opus-4-7
+          - anthropic:claude-opus-4-8
+          - anthropic:claude-haiku-4-5
+          - anthropic:claude-sonnet-4-5
+      - name: kimi-coding
+        # BYOK kimi-coding gateway ids — bare form is the canonical id
+        # the gateway routes. The colon form `moonshot:kimi-k2.*` was
+        # removed because claude-code's adapter cannot strip the
+        # `moonshot:` prefix — it only handles `anthropic:`/`claude:`
+        # (cp#521). The bare forms already cover these models.
+        models:
+          - kimi-for-coding
+          - kimi-k2.5
+          - kimi-k2
+      - name: minimax
+        # BYOK MiniMax ids — bare form is the canonical id. The colon
+        # forms `minimax:MiniMax-*` were removed because claude-code's
+        # adapter cannot strip the `minimax:` prefix — it only handles
+        # `anthropic:`/`claude:` (cp#521). The bare forms already cover
+        # these models.
+        models:
+          - MiniMax-M2
+          - MiniMax-M2.7
+          - MiniMax-M2.7-highspeed
+          - MiniMax-M3
+      # Platform-managed (no tenant key; Molecule owns billing). The
+      # vendor/model-namespaced ids the proxy resolves to the upstream vendor.
+      # Canonical for the template's `provider: platform` model entries — the
+      # drift gate (molecule-ci validate-workspace-template) enforces the
+      # template can offer no platform model absent from this set.
+      - name: platform
+        models:
+          - anthropic/claude-opus-4-7
+          - anthropic/claude-opus-4-8
+          - anthropic/claude-sonnet-4-6
+          - moonshot/kimi-k2.6
+          - moonshot/kimi-k2.5
+          - minimax/MiniMax-M2.7
+          - minimax/MiniMax-M2.7-highspeed
+          - minimax/MiniMax-M3
+      # NAME-ONLY BYOK arms (cp#529): zero model ids → add NOTHING to the
+      # platform menu (ModelsForRuntime), but wire these CONFIRMED-NON-PLATFORM
+      # providers into claude-code's NATIVE prefix-routing set so the bare BYOK
+      # ids the claude-code template offers (GLM-*, deepseek-*, mimo-*) resolve
+      # via DeriveProvider. BILLING-SAFE: zai/deepseek/xiaomi-mimo are tenant-key
+      # (BYOK) providers — never platform-shared — so routing through them bills
+      # the tenant's own key, never the platform's.
+      - name: zai
+      - name: deepseek
+      - name: xiaomi-mimo
+
+  # hermes: native Kimi only (kimi-coding gateway). hermes-agent owns its own
+  # broad provider matrix, but the CTO native matrix for the Molecule
+  # platform constrains it to kimi.
+  hermes:
+    providers:
+      - name: kimi-coding
+        models: [kimi-coding/kimi-k2]
+      # Platform-managed Kimi (hermes's native platform family). Routed via
+      # the proxy OpenAI-compat surface; see the template's
+      # scripts/derive-platform-llm.sh.
+      - name: platform
+        models:
+          - moonshot/kimi-k2.6
+          - moonshot/kimi-k2.5
+      # NAME-ONLY BYOK arms (cp#529): zero model ids → no addition to the
+      # platform menu, but wire hermes's CONFIRMED-NON-PLATFORM passthrough +
+      # bare-vendor providers into its NATIVE prefix-routing set so the BYOK
+      # ids the hermes template offers (openrouter/…, huggingface/…, deepseek/…,
+      # zai:…, etc.) resolve via DeriveProvider. ALL tenant-key (BYOK).
+      - name: openrouter
+      - name: huggingface
+      - name: ai-gateway
+      - name: opencode-zen
+      - name: opencode-go
+      - name: kilocode
+      - name: custom
+      - name: nvidia
+      - name: arcee
+      - name: ollama-cloud
+      - name: minimax-cn
+      - name: nousresearch
+      - name: deepseek
+      - name: zai
+      - name: xiaomi-mimo
+      - name: alibaba
+      # DEDICATED BYOK-VENDOR arms (cp#529): the namespaced ids hermes offers for
+      # the SHARED upstream vendors (anthropic/claude-*, gemini/*, openai/*,
+      # minimax/*) NOW resolve to these tenant-key BYOK-vendor providers — NOT
+      # the platform-shared `platform` provider (which would bill the platform's
+      # key). NAME-ONLY (no models) → no platform-menu change, prefix-routing
+      # only, BYOK-billed. This converts the last 12 hermes residual ids from
+      # cp#529 drift to routable.
+      - name: byok-anthropic
+      - name: byok-gemini
+      - name: byok-openai
+      - name: byok-minimax
+
+  # codex: OpenAI — BYOK split across TWO native providers
+  # (openai-subscription + openai-api), mirroring claude-code's anthropic
+  # oauth+api split, PLUS platform-managed (the `platform` ref below, served via
+  # the proxy Responses surface).
+  #
+  # The split fixes the prod "picks provider='openai' but it is not in the
+  # providers registry. Known providers: openai-subscription, openai-api" wedge:
+  # the codex template/adapter registry uses the SPLIT names, never bare
+  # `openai`, so the SSOT must derive one of them. openai-subscription is the
+  # DEFAULT (the adapter's resolve-provider precedence #1 picks the ChatGPT/Codex
+  # subscription when CODEX_AUTH_JSON is present), so it is listed FIRST and owns
+  # the bare gpt-* family — DeriveProvider(codex, gpt-5.5) -> openai-subscription.
+  # openai-api is referenced too (the direct-OPENAI_API_KEY BYOK arm); the same
+  # gpt-* ids are exact-listed under both arms and DeriveProvider disambiguates
+  # by available auth env (OPENAI_API_KEY -> openai-api; the subscription
+  # auth.json env or no auth context -> the first-declared default,
+  # openai-subscription) — the identical oauth-vs-key disambiguation
+  # claude-code's anthropic pair uses.
+  codex:
+    providers:
+      # DEFAULT arm (listed first): ChatGPT/Codex subscription via OAuth.
+      - name: openai-subscription
+        models:
+          - gpt-5.5
+          - gpt-5.4
+          - gpt-5.4-mini
+          - gpt-5.3-codex
+          - gpt-5.3-codex-spark
+          - gpt-5.2
+      # Direct OpenAI API-key BYOK arm. Same gpt-* family; selected over the
+      # subscription default when OPENAI_API_KEY is the available auth env (or
+      # via the explicit provisioner LLM_PROVIDER=openai-api).
+      - name: openai-api
+        models:
+          - gpt-5.5
+          - gpt-5.4
+          - gpt-5.4-mini
+          - gpt-5.3-codex
+          - gpt-5.3-codex-spark
+          - gpt-5.2
+      # Platform-managed OpenAI. NOW servable: the proxy exposes the OpenAI
+      # Responses surface (/internal/llm/openai/v1/responses) that the Codex
+      # CLI (0.130+, Responses-API-only) requires. The codex template adapter
+      # routes these via that surface (provider_config.py platform provider,
+      # auth_mode=openai_compat_responses, wire_api=responses). Default
+      # mirrors the deploy's MOLECULE_LLM_DEFAULT_MODEL (openai/gpt-5.4-mini).
+      - name: platform
+        models:
+          - openai/gpt-5.4
+          - openai/gpt-5.4-mini
+      # NAME-ONLY BYOK arm (cp#529): the codex template offers a BYOK MiniMax
+      # token-plan model `codex-minimax-m2.7` (its `minimax-token-plan` provider:
+      # base_url api.minimax.io, tenant MINIMAX_API_KEY, model_id_override
+      # codex-MiniMax-M2.7). It resolves to byok-minimax via the narrowly-anchored
+      # `codex-minimax-` leg of byok-minimax's matcher (same upstream, tenant key)
+      # — NOT a broad matcher. NAME-ONLY → no platform-menu change, BYOK-billed.
+      # Converts the last codex residual id from cp#529 drift to routable.
+      - name: byok-minimax
+
+  # openclaw: native Kimi only. openclaw's moonshot: model prefix + a
+  # KIMI_API_KEY (sk-kimi-*) routes to api.kimi.com/coding (kimi-for-coding),
+  # which is the native Kimi path. Default minimax / openai / groq / openrouter
+  # legs are pruned per the CTO matrix.
+  openclaw:
+    providers:
+      - name: kimi-coding
+        models:
+          - moonshot:kimi-k2.6
+          - moonshot:kimi-k2.5
+      # Platform-managed Kimi. Note the slash form (moonshot/...) here vs the
+      # BYOK colon form (moonshot:...) above — openclaw's adapter uses colon
+      # ids natively; the platform path normalizes to the proxy's slash form.
+      - name: platform
+        models:
+          - moonshot/kimi-k2.6
+          - moonshot/kimi-k2.5
+      # NAME-ONLY BYOK arms (cp#529): zero model ids → no platform-menu change,
+      # but wire openclaw's CONFIRMED-NON-PLATFORM passthroughs into its NATIVE
+      # prefix-routing set so the BYOK colon/slash ids the openclaw template
+      # offers (openrouter:…, custom:…) resolve via DeriveProvider. BYOK only.
+      - name: openrouter
+      - name: custom
+      # DEDICATED BYOK-VENDOR arms (cp#529): openclaw's default model is
+      # `minimax:MiniMax-M2.7`, plus it offers `openai:*` and `groq:*` BYOK ids.
+      # These NOW resolve to the tenant-key BYOK-vendor providers (NOT the
+      # platform key). NAME-ONLY → prefix-routing only, BYOK-billed. This converts
+      # the last 7 openclaw residual ids from cp#529 drift to routable AND makes
+      # the runtime's DEFAULT model (minimax:MiniMax-M2.7) resolve.
+      - name: byok-openai
+      - name: byok-minimax
+      - name: groq
+
+
+  # google-adk: Gemini via Vertex AI, keyless ADC (Workload Identity
+  # Federation; provisioner cp#416 + envs.yaml). The google vendor entry
+  # in the top-level providers: list supplies auth/model-prefix metadata;
+  # this runtimes entry declares the selectable model set.
+  google-adk:
+    providers:
+      # Platform-managed (keyless, metered) Gemini via the Molecule LLM proxy ->
+      # Vertex AI (server-side WIF mint; NO credential on the tenant box — the
+      # keyless-Vertex leak fix). Resolves to the closed `platform` provider ->
+      # IsPlatform=true -> platform_managed billing + required_env=[] (derived).
+      # The org-compliant default. The runtime translates the `platform:` select
+      # id to the bare wire id the proxy routes to Vertex.
+      - name: platform
+        models:
+          - platform:gemini-2.5-pro
+          - platform:gemini-2.5-flash
+      # API-key BYOK arm: AI Studio (the tenant's OWN GOOGLE_API_KEY).
+      #
+      # The colon-namespaced `google_genai:` ids are the BYOK spelling the
+      # template's models[] offers (template-google-adk main:
+      # `google_genai:gemini-2.5-pro` / `-flash`, AI-Studio BYOK; the default is
+      # the platform arm above). The runtime adapter (_routing.resolve_model)
+      # treats `google_genai`/`google`/`gemini` as the SAME AI-Studio prefix
+      # family — it strips the prefix to the bare `gemini-2.5-pro` and serves it
+      # via ADK LlmAgent on the AI-Studio backend (GOOGLE_API_KEY) — so both the
+      # bare and `google_genai:` forms resolve to THIS `google` arm. The bare ids
+      # stay (registry-projection / canvas form); the `google_genai:` ids are
+      # ADDED because the LIVE core check is EXACT membership in ModelsForRuntime,
+      # NOT the `^gemini-` prefix (model_registry_validation.go), so without these
+      # exact entries a template BYOK create 422s UNREGISTERED_MODEL_FOR_RUNTIME.
+      # (This corrects the template's own stale comment that `google_genai:` is
+      # covered by the `^gemini-` prefix — it is not; `^gemini-` matches only the
+      # BARE id.) Vertex was intentionally dropped from the runtime arm (cp#514);
+      # the template no longer offers `vertex:`, so no vertex arm is added here.
+      - name: google
+        models:
+          - gemini-2.5-pro
+          - gemini-2.5-flash
+          - google_genai:gemini-2.5-pro
+          - google_genai:gemini-2.5-flash

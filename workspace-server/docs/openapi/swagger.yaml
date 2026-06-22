@@ -1,0 +1,659 @@
+basePath: /
+definitions:
+  handlers.CreateScheduleRequest:
+    properties:
+      cron_expr:
+        type: string
+      enabled:
+        type: boolean
+      name:
+        type: string
+      prompt:
+        type: string
+      timezone:
+        type: string
+    required:
+    - cron_expr
+    - prompt
+    type: object
+  handlers.CreateScheduleResponse:
+    properties:
+      id:
+        type: string
+      next_run_at:
+        type: string
+      status:
+        type: string
+    type: object
+  handlers.CreateUserTaskRequest:
+    properties:
+      detail:
+        type: string
+      title:
+        type: string
+    required:
+    - title
+    type: object
+  handlers.CreateUserTaskResponse:
+    properties:
+      status:
+        type: string
+      user_task_id:
+        type: string
+    type: object
+  handlers.ErrorResponse:
+    properties:
+      error:
+        type: string
+    type: object
+  handlers.HistoryEntry:
+    properties:
+      duration_ms:
+        type: integer
+      error_detail:
+        type: string
+      request:
+        type: object
+      status:
+        type: string
+      timestamp:
+        type: string
+    type: object
+  handlers.OrgIdentityResponse:
+    properties:
+      name:
+        description: Name is the org's display name (MOLECULE_ORG_NAME, "" when unset).
+        type: string
+    type: object
+  handlers.PendingUserTask:
+    properties:
+      created_at:
+        type: string
+      detail:
+        type: string
+      id:
+        type: string
+      status:
+        enum:
+        - pending
+        type: string
+      title:
+        type: string
+      workspace_id:
+        type: string
+      workspace_name:
+        type: string
+    type: object
+  handlers.ResolveUserTaskRequest:
+    properties:
+      resolved_by:
+        type: string
+      status:
+        enum:
+        - done
+        - dismissed
+        type: string
+    required:
+    - status
+    type: object
+  handlers.ResolveUserTaskResponse:
+    properties:
+      status:
+        type: string
+      user_task_id:
+        type: string
+    type: object
+  handlers.RunNowResponse:
+    properties:
+      prompt:
+        type: string
+      status:
+        type: string
+      workspace_id:
+        type: string
+    type: object
+  handlers.ScheduleResponse:
+    properties:
+      created_at:
+        type: string
+      cron_expr:
+        type: string
+      enabled:
+        type: boolean
+      id:
+        type: string
+      last_error:
+        type: string
+      last_run_at:
+        type: string
+      last_status:
+        type: string
+      name:
+        type: string
+      next_run_at:
+        type: string
+      prompt:
+        type: string
+      run_count:
+        type: integer
+      source:
+        description: '''template'' (seeded by org/import) | ''runtime'' (created via
+          Canvas/API). Issue #24.'
+        type: string
+      timezone:
+        type: string
+      updated_at:
+        type: string
+      workspace_id:
+        type: string
+    type: object
+  handlers.StatusResponse:
+    properties:
+      status:
+        type: string
+    type: object
+  handlers.UpdateScheduleRequest:
+    properties:
+      cron_expr:
+        type: string
+      enabled:
+        type: boolean
+      name:
+        type: string
+      prompt:
+        type: string
+      timezone:
+        type: string
+    type: object
+  handlers.UpdateUserTaskRequest:
+    properties:
+      detail:
+        type: string
+      status:
+        enum:
+        - pending
+        - done
+        - dismissed
+        type: string
+      title:
+        type: string
+    type: object
+  handlers.UserTask:
+    properties:
+      created_at:
+        type: string
+      detail:
+        type: string
+      id:
+        type: string
+      resolved_at:
+        type: string
+      resolved_by:
+        type: string
+      status:
+        enum:
+        - pending
+        - done
+        - dismissed
+        type: string
+      title:
+        type: string
+    type: object
+  handlers.UserTaskMutationResponse:
+    properties:
+      status:
+        type: string
+      user_task_id:
+        type: string
+    type: object
+host: api.moleculesai.app
+info:
+  contact: {}
+  description: 'The per-tenant workspace-server HTTP API. Single source of truth for
+    workspace/schedule/agent/secrets/files/memory CRUD. Hand-written clients (canvas,
+    molecule-mcp-server, molecule-cli, molecule-sdk-python) should be replaced by
+    clients generated from this spec — see RFC #1706.'
+  title: Molecule AI Workspace Server API
+  version: "1.0"
+paths:
+  /org/identity:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.OrgIdentityResponse'
+      summary: Get the org's display name
+      tags:
+      - org
+  /user-tasks/pending:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/handlers.PendingUserTask'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List pending user tasks across all workspaces
+      tags:
+      - user-tasks
+  /workspaces/{id}/schedules:
+    get:
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/handlers.ScheduleResponse'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      security:
+      - BearerAuth && OrgSlugAuth: []
+      summary: List schedules for a workspace
+      tags:
+      - schedules
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Schedule fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.CreateScheduleRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/handlers.CreateScheduleResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      security:
+      - BearerAuth && OrgSlugAuth: []
+      summary: Create a schedule
+      tags:
+      - schedules
+  /workspaces/{id}/schedules/{scheduleId}:
+    delete:
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Schedule ID
+        in: path
+        name: scheduleId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.StatusResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      security:
+      - BearerAuth && OrgSlugAuth: []
+      summary: Delete a schedule
+      tags:
+      - schedules
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Schedule ID
+        in: path
+        name: scheduleId
+        required: true
+        type: string
+      - description: Partial schedule fields (only provided keys are updated)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.UpdateScheduleRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.ScheduleResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      security:
+      - BearerAuth && OrgSlugAuth: []
+      summary: Update a schedule
+      tags:
+      - schedules
+  /workspaces/{id}/schedules/{scheduleId}/history:
+    get:
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Schedule ID
+        in: path
+        name: scheduleId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/handlers.HistoryEntry'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      security:
+      - BearerAuth && OrgSlugAuth: []
+      summary: Get past runs of a schedule
+      tags:
+      - schedules
+  /workspaces/{id}/schedules/{scheduleId}/run:
+    post:
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Schedule ID
+        in: path
+        name: scheduleId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.RunNowResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      security:
+      - BearerAuth && OrgSlugAuth: []
+      summary: Fire a schedule manually
+      tags:
+      - schedules
+  /workspaces/{id}/user-tasks:
+    get:
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/handlers.UserTask'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      security:
+      - BearerAuth && OrgSlugAuth: []
+      summary: List a workspace's own user tasks
+      tags:
+      - user-tasks
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Task fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.CreateUserTaskRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/handlers.CreateUserTaskResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      security:
+      - BearerAuth && OrgSlugAuth: []
+      summary: Raise a user task
+      tags:
+      - user-tasks
+  /workspaces/{id}/user-tasks/{taskId}:
+    delete:
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: User task ID
+        in: path
+        name: taskId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.UserTaskMutationResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      security:
+      - BearerAuth && OrgSlugAuth: []
+      summary: Delete a workspace's own user task
+      tags:
+      - user-tasks
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: User task ID
+        in: path
+        name: taskId
+        required: true
+        type: string
+      - description: Partial task fields (only provided keys are updated)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.UpdateUserTaskRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.UserTaskMutationResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      security:
+      - BearerAuth && OrgSlugAuth: []
+      summary: Update a workspace's own user task
+      tags:
+      - user-tasks
+  /workspaces/{id}/user-tasks/{taskId}/resolve:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: User task ID
+        in: path
+        name: taskId
+        required: true
+        type: string
+      - description: Resolution
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.ResolveUserTaskRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.ResolveUserTaskResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      security:
+      - BearerAuth && OrgSlugAuth: []
+      summary: Resolve a user task
+      tags:
+      - user-tasks
+schemes:
+- https
+securityDefinitions:
+  BearerAuth:
+    description: Bearer token issued by Gitea (org-admin or persona PAT) or by the
+      platform's signup/SSO flow.
+    in: header
+    name: Authorization
+    type: apiKey
+  OrgIdAuth:
+    description: Tenant routing header (UUID form). Alternative to X-Molecule-Org-Slug.
+      At least one of OrgSlugAuth or OrgIdAuth must be sent alongside BearerAuth.
+    in: header
+    name: X-Molecule-Org-Id
+    type: apiKey
+  OrgSlugAuth:
+    description: Tenant routing header — required on every /workspaces/{id}/* request
+      so the platform edge can route to the correct per-tenant workspace-server. Either
+      X-Molecule-Org-Slug (human-readable, e.g. "agents-team") or X-Molecule-Org-Id
+      (UUID) must be sent; slug is preferred for client code.
+    in: header
+    name: X-Molecule-Org-Slug
+    type: apiKey
+swagger: "2.0"

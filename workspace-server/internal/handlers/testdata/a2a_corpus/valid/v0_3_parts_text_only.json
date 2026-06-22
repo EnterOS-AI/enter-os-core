@@ -1,0 +1,17 @@
+{
+  "_comment": "v0.3 canonical: params.message.parts is a list of Part objects. This is what the platform's normalizer produces internally and what the a-2-a-sdk v0.3 Pydantic validator expects.",
+  "_added": "2026-04-30",
+  "_source": "a-2-a-sdk v0.3 release notes example",
+  "jsonrpc": "2.0",
+  "method": "message/send",
+  "id": "msg-test-v03-parts",
+  "params": {
+    "message": {
+      "messageId": "msg-3",
+      "role": "user",
+      "parts": [
+        {"kind": "text", "text": "hello world"}
+      ]
+    }
+  }
+}

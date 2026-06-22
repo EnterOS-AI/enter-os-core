@@ -1,0 +1,210 @@
+name: E2E Staging Reconciler (heals terminated EC2)
+
+# Live staging proof for the core#2261 instance-state reconciler
+# (workspace-server/internal/registry/cp_instance_reconciler.go). The
+# real-infra complement to the deterministic unit tests: provisions a real
+# staging workspace, TERMINATES its EC2, and asserts the reconciler flips it
+# off 'online' (PRIMARY gate) and auto-reprovisions on a new instance_id
+# (SECONDARY, best-effort). See
+# tests/e2e/test_reconciler_heals_terminated_instance.sh for the assertion
+# contract + timeouts.
+#
+# Modeled on e2e-staging-saas.yml. Same secrets + same Gitea-port caveats:
+#   - Dropped workflow_dispatch.inputs (Gitea 1.22.6 parser rejects them).
+#   - Dropped merge_group / environment (no Gitea equivalent).
+#   - Workflow-level env.GITHUB_SERVER_URL pinned per
+#     feedback_act_runner_github_server_url.
+#
+# NOT a required check (yet). This is a brand-new live E2E that provisions +
+# terminates real EC2 (costs money, shares the cp#245 cold-boot flake
+# surface). A new live e2e must NOT hard-gate every merge until it has a
+# green track record. continue-on-error: true surfaces failures without
+# blocking. PROMOTE to branch-required (flip continue-on-error → false AND
+# add "E2E Staging Reconciler" to branch protection) once it has run green on
+# main for several consecutive days — same de-flake discipline the
+# platform-boot job in e2e-staging-saas.yml documents.
+
+on:
+  # Run when the reconciler itself, the script, or the libs it depends on
+  # change — so a reconciler regression is caught on the PR that introduces
+  # it (paths filter), plus a daily schedule to catch infra/AMI drift.
+  push:
+    branches: [main]
+    paths:
+      - 'workspace-server/internal/registry/cp_instance_reconciler.go'
+      - 'tests/e2e/test_reconciler_heals_terminated_instance.sh'
+      - 'tests/e2e/lib/aws_leak_check.sh'
+      - 'tests/e2e/lib/model_slug.sh'
+      - '.gitea/workflows/e2e-staging-reconciler.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'workspace-server/internal/registry/cp_instance_reconciler.go'
+      - 'tests/e2e/test_reconciler_heals_terminated_instance.sh'
+      - 'tests/e2e/lib/aws_leak_check.sh'
+      - 'tests/e2e/lib/model_slug.sh'
+      - '.gitea/workflows/e2e-staging-reconciler.yml'
+  workflow_dispatch:
+  schedule:
+    # 08:00 UTC daily — offset from e2e-staging-saas (07:00) so the two live
+    # harnesses don't fight over staging's per-hour org-creation quota.
+    - cron: '0 8 * * *'
+
+# Serialize against itself: staging has a finite per-hour org-creation quota,
+# and a cancelled run mid-teardown leaks EC2. cancel-in-progress: false
+# mirrors e2e-staging-saas.yml.
+concurrency:
+  group: e2e-staging-reconciler
+  cancel-in-progress: false
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  # PR-validation path: always posts success so a workflow-only / script-only
+  # PR has a status check (this workflow's real job only fires on the paths
+  # filter). Mirrors the pr-validate job in e2e-staging-saas.yml.
+  pr-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+        continue-on-error: true
+      - name: YAML validation (best-effort)
+        run: |
+          echo "e2e-staging-reconciler.yml — PR validation: workflow YAML is valid."
+          echo "Live E2E step runs only when the reconciler / script / libs change."
+        continue-on-error: true
+
+  e2e-staging-reconciler:
+    name: E2E Staging Reconciler
+    runs-on: ubuntu-latest
+    # NOT required yet — surface failures without blocking merges. Flip to
+    # false + add to branch protection once green on main for a de-flake
+    # window (see the header note). mc#2654: do not renew this mask silently.
+    continue-on-error: true
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    env:
+      MOLECULE_CP_URL: https://staging-api.moleculesai.app
+      # Single admin-bearer secret drives provision + tenant-token retrieval +
+      # teardown (= Railway staging CP_ADMIN_API_TOKEN). Same secret name the
+      # saas workflow canonicalised to under internal#322.
+      MOLECULE_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: us-east-2
+      # Leak-check is REQUIRED here: this test deliberately terminates an EC2,
+      # so teardown MUST positively confirm no slug-tagged box survives.
+      E2E_AWS_LEAK_CHECK: required
+      E2E_AWS_TERMINATE_LEAKS: '1'
+      E2E_RUNTIME: claude-code
+      # Platform-managed create path (moonshot/kimi-k2.6, no tenant key) — the
+      # combo proven to create cleanly; this test only needs the ws online.
+      #
+      # DELIBERATELY no E2E_MODEL_SLUG and no E2E_*_API_KEY here — mirror the
+      # e2e-staging-platform-boot job in e2e-staging-saas.yml. On
+      # E2E_LLM_PATH=platform the harness sends EMPTY secrets and lets
+      # pick_model_slug return the platform default moonshot/kimi-k2.6 (a member
+      # of the providers.yaml claude-code `platform` arm → provider=platform,
+      # billed by the CP LLM proxy, NO tenant key required).
+      #
+      # The previous wiring set E2E_MODEL_SLUG: MiniMax-M2 (a BARE id in the
+      # providers.yaml `minimax` BYOK arm → provider=minimax, requires
+      # MINIMAX_API_KEY) while sending secrets={} on the platform path. Because
+      # E2E_MODEL_SLUG wins over the E2E_LLM_PATH=platform branch in
+      # pick_model_slug, the workspace got a keyless BYOK-minimax model, could
+      # not resolve a serving path, and booted to status=failed — never online
+      # (run 223233: "MODEL_SLUG=MiniMax-M2" then "→ failed", "never reached
+      # status=online within 900s"). The BYOK key wiring was equally misleading:
+      # the harness ignores E2E_*_API_KEY on E2E_LLM_PATH=platform, so the keys
+      # only made the contradiction harder to spot. Platform-only is correct
+      # here — this test exercises instance-state, never an LLM completion.
+      E2E_LLM_PATH: platform
+      E2E_RUN_ID: "${{ github.run_id }}-${{ github.run_attempt }}"
+      E2E_KEEP_ORG: ${{ github.event.inputs.keep_org && '1' || '0' }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Verify required secrets present
+        run: |
+          if [ -z "$MOLECULE_ADMIN_TOKEN" ]; then
+            echo "::error::CP_STAGING_ADMIN_API_TOKEN secret not set (Railway staging CP_ADMIN_API_TOKEN)"
+            exit 2
+          fi
+          for var in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+            if [ -z "${!var:-}" ]; then
+              echo "::error::$var not set — this test terminates an EC2 and verifies no leak; AWS creds are mandatory"
+              exit 2
+            fi
+          done
+          echo "Required secrets present ✓"
+
+      - name: CP staging health preflight
+        run: |
+          code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$MOLECULE_CP_URL/health")
+          if [ "$code" != "200" ]; then
+            echo "::error::Staging CP unhealthy (got HTTP $code). Skipping — not a reconciler bug."
+            exit 1
+          fi
+          echo "Staging CP healthy ✓"
+
+      - name: Run reconciler heal E2E
+        id: e2e
+        run: bash tests/e2e/test_reconciler_heals_terminated_instance.sh
+
+      # Belt-and-braces teardown: the script installs its own EXIT trap, but if
+      # the runner is cancelled the trap may not fire. This always() step
+      # double-deletes any e2e-rec-* org from THIS run. The admin DELETE is
+      # idempotent so double-invoking is safe.
+      - name: Teardown safety net (runs on cancel/failure)
+        if: always()
+        env:
+          ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+        run: |
+          set +e
+          orgs=$(curl -sS "$MOLECULE_CP_URL/cp/admin/orgs" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" 2>/dev/null \
+            | python3 -c "
+          import json, sys, os, datetime
+          run_id = os.environ.get('GITHUB_RUN_ID', '')
+          d = json.load(sys.stdin)
+          today = datetime.date.today()
+          yesterday = today - datetime.timedelta(days=1)
+          dates = (today.strftime('%Y%m%d'), yesterday.strftime('%Y%m%d'))
+          # Slug shape: e2e-rec-YYYYMMDD-<run_id>-<attempt>-...
+          if run_id:
+              prefixes = tuple(f'e2e-rec-{d}-{run_id}-' for d in dates)
+          else:
+              prefixes = tuple(f'e2e-rec-{d}-' for d in dates)
+          candidates = [o['slug'] for o in d.get('orgs', [])
+                        if any(o.get('slug','').startswith(p) for p in prefixes)
+                        and o.get('instance_status') not in ('purged',)]
+          print('\n'.join(candidates))
+          " 2>/dev/null)
+          leaks=()
+          for slug in $orgs; do
+            echo "Safety-net teardown: $slug"
+            set +e
+            curl -sS -o /tmp/rec-cleanup.out -w "%{http_code}" \
+              -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
+              -H "Authorization: Bearer $ADMIN_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"confirm\":\"$slug\"}" >/tmp/rec-cleanup.code
+            set -e
+            code=$(cat /tmp/rec-cleanup.code 2>/dev/null || echo "000")
+            if [ "$code" = "200" ] || [ "$code" = "204" ]; then
+              echo "[teardown] deleted $slug (HTTP $code)"
+            else
+              echo "::warning::reconciler teardown for $slug returned HTTP $code — sweep-stale-e2e-orgs will catch it within ~45 min. Body: $(head -c 300 /tmp/rec-cleanup.out 2>/dev/null)"
+              leaks+=("$slug")
+            fi
+          done
+          if [ ${#leaks[@]} -gt 0 ]; then
+            echo "::warning::reconciler teardown left ${#leaks[@]} leak(s): ${leaks[*]}"
+          fi
+          exit 0

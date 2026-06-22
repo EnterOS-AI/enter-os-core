@@ -1,0 +1,267 @@
+name: Sweep stale e2e-* orgs (staging)
+
+# Ported from .github/workflows/sweep-stale-e2e-orgs.yml on 2026-05-11 per RFC
+# internal#219 §1 sweep. Differences from the GitHub version:
+#   - Dropped `workflow_dispatch.inputs` (Gitea 1.22.6 parser rejects them
+#     per feedback_gitea_workflow_dispatch_inputs_unsupported).
+#   - Dropped `merge_group:` (no Gitea merge queue).
+#   - Dropped `environment:` blocks (Gitea has no environments).
+#   - Workflow-level env.GITHUB_SERVER_URL pinned per
+#     feedback_act_runner_github_server_url.
+#   - `continue-on-error: true` on each job (RFC §1 contract).
+#
+
+# Janitor for staging tenants left behind when E2E cleanup didn't run:
+# CI cancellations, runner crashes, transient AWS errors mid-cascade,
+# bash trap missed (signal 9), etc. Without this loop, every failed
+# teardown leaks an EC2 + DNS + DB row until manual ops cleanup —
+# 2026-04-23 staging hit the 64 vCPU AWS quota from ~27 such orphans.
+#
+# Why not rely on per-test-run teardown:
+#   - Per-run teardown is best-effort by definition. Any process death
+#     after the test starts but before the trap fires leaves debris.
+#   - GH Actions cancellation kills the runner without grace period.
+#     The workflow's `if: always()` step usually catches this, but it
+#     too can fail (CP transient 5xx, runner network issue at the
+#     wrong moment).
+#   - Even when teardown runs, the CP cascade is best-effort in places
+#     (cascadeTerminateWorkspaces logs+continues; DNS deletion same).
+#   - This sweep is the catch-all that converges staging back to clean
+#     regardless of which specific path leaked.
+#
+# The PROPER fix is making CP cleanup transactional + verify-after-
+# terminate (filed separately as cleanup-correctness work). This
+# workflow is the safety net that catches everything else AND any
+# future leak source we haven't yet identified.
+
+on:
+  schedule:
+    # Every 15 min. E2E orgs are short-lived (~8-25 min wall clock from
+    # create to teardown — canary is ~8 min, full SaaS ~25 min). The
+    # previous hourly + 120-min stale threshold meant a leaked tenant
+    # could keep an EC2 alive for up to 2 hours, eating ~2 vCPU per
+    # leak. Tightening the cadence + threshold reduces the worst-case
+    # leak window from 120 min to ~45 min (15-min sweep cadence + 30-min
+    # threshold) without risk of catching in-progress runs (the longest
+    # e2e run is the 25-min canary, well under the 30-min threshold).
+    # See molecule-controlplane#420 for the leak-class accounting that
+    # motivated this tightening.
+    - cron: '*/15 * * * *'
+# Don't let two sweeps fight. Cron + workflow_dispatch could overlap
+# on a manual trigger; queue rather than parallel-delete.
+concurrency:
+  group: sweep-stale-e2e-orgs
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  sweep:
+    name: Sweep e2e orgs
+    runs-on: ubuntu-latest
+    # NOTE: Phase 3 (RFC #219 §1) `continue-on-error: true` removed
+    # 2026-05-11. The "surface broken workflows without blocking"
+    # rationale was correctly applied to advisory/lint workflows but
+    # wrong for this janitor — silent failure here masks real-money
+    # tenant leaks. Hongming observed 15 leaked EC2 in molecule-canary
+    # (<AWS_ACCOUNT_ID>) us-east-2 at 11:05Z 2026-05-11 because the sweep
+    # had been exiting 2 every tick and the failure was swallowed.
+    # See `feedback_strict_root_only_after_class_a` — critical janitors
+    # must fail loud. A follow-up `notify-failure` step below also
+    # surfaces breakage to ops even if branch-protection wiring is
+    # adjusted to keep this off the required-checks list.
+    timeout-minutes: 15
+    env:
+      MOLECULE_CP_URL: https://staging-api.moleculesai.app
+      ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+      MAX_AGE_MINUTES: ${{ github.event.inputs.max_age_minutes || '30' }}
+      DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+      # Refuse to delete more than this many orgs in one tick. If the
+      # CP DB is briefly empty (or the admin endpoint goes weird and
+      # returns no created_at), every e2e- org would look stale.
+      # Bailing protects against runaway nukes.
+      SAFETY_CAP: 50
+
+    steps:
+      - name: Verify admin token present
+        run: |
+          if [ -z "$ADMIN_TOKEN" ]; then
+            echo "::error::CP_STAGING_ADMIN_API_TOKEN not set"
+            exit 2
+          fi
+          echo "Admin token present ✓"
+
+      - name: Identify stale e2e orgs
+        id: identify
+        run: |
+          set -euo pipefail
+          # Fetch into a file so the python step reads it via stdin —
+          # cleaner than embedding $(curl ...) into a heredoc.
+          curl -sS --fail-with-body --max-time 30 \
+            "$MOLECULE_CP_URL/cp/admin/orgs?limit=500" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" \
+            > orgs.json
+
+          # Filter:
+          #   1. slug starts with one of the ephemeral test prefixes:
+          #        - 'e2e-'    — covers e2e-smoke- (formerly e2e-canary-),
+          #                      e2e-canvas-*, etc.
+          #        - 'rt-e2e-' — runtime-test harness fixtures (RFC #2251);
+          #                      missing this prefix left two such tenants
+          #                      orphaned 8h on staging (2026-05-03), then
+          #                      hard-failed redeploy-tenants-on-staging
+          #                      and broke the staging→main auto-promote
+          #                      chain. Kept in sync with the EPHEMERAL_PREFIX_RE
+          #                      regex in redeploy-tenants-on-staging.yml.
+          #   2. created_at is older than MAX_AGE_MINUTES ago
+          # Output one slug per line to a file the next step reads.
+          python3 > stale_slugs.txt <<'PY'
+          import json, os
+          from datetime import datetime, timezone, timedelta
+          # SSOT for this list lives in the controlplane Go code:
+          # molecule-controlplane/internal/slugs/ephemeral.go
+          # (var EphemeralPrefixes). The redeploy-fleet auto-rollout
+          # also reads from there to SKIP these slugs — without that
+          # filter, fleet redeploy SSM-failed in-flight E2E tenants
+          # whose containers were still booting, breaking the test
+          # that just spun them up (molecule-controlplane#493).
+          # Update both files together.
+          EPHEMERAL_PREFIXES = ("e2e-", "rt-e2e-")
+          with open("orgs.json") as f:
+              data = json.load(f)
+          max_age = int(os.environ["MAX_AGE_MINUTES"])
+          cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age)
+          for o in data.get("orgs", []):
+              slug = o.get("slug", "")
+              if not slug.startswith(EPHEMERAL_PREFIXES):
+                  continue
+              created = o.get("created_at")
+              if not created:
+                  # Defensively skip rows without created_at — better
+                  # to leave one orphan than nuke a brand-new row
+                  # whose timestamp didn't render.
+                  continue
+              # Python 3.11+ handles RFC3339 with Z directly via
+              # fromisoformat; older runners need the trailing Z swap.
+              created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+              if created_dt < cutoff:
+                  print(slug)
+          PY
+
+          count=$(wc -l < stale_slugs.txt | tr -d ' ')
+          echo "Found $count stale e2e org(s) older than ${MAX_AGE_MINUTES}m"
+          if [ "$count" -gt 0 ]; then
+            echo "First 20:"
+            head -20 stale_slugs.txt | sed 's/^/  /'
+          fi
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+
+      - name: Safety gate
+        if: steps.identify.outputs.count != '0'
+        run: |
+          count="${{ steps.identify.outputs.count }}"
+          if [ "$count" -gt "$SAFETY_CAP" ]; then
+            echo "::error::Refusing to delete $count orgs in one sweep (cap=$SAFETY_CAP). Investigate manually — this usually means the CP admin API returned no created_at or returned a degraded result. Re-run with workflow_dispatch + max_age_minutes if intentional."
+            exit 1
+          fi
+          echo "Within safety cap ($count ≤ $SAFETY_CAP) ✓"
+
+      - name: Delete stale orgs
+        if: steps.identify.outputs.count != '0' && env.DRY_RUN != 'true'
+        run: |
+          set -uo pipefail
+          deleted=0
+          failed=0
+          while IFS= read -r slug; do
+            [ -z "$slug" ] && continue
+            # The DELETE handler requires {"confirm": "<slug>"} matching
+            # the URL slug — fat-finger guard. Idempotent: re-issuing
+            # picks up via org_purges.last_step.
+            # Tempfile-routed -w + set +e/-e prevents curl-exit-code
+            # pollution of the captured status (lint-curl-status-capture.yml).
+            set +e
+            curl -sS -o /tmp/del_resp -w "%{http_code}" \
+              --max-time 60 \
+              -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
+              -H "Authorization: Bearer $ADMIN_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"confirm\":\"$slug\"}" >/tmp/del_code
+            set -e
+            # Stderr from curl (-sS shows dial errors etc.) goes to runner log.
+            http_code=$(cat /tmp/del_code 2>/dev/null || echo "000")
+            if [ "$http_code" = "200" ] || [ "$http_code" = "204" ]; then
+              deleted=$((deleted+1))
+              echo "  deleted: $slug"
+            else
+              failed=$((failed+1))
+              echo "  FAILED ($http_code): $slug — $(cat /tmp/del_resp 2>/dev/null | head -c 200)"
+            fi
+          done < stale_slugs.txt
+          echo ""
+          echo "Sweep summary: deleted=$deleted failed=$failed"
+          # Don't fail the workflow on per-org delete errors — the
+          # sweeper is best-effort. Next hourly tick re-attempts. We
+          # only fail loud at the safety-cap gate above.
+
+      - name: Sweep orphan tunnels
+        # Stale-org cleanup deletes the org (which cascades to tunnel
+        # delete inside the CP). But when that cascade fails partway —
+        # CP transient 5xx after the org row is deleted but before the
+        # CF tunnel delete completes — the tunnel persists with no
+        # matching org row. The reconciler in internal/sweep flags this
+        # as `cf_tunnel kind=orphan`, but nothing automatically reaps it.
+        #
+        # `/cp/admin/orphan-tunnels/cleanup` is the operator-triggered
+        # reaper. Calling it here at the end of every sweep tick
+        # converges the staging CF account to clean even when CP
+        # cascades half-fail.
+        #
+        # PR #492 made the underlying DeleteTunnel actually check
+        # status — pre-fix it silent-succeeded on CF code 1022
+        # ("active connections"), so this step would have been a no-op
+        # against stuck connectors. Post-fix the cleanup invokes
+        # CleanupTunnelConnections + retry, which actually clears the
+        # 1022 case. (#2987)
+        #
+        # Best-effort. Failure here doesn't fail the workflow — next
+        # tick re-attempts. Errors flow to step output for ops review.
+        if: env.DRY_RUN != 'true'
+        run: |
+          set +e
+          curl -sS -o /tmp/cleanup_resp -w "%{http_code}" \
+            --max-time 60 \
+            -X POST "$MOLECULE_CP_URL/cp/admin/orphan-tunnels/cleanup" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" >/tmp/cleanup_code
+          set -e
+          http_code=$(cat /tmp/cleanup_code 2>/dev/null || echo "000")
+          body=$(cat /tmp/cleanup_resp 2>/dev/null | head -c 500)
+          if [ "$http_code" = "200" ]; then
+            count=$(echo "$body" | python3 -c "import sys,json; d=json.loads(sys.stdin.read() or '{}'); print(d.get('deleted_count', 0))" 2>/dev/null || echo "0")
+            failed_n=$(echo "$body" | python3 -c "import sys,json; d=json.loads(sys.stdin.read() or '{}'); print(len(d.get('failed') or {}))" 2>/dev/null || echo "0")
+            echo "Orphan-tunnel sweep: deleted=$count failed=$failed_n"
+          else
+            echo "::warning::orphan-tunnels cleanup returned HTTP $http_code — body: $body"
+          fi
+
+      - name: Dry-run summary
+        if: env.DRY_RUN == 'true'
+        run: |
+          echo "DRY RUN — would have deleted ${{ steps.identify.outputs.count }} org(s) AND triggered orphan-tunnels cleanup. Re-run with dry_run=false to actually delete."
+
+      - name: Notify on sweep failure
+        # Fail-loud companion to dropping `continue-on-error: true`.
+        # If any prior step failed (missing token, CP 5xx, safety-cap
+        # tripped, etc.) emit a clearly-tagged ::error:: line so the
+        # Gitea runs UI + any log-tail consumer (Loki SOPRefireRule)
+        # flags this. Without this step, an early `exit 2` shows as a
+        # red run but the message can scroll past in busy log windows;
+        # the explicit tag here is greppable from the orchestrator
+        # triage loop.
+        if: failure()
+        run: |
+          echo "::error::sweep-stale-e2e-orgs FAILED — staging tenants are LEAKING. See prior step logs. Common causes: (a) CP_STAGING_ADMIN_API_TOKEN secret missing/rotated, (b) staging-api.moleculesai.app 5xx, (c) safety-cap tripped (CP admin API returning malformed orgs). Manual cleanup of leaked EC2 + DNS may be required while this is broken."
+          exit 1

@@ -1,0 +1,17 @@
+{
+  "_comment": "Unicode + emoji content. Pins that JSON encoding round-trips correctly through normalizeA2APayload's Marshal/Unmarshal pair. The 2026-03 emoji-truncation bug was at a different layer (display) but the underlying JSON path is the same.",
+  "_added": "2026-04-30",
+  "_source": "Synthetic — covers unicode round-trip",
+  "jsonrpc": "2.0",
+  "method": "message/send",
+  "id": "msg-test-unicode",
+  "params": {
+    "message": {
+      "messageId": "msg-9",
+      "role": "user",
+      "parts": [
+        {"kind": "text", "text": "Hello 你好 こんにちは 🚀 — ünicode test"}
+      ]
+    }
+  }
+}

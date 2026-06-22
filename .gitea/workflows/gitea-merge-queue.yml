@@ -1,0 +1,91 @@
+name: gitea-merge-queue
+
+# External serialized merge queue for Gitea 1.22.6.
+#
+# Gitea's `pull_auto_merge` table is not a real merge queue: it does not
+# serialize green PRs against a freshly-tested latest main. This workflow runs
+# the user-space queue bot, one PR per tick, using the non-bypass merge actor.
+#
+# Queue contract:
+#   - auto-discovery (default): any open same-repo PR is considered — no
+#     `merge-queue` label required (the label is optional metadata now)
+#   - bot updates stale PR heads with current main, then waits for CI
+#   - bot merges only when current main is green, genuine approvals are present
+#     on the current head, required PR contexts pass, and the PR is mergeable
+#   - add `merge-queue-hold`, `do-not-auto-merge`, or `wip` to keep a PR OUT of
+#     autonomous merging; draft PRs are also skipped
+
+on:
+  # Schedule moved to operator-config:
+  #   /etc/cron.d/molecule-core-merge-queue ->
+  #   /usr/local/bin/molecule-core-cron-bot.sh merge-queue
+  #
+  # The queue bot still processes one PR per tick, but no longer occupies
+  # one of the shared Actions runners just to poll.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitea-merge-queue-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  queue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out queue script from main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Process one queued PR
+        env:
+          # AUTO_SYNC_TOKEN is the devops-engineer persona PAT. It is the
+          # non-bypass merge actor allowed by branch protection.
+          GITEA_TOKEN: ${{ secrets.AUTO_SYNC_TOKEN }}
+          GITEA_HOST: git.moleculesai.app
+          REPO: ${{ github.repository }}
+          WATCH_BRANCH: ${{ github.event.repository.default_branch }}
+          QUEUE_LABEL: merge-queue
+          HOLD_LABEL: merge-queue-hold
+          # Auto-discovery (opt-OUT). When on (default), the queue considers ALL
+          # open same-repo PRs that meet the merge bar — it does NOT wait for a
+          # human/agent to add `merge-queue`. Agent Gitea tokens lack
+          # write:issue (labels are issue-scoped) and could never self-label,
+          # which stalled the queue; the label is now OPTIONAL metadata. The
+          # merge bar is UNCHANGED — only candidate selection widens. Set
+          # AUTO_DISCOVER=0 to restore legacy opt-IN (require the merge-queue
+          # label to be considered).
+          AUTO_DISCOVER: "1"
+          # Opt-OUT labels: any of these on a PR keeps it OUT of autonomous
+          # merging (the human escape hatch). HOLD_LABEL is always also honoured.
+          # A human who wants a PR held just adds one of these labels.
+          OPT_OUT_LABELS: do-not-auto-merge,wip
+          UPDATE_STYLE: merge
+          # Recognised official-reviewer set. A merge needs >= required_approvals
+          # DISTINCT genuine official approvals from these accounts on the
+          # CURRENT head sha (not stale/dismissed). The required_approvals count
+          # itself is read from branch protection at runtime.
+          REVIEWER_SET: agent-reviewer,agent-researcher,agent-reviewer-cr2
+          # NOTE: REQUIRED_CONTEXTS is no longer the authoritative PR gate. The
+          # queue now reads the required status contexts from BRANCH PROTECTION
+          # (status_check_contexts) so non-required governance reds (qa-review,
+          # security-review, sop-checklist when not branch-required,
+          # E2E Chat, Staging SaaS) cannot block a merge.
+          # If branch protection cannot be enumerated the queue HOLDS
+          # (fail-closed). REQUIRED_APPROVALS below is only a fallback used when
+          # branch protection does not specify required_approvals.
+          REQUIRED_APPROVALS: "2"
+          # Push-side required contexts. Checking CI / all-required (push)
+          # explicitly instead of the combined state avoids false-pause when
+          # non-blocking jobs (continue-on-error: true) have failed — those
+          # failures pollute combined state but do not gate merges.
+          # NOTE: the event-suffixed context name is intentional — branch protection
+          # MUST require `CI / all-required (pull_request)` (with suffix), NOT the
+          # bare `CI / all-required`. Gitea treats absent contexts as pending, not
+          # skipped; requiring the bare name silently blocks all merges (issue #1473).
+          PUSH_REQUIRED_CONTEXTS: CI / all-required (push)
+        run: python3 .gitea/scripts/gitea-merge-queue.py

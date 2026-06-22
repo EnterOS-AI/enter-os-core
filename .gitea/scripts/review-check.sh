@@ -1,0 +1,301 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016,SC2329
+# review-check — evaluate whether a PR satisfies a single team-review gate.
+#
+# RFC#324 Step 1 of 5 — qa-review + security-review check workflows.
+#
+# This is the shared evaluator invoked by:
+#   .gitea/workflows/qa-review.yml      (TEAM=qa,      TEAM_ID=20)
+#   .gitea/workflows/security-review.yml (TEAM=security, TEAM_ID=21)
+#
+# Pass condition (per RFC#324 v1.1 addendum):
+#   ≥ 1 review on the PR where:
+#     • state == APPROVED
+#     • review.dismissed == false
+#     • review.official != false (excludes draft/mis-filed APPROVED reviews)
+#     • review.user.login != PR.user.login (non-author)
+#     • review.user.login ∈ team-members
+#
+# Strict mode (default OFF for v1; see RFC trade-off note):
+#   If REVIEW_CHECK_STRICT=1, additionally require review.commit_id == PR.head.sha.
+#   With dismiss_stale_reviews: true at the protection layer, stale reviews
+#   are already dismissed, so the additional commit_id check is belt-and-
+#   suspenders. Keeping it off in v1 simplifies semantics; flip in a follow-up
+#   PR if reviewer telemetry shows residual stale-APPROVE merges.
+#
+# Privilege gate (RFC#324 v1.3 §A1.1 — INFORMATIONAL ONLY):
+#   The /qa-recheck and /security-recheck slash-commands can be triggered
+#   by anyone who can comment on the PR. The workflow's privilege step
+#   logs collaborator-status but does NOT gate execution of this script.
+#   Why this is safe: this evaluator is read-only and idempotent —
+#   reading `pulls/{N}/reviews` and `teams/{id}/members/{u}` can't be
+#   influenced by who triggered the run. If a real team-member APPROVE
+#   exists the gate flips green; otherwise it stays red. A
+#   non-collaborator commenting /qa-recheck cannot manufacture a green
+#   gate. Original (v1.2) design with `if:`-gating of this step was
+#   fail-open (skipped-via-`if:` job still publishes the status as
+#   `success`) — corrected in v1.3 per hongming-pc review 1421.
+#
+# Trust boundary (RFC A4):
+#   This script is loaded from the BASE branch (sourced via .gitea/scripts/
+#   on the workflow's checkout-of-base). It does NOT execute any PR-HEAD
+#   code. It only reads PR review state via the Gitea API.
+#
+# Token scope (RFC A1-α):
+#   The job's own conclusion (exit 0 / exit 1) is what publishes the
+#   `qa-review / approved` / `security-review / approved` status context.
+#   NO `POST /statuses` call here → NO `write:repository` scope on the
+#   token. `read:organization` (for team-membership probe) and
+#   `read:repository` (for PR + reviews) are enough.
+#
+# Required env:
+#   GITEA_TOKEN — least-priv read:repository + read:organization. See note
+#                 below about the team-membership API requiring the token
+#                 owner to be in the queried team (Gitea 1.22.6 quirk).
+#   GITEA_HOST  — e.g. git.moleculesai.app
+#   REPO        — owner/name (from github.repository)
+#   PR_NUMBER   — int (from github.event.pull_request.number or
+#                 github.event.issue.number for issue_comment events)
+#   TEAM        — short team name (qa | security) for log lines
+#   TEAM_ID     — Gitea team id (20=qa, 21=security at time of writing)
+#
+# Optional:
+#   REVIEW_CHECK_DEBUG=1 — per-API-call diagnostic lines
+#   REVIEW_CHECK_STRICT=1 — also require review.commit_id == pr.head.sha
+#   DEFAULT_BRANCH=main — branch this gate protects; non-default-base PRs no-op
+
+set -euo pipefail
+
+# jq is required for JSON parsing. It is pre-baked into the runner-base
+# image (per RFC#268 workflow-smoke), so the only reason we'd not find it
+# is a broken runner. The previous fallback dance (apt-get + curl to
+# /usr/local/bin/jq) cannot succeed on a uid-1001 rootless runner
+# (#391/#402 + feedback_ci_runner_install_needs_writable_path), so it's
+# dropped. Fail loud with a clear diagnostic rather than attempt an
+# install that physically cannot work.
+if ! command -v jq >/dev/null 2>&1; then
+  echo "::error::jq missing from runner-base image — bake it into the runner image (see RFC#268 workflow-smoke / feedback_ci_runner_install_needs_writable_path). This evaluator cannot run without jq."
+  exit 1
+fi
+
+: "${GITEA_TOKEN:?GITEA_TOKEN required}"
+: "${GITEA_HOST:?GITEA_HOST required}"
+: "${REPO:?REPO required (owner/name)}"
+: "${PR_NUMBER:?PR_NUMBER required}"
+: "${TEAM:?TEAM required (qa|security)}"
+: "${TEAM_ID:?TEAM_ID required (integer)}"
+
+OWNER="${REPO%%/*}"
+NAME="${REPO##*/}"
+API="https://${GITEA_HOST}/api/v1"
+
+# Token-in-argv fix (#541): write the Authorization header to a mode-600
+# temp file instead of passing it via curl -H "$AUTH" (which puts the
+# secret token value in the process table for any process to read via
+# /proc/<pid>/cmdline or ps -ef). The curl config file is read by curl
+# itself and never appears in the argv of the curl subprocess.
+CURL_AUTH_FILE=$(mktemp "${TMPDIR:-/tmp}/curl-auth.XXXXXX")
+chmod 600 "$CURL_AUTH_FILE"
+printf 'header = "Authorization: token %s"\n' "$GITEA_TOKEN" > "$CURL_AUTH_FILE"
+
+# Pre-create temp files so cleanup trap can reference them by name
+# (bash trap 'function' EXIT expands variables at trap-fire time, not def time).
+PR_JSON=$(mktemp)
+REVIEWS_JSON=$(mktemp)
+COMMENTS_JSON=$(mktemp)
+TEAM_PROBE_TMP=$(mktemp)
+NA_STATUSES_TMP=""  # declared here so cleanup() always has the var
+
+cleanup() {
+  rm -f "$CURL_AUTH_FILE" "$PR_JSON" "$REVIEWS_JSON" "$COMMENTS_JSON" "$TEAM_PROBE_TMP" "${NA_STATUSES_TMP-}"
+}
+trap cleanup EXIT
+
+debug() {
+  if [ "${REVIEW_CHECK_DEBUG:-}" = "1" ]; then
+    echo "  [debug] $*" >&2
+  fi
+}
+
+echo "::notice::${TEAM}-review evaluating repo=${OWNER}/${NAME} pr=${PR_NUMBER} team_id=${TEAM_ID}"
+
+# --- Fetch the PR (for author + head.sha) ---
+HTTP_CODE=$(curl -sS -o "$PR_JSON" -w '%{http_code}' \
+  -K "$CURL_AUTH_FILE" "${API}/repos/${OWNER}/${NAME}/pulls/${PR_NUMBER}")
+if [ "$HTTP_CODE" != "200" ]; then
+  echo "::error::GET /pulls/${PR_NUMBER} returned HTTP ${HTTP_CODE} (token scope?)"
+  cat "$PR_JSON" >&2
+  exit 1
+fi
+PR_AUTHOR=$(jq -r '.user.login // ""' "$PR_JSON")
+PR_HEAD_SHA=$(jq -r '.head.sha // ""' "$PR_JSON")
+PR_BASE_REF=$(jq -r '.base.ref // ""' "$PR_JSON")
+PR_BASE_SHA=$(jq -r '.base.sha // ""' "$PR_JSON")
+PR_STATE=$(jq -r '.state // ""' "$PR_JSON")
+DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
+debug "pr_author=${PR_AUTHOR} pr_head=${PR_HEAD_SHA:0:7} pr_base=${PR_BASE_REF} pr_state=${PR_STATE}"
+
+if [ "$PR_STATE" != "open" ]; then
+  echo "::notice::PR ${PR_NUMBER} is ${PR_STATE} — exiting 0 (closed PRs do not gate)"
+  exit 0
+fi
+if [ "$PR_HEAD_SHA" = "$PR_BASE_SHA" ]; then
+  echo "::notice::PR ${PR_NUMBER} has no diff (head == base) — exiting 0 (empty PRs do not gate)"
+  exit 0
+fi
+if [ "$PR_BASE_REF" != "$DEFAULT_BRANCH" ]; then
+  echo "::notice::PR ${PR_NUMBER} targets ${PR_BASE_REF:-<unknown>} not ${DEFAULT_BRANCH} — ${TEAM}-review gate not applicable"
+  exit 0
+fi
+if [ -z "$PR_AUTHOR" ] || [ -z "$PR_HEAD_SHA" ]; then
+  echo "::error::PR ${PR_NUMBER} missing user.login or head.sha — webhook payload malformed"
+  exit 1
+fi
+
+# --- RFC#324 §N/A follow-up: check N/A declarations status ---
+# sop-checklist.py posts `sop-checklist / na-declarations (pull_request)`
+# status when a peer posts /sop-n/a <gate>. If our gate is declared N/A,
+# the requirement for a Gitea APPROVE review is waived.
+NA_STATUSES_TMP=$(mktemp)
+HTTP_CODE=$(curl -sS -o "$NA_STATUSES_TMP" -w '%{http_code}' \
+  -K "$CURL_AUTH_FILE" "${API}/repos/${OWNER}/${NAME}/statuses/${PR_HEAD_SHA}")
+debug "statuses/${PR_HEAD_SHA} → HTTP ${HTTP_CODE}"
+
+if [ "$HTTP_CODE" = "200" ]; then
+  # Gitea returns statuses as array; look for the na-declarations context.
+  # jq: find all statuses where context == "sop-checklist / na-declarations (pull_request)"
+  # and state == "success". Extract the description field.
+  NA_DESC=$(jq -r '
+    .[] |
+    select(.context == "sop-checklist / na-declarations (pull_request)") |
+    select(.state == "success") |
+    .description
+  ' "$NA_STATUSES_TMP" 2>/dev/null | head -1)
+
+  if [ -n "$NA_DESC" ] && [ "$NA_DESC" != "null" ]; then
+    debug "na-declarations status found: ${NA_DESC}"
+    # Check if our gate appears in the N/A description.
+    # The description format is "N/A: qa-review, security-review" or similar.
+    if echo "$NA_DESC" | grep -iq "\\b${TEAM}-review\\b"; then
+      echo "::notice::${TEAM}-review N/A — gate declared not-applicable via /sop-n/a: ${NA_DESC}"
+      echo "::notice::PR ${PR_NUMBER} passes ${TEAM}-review via N/A declaration"
+      rm -f "$NA_STATUSES_TMP"
+      exit 0
+    fi
+  fi
+else
+  debug "could not fetch statuses (HTTP ${HTTP_CODE}) — proceeding with normal eval"
+fi
+rm -f "$NA_STATUSES_TMP"
+
+# --- Fetch all reviews on the PR ---
+HTTP_CODE=$(curl -sS -o "$REVIEWS_JSON" -w '%{http_code}' \
+  -K "$CURL_AUTH_FILE" "${API}/repos/${OWNER}/${NAME}/pulls/${PR_NUMBER}/reviews")
+if [ "$HTTP_CODE" != "200" ]; then
+  echo "::error::GET /pulls/${PR_NUMBER}/reviews returned HTTP ${HTTP_CODE}"
+  cat "$REVIEWS_JSON" >&2
+  exit 1
+fi
+
+# Filter via the SSOT fail-closed predicate in _approval_validator.py
+# (same module gitea-merge-queue.py imports). The jq filter is gone
+# entirely — any change to the predicate must be made in
+# _approval_validator.py. See SEV-1 internal#812 for the fail-closed
+# contract this closes.
+SCRIPT_DIR_HERE="$(cd "$(dirname "$0")" && pwd)"
+REVIEW_CANDIDATES=$(python3 "$SCRIPT_DIR_HERE/_review_check_filter.py" "$REVIEWS_JSON" "$PR_HEAD_SHA" "$PR_AUTHOR")
+debug "candidate non-author approvers: $(echo "$REVIEW_CANDIDATES" | tr '\n' ' ')"
+
+if [ -z "$REVIEW_CANDIDATES" ]; then
+  # --- Guardrail (internal#503): explain the most common false
+  # "no candidates" red. Gitea's review event enum is EXACTLY
+  # APPROVED/REQUEST_CHANGES/COMMENT/PENDING. A wrong value ("APPROVE",
+  # lowercase, ...) is silently accepted (HTTP 200) and stored as
+  # state=PENDING. A correctly-started draft review has an EMPTY body;
+  # a NON-empty body + state==PENDING by a non-author == an intended
+  # verdict mis-filed by a wrong event string. Surface it actionably.
+  # This does NOT change the gate result (still fail-closed below) — it
+  # only converts a mystery red into a named, self-fixing error.
+  MISFILED_FILTER='.[]
+    | select(.state == "PENDING")
+    | select(.dismissed != true)
+    | select(.user.login != $author)
+    | select(((.body // "") | gsub("^\\s+|\\s+$";"") | length) > 0)
+    | "\(.id)\t\(.user.login)"'
+  MISFILED=$(jq -r --arg author "$PR_AUTHOR" "$MISFILED_FILTER" "$REVIEWS_JSON" 2>/dev/null || true)
+  if [ -n "$MISFILED" ]; then
+    echo "::error::${TEAM}-review: non-author review(s) were SUBMITTED but stored as PENDING — almost certainly the wrong Gitea review event string (internal#503)."
+    echo "::error::Gitea accepts ONLY the exact enum APPROVED / REQUEST_CHANGES / COMMENT. 'APPROVE' or lowercase is silently (HTTP 200) filed as PENDING and is invisible to this gate."
+    printf '%s\n' "$MISFILED" | while IFS="$(printf '\t')" read -r _rid _rl; do
+      [ -n "${_rid:-}" ] && echo "::error::  review id=${_rid} by '${_rl}': RE-SUBMIT via POST ${API}/repos/${OWNER}/${NAME}/pulls/${PR_NUMBER}/reviews with {\"event\":\"APPROVED\"} (correct enum) — do NOT edit the DB."
+    done
+  fi
+
+fi
+
+# --- COMMENT APPROVAL REMOVED (security hardening) ---
+# Previous versions accepted issue comments containing generic approval
+# keywords (APPROVED/LGTM/ACCEPTED) or agent prefixes ([core-qa-agent],
+# [core-security-agent]) as satisfying the gate. Both paths are bypasses:
+# a comment lacks the audit trail, dismissal, stale-review invalidation,
+# and commit_id binding that an official Gitea review provides.
+# Only APPROVED reviews from the Gitea reviews API count.
+CANDIDATES="$REVIEW_CANDIDATES"
+
+if [ -z "${CANDIDATES:-}" ]; then
+  echo "::error::${TEAM}-review awaiting non-author APPROVE from ${TEAM} team (no candidates from reviews API or issue comments)"
+  exit 1
+fi
+
+# --- Probe team membership per candidate ---
+# Endpoint: GET /api/v1/teams/{id}/members/{username}
+#   200/204 → is member
+#   403     → token owner is not in this team (Gitea 1.22.6 'Must be a team
+#             member' constraint — see follow-up issue for token-provisioning)
+#   404     → not a member
+# Track whether every candidate returned 403 (token owner not in team).
+# When this happens the root cause is a token-provisioning issue, not a
+# reviewer-eligibility issue — surface it clearly so ops don't waste time
+# verifying team roster (Bug C / RFC#324 follow-up).
+_ALL_CANDIDATES_403="yes"
+_CANDIDATE_COUNT=0
+
+for U in $CANDIDATES; do
+  _CANDIDATE_COUNT=$((_CANDIDATE_COUNT + 1))
+  CODE=$(curl -sS -o "$TEAM_PROBE_TMP" -w '%{http_code}' \
+    -K "$CURL_AUTH_FILE" "${API}/teams/${TEAM_ID}/members/${U}")
+  debug "probe ${U} in team ${TEAM} (id=${TEAM_ID}) → HTTP ${CODE}"
+  case "$CODE" in
+    200|204)
+      echo "::notice::${TEAM}-review APPROVED by ${U} (team=${TEAM})"
+      exit 0
+      ;;
+    403)
+      # Token owner is not in the team being probed; Gitea 1.22.6 refuses
+      # to confirm membership in this case. Do NOT hard-fail the gate on a
+      # 403 — doing so would fail the entire gate if ANY candidate triggers
+      # a 403, even when other valid team-members exist. Instead skip this
+      # candidate and continue checking others. If all candidates produce
+      # 403 (token owner can't query any of them) the final exit fires.
+      echo "::warning::team-probe for ${U} in ${TEAM} returned 403 (token owner not in ${TEAM} team — skipping; cannot confirm membership)"
+      cat "$TEAM_PROBE_TMP" >&2
+      continue
+      ;;
+    404)
+      _ALL_CANDIDATES_403="no"
+      debug "${U} not a member of ${TEAM}"
+      ;;
+    *)
+      _ALL_CANDIDATES_403="no"
+      echo "::warning::team-probe for ${U} in ${TEAM} returned unexpected HTTP ${CODE}"
+      cat "$TEAM_PROBE_TMP" >&2
+      ;;
+  esac
+done
+
+if [ "$_ALL_CANDIDATES_403" = "yes" ] && [ "$_CANDIDATE_COUNT" -gt 0 ]; then
+  echo "::error::${TEAM}-review FAILED — every candidate returned 403 (token owner is not a member of the ${TEAM} team). This is a TOKEN PROVISIONING issue, not a reviewer-eligibility issue. Add the token owner to the '${TEAM}' Gitea team (id=${TEAM_ID}) or use a token whose owner is already in that team."
+else
+  echo "::error::${TEAM}-review awaiting non-author APPROVE from ${TEAM} team (candidates: $(echo "$CANDIDATES" | tr '\n' ',' | sed 's/,$//') — none are in team)"
+fi
+exit 1

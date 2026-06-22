@@ -1,0 +1,2 @@
+ALTER TABLE workspaces
+    ADD COLUMN IF NOT EXISTS compute JSONB NOT NULL DEFAULT '{}'::jsonb;

@@ -1,0 +1,128 @@
+name: Weekly Platform-Go Surface
+
+# Surface latent vet/test errors on main by running the full Platform-Go
+# suite on a weekly cron regardless of whether the last push touched
+# workspace-server/.
+#
+# Background: ci.yml's `platform-build` job gates real work on
+# `if: needs.changes.outputs.platform == 'true'`. When no push touches
+# workspace-server/, the skip fires and the suite never executes on main.
+# Latent vet errors and test flakes can sit for weeks undetected.
+#
+# This workflow runs the full suite (build, vet, golangci-lint, tests with
+# coverage) every Monday at 04:17 UTC. Results are posted as commit statuses
+# but continue-on-error: true means they never block anything — they're
+# purely a noise-reduction signal for when the next workspace-server push
+# lands and would otherwise trigger the first real suite run.
+#
+# Why 04:17 UTC on Monday: off-peak, before the weekly sprint cycle starts.
+
+on:
+  schedule:
+    - cron: '17 4 * * 1'  # Mondays at 04:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  weekly-platform-go:
+    name: Weekly Platform-Go Surface
+    runs-on: ubuntu-latest
+    # continue-on-error: surface only, never block
+    # mc#2654: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: workspace-server
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: stable
+          # cache:false — the self-hosted runner bind-mounts a persistent
+          # GOCACHE/GOMODCACHE (/var/cache/ci-go-{build,mod}); actions/cache is
+          # redundant and corrupts it by untarring over the bind mount ("File
+          # exists" -> "Failed to restore" -> partial cache -> linker/typecheck
+          # errors on heavy jobs, e.g. test -race link "too many errors" and
+          # go-arch-lint "without types"). Fleet sweep after the cp ci.yml find.
+          cache: false
+
+      - name: Go mod download
+        run: go mod download
+
+      - name: Build
+        run: go build ./cmd/server
+
+      # `go vet` is NOT `|| true`-guarded: surfacing latent vet errors on main is
+      # the whole point of this workflow (issue #567 — the motivating case was a
+      # `go vet` error in org_external.go that sat undetected on main for weeks).
+      # A vet error here fails the step → fails the job → shows red on the weekly
+      # commit. Per Gitea quirk #10 (job-level continue-on-error is ignored), that
+      # red surfaces on main — which is the intended signal, not a regression.
+      - name: go vet
+        run: go vet ./...
+
+      # golangci-lint stays `|| true`-guarded: lint is noisier (more false-
+      # positives than vet) and golangci-lint may not be pre-installed on every
+      # runner image — a `|| true` here keeps a missing-binary or lint-noise case
+      # from masking the vet/test signal above. Tighten to match ci.yml's lint
+      # gate if/when ci.yml's lint step becomes hard-failing.
+      - name: golangci-lint
+        run: golangci-lint run --timeout 3m ./... || true
+
+      - name: Tests with race detection + coverage
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - name: Check coverage thresholds
+        run: |
+          set -e
+          TOTAL_FLOOR=25
+          CRITICAL_PATHS=(
+            "internal/handlers/tokens"
+            "internal/handlers/workspace_provision"
+            "internal/handlers/a2a_proxy"
+            "internal/handlers/registry"
+            "internal/handlers/secrets"
+            "internal/middleware/wsauth"
+            "internal/crypto"
+          )
+
+          TOTAL=$(go tool cover -func=coverage.out | grep '^total:' | awk '{print $3}' | sed 's/%//')
+          echo "Total coverage: ${TOTAL}%"
+          if awk "BEGIN{exit !(\$TOTAL < \$TOTAL_FLOOR)}"; then
+            echo "::error::Total coverage \${TOTAL}% is below the \${TOTAL_FLOOR}% floor."
+            exit 1
+          fi
+
+          ALLOWLIST=""
+          if [ -f ../.coverage-allowlist.txt ]; then
+            ALLOWLIST=$(grep -vE '^(#|[[:space:]]*$)' ../.coverage-allowlist.txt || true)
+          fi
+
+          FAILED=0
+          for path in "\${CRITICAL_PATHS[@]}"; do
+            while read -r file pct; do
+              [[ "$file" == *_test.go ]] && continue
+              [[ "$file" == *"$path"* ]] || continue
+              awk "BEGIN{exit !(\$pct < 10)}" || continue
+              rel=$(echo "$file" | sed 's|^git.moleculesai.app/molecule-ai/molecule-core/workspace-server/workspace-server/||; s|^git.moleculesai.app/molecule-ai/molecule-core/workspace-server/||')
+              if echo "$ALLOWLIST" | grep -qxF "$rel"; then
+                continue
+              fi
+              echo "::error::Low coverage \${pct}% on \${rel} (below 10% in critical path \${path})"
+              FAILED=$((FAILED + 1))
+            done < <(go tool cover -func=coverage.out | grep -v '^total:' | awk '{file=$1; sub(/:[0-9][0-9.]*:.*/, "", file); pct=$NF; gsub(/%/,"",pct); s[file]+=pct; c[file]++} END {for (f in s) printf "%s %.1f\n", f, s[f]/c[f]}' | sort)
+          done
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::\${FAILED} critical paths below 10% coverage — see above."
+            exit 1
+          fi
+          echo "Coverage thresholds: OK"

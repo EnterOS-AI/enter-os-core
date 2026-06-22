@@ -1,0 +1,121 @@
+services:
+  # digest-pinned 2026-05-10 (sha256:4941ef97aaa2633ce9808f7766f8b8d746dd039ce8c51ca6da185c3dc63ab579, linux/amd64)
+  postgres:
+    image: postgres@sha256:4941ef97aaa2633ce9808f7766f8b8d746dd039ce8c51ca6da185c3dc63ab579
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev}
+      POSTGRES_DB: ${POSTGRES_DB:-molecule}
+    command: ["postgres", "-c", "wal_level=logical"]
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - molecule-core-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dev}"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  langfuse-db-init:
+    image: postgres@sha256:4941ef97aaa2633ce9808f7766f8b8d746dd039ce8c51ca6da185c3dc63ab579
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev}
+    networks:
+      - molecule-core-net
+    command:
+      - /bin/sh
+      - -c
+      - |
+        export PGPASSWORD="$${POSTGRES_PASSWORD}"
+        until pg_isready -h postgres -U "$${POSTGRES_USER}" -d postgres >/dev/null 2>&1; do
+          sleep 1
+        done
+        if ! psql -h postgres -U "$${POSTGRES_USER}" -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = 'langfuse'" | grep -q 1; then
+          psql -h postgres -U "$${POSTGRES_USER}" -d postgres -c "CREATE DATABASE langfuse"
+        fi
+
+  # digest-pinned 2026-05-10 (sha256:b1addbe72465a718643cff9e60a58e6df1841e29d6d7d60c9a85d8d72f08d1a7, linux/amd64)
+  redis:
+    image: redis@sha256:b1addbe72465a718643cff9e60a58e6df1841e29d6d7d60c9a85d8d72f08d1a7
+    command: ["redis-server", "--notify-keyspace-events", "KEA"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    networks:
+      - molecule-core-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  # digest-pinned 2026-05-10 (sha256:5b296e0ba1da74efea3143c773ddd60245f249fb7c72eb1d866c2d6ebc759fbe, linux/amd64)
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server@sha256:5b296e0ba1da74efea3143c773ddd60245f249fb7c72eb1d866c2d6ebc759fbe
+    environment:
+      CLICKHOUSE_DB: langfuse
+      CLICKHOUSE_USER: langfuse
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-langfuse-dev}
+    volumes:
+      - clickhousedata:/var/lib/clickhouse
+    networks:
+      - molecule-core-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # dev-only: no-auth on 0.0.0.0:7233; production must gate via mTLS or API key
+  # digest-pinned 2026-05-10 (sha256:9ce78f5a7ba7169acb659a8bb7a174a64251c3bfe1553d1fefdd669a59d41df5, linux/amd64)
+  temporal:
+    image: temporalio/auto-setup@sha256:9ce78f5a7ba7169acb659a8bb7a174a64251c3bfe1553d1fefdd669a59d41df5
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-dev}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-dev}
+      POSTGRES_SEEDS: postgres
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+    ports:
+      - "7233:7233"
+    healthcheck:
+      test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # digest-pinned 2026-05-10 (sha256:7be8d6e41d4846ccb718c4f35956c9557512f8085e94a73954286a4e95113703, linux/amd64)
+  temporal-ui:
+    image: temporalio/ui@sha256:7be8d6e41d4846ccb718c4f35956c9557512f8085e94a73954286a4e95113703
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:8233
+    ports:
+      - "8233:8080"
+
+networks:
+  molecule-core-net:
+    name: molecule-core-net
+    external: true
+
+volumes:
+  pgdata:
+  redisdata:
+  clickhousedata:

@@ -1,0 +1,151 @@
+/**
+ * Org-deploy animation module.
+ *
+ * Loaded globally (see app/globals.css). All values come from
+ * theme-tokens.css so a theme swap needs zero edits here.
+ *
+ * Component contract — canvas/src/components/canvas code adds
+ * these classes to the React Flow node / edge wrappers:
+ *
+ *   .mol-deploy-spawn             One-shot entry animation on a
+ *                                 node that just arrived. Applied
+ *                                 by canvas-events.ts for 600 ms
+ *                                 then removed.
+ *   .mol-deploy-shimmer           Persistent border shimmer while
+ *                                 a node's status === "provisioning".
+ *                                 Removed when status flips to
+ *                                 "online" / "failed".
+ *   .mol-deploy-parent-pulse      One-shot acknowledgement pulse
+ *                                 on the parent when a child lands.
+ *                                 Applied for parent-pulse duration
+ *                                 then removed.
+ *   .mol-deploy-locked            Applied to every non-root node
+ *                                 inside a deploying org so it dims
+ *                                 and the cursor signals un-
+ *                                 draggable.
+ *   .mol-deploy-root-complete     One-shot pop + glow on the root
+ *                                 when the last child comes online.
+ *
+ * Edges use React Flow edge data to pick styling — see the
+ * selectors below the node keyframes.
+ *
+ * Reduced motion is handled at the bottom via the same guard
+ * globals.css already installs for other animations.
+ */
+
+/* ────────────────────────────────────────────────────────
+   Keyframes — kept terse; values come from variables so
+   duplication across themes is nil.
+   ──────────────────────────────────────────────────────── */
+
+@keyframes mol-deploy-spawn {
+  /* Gentle fade-in-place. The earlier "spring from parent" motion
+     collided with the server-computed grid positions (parent and
+     child used different coord origins once the parent was placed
+     on the client's grid instead of the template's absolute
+     coords), which landed children in wrong slots. Keeping the
+     animation to a simple opacity+scale lets the server's layout
+     win — and reads as "node arrived" without the over-engineered
+     spring. */
+  from { opacity: 0; transform: scale(0.85); }
+  to   { opacity: 1; transform: scale(1);    }
+}
+
+/* mol-deploy-parent-pulse keyframe removed with the effect — the
+   box-shadow expanding ring made the parent card visibly "flash" on
+   every child arrival when the grow pass also bumped width/height.
+   Kept as a deliberate non-class so the theme-tokens vars can drop
+   with it on the next theme pass. */
+
+@keyframes mol-deploy-root-complete {
+  0%   { transform: scale(1);    box-shadow: 0 0 0 0 transparent;   }
+  40%  { transform: scale(var(--mol-deploy-root-scale-peak)); box-shadow: var(--mol-deploy-root-glow); }
+  100% { transform: scale(1);    box-shadow: 0 0 0 0 transparent;   }
+}
+
+/* (mol-deploy-edge-draw keyframe removed with the edge effects.) */
+
+@keyframes mol-deploy-cancel-pulse {
+  0%, 100% { box-shadow: 0 0 0 0   var(--mol-deploy-cancel-ring); }
+  50%      { box-shadow: 0 0 0 10px transparent;                   }
+}
+
+/* ────────────────────────────────────────────────────────
+   Node classes
+   ──────────────────────────────────────────────────────── */
+
+/* Qualify with .react-flow__node so this rule beats the default
+   `node-appear` animation defined later in globals.css. Without
+   the qualifier, CSS source-order wins and the standard
+   node-appear overrides our scale/opacity keyframe, visually
+   dropping the "spawn from parent" motion. */
+.react-flow__node.mol-deploy-spawn {
+  animation:
+    mol-deploy-spawn var(--mol-duration-spawn) var(--mol-easing-bounce-out) both;
+}
+
+/* Provisioning signal — the earlier rotating conic-gradient border
+   read as distracting "spinner" clutter during a 15-child org
+   import (dozens of them spinning simultaneously). A static dim
+   (reduced opacity + saturation) communicates "this one is still
+   coming online" without the motion noise. The locked-child style
+   already uses the same pattern — we reuse the filter values so
+   a provisioning ROOT node and a locked CHILD look consistent. */
+.mol-deploy-shimmer {
+  filter: saturate(var(--mol-deploy-locked-saturation)) opacity(var(--mol-deploy-locked-opacity));
+  transition: filter var(--mol-duration-base) var(--mol-easing-standard);
+}
+
+.mol-deploy-locked {
+  filter: saturate(var(--mol-deploy-locked-saturation)) opacity(var(--mol-deploy-locked-opacity));
+  cursor: not-allowed !important;
+  transition: filter var(--mol-duration-base) var(--mol-easing-standard);
+}
+
+.react-flow__node.mol-deploy-root-complete {
+  animation: mol-deploy-root-complete var(--mol-duration-root-complete) var(--mol-easing-emphasize) both;
+}
+
+/* ────────────────────────────────────────────────────────
+   Edge classes — intentionally inert.
+
+   Earlier revisions painted incoming edges with a dashed-blueprint
+   → animated-laser-trace effect as the child landed. User feedback
+   on the first demo was "remove connection line effects" — the
+   moving dashes read as noise during a multi-child deploy. Keeping
+   the class hooks so canvas-events.ts event handlers can still
+   apply/strip them without blowing up, but the styling is a no-op
+   (edges fall through to the default styling in globals.css).
+   If a future demo wants the effect back, wire the rules below.
+   ──────────────────────────────────────────────────────── */
+
+/* ────────────────────────────────────────────────────────
+   Cancel-deployment pill — rendered by OrgCancelButton.tsx
+   attached to the root node during deploy. Class `.mol-deploy-cancel`
+   is always applied; the pulse is additive.
+   ──────────────────────────────────────────────────────── */
+.mol-deploy-cancel {
+  background: var(--mol-deploy-cancel-bg);
+  color: var(--mol-deploy-cancel-text);
+  transition: background var(--mol-duration-fast) var(--mol-easing-standard);
+}
+.mol-deploy-cancel:hover {
+  background: var(--mol-deploy-cancel-bg-hover);
+}
+.mol-deploy-cancel-pulse {
+  animation: mol-deploy-cancel-pulse var(--mol-duration-parent-pulse) var(--mol-easing-standard) infinite;
+}
+
+/* ────────────────────────────────────────────────────────
+   Reduced-motion guard — mirror globals.css's policy so this
+   module stays WCAG 2.3.3 compliant without relying on the
+   global file being loaded first.
+   ──────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .react-flow__node.mol-deploy-spawn,
+  .react-flow__node.mol-deploy-root-complete,
+  .mol-deploy-cancel-pulse {
+    animation: none !important;
+  }
+  /* Dim-light signal is already static; no override needed. */
+}

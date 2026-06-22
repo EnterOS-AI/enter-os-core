@@ -1,0 +1,141 @@
+name: E2E Workspace Lifecycle (staginge2e)
+
+# core#2332 P1.10 — close the workspace-lifecycle coverage gap.
+#
+# soft-restart / pause / resume / hibernate were only unit-tested (httptest in
+# workspace-server/internal/handlers/*_test.go) and never proven against a real
+# container. This drives the Go staginge2e suite
+# (workspace-server/internal/staginge2e/workspace_lifecycle_test.go) which
+# provisions a REAL throwaway staging tenant, exercises each lifecycle endpoint,
+# and asserts OBSERVABLE container state (status transitions + serve reachability
+# + url-cleared-on-stop) — not just HTTP 200.
+#
+# ADVISORY-BY-INFRA. It needs a live staging tenant (~30+ min cold EC2 path), so
+# the real run is workflow_dispatch / schedule only — NOT per-PR and NOT a
+# required check. Promotion to a required branch-protection context is a separate
+# CTO decision (mirrors the cp internal/staginge2e suite, cp#386, and the
+# peer-visibility flip-to-required pattern, molecule-core#1296).
+#
+# HONEST GATE — NO continue-on-error mask (feedback_fix_root_not_symptom). The
+# PR job validates that the suite COMPILES under -tags=staging_e2e and SKIPs LOUD
+# without creds (the suite's contract) — a broken test file fails at PR time. The
+# real assertion runs on dispatch/cron with staging creds.
+#
+# Gitea 1.22.6 / act_runner notes honored: no cross-repo uses (mirrored
+# actions/checkout SHA), per-SHA concurrency, pinned GITHUB_SERVER_URL.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'workspace-server/internal/handlers/workspace_restart.go'
+      - 'workspace-server/internal/handlers/workspace_crud.go'
+      - 'workspace-server/internal/staginge2e/**'
+      - '.gitea/workflows/e2e-workspace-lifecycle.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'workspace-server/internal/handlers/workspace_restart.go'
+      - 'workspace-server/internal/handlers/workspace_crud.go'
+      - 'workspace-server/internal/staginge2e/**'
+      - '.gitea/workflows/e2e-workspace-lifecycle.yml'
+  workflow_dispatch:
+  schedule:
+    # 08:00 UTC daily — offset from e2e-staging-saas (07:00) and
+    # e2e-peer-visibility (07:30) so the three don't collide on the staging
+    # org-creation quota.
+    - cron: '0 8 * * *'
+
+concurrency:
+  # Per-SHA (feedback_concurrency_group_per_sha).
+  group: e2e-workspace-lifecycle-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  # PR / compile gate: prove the staginge2e suite compiles under the build tag
+  # and skips LOUD without creds. Cheap, honest, non-required. This is NOT a
+  # fake-green mask of the real assertion — it fails if the test file stops
+  # compiling. bp-required: pending CTO decision (see header).
+  lifecycle-compile-skip:
+    name: E2E Workspace Lifecycle (compile+skip)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 'stable'
+          # cache:false — the self-hosted runner bind-mounts a persistent
+          # GOCACHE/GOMODCACHE (/var/cache/ci-go-{build,mod}); actions/cache is
+          # redundant and corrupts it by untarring over the bind mount ("File
+          # exists" -> "Failed to restore" -> partial cache -> linker/typecheck
+          # errors on heavy jobs, e.g. test -race link "too many errors" and
+          # go-arch-lint "without types"). Fleet sweep after the cp ci.yml find.
+          cache: false
+          cache-dependency-path: workspace-server/go.sum
+      - name: go vet (staging_e2e tag)
+        working-directory: workspace-server
+        run: go vet -tags staging_e2e ./internal/staginge2e/...
+      - name: Compile + skip-run (must SKIP LOUD without STAGING_E2E)
+        working-directory: workspace-server
+        run: |
+          # No STAGING_E2E / creds → the suite MUST skip (not pass-with-zero-
+          # assertions, not fail-open). `go test` exit 0 with a SKIP line is the
+          # contract. -run pins to the one test so this stays fast.
+          out=$(go test -tags staging_e2e ./internal/staginge2e/ -run TestWorkspaceLifecycle -count=1 -v 2>&1)
+          echo "$out"
+          echo "$out" | grep -q "SKIP: TestWorkspaceLifecycle_Staging" \
+            || { echo "::error::expected a LOUD skip of TestWorkspaceLifecycle_Staging without creds"; exit 1; }
+
+  # Real STAGING gate: provisions a throwaway tenant, drives the lifecycle
+  # endpoints, asserts observable transitions, scoped teardown.
+  # dispatch / schedule only (30+ min cold EC2).
+  lifecycle-staging:
+    name: E2E Workspace Lifecycle (staging)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    timeout-minutes: 60
+    env:
+      CP_BASE_URL: https://staging-api.moleculesai.app
+      CP_ADMIN_API_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+      STAGING_E2E: '1'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 'stable'
+          # cache:false — the self-hosted runner bind-mounts a persistent
+          # GOCACHE/GOMODCACHE (/var/cache/ci-go-{build,mod}); actions/cache is
+          # redundant and corrupts it by untarring over the bind mount ("File
+          # exists" -> "Failed to restore" -> partial cache -> linker/typecheck
+          # errors on heavy jobs, e.g. test -race link "too many errors" and
+          # go-arch-lint "without types"). Fleet sweep after the cp ci.yml find.
+          cache: false
+          cache-dependency-path: workspace-server/go.sum
+      - name: Verify admin token present
+        run: |
+          if [ -z "$CP_ADMIN_API_TOKEN" ]; then
+            echo "::error::CP_STAGING_ADMIN_API_TOKEN secret not set (Railway staging CP_ADMIN_API_TOKEN)"
+            exit 2
+          fi
+          echo "Admin token present"
+      - name: CP staging health preflight
+        run: |
+          code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$CP_BASE_URL/health")
+          if [ "$code" != "200" ]; then
+            echo "::error::Staging CP unhealthy (HTTP $code) — infra, not a lifecycle bug. Failing loud per feedback_fix_root_not_symptom."
+            exit 1
+          fi
+          echo "Staging CP healthy"
+      - name: Run workspace-lifecycle staginge2e
+        working-directory: workspace-server
+        run: go test -tags staging_e2e ./internal/staginge2e/ -run TestWorkspaceLifecycle_Staging -count=1 -v -timeout 50m
+      # Teardown: the test installs a t.Cleanup admin-DELETE of its own tenant
+      # (runs even on a Fatal). We deliberately do NOT add a broad in-workflow
+      # "sweep all e2e-life-* slugs" net here — that could delete a concurrently
+      # running dispatch's fresh tenant (the slug is not run-id scoped). The
+      # age-guarded `sweep-stale-e2e-orgs` workflow (30-min floor, e2e- prefix)
+      # is the final safety net for a tenant orphaned by a hard runner cancel.

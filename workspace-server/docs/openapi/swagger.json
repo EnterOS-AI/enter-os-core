@@ -1,0 +1,1007 @@
+{
+    "schemes": [
+        "https"
+    ],
+    "swagger": "2.0",
+    "info": {
+        "description": "The per-tenant workspace-server HTTP API. Single source of truth for workspace/schedule/agent/secrets/files/memory CRUD. Hand-written clients (canvas, molecule-mcp-server, molecule-cli, molecule-sdk-python) should be replaced by clients generated from this spec — see RFC #1706.",
+        "title": "Molecule AI Workspace Server API",
+        "contact": {},
+        "version": "1.0"
+    },
+    "host": "api.moleculesai.app",
+    "basePath": "/",
+    "paths": {
+        "/org/identity": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "org"
+                ],
+                "summary": "Get the org's display name",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.OrgIdentityResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/user-tasks/pending": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "user-tasks"
+                ],
+                "summary": "List pending user tasks across all workspaces",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/handlers.PendingUserTask"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/schedules": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth \u0026\u0026 OrgSlugAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "schedules"
+                ],
+                "summary": "List schedules for a workspace",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/handlers.ScheduleResponse"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth \u0026\u0026 OrgSlugAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "schedules"
+                ],
+                "summary": "Create a schedule",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Schedule fields",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.CreateScheduleRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.CreateScheduleResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/schedules/{scheduleId}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth \u0026\u0026 OrgSlugAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "schedules"
+                ],
+                "summary": "Delete a schedule",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Schedule ID",
+                        "name": "scheduleId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.StatusResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth \u0026\u0026 OrgSlugAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "schedules"
+                ],
+                "summary": "Update a schedule",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Schedule ID",
+                        "name": "scheduleId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Partial schedule fields (only provided keys are updated)",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.UpdateScheduleRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ScheduleResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/schedules/{scheduleId}/history": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth \u0026\u0026 OrgSlugAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "schedules"
+                ],
+                "summary": "Get past runs of a schedule",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Schedule ID",
+                        "name": "scheduleId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/handlers.HistoryEntry"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/schedules/{scheduleId}/run": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth \u0026\u0026 OrgSlugAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "schedules"
+                ],
+                "summary": "Fire a schedule manually",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Schedule ID",
+                        "name": "scheduleId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.RunNowResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/user-tasks": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth \u0026\u0026 OrgSlugAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "user-tasks"
+                ],
+                "summary": "List a workspace's own user tasks",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/handlers.UserTask"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth \u0026\u0026 OrgSlugAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "user-tasks"
+                ],
+                "summary": "Raise a user task",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Task fields",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.CreateUserTaskRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.CreateUserTaskResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/user-tasks/{taskId}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth \u0026\u0026 OrgSlugAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "user-tasks"
+                ],
+                "summary": "Delete a workspace's own user task",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "User task ID",
+                        "name": "taskId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.UserTaskMutationResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth \u0026\u0026 OrgSlugAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "user-tasks"
+                ],
+                "summary": "Update a workspace's own user task",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "User task ID",
+                        "name": "taskId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Partial task fields (only provided keys are updated)",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.UpdateUserTaskRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.UserTaskMutationResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/user-tasks/{taskId}/resolve": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth \u0026\u0026 OrgSlugAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "user-tasks"
+                ],
+                "summary": "Resolve a user task",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "User task ID",
+                        "name": "taskId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Resolution",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ResolveUserTaskRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ResolveUserTaskResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "handlers.CreateScheduleRequest": {
+            "type": "object",
+            "required": [
+                "cron_expr",
+                "prompt"
+            ],
+            "properties": {
+                "cron_expr": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "prompt": {
+                    "type": "string"
+                },
+                "timezone": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.CreateScheduleResponse": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "next_run_at": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.CreateUserTaskRequest": {
+            "type": "object",
+            "required": [
+                "title"
+            ],
+            "properties": {
+                "detail": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.CreateUserTaskResponse": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string"
+                },
+                "user_task_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.ErrorResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.HistoryEntry": {
+            "type": "object",
+            "properties": {
+                "duration_ms": {
+                    "type": "integer"
+                },
+                "error_detail": {
+                    "type": "string"
+                },
+                "request": {
+                    "type": "object"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "timestamp": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.OrgIdentityResponse": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "description": "Name is the org's display name (MOLECULE_ORG_NAME, \"\" when unset).",
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.PendingUserTask": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "detail": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "pending"
+                    ]
+                },
+                "title": {
+                    "type": "string"
+                },
+                "workspace_id": {
+                    "type": "string"
+                },
+                "workspace_name": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.ResolveUserTaskRequest": {
+            "type": "object",
+            "required": [
+                "status"
+            ],
+            "properties": {
+                "resolved_by": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "done",
+                        "dismissed"
+                    ]
+                }
+            }
+        },
+        "handlers.ResolveUserTaskResponse": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string"
+                },
+                "user_task_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.RunNowResponse": {
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "workspace_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.ScheduleResponse": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "cron_expr": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "last_error": {
+                    "type": "string"
+                },
+                "last_run_at": {
+                    "type": "string"
+                },
+                "last_status": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "next_run_at": {
+                    "type": "string"
+                },
+                "prompt": {
+                    "type": "string"
+                },
+                "run_count": {
+                    "type": "integer"
+                },
+                "source": {
+                    "description": "'template' (seeded by org/import) | 'runtime' (created via Canvas/API). Issue #24.",
+                    "type": "string"
+                },
+                "timezone": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "workspace_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.StatusResponse": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.UpdateScheduleRequest": {
+            "type": "object",
+            "properties": {
+                "cron_expr": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "prompt": {
+                    "type": "string"
+                },
+                "timezone": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.UpdateUserTaskRequest": {
+            "type": "object",
+            "properties": {
+                "detail": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "pending",
+                        "done",
+                        "dismissed"
+                    ]
+                },
+                "title": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.UserTask": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "detail": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "resolved_at": {
+                    "type": "string"
+                },
+                "resolved_by": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "pending",
+                        "done",
+                        "dismissed"
+                    ]
+                },
+                "title": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.UserTaskMutationResponse": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string"
+                },
+                "user_task_id": {
+                    "type": "string"
+                }
+            }
+        }
+    },
+    "securityDefinitions": {
+        "BearerAuth": {
+            "description": "Bearer token issued by Gitea (org-admin or persona PAT) or by the platform's signup/SSO flow.",
+            "type": "apiKey",
+            "name": "Authorization",
+            "in": "header"
+        },
+        "OrgIdAuth": {
+            "description": "Tenant routing header (UUID form). Alternative to X-Molecule-Org-Slug. At least one of OrgSlugAuth or OrgIdAuth must be sent alongside BearerAuth.",
+            "type": "apiKey",
+            "name": "X-Molecule-Org-Id",
+            "in": "header"
+        },
+        "OrgSlugAuth": {
+            "description": "Tenant routing header — required on every /workspaces/{id}/* request so the platform edge can route to the correct per-tenant workspace-server. Either X-Molecule-Org-Slug (human-readable, e.g. \"agents-team\") or X-Molecule-Org-Id (UUID) must be sent; slug is preferred for client code.",
+            "type": "apiKey",
+            "name": "X-Molecule-Org-Slug",
+            "in": "header"
+        }
+    }
+}

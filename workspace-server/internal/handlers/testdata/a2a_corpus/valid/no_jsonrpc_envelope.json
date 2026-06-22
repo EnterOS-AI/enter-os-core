@@ -1,0 +1,15 @@
+{
+  "_comment": "Body without an outer jsonrpc envelope. The normalizer wraps it in {jsonrpc:2.0, id:<uuid>, method, params}. Some legacy senders post the bare params + method without the envelope.",
+  "_added": "2026-04-30",
+  "_source": "Pre-RFC sender behavior",
+  "method": "message/send",
+  "params": {
+    "message": {
+      "messageId": "msg-8",
+      "role": "user",
+      "parts": [
+        {"kind": "text", "text": "no envelope here"}
+      ]
+    }
+  }
+}

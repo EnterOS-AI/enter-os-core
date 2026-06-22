@@ -1,0 +1,1077 @@
+name: E2E Staging SaaS (full lifecycle)
+
+# Ported from .github/workflows/e2e-staging-saas.yml on 2026-05-11 per RFC
+# internal#219 §1 sweep. Differences from the GitHub version:
+#   - Dropped `workflow_dispatch.inputs` (Gitea 1.22.6 parser rejects them
+#     per feedback_gitea_workflow_dispatch_inputs_unsupported).
+#   - Dropped `merge_group:` (no Gitea merge queue).
+#   - Dropped `environment:` blocks (Gitea has no environments).
+#   - Workflow-level env.GITHUB_SERVER_URL pinned per
+#     feedback_act_runner_github_server_url.
+#   - `continue-on-error: true` on each job (RFC §1 contract).
+#
+
+# Dedicated workflow that provisions a fresh staging org per run, exercises
+# the full workspace lifecycle (register → heartbeat → A2A → delegation →
+# HMA memory → activity → peers), then tears down and asserts leak-free.
+#
+# Why a separate workflow (not folded into ci.yml):
+#   - The run takes ~25-35 min (EC2 boot + cloudflared DNS + provision sweeps +
+#     agent bootstrap), way too slow for every PR.
+#   - Needs its own concurrency group so two pushes don't fight over the
+#     same staging org slug prefix.
+#   - Has its own required secrets (session cookie, admin token) that most
+#     PRs don't need to read.
+#
+# Triggers:
+#   - Push to main (regression guard — fires on merges to main, not on PR updates)
+#   - pull_request: pr-validate always posts success; real E2E step runs only
+#     when provisioning-critical files change (detect-changes gates the step).
+#   - workflow_dispatch (manual re-run from UI)
+#   - Nightly cron (catches drift even when no pushes land)
+#
+# NOTE: A separate pr-validate job handles the pull_request path so this
+# workflow posts CI status for workflow-only PRs. Without it, a PR that
+# only touches the workflow file has no status check (workflow only fires
+# on push, not PR branches), which blocks merge under branch protection.
+# The E2E step itself only runs when provisioning-critical files change —
+# pr-validate always posts success, avoiding the double-fire that motivated
+# the pull_request-trigger removal in PRs #516/#530.
+
+on:
+  # Trunk-based (Phase 3 of internal#81): main is the only branch.
+  #
+  # core#3081 / lint-required-no-paths: NO `paths:` filter on either push or
+  # pull_request. The `E2E Staging Concierge Creates Workspace` job is now in
+  # .gitea/required-contexts.txt (merge-blocking), and lint-required-no-paths
+  # rejects any required workflow that path-filters its `on:` block — a
+  # path-filtered required context degrades the merge gate to a silent
+  # indefinite pending (Gitea 1.22.6 reports it as pending, never success,
+  # for PRs whose diff doesn't match the glob — wedging docs-only PRs
+  # forever; see feedback_path_filtered_workflow_cant_be_required).
+  #
+  # Per-job gating is moved to the job level (`if:` guards below) so the
+  # slow provisioning jobs (e2e-staging-saas, e2e-staging-platform-boot)
+  # still skip on docs-only PRs, but the workflow ITSELF is unconditional.
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # 07:00 UTC every day — catches AMI drift, WorkOS cert rotation,
+    # Cloudflare API regressions, etc. even on quiet days.
+    - cron: '0 7 * * *'
+
+# Serialize: staging has a finite per-hour org creation quota. Two pushes
+# landing in quick succession should queue, not race. `cancel-in-progress:
+# false` mirrors e2e-api.yml — GitHub would otherwise cancel the running
+# teardown step and leave orphan EC2s.
+concurrency:
+  group: e2e-staging-saas
+  cancel-in-progress: false
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  # PR-validation path: always posts success so branch protection can merge
+  # workflow-only PRs. The actual E2E step only runs when provisioning-
+  # critical files change (git-paths filter + if: guard below).
+  # All steps use continue-on-error: true so runner issues do not block merge.
+  pr-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+        # mc#2654: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+        continue-on-error: true
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+        # mc#2654: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+        continue-on-error: true
+
+      - name: YAML validation (best-effort)
+        run: |
+          echo "e2e-staging-saas.yml — PR validation: workflow YAML is valid."
+          echo "E2E step runs only when provisioning-critical files change."
+        # mc#2654: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+        continue-on-error: true
+
+  # Actual E2E: runs on trunk pushes and PRs that touch provisioning-critical
+  # paths. pr-validate remains as the lightweight workflow-shape check for PRs,
+  # but it is not a substitute for live staging proof when this workflow or the
+  # staging harness changes.
+  e2e-staging-saas:
+    name: E2E Staging SaaS
+    runs-on: ubuntu-latest
+    # core#3081: gate the slow full-lifecycle job to push/dispatch/cron now
+    # that the workflow's `paths:` filter has been removed (lint-required-no-paths
+    # compliance — see the on: block comment). The pre-#3081 behaviour of firing
+    # on path-matched PRs was an optimization; with the lint's no-paths rule in
+    # force, the equivalent optimization moves to the job's `if:` guard.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#2654: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true
+    # Raised 45→75: step 10b now exercises pause→resume→online +
+    # hibernate→wake→online, each of which RE-PROVISIONS the parent (CP
+    # re-provision + heartbeat recovery, not a fresh EC2 cold start, but still
+    # minutes). The base provision→online→A2A matrix fits in ~35 min; the two
+    # extra lifecycle reprovisions need headroom under WORKSPACE_ONLINE_TIMEOUT.
+    timeout-minutes: 75
+    permissions:
+      contents: read
+
+    env:
+      MOLECULE_CP_URL: https://staging-api.moleculesai.app
+      # Single admin-bearer secret drives provision + tenant-token
+      # retrieval + teardown. Configure in
+      # Settings → Secrets and variables → Actions → Repository secrets.
+      # 2026-05-11: secret canonicalised from MOLECULE_STAGING_ADMIN_TOKEN
+      # (dead in org secret store) to CP_STAGING_ADMIN_API_TOKEN per
+      # internal#322 — see this PR for the cross-workflow sweep.
+      MOLECULE_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: us-east-2
+      E2E_AWS_LEAK_CHECK: required
+      E2E_AWS_TERMINATE_LEAKS: '1'
+      # MiniMax is the PRIMARY LLM auth path post-2026-05-04. Switched
+      # from hermes+OpenAI default after #2578 (the staging OpenAI key
+      # account went over quota and stayed dead for 36+ hours, taking
+      # the full-lifecycle E2E red on every provisioning-critical push).
+      # claude-code template's `minimax` provider routes
+      # ANTHROPIC_BASE_URL to api.minimax.io/anthropic and reads
+      # MINIMAX_API_KEY at boot — separate billing account so an
+      # OpenAI quota collapse no longer wedges the gate. Mirrors the
+      # staging-smoke.yml + continuous-synth-e2e.yml migrations.
+      E2E_MINIMAX_API_KEY: ${{ secrets.MOLECULE_STAGING_MINIMAX_API_KEY }}
+      # Direct-Anthropic alternative for operators who don't want to
+      # set up a MiniMax account (priority below MiniMax — first
+      # non-empty wins in test_staging_full_saas.sh's secrets-injection
+      # block). See #2578 PR comment for the rationale.
+      E2E_ANTHROPIC_API_KEY: ${{ secrets.MOLECULE_STAGING_ANTHROPIC_API_KEY }}
+      # OpenAI fallback — kept wired so an operator-dispatched run with
+      # E2E_RUNTIME=hermes or =codex via workflow_dispatch can still
+      # exercise the OpenAI path.
+      E2E_OPENAI_API_KEY: ${{ secrets.MOLECULE_STAGING_OPENAI_API_KEY }}
+      # google-adk (operator-dispatched only) auths Gemini with an
+      # AI-Studio key. Org policy disallows API keys in PROD (Vertex+ADC
+      # there); CI uses the keyed AI-Studio path with config model
+      # google_genai:gemini-2.5-pro. Vertex remains the supported prod path.
+      E2E_GOOGLE_API_KEY: ${{ secrets.MOLECULE_STAGING_GOOGLE_API_KEY }}
+      E2E_RUNTIME: ${{ github.event.inputs.runtime || 'claude-code' }}
+      # Pin the model when running on the default claude-code path —
+      # the per-runtime default ("sonnet") routes to direct Anthropic
+      # and defeats the cost saving. Operators can override via the
+      # workflow_dispatch flow (no input wired here yet — runtime
+      # override is enough for ad-hoc).
+      #
+      # claude-code MiniMax slug must be the BARE registered id `MiniMax-M2.7`.
+      # It is the BYOK-minimax form: registry_gen.go:88 registers it on the
+      # `minimax` arm (resolves provider=minimax via MINIMAX_API_KEY), so the
+      # #1994 byok-not-platform guard still passes. The COLON form
+      # `minimax:MiniMax-M2.7` is UNREGISTERED on claude-code (internal#718;
+      # derive_provider_matrix_test.go:288) — the claude-code adapter can't
+      # strip the `minimax:` prefix, so workspace-create 422s
+      # UNREGISTERED_MODEL_FOR_RUNTIME (real failure: job 295233, main 4b3590e3).
+      # The slash form `minimax/MiniMax-M2.7` is the platform-billed arm and
+      # would trip the byok guard. #2311 fixed the same colon-vs-bare bug in the
+      # pick_model_slug lib (tests/e2e/lib/model_slug.sh), but this env var
+      # OVERRIDES that lib, so the bare fix has to live here too.
+      E2E_MODEL_SLUG: ${{ github.event.inputs.runtime == 'hermes' && 'openai/gpt-4o' || github.event.inputs.runtime == 'codex' && 'openai/gpt-4o' || github.event.inputs.runtime == 'google-adk' && 'google_genai:gemini-2.5-pro' || 'MiniMax-M2.7' }}
+      E2E_RUN_ID: "${{ github.run_id }}-${{ github.run_attempt }}"
+      E2E_KEEP_ORG: ${{ github.event.inputs.keep_org && '1' || '0' }}
+      # Lifecycle transitions (step 10b): pause→resume→online +
+      # hibernate→wake→online on the provisioned parent. `auto` runs them in
+      # full mode (this job). Set `off` to skip the ~2x-reprovision cost on an
+      # ad-hoc dispatch. The timeout-minutes above is sized for this being on.
+      E2E_LIFECYCLE: auto
+      # Fail-closed-on-skip: in CI the harness MUST prove ≥1 full
+      # provision→online→A2A cycle. If it reaches the end having validated
+      # nothing (a future short-circuit / skip path), it exits 5 rather than
+      # reporting a false green. Mirrors CP serving-e2e SERVING_E2E_REQUIRE_LIVE.
+      E2E_REQUIRE_LIVE: '1'
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Verify admin token present
+        run: |
+          if [ -z "$MOLECULE_ADMIN_TOKEN" ]; then
+            echo "::error::CP_STAGING_ADMIN_API_TOKEN secret not set (Railway staging CP_ADMIN_API_TOKEN)"
+            exit 2
+          fi
+          for var in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+            if [ -z "${!var:-}" ]; then
+              echo "::error::$var not set — EC2 leak verification cannot run"
+              exit 2
+            fi
+          done
+          echo "Admin token present ✓"
+
+      - name: Verify LLM key present
+        run: |
+          # Per-runtime key check — claude-code uses MiniMax; hermes /
+          # codex (operator-dispatched only) use OpenAI. Hard-fail
+          # rather than soft-skip per #2578's lesson — empty key
+          # silently falls through to the wrong SECRETS_JSON branch and
+          # produces a confusing auth error 5 min later instead of the
+          # clean "secret missing" message at the top.
+          case "${E2E_RUNTIME}" in
+            claude-code)
+              # Either MiniMax OR direct-Anthropic works — first
+              # non-empty wins in the test script's secrets-injection
+              # priority chain.
+              if [ -n "${E2E_MINIMAX_API_KEY:-}" ]; then
+                required_secret_name="MOLECULE_STAGING_MINIMAX_API_KEY"
+                required_secret_value="${E2E_MINIMAX_API_KEY}"
+              elif [ -n "${E2E_ANTHROPIC_API_KEY:-}" ]; then
+                required_secret_name="MOLECULE_STAGING_ANTHROPIC_API_KEY"
+                required_secret_value="${E2E_ANTHROPIC_API_KEY}"
+              else
+                required_secret_name="MOLECULE_STAGING_MINIMAX_API_KEY or MOLECULE_STAGING_ANTHROPIC_API_KEY"
+                required_secret_value=""
+              fi
+              ;;
+            codex|hermes)
+              required_secret_name="MOLECULE_STAGING_OPENAI_API_KEY"
+              required_secret_value="${E2E_OPENAI_API_KEY:-}"
+              ;;
+            google-adk)
+              required_secret_name="MOLECULE_STAGING_GOOGLE_API_KEY"
+              required_secret_value="${E2E_GOOGLE_API_KEY:-}"
+              ;;
+            *)
+              echo "::warning::Unknown E2E_RUNTIME='${E2E_RUNTIME}' — skipping LLM-key check"
+              required_secret_name=""
+              required_secret_value="present"
+              ;;
+          esac
+          if [ -n "$required_secret_name" ] && [ -z "$required_secret_value" ]; then
+            echo "::error::${required_secret_name} secret not set for runtime=${E2E_RUNTIME} — workspaces will fail at boot with 'No provider API key found'"
+            exit 2
+          fi
+          echo "LLM key present ✓ (runtime=${E2E_RUNTIME}, key=${required_secret_name}, len=${#required_secret_value})"
+
+      - name: CP staging health preflight
+        run: |
+          code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$MOLECULE_CP_URL/health")
+          if [ "$code" != "200" ]; then
+            echo "::error::Staging CP unhealthy (got HTTP $code). Skipping — not a workspace bug."
+            exit 1
+          fi
+          echo "Staging CP healthy ✓"
+
+      # core#2675: completion-gated lanes must distinguish "staging LLM proxy
+      # down" from "real code bug" with a distinct, machine-readable status
+      # description prefix `DEP-DOWN:staging-llm` so the redgate-reporter
+      # can dedup N identical reds into ONE incident issue. Wired into the
+      # pr-validate job first; the same source line is replicated in the
+      # other 3 completion-gated lanes in a follow-up commit (the file's
+      # 5 nearly-identical job blocks are mechanically derivable).
+      - name: LLM proxy preflight (DEP-DOWN:staging-llm)
+        run: |
+          # shellcheck source=lib/llm_proxy_preflight.sh
+          source tests/e2e/lib/llm_proxy_preflight.sh
+          llm_proxy_preflight
+
+      - name: Run full-lifecycle E2E
+        id: e2e
+        run: bash tests/e2e/test_staging_full_saas.sh
+
+      # Belt-and-braces teardown: the test script itself installs a trap
+      # for EXIT/INT/TERM, but if the GH runner itself is cancelled (e.g.
+      # someone pushes a new commit and workflow concurrency is set to
+      # cancel), the trap may not fire. This `always()` step runs even on
+      # cancellation and attempts the delete a second time. The admin
+      # DELETE endpoint is idempotent so double-invoking is safe.
+      - name: Teardown safety net (runs on cancel/failure)
+        if: always()
+        env:
+          ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+        run: |
+          # Best-effort: find any e2e-YYYYMMDD-* orgs matching this run and
+          # nuke them. Catches the case where the script died before
+          # exporting its slug.
+          set +e
+          orgs=$(curl -sS "$MOLECULE_CP_URL/cp/admin/orgs" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" 2>/dev/null \
+            | python3 -c "
+          import json, sys, os, datetime
+          run_id = os.environ.get('GITHUB_RUN_ID', '')
+          d = json.load(sys.stdin)
+          # ONLY sweep slugs from *this* CI run. Previously the filter was
+          # f'e2e-{today}-' which stomped on parallel CI runs AND any manual
+          # E2E probes a dev was running against staging (incident 2026-04-21
+          # 15:02Z: this workflow's safety net deleted an unrelated manual
+          # run's tenant 1s after it hit 'running').
+          # Sweep both today AND yesterday's UTC dates so a run that crosses
+          # midnight still matches its own slug — see the 2026-04-26→27
+          # canvas-safety-net incident for the same bug class.
+          today = datetime.date.today()
+          yesterday = today - datetime.timedelta(days=1)
+          dates = (today.strftime('%Y%m%d'), yesterday.strftime('%Y%m%d'))
+          if run_id:
+              prefixes = tuple(f'e2e-{d}-{run_id}-' for d in dates)
+          else:
+              prefixes = tuple(f'e2e-{d}-' for d in dates)
+          candidates = [o['slug'] for o in d.get('orgs', [])
+                        if any(o.get('slug','').startswith(p) for p in prefixes)
+                        and o.get('instance_status') not in ('purged',)]
+          print('\n'.join(candidates))
+          " 2>/dev/null)
+          # Per-slug verified DELETE (was `>/dev/null || true` — see
+          # molecule-controlplane#420). Surface non-2xx as a workflow
+          # warning naming the leaked slug; don't exit 1 (sweeper is
+          # the safety net within ~45 min).
+          leaks=()
+          for slug in $orgs; do
+            echo "Safety-net teardown: $slug"
+            # Tempfile-routed -w + set +e/-e prevents curl-exit-code
+            # pollution of the captured status (lint-curl-status-capture.yml).
+            set +e
+            curl -sS -o /tmp/saas-cleanup.out -w "%{http_code}" \
+              -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
+              -H "Authorization: Bearer $ADMIN_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"confirm\":\"$slug\"}" >/tmp/saas-cleanup.code
+            set -e
+            code=$(cat /tmp/saas-cleanup.code 2>/dev/null || echo "000")
+            if [ "$code" = "200" ] || [ "$code" = "204" ]; then
+              echo "[teardown] deleted $slug (HTTP $code)"
+            else
+              echo "::warning::saas teardown for $slug returned HTTP $code — sweep-stale-e2e-orgs will catch it within ~45 min. Body: $(head -c 300 /tmp/saas-cleanup.out 2>/dev/null)"
+              leaks+=("$slug")
+            fi
+          done
+          if [ ${#leaks[@]} -gt 0 ]; then
+            echo "::warning::saas teardown left ${#leaks[@]} leak(s): ${leaks[*]}"
+          fi
+          exit 0
+
+  # ── POST-RUN DNS PRUNE (core#81045 recurrence fix) ───────────────────────────
+  #
+  # The full-lifecycle E2E harness creates e2e-smoke-* and e2e-tmpl-* DNS
+  # records under the staging zone. When teardown is skipped (runner cancel,
+  # CP transient error, trap miss) these records leak and eventually exhaust
+  # the Cloudflare DNS record quota (error 81045), blocking staging tenant
+  # provisioning. This job runs after every real E2E run and prunes records
+  # older than a conservative age threshold.
+  #
+  # Design notes:
+  #   - needs: e2e-staging-saas so it only runs when the real E2E job fires
+  #     (push/dispatch/cron), not on PRs.
+  #   - if: always() so it runs even when the E2E job fails or is cancelled,
+  #     which is exactly when records are most likely to leak.
+  #   - continue-on-error: true — pruning is best-effort janitorial cleanup;
+  #     a transient CF API blip here must not block the merge gate. The
+  #     sweep-stale-e2e-orgs workflow is the backstop.
+  #   - Token and zone id come from repository secrets ONLY; never hardcoded.
+  #   - --min-age-hours is conservative (2h) so in-flight records from a long
+  #     E2E run or a recently-started dispatch are never touched.
+  # bp-required: pending #3147 — non-required / best-effort cleanup job.
+  prune-stale-e2e-dns:
+    name: Prune stale e2e DNS records
+    runs-on: ubuntu-latest
+    needs: e2e-staging-saas
+    if: always()
+    # mc#3147: best-effort cleanup; transient CF API failures must not block merge.
+    continue-on-error: true
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      CF_API_TOKEN: ${{ secrets.CF_STAGING_DNS_API_TOKEN }}
+      CF_ZONE_ID: ${{ secrets.CF_STAGING_ZONE_ID }}
+      # Staging tenant DNS records live under staging.moleculesai.app, not the
+      # apex zone, so the prefix matcher must anchor to the staging subdomain.
+      PRUNE_ZONE_DOMAIN: staging.moleculesai.app
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Dry-run preview (read-only)
+        if: env.CF_API_TOKEN == '' || env.CF_ZONE_ID == ''
+        run: |
+          echo "::warning::CF_STAGING_DNS_API_TOKEN or CF_STAGING_ZONE_ID not configured — skipping DNS prune."
+          exit 0
+
+      - name: Prune stale e2e DNS records
+        if: env.CF_API_TOKEN != '' && env.CF_ZONE_ID != ''
+        run: |
+          set -euo pipefail
+          ./scripts/ops/prune_cf_e2e_dns.sh --apply --min-age-hours 2
+
+  # ── PLATFORM-MANAGED BOOT REGRESSION (moonshot/kimi NOT_CONFIGURED) ──────────
+  #
+  # The REAL-boot complement to the deterministic unit suite
+  # (workspace_provision_platform_boot_test.go). Provisions a REAL staging
+  # claude-code workspace on the PLATFORM-managed path — provider=platform,
+  # model=moonshot/kimi-k2.6, NO tenant LLM key — and asserts it reaches
+  # status=online (NOT not_configured) and a completion returns 200, via the same
+  # online-wait + completion-assert the BYOK job uses.
+  #
+  # Why a SEPARATE job (not a matrix leg of e2e-staging-saas): the platform path
+  # injects NO secret and pins a different model, so its env block diverges from
+  # the BYOK job's. A dedicated job keeps each path's "verify key present" preflight
+  # honest (BYOK requires a key; platform requires its ABSENCE not to matter) and
+  # gives the regression its own named commit-status for branch protection.
+  #
+  # GATING (no continue-on-error), FALSE-GREEN-PROOF via E2E_REQUIRE_LIVE
+  # (0 on pull_request → PR-mode self-check; 1 on push/dispatch/cron → real
+  # staging boot, HARD FAILs on missing infra). Promoted to merge-blocking
+  # per #48 — RCA: molecule-controlplane PR #878 rendered the tenant
+  # `docker run` env block with a blank line that broke shell `\`-continuation,
+  # orphaning the image arg → `docker run exit=127` → no tenant container →
+  # prod onboarding outage 06:04–08:09 UTC 2026-06-21 (fixed by CP #885). The
+  # real-boot e2e being advisory + PR-skipped is why that class escaped
+  # pre-merge. This job now exercises a real platform-managed boot on every
+  # push-to-main and is the merge gate.
+  #
+  # bp-required: now required — added to .gitea/required-contexts.txt by #48
+  #
+  # core#3081 / #48: NO `if:` guard on this job (mirrors
+  # e2e-staging-concierge-creates-workspace). The job IS a required status
+  # context (see .gitea/required-contexts.txt); a required context that never
+  # fires on pull_request degrades the merge gate to a silent indefinite
+  # pending (the exact failure mode lint-required-no-paths exists to prevent;
+  # see feedback_path_filtered_workflow_cant_be_required). The job runs on
+  # every PR with E2E_REQUIRE_LIVE=0 (the harness detects the missing-creds
+  # case and exit 0s after a bash -n self-check), and on push/dispatch/cron
+  # with E2E_REQUIRE_LIVE=1 (the real staging boot runs and HARD FAILs on
+  # missing infra).
+  e2e-staging-platform-boot:
+    name: E2E Staging Platform Boot
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    env:
+      MOLECULE_CP_URL: https://staging-api.moleculesai.app
+      MOLECULE_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: us-east-2
+      E2E_AWS_LEAK_CHECK: required
+      E2E_AWS_TERMINATE_LEAKS: '1'
+      # The regression combo: claude-code + platform-managed + moonshot/kimi-k2.6.
+      # NO E2E_*_API_KEY is set — platform-managed billing is owned by Molecule via
+      # the CP LLM proxy. The harness's E2E_LLM_PATH=platform branch sends empty
+      # secrets and pin-selects the platform model.
+      E2E_RUNTIME: claude-code
+      E2E_LLM_PATH: platform
+      # Smoke mode: a single parent workspace is enough to prove online +
+      # completion for the platform path (the A2A/delegation matrix is the BYOK
+      # job's job). Override E2E_DEFAULT_PLATFORM_MODEL via workflow_dispatch to
+      # exercise another platform model id.
+      E2E_MODE: smoke
+      E2E_RUN_ID: "platform-${{ github.run_id }}-${{ github.run_attempt }}"
+      E2E_KEEP_ORG: ${{ github.event.inputs.keep_org && '1' || '0' }}
+      # Fail-closed-on-skip (see BYOK job + e2e-staging-concierge-creates-workspace).
+      # smoke mode still runs steps 2/4/7/8b, so all four required milestones
+      # (provisioned/tenant_online/workspace_online/a2a_roundtrip) fire — the guard
+      # is valid for this lane too.
+      #   pull_request: 0 → PRs have no staging creds; the harness's PR-mode
+      #                  self-check (bash -n) is the gate, then exit 0.
+      #   push / dispatch / schedule: 1 → the real staging boot runs and HARD
+      #                  FAILs (exit 5) on a run that proves no live lifecycle.
+      E2E_REQUIRE_LIVE: ${{ github.event_name == 'pull_request' && '0' || '1' }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Verify admin token present
+        env:
+          E2E_REQUIRE_LIVE: ${{ github.event_name == 'pull_request' && '0' || '1' }}
+        run: |
+          # PR-mode (#48): on pull_request the job runs with E2E_REQUIRE_LIVE=0
+          # and PRs carry no staging creds. Don't hard-fail here — the harness
+          # detects the missing-creds case, runs a bash -n self-check, and
+          # exit 0s. On push/dispatch/cron (E2E_REQUIRE_LIVE=1) the creds MUST
+          # be present and a missing token/AWS-cred is a hard error.
+          if [ -z "$MOLECULE_ADMIN_TOKEN" ]; then
+            if [ "${E2E_REQUIRE_LIVE}" = "0" ]; then
+              echo "PR-mode: no MOLECULE_ADMIN_TOKEN (E2E_REQUIRE_LIVE=0) — harness will self-check and skip the live boot ✓"
+              exit 0
+            fi
+            echo "::error::CP_STAGING_ADMIN_API_TOKEN secret not set (Railway staging CP_ADMIN_API_TOKEN)"
+            exit 2
+          fi
+          for var in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+            if [ -z "${!var:-}" ]; then
+              echo "::error::$var not set — EC2 leak verification cannot run"
+              exit 2
+            fi
+          done
+          echo "Admin token present ✓"
+
+      - name: Assert NO BYOK key leaks into the platform run
+        run: |
+          # The whole point of this job is the platform-managed path. A stray
+          # E2E_*_API_KEY in the runner env would (via the harness) still be
+          # skipped by the E2E_LLM_PATH=platform branch — but assert their
+          # absence loudly here so a future env edit can't silently convert this
+          # into a masked BYOK run that no longer exercises the regression.
+          for var in E2E_MINIMAX_API_KEY E2E_ANTHROPIC_API_KEY E2E_OPENAI_API_KEY; do
+            if [ -n "${!var:-}" ]; then
+              echo "::warning::$var is set in this platform-boot job's env — the harness ignores it on E2E_LLM_PATH=platform, but it should not be wired here."
+            fi
+          done
+          echo "Platform-managed path: no tenant LLM key required ✓"
+
+      - name: CP staging health preflight
+        run: |
+          code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$MOLECULE_CP_URL/health")
+          if [ "$code" != "200" ]; then
+            echo "::error::Staging CP unhealthy (got HTTP $code). Skipping — not a workspace bug."
+            exit 1
+          fi
+          echo "Staging CP healthy ✓"
+
+      - name: Run platform-managed boot E2E (online + completion)
+        id: e2e
+        run: bash tests/e2e/test_staging_full_saas.sh
+
+      - name: Teardown safety net (runs on cancel/failure)
+        if: always()
+        env:
+          ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+        run: |
+          set +e
+          orgs=$(curl -sS "$MOLECULE_CP_URL/cp/admin/orgs" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" 2>/dev/null \
+            | python3 -c "
+          import json, sys, os, datetime
+          run_id = os.environ.get('GITHUB_RUN_ID', '')
+          d = json.load(sys.stdin)
+          today = datetime.date.today()
+          yesterday = today - datetime.timedelta(days=1)
+          dates = (today.strftime('%Y%m%d'), yesterday.strftime('%Y%m%d'))
+          # smoke mode slugs are e2e-smoke-YYYYMMDD-platform-<run_id>-...
+          if run_id:
+              prefixes = tuple(f'e2e-smoke-{d}-platform-{run_id}-' for d in dates)
+          else:
+              prefixes = tuple(f'e2e-smoke-{d}-platform-' for d in dates)
+          candidates = [o['slug'] for o in d.get('orgs', [])
+                        if any(o.get('slug','').startswith(p) for p in prefixes)
+                        and o.get('instance_status') not in ('purged',)]
+          print('\n'.join(candidates))
+          " 2>/dev/null)
+          leaks=()
+          for slug in $orgs; do
+            echo "Safety-net teardown: $slug"
+            set +e
+            curl -sS -o /tmp/plat-cleanup.out -w "%{http_code}" \
+              -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
+              -H "Authorization: Bearer $ADMIN_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"confirm\":\"$slug\"}" >/tmp/plat-cleanup.code
+            set -e
+            code=$(cat /tmp/plat-cleanup.code 2>/dev/null || echo "000")
+            if [ "$code" = "200" ] || [ "$code" = "204" ]; then
+              echo "[teardown] deleted $slug (HTTP $code)"
+            else
+              echo "::warning::platform-boot teardown for $slug returned HTTP $code — sweep-stale-e2e-orgs will catch it within ~45 min. Body: $(head -c 300 /tmp/plat-cleanup.out 2>/dev/null)"
+              leaks+=("$slug")
+            fi
+          done
+          if [ ${#leaks[@]} -gt 0 ]; then
+            echo "::warning::platform-boot teardown left ${#leaks[@]} leak(s): ${leaks[*]}"
+          fi
+          exit 0
+
+  # ── CONCIERGE user_tasks PRIMITIVE (Feature 3) — real-staging REST+MCP+authz ──
+  #
+  # Drives tests/e2e/test_staging_concierge_e2e.sh against a fresh throwaway
+  # tenant: the full agent→user "ask" contract over BOTH surfaces (REST +
+  # the MCP tools/call envelope a canvas concierge agent uses) PLUS the
+  # cross-workspace authz scoping (ws-B can't touch ws-A's task). Reuses the
+  # same CP-admin org-provision/teardown scaffolding + _lib.sh + AWS-leak-check
+  # lib as the full-SaaS harness (the script SOURCEs them — no duplication).
+  #
+  # GATING (no continue-on-error): user_tasks is a pure DB/handler primitive
+  # with NO LLM container dependency (workspaces are created 'external' — row
+  # only, no EC2), so this is fast (~provision + TLS, no 10-min cold boot) and
+  # NOT subject to the cp#245 boot-timeout flake the full-SaaS job carries. It
+  # therefore has no honest reason to be masked. Runs on push-to-main /
+  # workflow_dispatch / cron only (needs live staging infra — never on PR, where
+  # the pr-validate job above already posts the workflow's PR status).
+  # bp-required: pending #2430
+  e2e-staging-concierge-user-tasks:
+    name: E2E Staging Concierge user_tasks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      MOLECULE_CP_URL: https://staging-api.moleculesai.app
+      MOLECULE_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: us-east-2
+      E2E_AWS_LEAK_CHECK: required
+      E2E_AWS_TERMINATE_LEAKS: '1'
+      E2E_RUN_ID: "${{ github.run_id }}-${{ github.run_attempt }}"
+      E2E_KEEP_ORG: ${{ github.event.inputs.keep_org && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+
+      - name: Verify admin token + AWS creds present
+        run: |
+          if [ -z "$MOLECULE_ADMIN_TOKEN" ]; then
+            echo "::error::CP_STAGING_ADMIN_API_TOKEN secret not set (Railway staging CP_ADMIN_API_TOKEN)"
+            exit 2
+          fi
+          for var in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+            if [ -z "${!var:-}" ]; then
+              echo "::error::$var not set — EC2 leak verification cannot run"
+              exit 2
+            fi
+          done
+          echo "Admin token + AWS creds present ✓"
+
+      - name: CP staging health preflight
+        run: |
+          code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$MOLECULE_CP_URL/health")
+          if [ "$code" != "200" ]; then
+            echo "::error::Staging CP unhealthy (got HTTP $code). Skipping — not a workspace bug."
+            exit 1
+          fi
+          echo "Staging CP healthy ✓"
+
+      - name: Run concierge user_tasks E2E
+        run: bash tests/e2e/test_staging_concierge_e2e.sh
+
+      - name: Teardown safety net (runs on cancel/failure)
+        if: always()
+        env:
+          ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+        run: |
+          # Sweep any e2e-cncrg-YYYYMMDD-<run_id>-* org this run created if the
+          # script died before its EXIT trap fired. Run-id scoped so it never
+          # stomps a concurrent run's fresh tenant (see the saas job's note).
+          set +e
+          orgs=$(curl -sS "$MOLECULE_CP_URL/cp/admin/orgs" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" 2>/dev/null \
+            | python3 -c "
+          import json, sys, os, datetime
+          run_id = os.environ.get('GITHUB_RUN_ID', '')
+          d = json.load(sys.stdin)
+          today = datetime.date.today()
+          yesterday = today - datetime.timedelta(days=1)
+          dates = (today.strftime('%Y%m%d'), yesterday.strftime('%Y%m%d'))
+          if run_id:
+              prefixes = tuple(f'e2e-cncrg-{d}-{run_id}-' for d in dates)
+          else:
+              prefixes = tuple(f'e2e-cncrg-{d}-' for d in dates)
+          candidates = [o['slug'] for o in d.get('orgs', [])
+                        if any(o.get('slug','').startswith(p) for p in prefixes)
+                        and o.get('instance_status') not in ('purged',)]
+          print('\n'.join(candidates))
+          " 2>/dev/null)
+          leaks=()
+          for slug in $orgs; do
+            echo "Safety-net teardown: $slug"
+            set +e
+            curl -sS -o /tmp/cncrg-cleanup.out -w "%{http_code}" \
+              -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
+              -H "Authorization: Bearer $ADMIN_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"confirm\":\"$slug\"}" >/tmp/cncrg-cleanup.code
+            set -e
+            code=$(cat /tmp/cncrg-cleanup.code 2>/dev/null || echo "000")
+            if [ "$code" = "200" ] || [ "$code" = "204" ]; then
+              echo "[teardown] deleted $slug (HTTP $code)"
+            else
+              echo "::warning::concierge teardown for $slug returned HTTP $code — sweep-stale-e2e-orgs will catch it within ~45 min. Body: $(head -c 300 /tmp/cncrg-cleanup.out 2>/dev/null)"
+              leaks+=("$slug")
+            fi
+          done
+          if [ ${#leaks[@]} -gt 0 ]; then
+            echo "::warning::concierge teardown left ${#leaks[@]} leak(s): ${leaks[*]}"
+          fi
+          exit 0
+
+  # ── CONCIERGE FUNCTIONAL: it ACTUALLY CREATES A WORKSPACE (real-LLM) ─────────
+  #
+  # core#2606: a NORMAL (non-platform) workspace raises a task + approval to the
+  # user via the wsAuth POST /workspaces/:id/requests endpoint, and both surface
+  # in the org's unified /requests/pending view. Its OWN job (not a step in the
+  # concierge job) so a concierge failure can never mask this proof (CR2 +
+  # Researcher review on #2660). Own throwaway org (e2e-req-*) with t.Cleanup
+  # teardown; skips LOUD without staging creds.
+  # bp-required: pending #2619
+  e2e-staging-workspace-requests:
+    name: E2E Staging Workspace Requests (core#2606)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    env:
+      CP_BASE_URL: https://staging-api.moleculesai.app
+      CP_ADMIN_API_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+      STAGING_E2E: '1'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 'stable'
+          cache: false
+          cache-dependency-path: workspace-server/go.sum
+      - name: Verify admin token present
+        run: |
+          if [ -z "$CP_ADMIN_API_TOKEN" ]; then
+            echo "::error::CP_STAGING_ADMIN_API_TOKEN secret not set (Railway staging CP_ADMIN_API_TOKEN)"
+            exit 2
+          fi
+          echo "Admin token present"
+      - name: CP staging health preflight
+        run: |
+          code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$CP_BASE_URL/health")
+          if [ "$code" != "200" ]; then
+            echo "::error::Staging CP unhealthy (HTTP $code) — infra, not a workspace-requests bug."
+            exit 1
+          fi
+          echo "Staging CP healthy"
+      - name: Run workspace-requests staginge2e (core#2606)
+        working-directory: workspace-server
+        run: go test -tags staging_e2e ./internal/staginge2e/ -run TestWorkspaceCanRaiseTaskAndApprovalToUser -count=1 -v -timeout 30m
+
+  # Drives tests/e2e/test_staging_concierge_creates_workspace_e2e.sh — the
+  # RFC docs/design/rfc-platform-agent.md §11.4 "Reach" check turned into a gate:
+  # send the org concierge a natural-language A2A message ("create a workspace
+  # named e2e-cncrg-worker-<runid> with role engineer") and assert the
+  # DETERMINISTIC SIDE EFFECT — that named workspace now EXISTS in GET /workspaces
+  # — which can only happen if the concierge's LLM really invoked the
+  # create_workspace platform-MCP tool (a real org mutation), NOT just that a REST
+  # API returned 200.
+  #
+  # GATING (no continue-on-error), but FALSE-GREEN-PROOF via E2E_REQUIRE_LIVE=1:
+  # this is a REAL-LLM, REAL-tool test, so it depends on the concierge being
+  # provisioned on the DEDICATED platform-agent image (Dockerfile.platform-agent,
+  # ships /opt/molecule-mcp-server — the ONLY image where create_workspace lights
+  # up; see platform_agent.go's SELF-HOST CAVEAT). A parallel agent is wiring that
+  # image into the staging provision path. The script SKIPs LOUD when the
+  # concierge is absent / not online / not on the platform-agent image — but with
+  # E2E_REQUIRE_LIVE=1 the harness converts that skip into a HARD FAIL (exit 5) so
+  # a silently-missing platform-agent image can NEVER false-green this gate. Runs
+  # on push-to-main / workflow_dispatch / cron only (needs live staging infra +
+  # a model — never on PR, where pr-validate posts the workflow's PR status).
+  # bp-required: now required — added to .gitea/required-contexts.txt by core#3081
+  # (core#3081 also adds the A2A-probe step in the test script: it reads the
+  # concierge's /configs/mcp_servers.yaml via GET /workspaces/:id/files/mcp_servers.yaml
+  # and asserts the molecule-platform MCP server is declared with create_workspace.
+  # The previous false-green slipped because the proxies were healthy, the
+  # concierge was online, and the platform-agent image was baked — but the
+  # mcp_servers.yaml overlay on the concierge's /configs did not name the
+  # platform server, so the LLM could not call the tool. Probing the overlay
+  # directly is the only way to fail fast before burning LLM budget on a
+  # 7-minute cold-concierge tool call that will never succeed.)
+  #
+  # core#3081 / CR2 #12653: NO `if:` guard on this job. The job IS the
+  # required status context (see .gitea/required-contexts.txt) — a required
+  # context that never fires on pull_request degrades the merge gate to a
+  # silent indefinite pending (the exact failure mode lint-required-no-paths
+  # exists to prevent; see feedback_path_filtered_workflow_cant_be_required).
+  # The job runs on every PR; E2E_REQUIRE_LIVE is 0 on PR (the script
+  # detects the missing-creds case and exit 0s with a self-check), 1 on
+  # push-to-main / dispatch / cron (the real staging test runs and HARD
+  # FAILs on missing infra).
+  e2e-staging-concierge-creates-workspace:
+    name: E2E Staging Concierge Creates Workspace
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      MOLECULE_CP_URL: https://staging-api.moleculesai.app
+      MOLECULE_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: us-east-2
+      E2E_AWS_LEAK_CHECK: required
+      E2E_AWS_TERMINATE_LEAKS: '1'
+      # The concierge is platform_managed on SaaS (the CP-exported LLM proxy
+      # supplies its model — no BYOK key needed for the concierge itself). The
+      # MiniMax key is wired anyway so a staging image that boots the concierge
+      # BYOK-MiniMax (parallel-agent image work) still has a model; harmless when
+      # the concierge is platform-managed.
+      E2E_MINIMAX_API_KEY: ${{ secrets.MOLECULE_STAGING_MINIMAX_API_KEY }}
+      # False-green guard, gated by event:
+      #   pull_request: 0 → PR has no staging creds, the script's PR-mode
+      #                  self-check (bash -n) is the gate; a no-creds real
+      #                  test would just exit 2 at the ADMIN_TOKEN check.
+      #   push / dispatch / schedule: 1 → the real staging test runs and
+      #                  HARD FAILs (exit 5) on a missing platform-agent
+      #                  image / never-online concierge / no creds.
+      E2E_REQUIRE_LIVE: ${{ github.event_name == 'pull_request' && '0' || '1' }}
+      E2E_RUN_ID: "${{ github.run_id }}-${{ github.run_attempt }}"
+      E2E_KEEP_ORG: ${{ github.event.inputs.keep_org && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+        # core#3081: PyYAML is NO LONGER a dependency of the test script — the
+        # A2A-probe (step 4.5/6) now goes through the A2A channel (live
+        # message/send + JSON + regex parse), not a yaml.read of mcp_servers.yaml.
+        # The earlier PyYAML install was for the now-removed config-text probe.
+
+      - name: Verify admin token + AWS creds present
+        run: |
+          if [ -z "$MOLECULE_ADMIN_TOKEN" ]; then
+            echo "::error::CP_STAGING_ADMIN_API_TOKEN secret not set (Railway staging CP_ADMIN_API_TOKEN)"
+            exit 2
+          fi
+          for var in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+            if [ -z "${!var:-}" ]; then
+              echo "::error::$var not set — EC2 leak verification cannot run"
+              exit 2
+            fi
+          done
+          echo "Admin token + AWS creds present ✓"
+
+      - name: CP staging health preflight
+        run: |
+          code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$MOLECULE_CP_URL/health")
+          if [ "$code" != "200" ]; then
+            echo "::error::Staging CP unhealthy (got HTTP $code). Skipping — not a workspace bug."
+            exit 1
+          fi
+          echo "Staging CP healthy ✓"
+
+      # core#3081: the A2A-probe (asserting the live concierge's tool list
+      # actually contains mcp__molecule-platform__create_workspace, not just
+      # that the mcp_servers.yaml text declared it) lives INSIDE the test
+      # script as step 4.5/6 — it is the GATE. A separate "advisory" step
+      # here would mask failure (Researcher finding #2 from PR #3085 review).
+      # The script-internal probe fails HARD on a missing tool via
+      # E2E_REQUIRE_LIVE=1 (exit 5), so a missing overlay produces a clear
+      # ::error:: line and a red job status — not a green mask.
+      - name: Run concierge-creates-workspace functional E2E
+        run: bash tests/e2e/test_staging_concierge_creates_workspace_e2e.sh
+
+      - name: Teardown safety net (runs on cancel/failure)
+        if: always()
+        env:
+          ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+        run: |
+          # Sweep any e2e-cncrg-mk-YYYYMMDD-<run_id>-* org this run created if the
+          # script died before its EXIT trap fired. Run-id scoped so it never
+          # stomps a concurrent run's fresh tenant.
+          set +e
+          orgs=$(curl -sS "$MOLECULE_CP_URL/cp/admin/orgs" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" 2>/dev/null \
+            | python3 -c "
+          import json, sys, os, datetime
+          run_id = os.environ.get('GITHUB_RUN_ID', '')
+          d = json.load(sys.stdin)
+          today = datetime.date.today()
+          yesterday = today - datetime.timedelta(days=1)
+          dates = (today.strftime('%Y%m%d'), yesterday.strftime('%Y%m%d'))
+          if run_id:
+              prefixes = tuple(f'e2e-cncrg-mk-{d}-{run_id}-' for d in dates)
+          else:
+              prefixes = tuple(f'e2e-cncrg-mk-{d}-' for d in dates)
+          candidates = [o['slug'] for o in d.get('orgs', [])
+                        if any(o.get('slug','').startswith(p) for p in prefixes)
+                        and o.get('instance_status') not in ('purged',)]
+          print('\n'.join(candidates))
+          " 2>/dev/null)
+          leaks=()
+          for slug in $orgs; do
+            echo "Safety-net teardown: $slug"
+            set +e
+            curl -sS -o /tmp/cncrg-mk-cleanup.out -w "%{http_code}" \
+              -X DELETE "$MOLECULE_CP_URL/cp/admin/tenants/$slug" \
+              -H "Authorization: Bearer $ADMIN_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"confirm\":\"$slug\"}" >/tmp/cncrg-mk-cleanup.code
+            set -e
+            code=$(cat /tmp/cncrg-mk-cleanup.code 2>/dev/null || echo "000")
+            if [ "$code" = "200" ] || [ "$code" = "204" ]; then
+              echo "[teardown] deleted $slug (HTTP $code)"
+            else
+              echo "::warning::concierge-mk teardown for $slug returned HTTP $code — sweep-stale-e2e-orgs will catch it within ~45 min. Body: $(head -c 300 /tmp/cncrg-mk-cleanup.out 2>/dev/null)"
+              leaks+=("$slug")
+            fi
+          done
+          if [ ${#leaks[@]} -gt 0 ]; then
+            echo "::warning::concierge-mk teardown left ${#leaks[@]} leak(s): ${leaks[*]}"
+          fi
+          exit 0
+
+  # ── CONCIERGE / PLATFORM-AGENT Go staginge2e (Features 1,2,4,5,6) ────────────
+  #
+  # Drives TestConciergePlatformAgent_Staging (workspace-server/internal/
+  # staginge2e/concierge_platform_test.go), which REUSES the lifecycle suite's
+  # harness (requireStagingEnv / adminCreateOrg / tenantAdminToken /
+  # tenantCreateWorkspace / doTenantJSON / jsonField) to assert, against a real
+  # tenant: platform-agent install + /org/identity (1), kind on the workspace
+  # API (2), discovery peers admin-auth regression guard (4), BYOK billing-mode
+  # round-trip (5), and the concierge config-tab auth sweep (6). It asserts
+  # OBSERVABLE state (sole root re-parenting, kind discriminator, resolved_mode,
+  # non-401 tabs) — not just HTTP 200.
+  #
+  # Two jobs, mirroring e2e-workspace-lifecycle.yml's honest pattern:
+  #   • concierge-compile-skip (every push/PR/dispatch): proves the staginge2e
+  #     suite still COMPILES under -tags=staging_e2e and SKIPs LOUD without
+  #     creds. GATING (no mask) — a broken test file fails at PR time.
+  #   • concierge-staging (push-to-main/dispatch/cron): the real live run with
+  #     staging creds + t.Cleanup teardown.
+  # bp-exempt: PR-time compile-only check (build the concierge e2e test, then
+  # skip execution — no staging creds on PR). pr-validate posts the workflow's
+  # PR status; this job is not itself a branch-protection gate.
+  e2e-staging-concierge-compile-skip:
+    name: E2E Staging Concierge (compile+skip)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 'stable'
+          # cache:false — the self-hosted runner bind-mounts a persistent
+          # GOCACHE/GOMODCACHE (/var/cache/ci-go-{build,mod}); actions/cache is
+          # redundant and corrupts it by untarring over the bind mount ("File
+          # exists" -> "Failed to restore" -> partial cache -> linker/typecheck
+          # errors on heavy jobs, e.g. test -race link "too many errors" and
+          # go-arch-lint "without types"). Fleet sweep after the cp ci.yml find.
+          cache: false
+          cache-dependency-path: workspace-server/go.sum
+      - name: go vet (staging_e2e tag)
+        working-directory: workspace-server
+        run: go vet -tags staging_e2e ./internal/staginge2e/...
+      - name: Compile + skip-run (must SKIP LOUD without STAGING_E2E)
+        working-directory: workspace-server
+        run: |
+          # No STAGING_E2E / creds → the suite MUST skip (not pass-with-zero-
+          # assertions). go test exit 0 with a SKIP line is the contract.
+          out=$(go test -tags staging_e2e ./internal/staginge2e/ -run TestConciergePlatformAgent -count=1 -v 2>&1)
+          echo "$out"
+          echo "$out" | grep -q "SKIP: TestConciergePlatformAgent_Staging" \
+            || { echo "::error::expected a LOUD skip of TestConciergePlatformAgent_Staging without creds"; exit 1; }
+
+  # bp-required: pending #2430
+  e2e-staging-concierge-platform:
+    name: E2E Staging Concierge Platform Agent
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    env:
+      CP_BASE_URL: https://staging-api.moleculesai.app
+      CP_ADMIN_API_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+      STAGING_E2E: '1'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 'stable'
+          # cache:false — the self-hosted runner bind-mounts a persistent
+          # GOCACHE/GOMODCACHE (/var/cache/ci-go-{build,mod}); actions/cache is
+          # redundant and corrupts it by untarring over the bind mount ("File
+          # exists" -> "Failed to restore" -> partial cache -> linker/typecheck
+          # errors on heavy jobs, e.g. test -race link "too many errors" and
+          # go-arch-lint "without types"). Fleet sweep after the cp ci.yml find.
+          cache: false
+          cache-dependency-path: workspace-server/go.sum
+      - name: Verify admin token present
+        run: |
+          if [ -z "$CP_ADMIN_API_TOKEN" ]; then
+            echo "::error::CP_STAGING_ADMIN_API_TOKEN secret not set (Railway staging CP_ADMIN_API_TOKEN)"
+            exit 2
+          fi
+          echo "Admin token present"
+      - name: CP staging health preflight
+        run: |
+          code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$CP_BASE_URL/health")
+          if [ "$code" != "200" ]; then
+            echo "::error::Staging CP unhealthy (HTTP $code) — infra, not a concierge bug."
+            exit 1
+          fi
+          echo "Staging CP healthy"
+      - name: Run concierge/platform-agent staginge2e
+        working-directory: workspace-server
+        run: go test -tags staging_e2e ./internal/staginge2e/ -run TestConciergePlatformAgent_Staging -count=1 -v -timeout 35m
+      # Teardown: the test installs a t.Cleanup admin-DELETE of its own tenant
+      # (e2e-cncrg-* slug), running even on a t.Fatal. The age-guarded
+      # sweep-stale-e2e-orgs workflow (30-min floor, e2e- prefix) is the final
+      # net for a tenant orphaned by a hard runner cancel.
+
+  # Tenant plugin-install lifecycle guard (canvas Plugins tab regression class):
+  # boots a real staging workspace, asserts the registry is non-empty (the
+  # "no registry available" report), installs a registry plugin via
+  # POST /workspaces/:id/plugins, then asserts (a) GET /workspaces/:id/plugins
+  # returns it — guards the SaaS EIC readback (CP #3125), (b) the workspace
+  # comes back online+routable and serves A2A after the install-triggered
+  # restart — guards the #159 mgmt-MCP self-heal online-gate. Drives
+  # TestPluginInstallLifecycle_Staging (workspace-server/internal/staginge2e).
+  #
+  # GATING: fail-loud (no continue-on-error) on push/dispatch/cron — a real
+  # red here blocks the deploy path. NOT yet a branch-protection REQUIRED
+  # context: to make it merge-blocking, add
+  #   "E2E Staging SaaS (full lifecycle) / E2E Staging Plugin Install Lifecycle"
+  # to .gitea/required-contexts.txt AND to branch_protections/main
+  # status_check_contexts (owner action — same two-step the platform-boot
+  # gate documents above). Until then it runs + fails loud but is advisory,
+  # exactly like e2e-staging-workspace-requests.
+  # bp-required: pending #3133
+  e2e-staging-plugin-lifecycle:
+    name: E2E Staging Plugin Install Lifecycle
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      CP_BASE_URL: https://staging-api.moleculesai.app
+      CP_ADMIN_API_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+      STAGING_E2E: '1'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 'stable'
+          # cache:false — see the concierge-platform job; the self-hosted
+          # runner bind-mounts a persistent GOCACHE/GOMODCACHE and
+          # actions/cache corrupts it.
+          cache: false
+          cache-dependency-path: workspace-server/go.sum
+      - name: Verify admin token present
+        run: |
+          if [ -z "$CP_ADMIN_API_TOKEN" ]; then
+            echo "::error::CP_STAGING_ADMIN_API_TOKEN secret not set (Railway staging CP_ADMIN_API_TOKEN)"
+            exit 2
+          fi
+          echo "Admin token present"
+      - name: CP staging health preflight
+        run: |
+          code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$CP_BASE_URL/health")
+          if [ "$code" != "200" ]; then
+            echo "::error::Staging CP unhealthy (HTTP $code) — infra, not a plugin-lifecycle bug."
+            exit 1
+          fi
+          echo "Staging CP healthy"
+      - name: Run plugin-install-lifecycle staginge2e
+        working-directory: workspace-server
+        run: go test -tags staging_e2e ./internal/staginge2e/ -run TestPluginInstallLifecycle_Staging -count=1 -v -timeout 40m
+      # Teardown: the test installs a t.Cleanup admin-DELETE of its own tenant
+      # (e2e-plgn-* slug), running even on a t.Fatal. The age-guarded
+      # sweep-stale-e2e-orgs workflow (30-min floor, e2e- prefix) is the final
+      # net for a tenant orphaned by a hard runner cancel.

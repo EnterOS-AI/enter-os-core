@@ -1,0 +1,33 @@
+name: PR Diff Guard
+
+# core#2875: block stale PR branches that have drifted into massive,
+# destructive diffs against current main (e.g., PR #1100: 481 files,
+# ~55k deletions). Runs on every PR and fails when configured size or
+# protected-path deletion thresholds are exceeded.
+
+on:
+  pull_request:
+    branches: [main, staging]
+
+permissions:
+  contents: read
+
+jobs:
+  # bp-required: pending #2875
+  # New gate; wiring into branch protection will follow once it has
+  # green history and the thresholds are calibrated.
+  diff-guard:
+    name: PR diff guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Full history is required to compute the merge-base against origin/main.
+          fetch-depth: 0
+
+      - name: Run PR diff guard
+        env:
+          PR_BASE_REF: ${{ github.base_ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 .gitea/scripts/pr-diff-guard.py

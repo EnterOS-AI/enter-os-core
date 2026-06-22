@@ -1,0 +1,182 @@
+name: Railway pin audit (drift detection)
+
+# Ported from .github/workflows/railway-pin-audit.yml on 2026-05-11 per
+# RFC internal#219 §1 sweep.
+#
+# Differences from the GitHub version:
+#   - Dropped `workflow_dispatch:` (Gitea 1.22.6 trigger handling).
+#     Manual runs go via cron-trigger bump or push the workflow file
+#     itself.
+#   - `actions/github-script@v9` blocks (which call github.rest.* — a
+#     GitHub-specific JS API) replaced with curl calls against the
+#     Gitea REST API (/api/v1/repos/.../issues, .../labels,
+#     .../comments). Same behaviour: open issue on drift, comment on
+#     repeat-drift, close on clean run.
+#   - Workflow-level env.GITHUB_SERVER_URL set so the curl calls can
+#     derive `git.moleculesai.app` from the runner env (with
+#     hard-coded fallback inside the steps).
+#   - `continue-on-error: true` on the job (RFC §1 contract).
+#
+# Daily audit of Railway env vars for drift-prone image-tag pins —
+# automation-cadence layer over the detection script + regression test
+# shipped in PR #2168 (#2001 closure).
+#
+# Background: on 2026-04-24 a stale `:staging-a14cf86` SHA pin in CP's
+# TENANT_IMAGE caused 3+ hours of E2E failure with the appearance that
+# "every fix didn't propagate" — really the tenant image was so old it
+# didn't read the env vars those fixes produced.
+#
+# Cadence: once a day, 13:00 UTC (06:00 PT).
+#
+# Secret hardening: per feedback_schedule_vs_dispatch_secrets_hardening,
+# the schedule trigger HARD-FAILS on missing RAILWAY_AUDIT_TOKEN.
+
+on:
+  schedule:
+    - cron: '0 13 * * *'
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+concurrency:
+  group: railway-pin-audit
+  cancel-in-progress: false
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  audit:
+    name: Audit Railway env vars for drift-prone pins
+    runs-on: ubuntu-latest
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#2654: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Verify RAILWAY_AUDIT_TOKEN present
+        env:
+          RAILWAY_AUDIT_TOKEN: ${{ secrets.RAILWAY_AUDIT_TOKEN }}
+        id: secret_check
+        run: |
+          set -euo pipefail
+          if [ -n "${RAILWAY_AUDIT_TOKEN:-}" ]; then
+            echo "have_secret=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "have_secret=false" >> "$GITHUB_OUTPUT"
+          echo "::error::RAILWAY_AUDIT_TOKEN secret missing — schedule trigger requires it. Provision the token (read-only \`variables\` scope on the molecule-platform Railway project) and store as repo secret RAILWAY_AUDIT_TOKEN."
+          exit 1
+
+      - name: Install Railway CLI
+        if: steps.secret_check.outputs.have_secret == 'true'
+        run: |
+          set -euo pipefail
+          curl -fsSL https://railway.com/install.sh | sh
+          echo "$HOME/.railway/bin" >> "$GITHUB_PATH"
+
+      - name: Verify Railway CLI authenticated
+        if: steps.secret_check.outputs.have_secret == 'true'
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_AUDIT_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! railway whoami >/dev/null 2>&1; then
+            echo "::error::Railway CLI failed to authenticate with RAILWAY_AUDIT_TOKEN — token may be revoked or scoped incorrectly"
+            exit 2
+          fi
+
+      - name: Link molecule-platform project
+        if: steps.secret_check.outputs.have_secret == 'true'
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_AUDIT_TOKEN }}
+        run: |
+          set -euo pipefail
+          railway link --project 7ccc8c68-61f4-42ab-9be5-586eeee11768
+
+      - name: Run drift audit
+        if: steps.secret_check.outputs.have_secret == 'true'
+        id: audit
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_AUDIT_TOKEN }}
+        run: |
+          set +e
+          bash scripts/ops/audit-railway-sha-pins.sh 2>&1 | tee /tmp/audit.log
+          rc=${PIPESTATUS[0]}
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          # Capture the audit log for the issue body.
+          {
+            echo 'log<<AUDIT_EOF'
+            cat /tmp/audit.log
+            echo 'AUDIT_EOF'
+          } >> "$GITHUB_OUTPUT"
+          case "$rc" in
+            0) exit 0 ;;
+            1) echo "::warning::Drift-prone pin(s) detected — issue will be filed"; exit 1 ;;
+            2) echo "::error::Railway CLI auth/link failed mid-script — token or project ID drift"; exit 2 ;;
+            *) echo "::error::Unexpected audit rc=$rc"; exit 1 ;;
+          esac
+
+      - name: Open / update drift issue (Gitea API)
+        if: failure() && steps.audit.outputs.rc == '1'
+        env:
+          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          AUDIT_LOG: ${{ steps.audit.outputs.log }}
+          SERVER_URL: ${{ env.GITHUB_SERVER_URL }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          API="${SERVER_URL%/}/api/v1"
+          TITLE="Railway env-var drift detected"
+          RUN_URL="${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
+          BODY=$(jq -nc --arg t "$TITLE" --arg log "${AUDIT_LOG:-(log unavailable)}" --arg run "$RUN_URL" '
+            {body: ("Daily Railway pin audit found drift-prone image-tag pins in the molecule-platform Railway project.\n\n**What this means:** an env var (likely on `controlplane`) is pinned to a SHA-shaped or semver tag instead of a floating tag. Same pattern that caused the 2026-04-24 TENANT_IMAGE incident — fix-PRs land but the running service does not pick them up.\n\n**Recovery:** open the Railway dashboard, replace the flagged value with a floating tag (:staging-latest, :main) unless the pin is intentional and documented in the ops runbook.\n\n**Audit output:**\n\n```\n" + $log + "\n```\n\nRun: " + $run + "\n\nCloses automatically when a subsequent daily run reports clean.")}')
+
+          # Look for existing open drift issue with the title.
+          EXISTING=$(curl -fsS -H "Authorization: token $GITEA_TOKEN" \
+            "${API}/repos/${REPO}/issues?state=open&type=issues&limit=50" \
+            | jq -r --arg t "$TITLE" '.[] | select(.title==$t) | .number' | head -1)
+
+          if [ -n "$EXISTING" ]; then
+            COMMENT_BODY=$(jq -nc --arg log "${AUDIT_LOG:-(log unavailable)}" --arg run "$RUN_URL" \
+              '{body: ("Still drifting. " + $run + "\n\n```\n" + $log + "\n```")}')
+            curl -fsS -X POST -H "Authorization: token $GITEA_TOKEN" -H "Content-Type: application/json" \
+              "${API}/repos/${REPO}/issues/${EXISTING}/comments" -d "$COMMENT_BODY" >/dev/null
+            echo "Commented on existing issue #${EXISTING}"
+          else
+            CREATE_BODY=$(echo "$BODY" | jq --arg t "$TITLE" '. + {title: $t, labels: []}')
+            NUM=$(curl -fsS -X POST -H "Authorization: token $GITEA_TOKEN" -H "Content-Type: application/json" \
+              "${API}/repos/${REPO}/issues" -d "$CREATE_BODY" | jq -r .number)
+            echo "Filed issue #${NUM}"
+          fi
+
+      - name: Close stale drift issue on clean run (Gitea API)
+        if: success() && steps.audit.outputs.rc == '0'
+        env:
+          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ env.GITHUB_SERVER_URL }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          API="${SERVER_URL%/}/api/v1"
+          TITLE="Railway env-var drift detected"
+          RUN_URL="${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
+
+          NUMS=$(curl -fsS -H "Authorization: token $GITEA_TOKEN" \
+            "${API}/repos/${REPO}/issues?state=open&type=issues&limit=50" \
+            | jq -r --arg t "$TITLE" '.[] | select(.title==$t) | .number')
+
+          for N in $NUMS; do
+            curl -fsS -X POST -H "Authorization: token $GITEA_TOKEN" -H "Content-Type: application/json" \
+              "${API}/repos/${REPO}/issues/${N}/comments" \
+              -d "$(jq -nc --arg run "$RUN_URL" '{body: ("Daily audit clean — drift resolved. " + $run)}')" >/dev/null
+            curl -fsS -X PATCH -H "Authorization: token $GITEA_TOKEN" -H "Content-Type: application/json" \
+              "${API}/repos/${REPO}/issues/${N}" -d '{"state":"closed"}' >/dev/null
+            echo "Closed #${N}"
+          done

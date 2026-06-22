@@ -1,0 +1,18 @@
+{
+  "_comment": "v0.2 with content already a list (e.g. multimodal Part shape). Some pre-v0.3 senders constructed the list form even before the v0.3 rename — usually because they were copying from working v0.3 examples but still pinned to a-2-a-sdk v0.2 by mistake. The compat shim accepts both list and string for content.",
+  "_added": "2026-04-30",
+  "_source": "Synthetic — covers normalizeA2APayload's []interface{} switch case",
+  "jsonrpc": "2.0",
+  "method": "message/send",
+  "id": "msg-test-v02-list",
+  "params": {
+    "message": {
+      "messageId": "msg-2",
+      "role": "user",
+      "content": [
+        {"kind": "text", "text": "hello"},
+        {"kind": "text", "text": "world"}
+      ]
+    }
+  }
+}

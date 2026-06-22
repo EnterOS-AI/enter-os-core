@@ -1,0 +1,630 @@
+name: Local Provision Lifecycle E2E
+
+# MANDATORY coverage for the LOCAL Docker provisioner (MOLECULE_ENV=development,
+# docker.sock) — the path self-hosters + dev runs use. Every OTHER e2e exercises
+# the SaaS/EC2 (control-plane) provisioner; nothing mandatory drove the local
+# Docker path, which is why a config-volume restart-survival bug went undetected.
+# This workflow provisions a REAL workspace via the local Docker provisioner and
+# asserts the full lifecycle, INCLUDING the restart-survival assertion.
+#
+# Two jobs:
+#   * lifecycle-stub  (REQUIRED gate) — builds the tiny stub runtime image, tags
+#     it to the provisioner's RegistryModeLocal cache tag, and runs the full
+#     lifecycle e2e (provision -> online -> restart-survive -> proxy-reach). Fast
+#     (seconds of agent boot, no LLM, no 2.5GB image).
+#   * lifecycle-real  (ADVISORY, continue-on-error) — runs the SAME script against
+#     the real claude-code template image with a REAL MiniMax BYOK credential
+#     (LIFECYCLE_LLM=minimax). The proxy-reach step asserts an ACTUAL model reply
+#     (real round-trip through the ws-<id>:8000 proxy), not just reachability.
+#     MiniMax is the cheapest LLM the platform offers, and its `minimax` provider
+#     dials api.minimax.io directly (no CP proxy needed on this local stack).
+#     Heavy + network-dependent (pulls/builds the template + a real LLM call), so
+#     it is non-blocking. Needs the MOLECULE_STAGING_MINIMAX_API_KEY CI secret:
+#     when ABSENT the script SKIPS loud (exit 0) — it never reds on a missing
+#     secret (serving-e2e skip-if-absent pattern).
+#
+# SUBSTRATE REQUIREMENT (read before wiring into branch protection)
+# -----------------------------------------------------------------
+# This workflow provisions SIBLING docker containers from a HOST Go binary via
+# the runner's docker.sock — exactly like e2e-api.yml, which already provisions
+# the `mock` + `priority-runtimes` arms on `docker-host`. So the docker-in-runner
+# capability IS available on the molecule-runner-* (docker-host) lane. If the
+# operator ever moves these to a runner WITHOUT docker.sock access for the
+# platform binary, this lane will red — keep it on `docker-host`.
+#
+# Both jobs pin `runs-on: docker-host` (Linux operator-host runners with the
+# molecule-core-net bridge + a working docker.sock). The bare `ubuntu-latest`
+# label is also advertised by the Windows act_runner, where docker.sock-bound
+# steps fail non-deterministically — see lint-required-workflows-docker-host-
+# pinned.yml + internal#512.
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main, staging]
+
+concurrency:
+  # Per-SHA grouping (mirrors e2e-api.yml). cancel-in-progress:false so a queued
+  # run for an older SHA isn't cancelled by a newer push (auto-promote brittleness).
+  group: local-provision-e2e-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+  # #2520: GCP-class runners (e2-standard-8, shared Intel) boot the platform
+  # ~33% slower than AMD/dedicated runners. Keep the default generous so a
+  # slow provisioner/image-pull does not false-positive as a platform failure.
+  PLATFORM_BOOT_DEADLINE: 480
+
+jobs:
+  # ===========================================================================
+  # REQUIRED gate — stub runtime, fast. This IS meant to be a required merge gate
+  # (the only mandatory coverage for the LOCAL Docker provisioner), but the new
+  # context is not yet in branch_protections/main — wire it in once the operator
+  # confirms the docker-host runners reliably provision sibling containers from
+  # the host platform binary for this lane (see SUBSTRATE REQUIREMENT above), then
+  # flip the directive below to `# bp-required: yes`. Until then it runs gating
+  # locally (continue-on-error: false) but un-wired in BP, an acknowledged
+  # asymmetry tracked for follow-up. (Earlier this block read `# bp-exempt`, which
+  # contradicted "REQUIRED gate" and tripped lint-required-context-exists-in-bp.)
+  # bp-required: pending #2409
+  # ===========================================================================
+  lifecycle-stub:
+    name: Local Provision Lifecycle E2E (stub)
+    runs-on: docker-host
+    continue-on-error: false
+    timeout-minutes: 15
+    env:
+      PG_CONTAINER: pg-lpe2e-${{ github.run_id }}-${{ github.run_attempt }}
+      REDIS_CONTAINER: redis-lpe2e-${{ github.run_id }}-${{ github.run_attempt }}
+      # Hard-code dev mode at the job level so the platform server ALWAYS sees it,
+      # even if the runner's $GITHUB_ENV propagation is flaky (#2468 RCA).
+      MOLECULE_ENV: development
+      SECRETS_ENCRYPTION_KEY: lpe2e-test-encryption-key-32bytes!!
+      # act_runner runs the job inside a Docker container, so /.dockerenv exists
+      # and the platform auto-detects platformInDocker=true. But the job container
+      # is NOT on molecule-core-net, so it cannot resolve workspace container
+      # hostnames (ws-<id>:8000). Force false so the proxy keeps using the
+      # host-mapped 127.0.0.1:<ephemeral_port> URL, which IS reachable.
+      MOLECULE_IN_DOCKER: false
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 'stable'
+          # cache:false — the self-hosted runner bind-mounts a persistent
+          # GOCACHE/GOMODCACHE (/var/cache/ci-go-{build,mod}); actions/cache is
+          # redundant and corrupts it by untarring over the bind mount ("File
+          # exists" -> "Failed to restore" -> partial cache -> linker/typecheck
+          # errors on heavy jobs, e.g. test -race link "too many errors" and
+          # go-arch-lint "without types"). Fleet sweep after the cp ci.yml find.
+          cache: false
+          cache-dependency-path: workspace-server/go.sum
+
+      - name: Snapshot pre-existing ws-* containers (run-scoped teardown baseline)
+        run: |
+          # #2883: this job provisions ws-<uuid> workspace containers via the
+          # platform binary's docker.sock. The e2e script's own EXIT trap deletes
+          # the workspace it created, but a CANCELLED / TIMED-OUT job (act_runner
+          # SIGKILLs the job container, so the bash trap never fires) or a
+          # platform crash mid-provision leaks the ws-<uuid> container — it then
+          # runs forever and pegs CPU on the shared docker-host runner (13 orphans
+          # found on ded-1, 11+3 on the prod robots). Record the ws-* containers
+          # that already exist BEFORE this job touches anything, so the always()
+          # teardown below removes ONLY the ones this run created and never
+          # disrupts a concurrent run's in-flight workspace on the shared host.
+          docker ps -aq --filter "name=^ws-" > /tmp/ws_baseline_${{ github.run_id }}_${{ github.run_attempt }}.txt 2>/dev/null || true
+          echo "ws-* baseline ($(wc -l < /tmp/ws_baseline_${{ github.run_id }}_${{ github.run_attempt }}.txt 2>/dev/null | tr -d ' ') pre-existing):"
+          cat /tmp/ws_baseline_${{ github.run_id }}_${{ github.run_attempt }}.txt 2>/dev/null || true
+
+      - name: Build e2e-names SSOT CLI
+        working-directory: workspace-server
+        run: go build -o /usr/local/bin/e2e-names ./cmd/e2e-names
+
+      - name: Ensure provisioner network + pre-pull alpine
+        run: |
+          # The local provisioner attaches workspace containers to
+          # molecule-core-net and seeds /configs via an alpine helper; the
+          # lifecycle script also uses alpine to seed config.yaml into the
+          # named config volume. Pre-pull + ensure the bridge (idempotent).
+          docker pull alpine:3 >/dev/null
+          # Pre-pull the exact digest-pinned alpine image the platform server
+          # uses for token-write helper containers (workspace-server/Dockerfile
+          # and provisioner.go). Without this, the real-image advisory job can
+          # fail when the runner cache does not already contain the pinned SHA.
+          docker pull alpine:3.20@sha256:c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e >/dev/null
+          docker network create molecule-core-net >/dev/null 2>&1 || true
+          # SEV-2499 / mc#2499: connect the act_runner job container to
+          # molecule-core-net so workspace containers can reach the platform
+          # server. Without this, the platform runs in the job container's
+          # namespace and workspace containers on molecule-core-net time out
+          # trying to reach the gateway IP (the host cannot forward to an
+          # unpublished container port).
+          JOB_CID="$(hostname)"
+          echo "JOB_CID=${JOB_CID}" >> "$GITHUB_ENV"
+          if docker network connect molecule-core-net "$JOB_CID" >/dev/null 2>&1; then
+            echo "Connected job container ($JOB_CID) to molecule-core-net."
+          else
+            echo "WARN: could not connect job container to molecule-core-net (fallback to gateway)."
+          fi
+          echo "alpine:3 pre-pulled; molecule-core-net ensured."
+
+      - name: Start Postgres (docker, ephemeral host port)
+        run: |
+          docker rm -f "$PG_CONTAINER" 2>/dev/null || true
+          docker run -d --name "$PG_CONTAINER" \
+            -e POSTGRES_USER=dev -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=molecule \
+            -p 0:5432 postgres:16 >/dev/null
+          PG_PORT=$(docker port "$PG_CONTAINER" 5432/tcp | awk -F: '/^0\.0\.0\.0:/ {print $2; exit}')
+          [ -z "$PG_PORT" ] && PG_PORT=$(docker port "$PG_CONTAINER" 5432/tcp | head -1 | awk -F: '{print $NF}')
+          if [ -z "$PG_PORT" ]; then echo "::error::no host port for $PG_CONTAINER"; docker logs "$PG_CONTAINER" || true; exit 1; fi
+          echo "DATABASE_URL=postgres://dev:dev@127.0.0.1:${PG_PORT}/molecule?sslmode=disable" >> "$GITHUB_ENV"
+          for i in $(seq 1 30); do
+            docker exec "$PG_CONTAINER" pg_isready -U dev >/dev/null 2>&1 && { echo "pg ready ${i}s"; exit 0; }
+            sleep 1
+          done
+          echo "::error::Postgres not ready in 30s"; docker logs "$PG_CONTAINER" || true; exit 1
+
+      - name: Start Redis (docker, ephemeral host port)
+        run: |
+          docker rm -f "$REDIS_CONTAINER" 2>/dev/null || true
+          docker run -d --name "$REDIS_CONTAINER" -p 0:6379 redis:7 >/dev/null
+          REDIS_PORT=$(docker port "$REDIS_CONTAINER" 6379/tcp | awk -F: '/^0\.0\.0\.0:/ {print $2; exit}')
+          [ -z "$REDIS_PORT" ] && REDIS_PORT=$(docker port "$REDIS_CONTAINER" 6379/tcp | head -1 | awk -F: '{print $NF}')
+          if [ -z "$REDIS_PORT" ]; then echo "::error::no host port for $REDIS_CONTAINER"; docker logs "$REDIS_CONTAINER" || true; exit 1; fi
+          echo "REDIS_URL=redis://127.0.0.1:${REDIS_PORT}" >> "$GITHUB_ENV"
+          for i in $(seq 1 15); do
+            docker exec "$REDIS_CONTAINER" redis-cli ping 2>/dev/null | grep -q PONG && { echo "redis ready ${i}s"; exit 0; }
+            sleep 1
+          done
+          echo "::error::Redis not ready in 15s"; docker logs "$REDIS_CONTAINER" || true; exit 1
+
+      - name: Configure platform env (admin token + local Docker provisioner)
+        run: |
+          # Allocate an unused ephemeral port to avoid collision with concurrent
+          # jobs or stale processes from prior cancelled runs (see #2450).
+          PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()")
+          echo "PORT=${PORT}" >> "$GITHUB_ENV"
+          echo "BASE=http://127.0.0.1:${PORT}" >> "$GITHUB_ENV"
+          # Discover an IP that Docker containers can use to reach the host platform.
+          # host.docker.internal is not reliably available on Linux (act_runner), so
+          # workspace containers cannot resolve it and fail to register/heartbeat.
+          # Workspace containers join molecule-core-net; the host is reachable via that
+          # network's gateway. Ensure the network exists first (the provisioner creates
+          # it lazily, but we need the gateway BEFORE starting the platform).
+          docker network inspect molecule-core-net >/dev/null 2>&1 || docker network create molecule-core-net >/dev/null
+          # Parse Gateway from raw JSON because --format '{{.IPAM.Config}}' is
+          # inconsistent across Docker versions (sometimes omits Gateway field).
+          PLATFORM_HOST_IP=$(docker network inspect molecule-core-net 2>/dev/null | sed -n 's/.*"Gateway": "\([^"]*\)".*/\1/p' | head -1)
+          if [ -z "$PLATFORM_HOST_IP" ]; then
+            PLATFORM_HOST_IP=$(docker network inspect bridge 2>/dev/null | sed -n 's/.*"Gateway": "\([^"]*\)".*/\1/p' | head -1)
+          fi
+          if [ -z "$PLATFORM_HOST_IP" ]; then
+            PLATFORM_HOST_IP=$(ip route | awk '/default/ {print $3}' | head -1 || true)
+          fi
+          if [ -z "$PLATFORM_HOST_IP" ]; then
+            echo "::error::Could not determine PLATFORM_HOST_IP for Docker containers to reach the platform"
+            exit 1
+          fi
+          echo "PLATFORM_HOST_IP=${PLATFORM_HOST_IP}"
+          echo "PLATFORM_URL=http://${PLATFORM_HOST_IP}:${PORT}" >> "$GITHUB_ENV"
+          # #2851: the workspace runtime must advertise an address the platform can
+          # resolve and that /registry/register will accept. In self-hosted dev
+          # mode SSRF validation only allows "localhost" by name (RFC-1918 gateway
+          # IPs are rejected). The act_runner job container runs with host-network,
+          # so localhost:<host-port> reaches the host-mapped workspace port.
+          # Without this the runtime may fall back to its Docker container
+          # hostname (e.g. 30e9e720fbc2), which the platform cannot resolve and
+          # the A2A proxy rejects.
+          echo "MOLECULE_WORKSPACE_ADVERTISE_HOST=localhost" >> "$GITHUB_ENV"
+          # Deterministic admin token: the script sends MOLECULE_ADMIN_TOKEN as the
+          # bearer; the platform checks ADMIN_TOKEN. Set both to the same value.
+          T="lpe2e-admin-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "ADMIN_TOKEN=${T}" >> "$GITHUB_ENV"
+          echo "MOLECULE_ADMIN_TOKEN=${T}" >> "$GITHUB_ENV"
+          # MOLECULE_ENV=development: dev posture. MOLECULE_ORG_ID is left UNSET so
+          # main.go wires the LOCAL Docker provisioner (not the CP provisioner), and
+          # MOLECULE_IMAGE_REGISTRY is left UNSET so image resolution uses
+          # RegistryModeLocal (the dockerHasTag cache-check the stub pre-tags into).
+          echo "MOLECULE_ENV=development" >> "$GITHUB_ENV"
+          echo "SECRETS_ENCRYPTION_KEY=lpe2e-test-encryption-key-32bytes!!" >> "$GITHUB_ENV"
+
+      - name: Build platform
+        working-directory: workspace-server
+        run: go build -o platform-server ./cmd/server
+
+      - name: Kill stale platform-server before start (issue #1046)
+        run: |
+          # Dynamic port allocation (see #2450) eliminates the fixed-port race
+          # that caused this gate to red when a prior run left a zombie process.
+          # We still sweep by process name to avoid leaking platform-server
+          # processes on the shared runner.
+          killed=0
+          for pid in $(grep -l "platform-serve" /proc/[0-9]*/comm 2>/dev/null); do
+            kpid="${pid%/comm}"; kpid="${kpid##*/}"
+            cmdline=$(cat "/proc/${kpid}/cmdline" 2>/dev/null | tr '\0' ' ')
+            if echo "$cmdline" | grep -q "platform-server"; then
+              echo "Killing stale platform-server pid ${kpid}: ${cmdline}"
+              kill "$kpid" 2>/dev/null || true
+              killed=$((killed + 1))
+            fi
+          done
+          if [ "$killed" -gt 0 ]; then echo "Killed $killed stale platform-server process(es)."; else echo "No platform-server-named process found."; fi
+          sleep 1
+
+      - name: Start platform (background)
+        working-directory: workspace-server
+        run: |
+          # Bind to the dynamically allocated port (see #2450).
+          # DATABASE_URL/REDIS_URL/ADMIN_TOKEN/MOLECULE_ENV are inherited from
+          # $GITHUB_ENV. PLATFORM_URL is also passed explicitly because
+          # $GITHUB_ENV propagation can be flaky on act_runner (#2468 RCA).
+          echo "starting platform with PLATFORM_URL=${PLATFORM_URL:-<fallback>} PORT=$PORT BIND_ADDR=0.0.0.0"
+          PORT=$PORT BIND_ADDR=0.0.0.0 PLATFORM_URL="${PLATFORM_URL:-http://host.docker.internal:$PORT}" ./platform-server > platform.log 2>&1 &
+          echo $! > platform.pid
+
+      - name: Wait for /health (+ migrations applied)
+        run: |
+          DEADLINE=${PLATFORM_BOOT_DEADLINE:-300}; PID="$(cat workspace-server/platform.pid 2>/dev/null || true)"; start=$(date +%s)
+          while :; do
+            # Verify OUR server is still alive before trusting /health. Our server
+            # binds the allocated port or exits FATAL, so "our PID alive" <=>
+            # "we own the port"; checking it first stops a squatter that answers
+            # /health on the same port (our bind having failed) from false-positiving
+            # the gate (no-flakes RCA).
+            if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then
+              echo "::error::platform-server exited early (failed to bind or crashed)"; cat workspace-server/platform.log || true; exit 1
+            fi
+            if curl -sf "$BASE/health" >/dev/null; then
+              tables=$(docker exec "$PG_CONTAINER" psql -U dev -d molecule -tAc \
+                "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='workspaces'" 2>/dev/null || echo 0)
+              [ "$tables" = "1" ] && { echo "healthy + migrated after $(( $(date +%s) - start ))s"; exit 0; }
+            fi
+            [ "$(( $(date +%s) - start ))" -ge "$DEADLINE" ] && { echo "::error::platform not healthy in ${DEADLINE}s"; cat workspace-server/platform.log || true; exit 1; }
+            sleep 1
+          done
+
+      - name: Verify platform reachable from molecule-core-net
+        run: |
+          echo "Testing platform reachability from molecule-core-net container..."
+          docker run --rm --network molecule-core-net alpine:latest sh -c "wget -qO- http://${PLATFORM_URL#http://}/health" || echo "WARN: platform not reachable from molecule-core-net"
+
+      - name: Run local-provision lifecycle E2E (stub — REQUIRED)
+        run: bash tests/e2e/test_local_provision_lifecycle_e2e.sh
+
+      - name: Dump platform log on failure
+        if: failure()
+        run: cat workspace-server/platform.log || true
+
+      - name: Dump workspace container logs on failure
+        if: failure()
+        run: |
+          WS_NAME=$(docker ps --filter "name=ws-" --format '{{.Names}}' | head -1 || true)
+          if [ -n "$WS_NAME" ]; then
+            echo "=== Workspace container logs for $WS_NAME ==="
+            docker logs "$WS_NAME" 2>&1 | tail -n 80 || true
+          fi
+
+      - name: Stop platform
+        if: always()
+        run: |
+          [ -f workspace-server/platform.pid ] && kill "$(cat workspace-server/platform.pid)" 2>/dev/null || true
+
+      - name: Stop service containers
+        if: always()
+        run: |
+          docker rm -f "$PG_CONTAINER" 2>/dev/null || true
+          docker rm -f "$REDIS_CONTAINER" 2>/dev/null || true
+
+      - name: Teardown leaked ws-* workspace containers (run-scoped, #2883)
+        if: always()
+        run: |
+          # #2883: remove ONLY the ws-<uuid> workspace containers this run
+          # created (everything matching name ^ws- that was NOT in the
+          # pre-job baseline). The e2e script's trap usually handles its own
+          # workspace, but a cancelled/timed-out job kills the runner container
+          # before the trap fires, and a platform crash can orphan the
+          # container — both leak a forever-running ws-* that pegs CPU on the
+          # shared docker-host. Run-scoped (diff against baseline) so a
+          # concurrent run's in-flight workspace on the same host is untouched.
+          # The standing sweep-stale-ws-orphans.yml janitor is the age-guarded
+          # belt-and-braces second layer for anything this step misses
+          # (e.g. the runner container itself being SIGKILLed before this runs).
+          BASELINE="/tmp/ws_baseline_${{ github.run_id }}_${{ github.run_attempt }}.txt"
+          [ -f "$BASELINE" ] || : > "$BASELINE"
+          removed=0
+          for cid in $(docker ps -aq --filter "name=^ws-" 2>/dev/null); do
+            # Skip containers that already existed before this job started.
+            if grep -qx "$cid" "$BASELINE" 2>/dev/null; then continue; fi
+            name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's#^/##' || echo "$cid")
+            echo "removing leaked workspace container: $name ($cid)"
+            docker rm -f "$cid" >/dev/null 2>&1 || true
+            removed=$((removed + 1))
+          done
+          rm -f "$BASELINE" 2>/dev/null || true
+          echo "ws-* teardown removed $removed run-scoped orphan container(s)."
+
+  # ===========================================================================
+  # ADVISORY — real claude-code image, lifecycle-only. Non-blocking. It pulls/
+  # builds the 2.5GB template image, makes a real (cheap) MiniMax LLM call, and is
+  # network-dependent, so a miss must not block. It proves the REAL runtime
+  # survives a restart AND serves a genuine LLM round-trip on the local
+  # provisioner (proxy-reach asserts a real MiniMax reply, not just reachability).
+  # ===========================================================================
+  # bp-exempt: advisory lane (continue-on-error: true) — informational, never a merge gate.
+  lifecycle-real:
+    name: Local Provision Lifecycle E2E (real image + MiniMax LLM, advisory)
+    runs-on: docker-host
+    # Serialise behind the gating stub job: both jobs share the same docker-host
+    # runner and provision sibling containers. `needs:` forces this advisory job
+    # to start only AFTER lifecycle-stub finishes, avoiding resource contention.
+    # (Dynamic ports eliminated the fixed-port race; serialisation remains for
+    # docker-host capacity hygiene.) continue-on-error keeps a real-job miss
+    # non-blocking; `needs:` does NOT gate on the stub's success (a failed
+    # required gate still lets this advisory dependent run).
+    needs: lifecycle-stub
+    if: ${{ always() }}
+    # Tracker for lint-continue-on-error-tracking (Tier 2e / internal#350): this
+    # mask has a forced 14-day renewal cycle. mc#2408 tracks promoting this
+    # advisory MiniMax round-trip to a gating job (then flip to false).
+    continue-on-error: true  # mc#2408 — promote advisory MiniMax e2e to gating
+    timeout-minutes: 30
+    env:
+      PG_CONTAINER: pg-lpe2e-real-${{ github.run_id }}-${{ github.run_attempt }}
+      REDIS_CONTAINER: redis-lpe2e-real-${{ github.run_id }}-${{ github.run_attempt }}
+      # Hard-code dev mode at the job level so the platform server ALWAYS sees it,
+      # even if the runner's $GITHUB_ENV propagation is flaky (#2468 RCA).
+      MOLECULE_ENV: development
+      SECRETS_ENCRYPTION_KEY: lpe2e-test-encryption-key-32bytes!!
+      # #2851 fix follow-up: act_runner executes this job container in host-network
+      # mode, so the platform process shares the host's loopback. The A2A proxy
+      # must therefore keep the stored http://127.0.0.1:<host-port> URL as-is;
+      # enabling Docker-aware rewrite would synthesize ws-<id>:8000, which the
+      # host-network platform cannot resolve. Leave MOLECULE_IN_DOCKER=false so
+      # the proxy uses the host-mapped port directly (same as lifecycle-stub).
+      MOLECULE_IN_DOCKER: false
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 'stable'
+          # cache:false — the self-hosted runner bind-mounts a persistent
+          # GOCACHE/GOMODCACHE (/var/cache/ci-go-{build,mod}); actions/cache is
+          # redundant and corrupts it by untarring over the bind mount ("File
+          # exists" -> "Failed to restore" -> partial cache -> linker/typecheck
+          # errors on heavy jobs, e.g. test -race link "too many errors" and
+          # go-arch-lint "without types"). Fleet sweep after the cp ci.yml find.
+          cache: false
+          cache-dependency-path: workspace-server/go.sum
+
+      - name: Snapshot pre-existing ws-* containers (run-scoped teardown baseline)
+        run: |
+          # #2883: this job provisions ws-<uuid> workspace containers via the
+          # platform binary's docker.sock. The e2e script's own EXIT trap deletes
+          # the workspace it created, but a CANCELLED / TIMED-OUT job (act_runner
+          # SIGKILLs the job container, so the bash trap never fires) or a
+          # platform crash mid-provision leaks the ws-<uuid> container — it then
+          # runs forever and pegs CPU on the shared docker-host runner (13 orphans
+          # found on ded-1, 11+3 on the prod robots). Record the ws-* containers
+          # that already exist BEFORE this job touches anything, so the always()
+          # teardown below removes ONLY the ones this run created and never
+          # disrupts a concurrent run's in-flight workspace on the shared host.
+          docker ps -aq --filter "name=^ws-" > /tmp/ws_baseline_${{ github.run_id }}_${{ github.run_attempt }}.txt 2>/dev/null || true
+          echo "ws-* baseline ($(wc -l < /tmp/ws_baseline_${{ github.run_id }}_${{ github.run_attempt }}.txt 2>/dev/null | tr -d ' ') pre-existing):"
+          cat /tmp/ws_baseline_${{ github.run_id }}_${{ github.run_attempt }}.txt 2>/dev/null || true
+
+      - name: Build e2e-names SSOT CLI
+        working-directory: workspace-server
+        run: go build -o /usr/local/bin/e2e-names ./cmd/e2e-names
+
+      - name: Ensure provisioner network + pre-pull alpine
+        run: |
+          docker pull alpine:3 >/dev/null
+          # Pre-pull the exact digest-pinned alpine image the platform server
+          # uses for token-write helper containers.
+          docker pull alpine:3.20@sha256:c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e >/dev/null
+          docker network create molecule-core-net >/dev/null 2>&1 || true
+          # Workspace containers join molecule-core-net. The act_runner job
+          # container runs host-network, so connecting it to the bridge is not
+          # possible, but the bridge itself must exist for sibling workspace
+          # containers to communicate.
+
+      - name: Start Postgres (docker, ephemeral host port)
+        run: |
+          docker rm -f "$PG_CONTAINER" 2>/dev/null || true
+          docker run -d --name "$PG_CONTAINER" \
+            -e POSTGRES_USER=dev -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=molecule \
+            -p 0:5432 postgres:16 >/dev/null
+          PG_PORT=$(docker port "$PG_CONTAINER" 5432/tcp | awk -F: '/^0\.0\.0\.0:/ {print $2; exit}')
+          [ -z "$PG_PORT" ] && PG_PORT=$(docker port "$PG_CONTAINER" 5432/tcp | head -1 | awk -F: '{print $NF}')
+          if [ -z "$PG_PORT" ]; then echo "::error::no host port"; docker logs "$PG_CONTAINER" || true; exit 1; fi
+          echo "DATABASE_URL=postgres://dev:dev@127.0.0.1:${PG_PORT}/molecule?sslmode=disable" >> "$GITHUB_ENV"
+          for i in $(seq 1 30); do
+            docker exec "$PG_CONTAINER" pg_isready -U dev >/dev/null 2>&1 && { echo "pg ready ${i}s"; exit 0; }
+            sleep 1
+          done
+          echo "::error::Postgres not ready"; docker logs "$PG_CONTAINER" || true; exit 1
+
+      - name: Start Redis (docker, ephemeral host port)
+        run: |
+          docker rm -f "$REDIS_CONTAINER" 2>/dev/null || true
+          docker run -d --name "$REDIS_CONTAINER" -p 0:6379 redis:7 >/dev/null
+          REDIS_PORT=$(docker port "$REDIS_CONTAINER" 6379/tcp | awk -F: '/^0\.0\.0\.0:/ {print $2; exit}')
+          [ -z "$REDIS_PORT" ] && REDIS_PORT=$(docker port "$REDIS_CONTAINER" 6379/tcp | head -1 | awk -F: '{print $NF}')
+          if [ -z "$REDIS_PORT" ]; then echo "::error::no host port"; docker logs "$REDIS_CONTAINER" || true; exit 1; fi
+          echo "REDIS_URL=redis://127.0.0.1:${REDIS_PORT}" >> "$GITHUB_ENV"
+          for i in $(seq 1 15); do
+            docker exec "$REDIS_CONTAINER" redis-cli ping 2>/dev/null | grep -q PONG && { echo "redis ready ${i}s"; exit 0; }
+            sleep 1
+          done
+          echo "::error::Redis not ready"; docker logs "$REDIS_CONTAINER" || true; exit 1
+
+      - name: Configure platform env
+        run: |
+          # Allocate an unused ephemeral port to avoid collision with concurrent
+          # jobs or stale processes from prior cancelled runs (see #2450).
+          PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()")
+          echo "PORT=${PORT}" >> "$GITHUB_ENV"
+          echo "BASE=http://127.0.0.1:${PORT}" >> "$GITHUB_ENV"
+          # Discover an IP that Docker containers can use to reach the host platform.
+          # host.docker.internal is not reliably available on Linux (act_runner), so
+          # workspace containers cannot resolve it and fail to register/heartbeat.
+          # Workspace containers join molecule-core-net; the host is reachable via that
+          # network's gateway. Ensure the network exists first (the provisioner creates
+          # it lazily, but we need the gateway BEFORE starting the platform).
+          docker network inspect molecule-core-net >/dev/null 2>&1 || docker network create molecule-core-net >/dev/null
+          # Parse Gateway from raw JSON because --format '{{.IPAM.Config}}' is
+          # inconsistent across Docker versions (sometimes omits Gateway field).
+          PLATFORM_HOST_IP=$(docker network inspect molecule-core-net 2>/dev/null | sed -n 's/.*"Gateway": "\([^"]*\)".*/\1/p' | head -1)
+          if [ -z "$PLATFORM_HOST_IP" ]; then
+            PLATFORM_HOST_IP=$(docker network inspect bridge 2>/dev/null | sed -n 's/.*"Gateway": "\([^"]*\)".*/\1/p' | head -1)
+          fi
+          if [ -z "$PLATFORM_HOST_IP" ]; then
+            PLATFORM_HOST_IP=$(ip route | awk '/default/ {print $3}' | head -1 || true)
+          fi
+          if [ -z "$PLATFORM_HOST_IP" ]; then
+            echo "::error::Could not determine PLATFORM_HOST_IP for Docker containers to reach the platform"
+            exit 1
+          fi
+          echo "PLATFORM_HOST_IP=${PLATFORM_HOST_IP}"
+          echo "PLATFORM_URL=http://${PLATFORM_HOST_IP}:${PORT}" >> "$GITHUB_ENV"
+          # #2851: the workspace runtime must advertise an address the platform can
+          # resolve and that /registry/register will accept. In self-hosted dev
+          # mode SSRF validation only allows "localhost" by name (RFC-1918 gateway
+          # IPs are rejected). The act_runner job container runs with host-network,
+          # so localhost:<host-port> reaches the host-mapped workspace port.
+          # Without this the runtime may fall back to its Docker container
+          # hostname (e.g. 30e9e720fbc2), which the platform cannot resolve and
+          # the A2A proxy rejects.
+          echo "MOLECULE_WORKSPACE_ADVERTISE_HOST=localhost" >> "$GITHUB_ENV"
+          T="lpe2e-real-admin-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "ADMIN_TOKEN=${T}" >> "$GITHUB_ENV"
+          echo "MOLECULE_ADMIN_TOKEN=${T}" >> "$GITHUB_ENV"
+          echo "MOLECULE_ENV=development" >> "$GITHUB_ENV"
+          echo "SECRETS_ENCRYPTION_KEY=lpe2e-test-encryption-key-32bytes!!" >> "$GITHUB_ENV"
+
+      - name: Build platform
+        working-directory: workspace-server
+        run: go build -o platform-server ./cmd/server
+
+      - name: Kill stale platform-server before start (issue #1046)
+        run: |
+          # Dynamic port allocation (see #2450) eliminates the fixed-port race.
+          # We still sweep by process name to avoid leaking platform-server
+          # processes on the shared runner.
+          killed=0
+          for pid in $(grep -l "platform-serve" /proc/[0-9]*/comm 2>/dev/null); do
+            kpid="${pid%/comm}"; kpid="${kpid##*/}"
+            cmdline=$(cat "/proc/${kpid}/cmdline" 2>/dev/null | tr '\0' ' ')
+            if echo "$cmdline" | grep -q "platform-server"; then
+              echo "Killing stale platform-server pid ${kpid}: ${cmdline}"
+              kill "$kpid" 2>/dev/null || true
+              killed=$((killed + 1))
+            fi
+          done
+          if [ "$killed" -gt 0 ]; then echo "Killed $killed stale platform-server process(es)."; else echo "No platform-server-named process found."; fi
+          sleep 1
+
+      - name: Start platform (background)
+        working-directory: workspace-server
+        run: |
+          echo "starting platform with PLATFORM_URL=${PLATFORM_URL:-<fallback>} PORT=$PORT BIND_ADDR=0.0.0.0"
+          PORT=$PORT BIND_ADDR=0.0.0.0 PLATFORM_URL="${PLATFORM_URL:-http://host.docker.internal:$PORT}" ./platform-server > platform.log 2>&1 &
+          echo $! > platform.pid
+
+      - name: Wait for /health (+ migrations applied)
+        run: |
+          DEADLINE=${PLATFORM_BOOT_DEADLINE:-300}; PID="$(cat workspace-server/platform.pid 2>/dev/null || true)"; start=$(date +%s)
+          while :; do
+            # Verify OUR server is still alive before trusting /health. Our server
+            # binds the allocated port or exits FATAL, so checking our PID first
+            # stops a squatter from false-positiving the gate (no-flakes RCA).
+            if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then
+              echo "::error::platform-server exited early (failed to bind or crashed)"; cat workspace-server/platform.log || true; exit 1
+            fi
+            if curl -sf "$BASE/health" >/dev/null; then
+              tables=$(docker exec "$PG_CONTAINER" psql -U dev -d molecule -tAc \
+                "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='workspaces'" 2>/dev/null || echo 0)
+              [ "$tables" = "1" ] && { echo "healthy after $(( $(date +%s) - start ))s"; exit 0; }
+            fi
+            [ "$(( $(date +%s) - start ))" -ge "$DEADLINE" ] && { echo "::error::platform not healthy in ${DEADLINE}s"; cat workspace-server/platform.log || true; exit 1; }
+            sleep 1
+          done
+
+      - name: Verify platform reachable from molecule-core-net
+        run: |
+          echo "Testing platform reachability from molecule-core-net container..."
+          docker run --rm --network molecule-core-net alpine:latest sh -c "wget -qO- http://${PLATFORM_URL#http://}/health" || echo "WARN: platform not reachable from molecule-core-net"
+
+      - name: Run local-provision lifecycle E2E (real image + MiniMax LLM — ADVISORY)
+        env:
+          # LIFECYCLE_LLM=minimax: provision the REAL claude-code template image
+          # (the mode forces LIFECYCLE_PROVISIONER_BUILDS=1 — the provisioner
+          # clones + docker-builds the template from Gitea via RegistryModeLocal)
+          # with a real MiniMax BYOK credential, and assert an ACTUAL model reply
+          # at the proxy-reach step (a genuine round-trip through ws-<id>:8000).
+          # MiniMax is the cheapest LLM the platform offers; its `minimax`
+          # provider dials api.minimax.io directly, so no CP proxy env is needed.
+          #
+          # Key wiring (DO NOT hardcode): the script reads MINIMAX_API_KEY from
+          # the env; we feed it from the MOLECULE_STAGING_MINIMAX_API_KEY CI
+          # secret (the same secret the staging-smoke + e2e-api MiniMax arms use).
+          # When that secret is ABSENT, MINIMAX_API_KEY is empty and the script
+          # SKIPS loud (exit 0) — it never reds on a missing secret (serving-e2e
+          # skip-if-absent pattern). The advisory job stays green either way.
+          LIFECYCLE_LLM: minimax
+          MINIMAX_API_KEY: ${{ secrets.MOLECULE_STAGING_MINIMAX_API_KEY }}
+        run: bash tests/e2e/test_local_provision_lifecycle_e2e.sh
+
+      - name: Dump platform log on failure
+        if: failure()
+        run: cat workspace-server/platform.log || true
+
+      - name: Dump workspace container logs on failure
+        if: failure()
+        run: |
+          WS_NAME=$(docker ps --filter "name=ws-" --format '{{.Names}}' | head -1 || true)
+          if [ -n "$WS_NAME" ]; then
+            echo "=== Workspace container logs for $WS_NAME ==="
+            docker logs "$WS_NAME" 2>&1 | tail -n 80 || true
+          fi
+
+      - name: Stop platform
+        if: always()
+        run: |
+          [ -f workspace-server/platform.pid ] && kill "$(cat workspace-server/platform.pid)" 2>/dev/null || true
+
+      - name: Stop service containers
+        if: always()
+        run: |
+          docker rm -f "$PG_CONTAINER" 2>/dev/null || true
+          docker rm -f "$REDIS_CONTAINER" 2>/dev/null || true
+
+      - name: Teardown leaked ws-* workspace containers (run-scoped, #2883)
+        if: always()
+        run: |
+          # #2883: remove ONLY the ws-<uuid> workspace containers this run
+          # created (everything matching name ^ws- that was NOT in the
+          # pre-job baseline). The e2e script's trap usually handles its own
+          # workspace, but a cancelled/timed-out job kills the runner container
+          # before the trap fires, and a platform crash can orphan the
+          # container — both leak a forever-running ws-* that pegs CPU on the
+          # shared docker-host. Run-scoped (diff against baseline) so a
+          # concurrent run's in-flight workspace on the same host is untouched.
+          # The standing sweep-stale-ws-orphans.yml janitor is the age-guarded
+          # belt-and-braces second layer for anything this step misses
+          # (e.g. the runner container itself being SIGKILLed before this runs).
+          BASELINE="/tmp/ws_baseline_${{ github.run_id }}_${{ github.run_attempt }}.txt"
+          [ -f "$BASELINE" ] || : > "$BASELINE"
+          removed=0
+          for cid in $(docker ps -aq --filter "name=^ws-" 2>/dev/null); do
+            # Skip containers that already existed before this job started.
+            if grep -qx "$cid" "$BASELINE" 2>/dev/null; then continue; fi
+            name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's#^/##' || echo "$cid")
+            echo "removing leaked workspace container: $name ($cid)"
+            docker rm -f "$cid" >/dev/null 2>&1 || true
+            removed=$((removed + 1))
+          done
+          rm -f "$BASELINE" 2>/dev/null || true
+          echo "ws-* teardown removed $removed run-scoped orphan container(s)."

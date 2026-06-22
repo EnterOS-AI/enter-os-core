@@ -1,0 +1,15 @@
+{
+  "_comment": "v0.2 string content — the most common pre-rename shape. Caused the 2026-04-29 silent-drop bug: a-2-a-sdk v0.3 renamed params.message.content (string) -> params.message.parts (Part list). Shipped PR #2349 to compat-shim this in normalizeA2APayload.",
+  "_added": "2026-04-30",
+  "_source": "PR #2349 incident reproduction",
+  "jsonrpc": "2.0",
+  "method": "message/send",
+  "id": "msg-test-v02-string",
+  "params": {
+    "message": {
+      "messageId": "msg-1",
+      "role": "user",
+      "content": "hello world"
+    }
+  }
+}

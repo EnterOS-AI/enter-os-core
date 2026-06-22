@@ -1,0 +1,50 @@
+# Railway deployment configuration for Molecule AI
+# Deploy with one click: https://railway.app/new/template
+#
+# Railway provisions Postgres and Redis as managed services automatically.
+# Set the required environment variables in the Railway dashboard after deploy.
+#
+# Required variables (set in Railway dashboard → Variables):
+#   SECRETS_ENCRYPTION_KEY  — 32-byte random string for AES-256 secret encryption
+#                             Generate: openssl rand -base64 32
+#   CORS_ORIGINS            — comma-separated allowed origins, e.g. https://yourcanvas.up.railway.app
+#
+# Injected automatically by Railway:
+#   DATABASE_URL, REDIS_URL, PORT
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "workspace-server/Dockerfile"
+
+[deploy]
+startCommand = "./server"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
+
+[[services]]
+name = "platform"
+
+[services.build]
+builder = "DOCKERFILE"
+dockerfilePath = "workspace-server/Dockerfile"
+buildContext = "."
+
+[services.deploy]
+startCommand = "./server"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+
+[[services]]
+name = "canvas"
+
+[services.build]
+builder = "DOCKERFILE"
+dockerfilePath = "canvas/Dockerfile"
+buildContext = "canvas"
+
+[services.deploy]
+startCommand = "node server.js"
+healthcheckPath = "/"
+healthcheckTimeout = 30

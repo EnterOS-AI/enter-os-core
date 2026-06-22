@@ -1,0 +1,517 @@
+'use client';
+
+// ExternalConnectModal — shown once after creating a runtime="external"
+// workspace. Surfaces the workspace_auth_token + ready-to-paste snippets
+// so the operator can hand them to whoever runs their off-host agent
+// without piecing together the register payload from docs.
+//
+// Security posture:
+//   - The auth_token is visible once. After the modal closes, the value
+//     is unrecoverable (the /workspaces/:id read endpoints never echo it).
+//     UI warns the operator before they dismiss.
+//   - A "copy to clipboard" button uses the navigator.clipboard API which
+//     is same-origin and requires user gesture — no cross-origin leak.
+//   - Snippets use placeholders for the operator's own public URL
+//     ($AGENT_URL). They ARE NOT filled in server-side because the
+//     server doesn't know where the operator's agent will live.
+
+import { useCallback, useRef, useState } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
+
+type Tab = "python" | "curl" | "claude" | "mcp" | "hermes" | "codex" | "openclaw" | "kimi" | "fields";
+
+export interface ExternalConnectionInfo {
+  workspace_id: string;
+  platform_url: string;
+  auth_token: string;
+  registry_endpoint: string;
+  heartbeat_endpoint: string;
+  curl_register_template: string;
+  python_snippet: string;
+  // Claude Code channel plugin snippet — for operators whose external
+  // agent IS a Claude Code session. Polling-based; no tunnel required.
+  // Optional in the type for backward compat with platforms that
+  // haven't shipped molecule-core PR #2304 yet (older response payload
+  // omits the field; tab is hidden if empty).
+  claude_code_channel_snippet?: string;
+  // Universal MCP snippet — runtime-agnostic outbound tool path via
+  // the `molecule-mcp` console script in the
+  // molecule-ai-workspace-runtime PyPI wheel. Works with any MCP-aware
+  // agent runtime (Claude Code, hermes, codex, third-party). Outbound-
+  // only: pair with claude_code_channel or python tabs for heartbeat
+  // + inbound. Optional for backward compat with platforms that
+  // haven't shipped PR #2413 yet.
+  universal_mcp_snippet?: string;
+  // Hermes channel snippet — for operators whose external agent IS a
+  // hermes-agent session. Routes A2A traffic into the hermes gateway
+  // via the molecule-channel plugin (Molecule-AI/hermes-channel-molecule).
+  // Long-poll based (no tunnel) — same UX shape as the Claude Code
+  // channel tab. Gives hermes true push parity. Optional for backward
+  // compat with platforms that haven't shipped this PR yet.
+  hermes_channel_snippet?: string;
+  // Codex MCP config snippet — wires the molecule MCP server into
+  // ~/.codex/config.toml so codex agents can call platform tools.
+  // Outbound-tools-only today (codex's MCP client doesn't route
+  // notifications/*); push parity would need a separate bridge daemon.
+  codex_snippet?: string;
+  // OpenClaw MCP config snippet — wires molecule MCP + starts the
+  // openclaw gateway on loopback. Outbound-tools-only today; push
+  // parity on an external openclaw needs a sessions.steer bridge.
+  openclaw_snippet?: string;
+  // Kimi CLI setup snippet — self-contained Python heartbeat script
+  // that keeps a Kimi workspace online in poll mode. Optional for
+  // backward compat with platforms that haven't shipped the Kimi tab.
+  kimi_snippet?: string;
+}
+
+interface Props {
+  info: ExternalConnectionInfo | null;
+  onClose: () => void;
+}
+
+export function ExternalConnectModal({ info, onClose }: Props) {
+  // Default to Universal MCP when the platform offers it — runtime-
+  // agnostic outbound tool path that works for any MCP-aware runtime
+  // (Claude Code, hermes, codex, etc.) and lets operators inspect the
+  // primitives before picking a runtime-specific tab. Python SDK is
+  // the fallback for platforms predating the universal_mcp_snippet
+  // field. Pre-2026-05-03 the default was "claude" (Claude Code first)
+  // but operators using non-Claude runtimes opened to a tab they had
+  // to skip past — universal MCP works for everyone as a starting
+  // point and the runtime-specific tabs are still one click away.
+  const initialTab: Tab = info?.universal_mcp_snippet
+    ? "mcp"
+    : "python";
+  const [tab, setTab] = useState<Tab>(initialTab);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const tabRefs = useRef<Map<Tab, HTMLButtonElement | null>>(new Map());
+
+  const handleTabKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLButtonElement>, current: Tab, tabs: Tab[]) => {
+      const idx = tabs.indexOf(current);
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+        e.preventDefault();
+        const next = tabs[(idx + 1) % tabs.length];
+        setTab(next);
+        tabRefs.current.get(next)?.focus();
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const prev = tabs[(idx - 1 + tabs.length) % tabs.length];
+        setTab(prev);
+        tabRefs.current.get(prev)?.focus();
+      } else if (e.key === "Home") {
+        e.preventDefault();
+        setTab(tabs[0]);
+        tabRefs.current.get(tabs[0])?.focus();
+      } else if (e.key === "End") {
+        e.preventDefault();
+        setTab(tabs[tabs.length - 1]);
+        tabRefs.current.get(tabs[tabs.length - 1])?.focus();
+      }
+    },
+    [],
+  );
+
+  const copy = useCallback(async (value: string, key: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedKey(key);
+      // Auto-clear the "Copied!" label after 1.5s so a second copy
+      // attempt feels responsive — without the reset, the second
+      // click appears as a no-op.
+      window.setTimeout(() => setCopiedKey(null), 1500);
+    } catch {
+      // Fallback for browsers that refuse clipboard access (http://
+      // over insecure origin, Safari private mode, etc.). We surface
+      // a minimal textarea so the operator can manually copy.
+      const el = document.getElementById(`fallback-${key}`) as HTMLTextAreaElement | null;
+      if (el) {
+        el.select();
+      }
+    }
+  }, []);
+
+  if (!info) return null;
+
+  // Python snippet is stamped server-side with workspace_id +
+  // platform_url but leaves AUTH_TOKEN as a "<paste …>" placeholder
+  // (that's what we're showing in the modal). Fill in the real
+  // token here so the snippet the operator copies is truly ready-to-run.
+  const filledPython = info.python_snippet.replace(
+    'AUTH_TOKEN    = "<paste from create response>"',
+    `AUTH_TOKEN    = "${info.auth_token}"`,
+  );
+  const filledCurl = info.curl_register_template.replace(
+    'WORKSPACE_AUTH_TOKEN="<paste from create response>"',
+    `WORKSPACE_AUTH_TOKEN="${info.auth_token}"`,
+  );
+  // The channel snippet asks the operator to paste the auth_token into
+  // the .env file's MOLECULE_WORKSPACE_TOKENS field. Stamp it server-side
+  // here so the copy-paste-block is truly ready-to-run.
+  const filledChannel = info.claude_code_channel_snippet?.replace(
+    'MOLECULE_WORKSPACE_TOKENS=<paste auth_token from create response>',
+    `MOLECULE_WORKSPACE_TOKENS=${info.auth_token}`,
+  );
+  // Universal MCP snippet uses MOLECULE_WORKSPACE_TOKEN as the env-var
+  // name passed through to molecule-mcp via `claude mcp add ... -- env
+  // MOLECULE_WORKSPACE_TOKEN=...`. The placeholder must match the
+  // template's literal — pre-2026-04-30 polish this looked for
+  // WORKSPACE_AUTH_TOKEN (carryover from the curl tab), which silently
+  // skipped the substitution and left "<paste from create response>"
+  // visible in the operator's clipboard.
+  const filledUniversalMcp = info.universal_mcp_snippet?.replace(
+    'MOLECULE_WORKSPACE_TOKEN="<paste from create response>"',
+    `MOLECULE_WORKSPACE_TOKEN="${info.auth_token}"`,
+  );
+  // Hermes channel snippet uses MOLECULE_WORKSPACE_TOKEN (same env-var
+  // name as Universal MCP). Stamp the auth_token in so the operator's
+  // copy-paste is fully ready-to-run.
+  const filledHermes = info.hermes_channel_snippet?.replace(
+    'MOLECULE_WORKSPACE_TOKEN="<paste from create response>"',
+    `MOLECULE_WORKSPACE_TOKEN="${info.auth_token}"`,
+  );
+  // Codex + OpenClaw snippets carry the placeholder inside the
+  // generated config block (TOML / JSON respectively). Stamp the
+  // token in so the copy-paste is one less manual edit.
+  const filledCodex = info.codex_snippet?.replace(
+    'MOLECULE_WORKSPACE_TOKEN = "<paste from create response>"',
+    `MOLECULE_WORKSPACE_TOKEN = "${info.auth_token}"`,
+  );
+  const filledOpenClaw = info.openclaw_snippet?.replace(
+    'WORKSPACE_TOKEN="<paste from create response>"',
+    `WORKSPACE_TOKEN="${info.auth_token}"`,
+  );
+  // Kimi snippet carries the placeholder inside the shell heredoc.
+  const filledKimi = info.kimi_snippet?.replace(
+    'MOLECULE_WORKSPACE_TOKEN=<paste from create response>',
+    `MOLECULE_WORKSPACE_TOKEN=${info.auth_token}`,
+  );
+
+  // Build the tab list once so both the tab bar and keyboard handler
+  // share the same ordered array. Computed here (after all filled* vars)
+  // so TypeScript's block-scoping analysis can reach them.
+  const tabList: Tab[] = [];
+  if (filledUniversalMcp) tabList.push("mcp");
+  tabList.push("python");
+  if (filledChannel) tabList.push("claude");
+  if (filledHermes) tabList.push("hermes");
+  if (filledCodex) tabList.push("codex");
+  if (filledOpenClaw) tabList.push("openclaw");
+  if (filledKimi) tabList.push("kimi");
+  tabList.push("curl", "fields");
+
+  return (
+    <Dialog.Root open onOpenChange={(o) => !o && onClose()}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 bg-black/60 z-50" />
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(720px,92vw)] -translate-x-1/2 -translate-y-1/2 rounded-xl bg-surface-sunken border border-line p-6 shadow-2xl">
+          <Dialog.Title className="text-lg font-semibold text-ink">
+            Connect your external agent
+          </Dialog.Title>
+          <Dialog.Description className="mt-1 text-sm text-ink-mid">
+            Paste the snippet below into your agent&apos;s deployment. The
+            auth token is shown <span className="text-warm">only once</span>
+            {" "}— save it somewhere safe before closing this dialog.
+          </Dialog.Description>
+
+          {/* Tabs */}
+          <div
+            role="tablist"
+            aria-label="Connection snippet format"
+            className="mt-4 flex gap-1 border-b border-line"
+          >
+            {tabList.map((t) => (
+              <button
+                key={t}
+                type="button"
+                role="tab"
+                id={`tab-${t}`}
+                aria-selected={tab === t}
+                aria-controls={`panel-${t}`}
+                tabIndex={tab === t ? 0 : -1}
+                ref={(el) => { tabRefs.current.set(t, el); }}
+                onClick={() => setTab(t)}
+                onKeyDown={(e) => handleTabKeyDown(e, t, tabList)}
+                className={`px-3 py-2 text-sm border-b-2 -mb-px transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface ${
+                  tab === t
+                    ? "border-accent text-ink"
+                    : "border-transparent text-ink-mid hover:text-ink-mid"
+                }`}
+              >
+                {t === "claude"
+                  ? "Claude Code"
+                  : t === "hermes"
+                  ? "Hermes"
+                  : t === "codex"
+                  ? "Codex"
+                  : t === "openclaw"
+                  ? "OpenClaw"
+                  : t === "kimi"
+                  ? "Kimi"
+                  : t === "python"
+                  ? "Python SDK"
+                  : t === "mcp"
+                  ? "Universal MCP"
+                  : t === "curl"
+                  ? "curl"
+                  : "Fields"}
+              </button>
+            ))}
+          </div>
+
+          {/* Snippet area — all panels always in the DOM so aria-controls
+              targets are stable. Hidden panels use aria-hidden so screen
+              readers skip them; active panel uses role=tabpanel with
+              aria-labelledby pointing to the tab button. */}
+          <div className="mt-3" data-testid="snippet-panels">
+            {/* Claude Code tab */}
+            <div
+              id="panel-claude"
+              data-testid="panel-claude"
+              role="tabpanel"
+              aria-labelledby="tab-claude"
+              hidden={tab !== "claude" || !filledChannel}
+              className={tab === "claude" && filledChannel ? "" : "hidden"}
+            >
+              {filledChannel && (
+                <SnippetBlock
+                  value={filledChannel}
+                  label="Claude Code channel — polls workspace's A2A; no tunnel needed"
+                  copyKey="claude"
+                  copied={copiedKey === "claude"}
+                  onCopy={() => copy(filledChannel, "claude")}
+                />
+              )}
+            </div>
+            {/* Python SDK tab */}
+            <div
+              id="panel-python"
+              data-testid="panel-python"
+              role="tabpanel"
+              aria-labelledby="tab-python"
+              hidden={tab !== "python"}
+              className={tab === "python" ? "" : "hidden"}
+            >
+              <SnippetBlock
+                value={filledPython}
+                label="Python SDK — includes heartbeat loop (push-mode, needs public URL)"
+                copyKey="python"
+                copied={copiedKey === "python"}
+                onCopy={() => copy(filledPython, "python")}
+              />
+            </div>
+            {/* curl tab */}
+            <div
+              id="panel-curl"
+              data-testid="panel-curl"
+              role="tabpanel"
+              aria-labelledby="tab-curl"
+              hidden={tab !== "curl"}
+              className={tab === "curl" ? "" : "hidden"}
+            >
+              <SnippetBlock
+                value={filledCurl}
+                label="curl — one-shot register only (no heartbeat)"
+                copyKey="curl"
+                copied={copiedKey === "curl"}
+                onCopy={() => copy(filledCurl, "curl")}
+              />
+            </div>
+            {/* Universal MCP tab */}
+            <div
+              id="panel-mcp"
+              data-testid="panel-mcp"
+              role="tabpanel"
+              aria-labelledby="tab-mcp"
+              hidden={tab !== "mcp" || !filledUniversalMcp}
+              className={tab === "mcp" && filledUniversalMcp ? "" : "hidden"}
+            >
+              {filledUniversalMcp && (
+                <SnippetBlock
+                  value={filledUniversalMcp}
+                  label="Universal MCP — standalone register + heartbeat + tools for any MCP-aware runtime (Claude Code, hermes, codex). Pair with Python or Claude Code tab if you need inbound A2A delivery."
+                  copyKey="mcp"
+                  copied={copiedKey === "mcp"}
+                  onCopy={() => copy(filledUniversalMcp, "mcp")}
+                />
+              )}
+            </div>
+            {/* Hermes tab */}
+            <div
+              id="panel-hermes"
+              data-testid="panel-hermes"
+              role="tabpanel"
+              aria-labelledby="tab-hermes"
+              hidden={tab !== "hermes" || !filledHermes}
+              className={tab === "hermes" && filledHermes ? "" : "hidden"}
+            >
+              {filledHermes && (
+                <SnippetBlock
+                  value={filledHermes}
+                  label="Hermes channel — bridges this workspace's A2A traffic into your hermes-agent session as platform messages (push parity with Claude Code). Long-poll based; no tunnel needed."
+                  copyKey="hermes"
+                  copied={copiedKey === "hermes"}
+                  onCopy={() => copy(filledHermes, "hermes")}
+                />
+              )}
+            </div>
+            {/* Codex tab */}
+            <div
+              id="panel-codex"
+              data-testid="panel-codex"
+              role="tabpanel"
+              aria-labelledby="tab-codex"
+              hidden={tab !== "codex" || !filledCodex}
+              className={tab === "codex" && filledCodex ? "" : "hidden"}
+            >
+              {filledCodex && (
+                <SnippetBlock
+                  value={filledCodex}
+                  label="Codex MCP config — wires the molecule MCP server into ~/.codex/config.toml. Outbound tools today; inbound A2A push needs the Python SDK tab paired in (codex's MCP runtime doesn't route arbitrary notifications/* yet)."
+                  copyKey="codex"
+                  copied={copiedKey === "codex"}
+                  onCopy={() => copy(filledCodex, "codex")}
+                />
+              )}
+            </div>
+            {/* OpenClaw tab */}
+            <div
+              id="panel-openclaw"
+              data-testid="panel-openclaw"
+              role="tabpanel"
+              aria-labelledby="tab-openclaw"
+              hidden={tab !== "openclaw" || !filledOpenClaw}
+              className={tab === "openclaw" && filledOpenClaw ? "" : "hidden"}
+            >
+              {filledOpenClaw && (
+                <SnippetBlock
+                  value={filledOpenClaw}
+                  label="OpenClaw MCP config — wires the molecule MCP server via openclaw mcp set + starts the gateway on loopback. Outbound tools today; inbound A2A push on an external openclaw needs the Python SDK tab paired in (a sessions.steer bridge daemon is future work)."
+                  copyKey="openclaw"
+                  copied={copiedKey === "openclaw"}
+                  onCopy={() => copy(filledOpenClaw, "openclaw")}
+                />
+              )}
+            </div>
+            {/* Kimi tab */}
+            <div
+              id="panel-kimi"
+              data-testid="panel-kimi"
+              role="tabpanel"
+              aria-labelledby="tab-kimi"
+              hidden={tab !== "kimi" || !filledKimi}
+              className={tab === "kimi" && filledKimi ? "" : "hidden"}
+            >
+              {filledKimi && (
+                <SnippetBlock
+                  value={filledKimi}
+                  label="Kimi CLI — self-contained Python bridge. Registers, heartbeats, polls for canvas messages, and echoes replies back. NAT-safe (no public URL). Run in a background terminal or via launchd."
+                  copyKey="kimi"
+                  copied={copiedKey === "kimi"}
+                  onCopy={() => copy(filledKimi, "kimi")}
+                />
+              )}
+            </div>
+            {/* Fields tab */}
+            <div
+              id="panel-fields"
+              data-testid="panel-fields"
+              role="tabpanel"
+              aria-labelledby="tab-fields"
+              hidden={tab !== "fields"}
+              className={tab === "fields" ? "" : "hidden"}
+            >
+              <div className="space-y-2">
+                <Field label="workspace_id" value={info.workspace_id} onCopy={() => copy(info.workspace_id, "wsid")} copied={copiedKey === "wsid"} />
+                <Field label="platform_url" value={info.platform_url} onCopy={() => copy(info.platform_url, "url")} copied={copiedKey === "url"} />
+                <Field
+                  label="auth_token"
+                  value={info.auth_token}
+                  onCopy={() => copy(info.auth_token, "tok")}
+                  copied={copiedKey === "tok"}
+                  mono
+                />
+                <Field label="registry_endpoint" value={info.registry_endpoint} onCopy={() => copy(info.registry_endpoint, "reg")} copied={copiedKey === "reg"} />
+                <Field label="heartbeat_endpoint" value={info.heartbeat_endpoint} onCopy={() => copy(info.heartbeat_endpoint, "hb")} copied={copiedKey === "hb"} />
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-sm rounded-lg bg-surface-card hover:bg-surface-card text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
+            >
+              I&apos;ve saved it — close
+            </button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+function SnippetBlock({
+  value,
+  label,
+  copied,
+  onCopy,
+}: {
+  value: string;
+  label: string;
+  copyKey: string;
+  copied: boolean;
+  onCopy: () => void;
+}) {
+  return (
+    <div>
+      <div className="flex items-center justify-between pb-1">
+        <span className="text-xs text-ink-mid">{label}</span>
+        <button
+          type="button"
+          onClick={onCopy}
+          className="text-xs px-2 py-1 rounded bg-accent text-white hover:bg-accent-strong transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+        >
+          {copied ? "Copied!" : "Copy"}
+        </button>
+      </div>
+      <pre className="text-xs bg-surface border border-line rounded-lg p-3 max-h-80 overflow-auto whitespace-pre-wrap break-all font-mono text-ink">
+        {value}
+      </pre>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  value,
+  onCopy,
+  copied,
+  mono,
+}: {
+  label: string;
+  value: string;
+  onCopy: () => void;
+  copied: boolean;
+  mono?: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-xs text-ink-mid w-36 shrink-0">{label}</span>
+      <code
+        className={`flex-1 text-xs bg-surface border border-line rounded px-2 py-1 text-ink break-all ${mono ? "font-mono" : ""}`}
+      >
+        {value || "(missing)"}
+      </code>
+      <button
+        type="button"
+        onClick={onCopy}
+        disabled={!value}
+        className="text-xs px-2 py-1 rounded bg-surface-card hover:bg-surface-card text-ink disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+      >
+        {copied ? "Copied!" : "Copy"}
+      </button>
+    </div>
+  );
+}

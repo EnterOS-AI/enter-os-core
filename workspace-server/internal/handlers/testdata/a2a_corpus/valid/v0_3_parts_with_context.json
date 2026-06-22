@@ -1,0 +1,18 @@
+{
+  "_comment": "v0.3 with contextId — multi-turn conversation thread identifier. The a-2-a-sdk groups messages with the same contextId into a single conversation history.",
+  "_added": "2026-04-30",
+  "_source": "Conversation-thread feature path",
+  "jsonrpc": "2.0",
+  "method": "message/send",
+  "id": "msg-test-v03-context",
+  "params": {
+    "message": {
+      "messageId": "msg-6",
+      "contextId": "ctx-conversation-7",
+      "role": "user",
+      "parts": [
+        {"kind": "text", "text": "Continuing from before — what did you find?"}
+      ]
+    }
+  }
+}

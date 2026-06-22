@@ -1,0 +1,191 @@
+---
+title: Workspace File Copy API
+description: API reference for the workspace file copy and write operations, including CWE-22 path traversal protection.
+---
+
+# Workspace File Copy API
+
+> **Source:** `workspace-server/internal/handlers/container_files.go` + `templates.go`
+> **Handler:** `TemplatesHandler.WriteFile` → `copyFilesToContainer`
+> **Security:** CWE-22 path traversal protection (PRs #1267, #1270, #1271)
+
+`copyFilesToContainer` is the internal Go implementation that powers workspace file write operations. It is not called directly by API clients — clients reach it through the HTTP handler `PUT /workspaces/:id/files/*path`.
+
+## Endpoint Overview
+
+`PUT /workspaces/:id/files/*path` writes a single file to a workspace container or its config volume.
+
+```
+PUT /workspaces/:id/files/*path
+Authorization: Bearer <workspace-token>
+Content-Type: application/json
+
+{
+  "content": "string"
+}
+```
+
+The handler (`TemplatesHandler.WriteFile`) validates the path, then routes to one of two backends:
+
+| Workspace state | Backend | Method |
+|---|---|---|
+| Container running | Docker `CopyToContainer` (tar) | `copyFilesToContainer` |
+| Container offline | Ephemeral Alpine container | `writeViaEphemeral` → `copyFilesToContainer` |
+
+Both paths use `copyFilesToContainer` internally. The ephemeral container path mounts the config volume as `/configs` and calls the same function, so CWE-22 protection applies regardless of container state.
+
+## Function Signature
+
+```go
+func (h *TemplatesHandler) copyFilesToContainer(
+    ctx     context.Context,
+    containerName string,
+    destPath string,
+    files   map[string]string,   // filename → content
+) error
+```
+
+| Parameter | Type | Description |
+|---|---|---|
+| `ctx` | `context.Context` | Request-scoped context |
+| `containerName` | `string` | Docker container name or ID |
+| `destPath` | `string` | Target directory inside the container (typically `/configs`) |
+| `files` | `map[string]string` | Map of relative filenames to file contents |
+
+## Parameters
+
+### `containerName`
+
+The running container for the workspace. Resolved by `TemplatesHandler.findContainer`, which checks three candidates in order:
+
+1. Platform provisioner naming convention (`ws-<uuid>`)
+2. The full workspace container ID
+3. The workspace name from the database (spaces replaced with dashes)
+
+If the container is not running, `findContainer` returns `""` and the handler falls back to `writeViaEphemeral`.
+
+### `destPath`
+
+The directory inside the container where files are written. In normal operation this is `/configs`, which is mounted from the platform-managed config volume. All file operations are constrained to this volume.
+
+### `files` (`map[string]string`)
+
+A map of relative filenames to their string content. File names are **relative paths only** — absolute paths and `..` traversal sequences are rejected before the tar header is written.
+
+## Security Notes
+
+### CWE-22 Path Traversal Protection
+
+**PRs #1267, #1270, #1271** added path traversal protection at the tar-archive-write boundary.
+
+Before these PRs, `copyFilesToContainer` used raw map keys as tar header names without validation:
+
+```go
+// Before — UNSAFE
+header := &tar.Header{
+    Name: name,   // name came directly from map key
+    Mode: 0644,
+    Size: int64(len(data)),
+}
+```
+
+A malicious caller embedding `../` in a file name could write outside the volume mount. Now:
+
+```go
+// After — SAFE (PRs #1267 / #1270)
+clean := filepath.Clean(name)
+if filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") {
+    return fmt.Errorf("unsafe file path in archive: %s", name)
+}
+archiveName := filepath.Join(destPath, name)
+header := &tar.Header{
+    Name: archiveName,   // always inside destPath
+    Mode: 0644,
+    Size: int64(len(data)),
+}
+```
+
+The validation works in three stages:
+
+1. **`filepath.Clean`** normalizes the path (removes redundant separators, resolves `.`).
+2. **Absolute path check** (`filepath.IsAbs`) rejects any path that resolves to an absolute OS path.
+3. **`..` prefix check** (`strings.HasPrefix`) rejects paths that would escape the destination via parent-directory traversal.
+
+The resulting `archiveName` is always inside `destPath`, so the tar header can never write outside the mounted volume regardless of input.
+
+> **Defense in depth:** `WriteFile` (the HTTP handler) also calls `validateRelPath(filePath)` **before** passing the path to `copyFilesToContainer`. This closes the gap for any future caller that bypasses the handler-level check. Do not remove handler-level `validateRelPath` when modifying this code.
+
+### Handler-Level Validation (`validateRelPath`)
+
+```go
+func validateRelPath(relPath string) error {
+    clean := filepath.Clean(relPath)
+    if filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") {
+        return fmt.Errorf("path traversal blocked: %s", relPath)
+    }
+    return nil
+}
+```
+
+`validateRelPath` is called at the start of every file operation handler (`WriteFile`, `ReadFile`, `DeleteFile`, `ListFiles`). Invalid paths return `400 Bad Request` with `{"error": "invalid path"}`.
+
+Allowed root paths are also allow-listed: `root` must be one of `/configs`, `/workspace`, `/home`, or `/plugins`. Other values return `400 Bad Request`.
+
+## Error Codes
+
+`copyFilesToContainer` returns errors directly. The `WriteFile` HTTP handler wraps them:
+
+| HTTP status | Condition | Response body |
+|---|---|---|
+| `400 Bad Request` | `validateRelPath` rejects the path (traversal attempt) | `{"error": "invalid path"}` |
+| `400 Bad Request` | Malformed JSON body | `{"error": "invalid request body"}` |
+| `404 Not Found` | Workspace not found in database | `{"error": "workspace not found"}` |
+| `500 Internal Server Error` | Docker unavailable | `{"error": "failed to write file: docker not available"}` |
+| `500 Internal Server Error` | Tar header write failure | `{"error": "failed to write file: failed to write tar header for <name>: ..."}` |
+| `500 Internal Server Error` | Docker `CopyToContainer` failure | `{"error": "failed to write file: <docker error>"}` |
+
+## Example
+
+### Write a file to a workspace
+
+```bash
+curl -X PUT https://platform.example.com/workspaces/ws-abc123/files/claude.md \
+  -H "Authorization: Bearer <workspace-token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "# My Agent\n\nThis agent specializes in code review.\n"
+  }'
+```
+
+**Success response (`200 OK`):**
+
+```json
+{
+  "status": "saved",
+  "path": "claude.md"
+}
+```
+
+### Path traversal rejected
+
+```bash
+curl -X PUT https://platform.example.com/workspaces/ws-abc123/files/../../etc/passwd \
+  -H "Authorization: Bearer <workspace-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"content": "hacked"}'
+```
+
+**Rejection response (`400 Bad Request`):**
+
+```json
+{
+  "error": "invalid path"
+}
+```
+
+## Related
+
+- [Platform API Reference](./platform-api.md) — full API endpoint table
+- [Workspace Runtime](../agent-runtime/workspace-runtime.md) — runtime environment model
+- `workspace-server/internal/handlers/templates.go` — `WriteFile`, `validateRelPath`
+- `workspace-server/internal/handlers/container_files.go` — `copyFilesToContainer`, `writeViaEphemeral`

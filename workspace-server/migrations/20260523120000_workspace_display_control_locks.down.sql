@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS idx_workspace_display_control_locks_expires;
+DROP TABLE IF EXISTS workspace_display_control_locks;

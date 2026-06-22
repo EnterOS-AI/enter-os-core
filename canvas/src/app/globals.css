@@ -1,0 +1,308 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+/*
+ * Tailwind v4 defaults the `dark:` variant to `prefers-color-scheme: dark`.
+ * Our theme switcher writes `data-theme="dark"` on <html> instead (so user
+ * choice via the toggle wins over OS preference). Re-bind `dark:` to that
+ * attribute so component classes like `dark:bg-zinc-800` track the same
+ * source of truth as the `[data-theme="dark"]` token overrides below.
+ */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/*
+ * Load order:
+ *   1. Tailwind core (v4) — provides preflight + utility generation.
+ *   2. xterm — overrides preflight on its own .xterm-* class names; must
+ *      load AFTER tailwind so its specificity wins.
+ *   3. theme-tokens.css — canvas-only motion + deploy animation vars
+ *      (--mol-duration-*, --mol-easing-*, --mol-deploy-*). NOT colour
+ *      tokens; the warm-paper @theme block below owns those.
+ *   4. settings-panel.css / org-deploy.css — feature stylesheets that
+ *      reference the variables above.
+ */
+@import "xterm/css/xterm.css";
+@import "../styles/theme-tokens.css";
+@import "../styles/settings-panel.css";
+@import "../styles/org-deploy.css";
+
+/*
+ * Warm-paper semantic tokens — light defaults via @theme, dark
+ * overrides via [data-theme="dark"]. Names are role-based
+ * (`bg-surface`, `text-ink`, `border-line`) not colour-based, so the
+ * same component classes work in either mode.
+ *
+ * Source of truth: molecule-app/app/globals.css. Keep aligned across
+ * surfaces (landing, market, app, canvas) so a token tweak ripples
+ * everywhere via a single PR per repo.
+ *
+ * Theme preference is persisted in the `mol_theme` cookie scoped to
+ * Domain=.moleculesai.app so the choice follows the user across
+ * subdomains. The inline boot script in app/layout.tsx applies it
+ * before paint to eliminate flash.
+ */
+@theme {
+  /* Org Concierge palette (RFC platform-agent / canvas redesign). Warm-paper
+     light theme + purple accent replacing the old blue brand. */
+  /* Surface — page / elevated card / sunken input / deep card */
+  --color-surface: #f1efe8;
+  --color-surface-elevated: #ffffff;
+  --color-surface-sunken: #f6f4ee;
+  --color-surface-card: #faf9f4;
+
+  /* Borders */
+  --color-line: #ddd9cf;
+  --color-line-soft: #ebe8df;
+
+  /* Text */
+  --color-ink: #21201b;
+  --color-ink-mid: #5c5a52;
+  --color-ink-soft: #656871;
+
+  /* Brand + state — purple accent (concept #7c3aed). good/bad (LIGHT) are
+     darkened to actually clear WCAG AA 4.5:1 on their own 10%-tint badges
+     (`text-good` on `bg-good/10`): the old #0c8a52/#c2403c measured 3.87/4.46
+     (axe, molecule-app issue #48 + core#2742) — only NOW do they pass
+     (#2a6e44 → 5.33, #b0463f → 4.79). ink-soft #656871 too (4.84). These are
+     the UNIFIED values all three surfaces share (canvas / mobile-web palette /
+     molecule-app) — the cross-surface SSOT, gated by globals.a11y.test.ts.
+     Dark already passes AA (unchanged). */
+  --color-accent: #7c3aed;
+  --color-accent-strong: #6d28d9;
+  --color-warm: #c47e12;
+  --color-good: #2a6e44;
+  --color-bad: #b0463f;
+}
+
+[data-theme="dark"] {
+  /* Org Concierge dark palette — near-black panels, bright purple accent. */
+  --color-surface: #08080a;
+  --color-surface-elevated: #16161d;
+  --color-surface-sunken: #0d0d11;
+  --color-surface-card: #1b1b23;
+
+  --color-line: #26262e;
+  --color-line-soft: #1b1b22;
+
+  --color-ink: #ececf1;
+  --color-ink-mid: #9b9baa;
+  --color-ink-soft: #65656f;
+
+  /* Purple accent brightened for AA on the near-black surfaces. */
+  --color-accent: #a78bfa;
+  --color-accent-strong: #c4b5fd;
+  --color-warm: #fbbf24;
+  --color-good: #34d399;
+  --color-bad: #f87171;
+}
+
+:root {
+  color-scheme: light;
+}
+[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+/*
+ * Always-dark surface tokens. Terminals (xterm), the console modal,
+ * and log streams stay dark in both modes — readable green-on-black
+ * code surfaces don't translate cleanly to a light theme. Components
+ * that should not light-flip use `bg-bg`, `bg-bg-elev`, `bg-bg-card`,
+ * `text-ink-mute`, `text-ink-dim`, `border-line-strong` instead of
+ * the warm-paper utilities above.
+ *
+ * Distinct names (bg-* / ink-mute / ink-dim / line-strong) so they
+ * don't collide with the warm-paper namespace (surface / ink /
+ * line). Both palettes coexist; the choice between them is per
+ * component, not per theme.
+ */
+@theme {
+  /* Org Concierge canvas palette (near-black + purple). */
+  --color-bg: rgb(8 8 10);            /* concept --bg #08080a */
+  --color-bg-elev: rgb(22 22 29);     /* concept --card #16161d */
+  --color-bg-card: rgb(27 27 35);     /* concept --card-2 #1b1b23 */
+  --color-line-strong: rgb(54 54 64);
+  --color-ink-mute: rgb(155 155 170); /* concept --tx-2 */
+  --color-ink-dim: rgb(101 101 111);  /* concept --tx-3 */
+  --color-accent-dim: rgb(167 139 250);/* concept --accent-2 #a78bfa */
+  --color-plasma: rgb(139 92 246);    /* concept --accent #8b5cf6 */
+  --color-warn: rgb(251 191 36);      /* amber-400 */
+
+  /* Typography — Org Concierge (Hanken Grotesk UI, JetBrains Mono code).
+     next/font variables are set on <html> in the canvas layout. */
+  --font-sans: var(--font-hanken), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: var(--color-surface);
+  color: var(--color-ink);
+  font-family: var(--font-hanken), -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* React Flow overrides for both themes. Edge stroke pulls from the
+   semantic line token so dark mode keeps its existing zinc-700 look
+   and light mode picks up the warm-paper line colour. */
+.react-flow__edge-path {
+  stroke: var(--color-line) !important;
+  stroke-width: 1.5 !important;
+}
+
+.react-flow__edge.animated .react-flow__edge-path {
+  stroke-dasharray: 5;
+  animation: dashdraw 0.5s linear infinite;
+}
+
+@keyframes dashdraw {
+  to {
+    stroke-dashoffset: -10;
+  }
+}
+
+.react-flow__handle {
+  transition: all 0.15s ease;
+}
+
+.react-flow__node {
+  /* Transform transition drives the "spawn from parent" motion —
+     org-deploy sets the node's initial position to the parent's
+     absolute coords, then repositions to the real slot, and this
+     transition interpolates the translate() in between.
+     Non-deploy workspace moves (drag, nest) get the same smoothing
+     for free. */
+  transition:
+    box-shadow var(--mol-duration-fast) ease,
+    transform var(--mol-duration-spawn) var(--mol-easing-bounce-out);
+}
+/* Drag events must feel instant — React Flow adds this class
+   for the lifetime of the gesture. */
+.react-flow__node.dragging {
+  transition: box-shadow var(--mol-duration-fast) ease;
+}
+
+/* Scrollbar styling. Track + thumb pull from the surface tokens so
+   they feel native to either theme. */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-line-strong, var(--color-ink-soft));
+}
+
+/* Selection */
+::selection {
+  background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
+
+/* Panel slide animation */
+@keyframes slide-in-from-right {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes slide-in-from-bottom {
+  from { transform: translateY(10px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.slide-in-from-bottom {
+  animation-name: slide-in-from-bottom;
+}
+
+@keyframes slide-in-from-top {
+  from { transform: translateY(-10px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.slide-in-from-top {
+  animation-name: slide-in-from-top;
+}
+
+.animate-in {
+  animation-fill-mode: both;
+}
+
+.slide-in-from-right {
+  animation-name: slide-in-from-right;
+}
+
+.duration-200 {
+  animation-duration: 200ms;
+}
+
+/* Subtle node entrance */
+@keyframes node-appear {
+  from { opacity: 0; transform: scale(0.9); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.react-flow__node {
+  animation: node-appear 0.3s ease-out;
+}
+
+/* ============================================================
+   REDUCED MOTION — WCAG 2.3.3
+   Disable all animations/transitions for users who prefer it.
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* Custom slide-in / animate-in classes used by Toaster & ApprovalBanner */
+  .animate-in,
+  .slide-in-from-bottom,
+  .slide-in-from-top,
+  .slide-in-from-right {
+    animation: none !important;
+    transform: none !important;
+    opacity: 1 !important;
+  }
+
+  /* React Flow animated edges */
+  .react-flow__edge.animated .react-flow__edge-path {
+    animation: none !important;
+    stroke-dasharray: none !important;
+  }
+
+  /* React Flow node appear animation */
+  .react-flow__node {
+    animation: none !important;
+  }
+
+  /* React Flow Controls toolbar buttons — WCAG 2.4.7 focus-visible */
+  .react-flow__controls button:focus-visible {
+    outline: 2px solid var(--accent, #3b5bdb);
+    outline-offset: 2px;
+  }
+
+  /* React Flow Minimap nodes — WCAG 2.4.7 focus-visible */
+  .react-flow__minimap:focus-visible,
+  .react-flow__minimap svg:focus-visible {
+    outline: 2px solid var(--accent, #3b5bdb);
+    outline-offset: 2px;
+  }
+}

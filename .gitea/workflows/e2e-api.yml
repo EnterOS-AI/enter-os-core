@@ -1,0 +1,535 @@
+name: E2E API Smoke Test
+
+# Ported from .github/workflows/e2e-api.yml on 2026-05-11 per RFC
+# internal#219 §1 sweep. Differences from the GitHub version:
+#   - Dropped `workflow_dispatch.inputs` (Gitea 1.22.6 parser rejects them
+#     per feedback_gitea_workflow_dispatch_inputs_unsupported).
+#   - Dropped `merge_group:` (no Gitea merge queue).
+#   - Dropped `environment:` blocks (Gitea has no environments).
+#   - Workflow-level env.GITHUB_SERVER_URL pinned per
+#     feedback_act_runner_github_server_url.
+#   - `continue-on-error: true` on each job (RFC §1 contract).
+#
+# Extracted from ci.yml so workflow-level concurrency can protect this job
+# from run-level cancellation (issue #458).
+#
+# Trigger model (revised 2026-04-29):
+#
+# Always FIRES on push/pull_request to staging+main. Real work is gated
+# per-step on `needs.detect-changes.outputs.api` — when paths under
+# `workspace-server/`, `tests/e2e/`, or this workflow file haven't
+# changed, the no-op step alone runs and emits SUCCESS for the
+# `E2E API Smoke Test` check, satisfying branch protection without
+# spending CI cycles. See the in-job comment on the `e2e-api` job for
+# why this is one job (not two-jobs-sharing-name) and the 2026-04-29
+# PR #2264 incident that drove the consolidation.
+#
+# Parallel-safety (Class B Hongming-owned CICD red sweep, 2026-05-08)
+# -------------------------------------------------------------------
+# Same substrate hazard as PR #98 (handlers-postgres-integration). Our
+# Gitea act_runner runs with `container.network: host` (operator host
+# `/opt/molecule/runners/config.yaml`), which means:
+#
+#   * Two concurrent runs both try to bind their `-p 15432:5432` /
+#     `-p 16379:6379` host ports — the second postgres/redis FATALs
+#     with `Address in use` and `docker run` returns exit 125 with
+#     `Conflict. The container name "/molecule-ci-postgres" is already
+#     in use by container ...`. Verified in run a7/2727 on 2026-05-07.
+#   * The fixed container names `molecule-ci-postgres` / `-redis` (the
+#     pre-fix shape) collide on name AS WELL AS port. The cleanup-with-
+#     `docker rm -f` at the start of the second job KILLS the first
+#     job's still-running postgres/redis.
+#
+# Fix shape (mirrors PR #98's bridge-net pattern, adapted because
+# platform-server is a Go binary on the host, not a containerised
+# step):
+#
+#   1. Unique container names per run:
+#         pg-e2e-api-${RUN_ID}-${RUN_ATTEMPT}
+#         redis-e2e-api-${RUN_ID}-${RUN_ATTEMPT}
+#      `${RUN_ID}-${RUN_ATTEMPT}` is unique even across reruns of the
+#      same run_id.
+#   2. Ephemeral host port per run (`-p 0:5432`), then read the actual
+#      bound port via `docker port` and export DATABASE_URL/REDIS_URL
+#      pointing at it. No fixed host-port → no port collision.
+#   3. `127.0.0.1` (NOT `localhost`) in URLs — IPv6 first-resolve was
+#      the original flake fixed in #92 and the script's still IPv6-
+#      enabled.
+#   4. `if: always()` cleanup so containers don't leak when test steps
+#      fail.
+#
+# Issue #94 items #2 + #3 (also fixed here):
+#   * Pre-pull `alpine:latest` so the platform-server's provisioner
+#     (`internal/handlers/container_files.go`) can stand up its
+#     ephemeral token-write helper without a daemon.io round-trip.
+#   * Create `molecule-core-net` bridge network if missing so the
+#     provisioner's container.HostConfig {NetworkMode: ...} attach
+#     succeeds.
+# Item #1 (timeouts) — evidence on recent runs (77/3191, ae/4270, 0e/
+# 2318) shows Postgres ready in 3s, Redis in 1s, Platform in 1s when
+# they DO come up. Timeouts are not the bottleneck; not bumped.
+#
+# Item #1046 (fixed 2026-05-14): Stale platform-server from cancelled runs
+#   lingers on :8080 after "Stop platform" step is skipped (workflow cancelled
+#   before reaching line 335). Added a pre-start "Kill stale platform-server"
+#   step (line 286) that scans /proc for zombie platform-server processes
+#   and kills them before the port probe or bind. Makes the ephemeral port
+#   probe + start sequence deterministic.
+#
+# Item explicitly NOT fixed here: failing test `Status back online`
+# fails because the platform's langgraph workspace template image
+# (ghcr.io/molecule-ai/workspace-template-langgraph:latest) returns
+# 403 Forbidden post-2026-05-06 GitHub org suspension. That is a
+# template-registry resolution issue (ADR-002 / local-build mode) and
+# belongs in a separate change that touches workspace-server, not
+# this workflow file.
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main, staging]
+concurrency:
+  # Per-SHA grouping (changed 2026-04-28 from per-ref). Per-ref had the
+  # same auto-promote-staging brittleness as e2e-staging-canvas — back-
+  # to-back staging pushes share refs/heads/staging, so the older push's
+  # queued run gets cancelled when a newer push lands. Auto-promote-
+  # staging then sees `completed/cancelled` for the older SHA and stays
+  # put; the newer SHA's gates may eventually save the day, but if the
+  # newer push gets cancelled too, we deadlock.
+  #
+  # See e2e-staging-canvas.yml's identical concurrency block for the full
+  # rationale and the 2026-04-28 incident reference.
+  group: e2e-api-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  detect-changes:
+    # mc#1529 follow-on: pin to `docker-host` so the e2e-api lane lands
+    # on Linux operator-host runners (molecule-runner-*) that carry the
+    # `molecule-core-net` bridge network + a working `aws ecr get-login-
+    # password | docker login` path. The bare `ubuntu-latest` label is
+    # also accepted by hongming-pc-runner-* (Windows act_runner v1.0.3),
+    # where the docker.sock-bound steps below fail non-deterministically
+    # (e.g. `docker run -d --name pg-e2e-api-...` with port-bind +
+    # `docker exec ... pg_isready` cannot work against a Windows daemon).
+    # detect-changes itself doesn't bind docker.sock, but pinning here too
+    # keeps both jobs on the same lane so we don't re-roll the dice on
+    # workspace-volume cross-host surprises and the routing rule is
+    # discoverable in one place. Mirror of mc#1543 (handlers-postgres-
+    # integration). See internal#512 for the class defect.
+    runs-on: docker-host
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#1982: mask removed. If regressions appear, root-fix the underlying
+    # test — do NOT renew the mask silently.
+    continue-on-error: false
+    outputs:
+      api: ${{ steps.decide.outputs.api }}
+      debug: ${{ steps.decide.outputs.debug }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - id: decide
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          BASE_SHA="${PR_BASE_SHA:-$PUSH_BEFORE}"
+          python3 .gitea/scripts/detect-changes.py \
+            --profile e2e-api \
+            --event-name "${{ github.event_name }}" \
+            --pr-base-sha "$PR_BASE_SHA" \
+            --base-ref "$PR_BASE_REF" \
+            --push-before "${GITHUB_EVENT_BEFORE:-$PUSH_BEFORE}" || {
+            # Script crash / uncaught error: fail open so the E2E gate runs
+            # rather than silently no-oping a potentially-breaking PR.
+            echo "api=true" >> "$GITHUB_OUTPUT"
+            echo "debug=detect-script-error event=${{ github.event_name }} base=$BASE_SHA" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          echo "debug=profile=e2e-api event=${{ github.event_name }} base=$BASE_SHA" >> "$GITHUB_OUTPUT"
+
+  # ONE job (no job-level `if:`) that always runs and reports under the
+  # required-check name `E2E API Smoke Test`. Real work is gated per-step
+  # on `needs.detect-changes.outputs.api`. Reason: GitHub registers a
+  # check run for every job that matches `name:`, and a job-level
+  # `if: false` produces a SKIPPED check run. Branch protection treats
+  # all check runs with a matching context name on the latest commit as a
+  # SET — any SKIPPED in the set fails the required-check eval, even with
+  # SUCCESS siblings. Verified 2026-04-29 on PR #2264 (staging→main):
+  # 4 check runs (2 SKIPPED + 2 SUCCESS) at the head SHA blocked
+  # promotion despite all real work succeeding. Collapsing to a single
+  # always-running job with conditional steps emits exactly one SUCCESS
+  # check run regardless of paths filter — branch-protection-clean.
+  e2e-api:
+    needs: detect-changes
+    name: E2E API Smoke Test
+    # mc#1529 follow-on: must run on operator-host Linux runners (where
+    # docker.sock + `molecule-core-net` + `aws ecr ...` work). See
+    # detect-changes for the full rationale.
+    runs-on: docker-host
+    # Phase 3 (RFC #219 §1): surface broken workflows without blocking.
+    # mc#1982: mask removed. If regressions appear, root-fix the underlying
+    # test — do NOT renew the mask silently.
+    continue-on-error: false
+    timeout-minutes: 15
+    env:
+      # Unique per-run container names so concurrent runs on the host-
+      # network act_runner don't collide on name OR port.
+      # `${RUN_ID}-${RUN_ATTEMPT}` stays unique across reruns of the
+      # same run_id. PORT is set later (after docker port lookup) since
+      # we let Docker assign an ephemeral host port.
+      PG_CONTAINER: pg-e2e-api-${{ github.run_id }}-${{ github.run_attempt }}
+      REDIS_CONTAINER: redis-e2e-api-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: No-op pass (paths filter excluded this commit)
+        if: needs.detect-changes.outputs.api != 'true'
+        run: |
+          echo "No workspace-server / tests/e2e / workflow changes — E2E API gate satisfied without running tests."
+          echo "::notice::E2E API Smoke Test no-op pass (paths filter excluded this commit)."
+          echo "::notice::detect-changes debug: ${{ needs.detect-changes.outputs.debug }}"
+      - if: needs.detect-changes.outputs.api == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - if: needs.detect-changes.outputs.api == 'true'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 'stable'
+          # cache:false — the self-hosted runner bind-mounts a persistent
+          # GOCACHE/GOMODCACHE (/var/cache/ci-go-{build,mod}); actions/cache is
+          # redundant and corrupts it by untarring over the bind mount ("File
+          # exists" -> "Failed to restore" -> partial cache -> linker/typecheck
+          # errors on heavy jobs, e.g. test -race link "too many errors" and
+          # go-arch-lint "without types"). Fleet sweep after the cp ci.yml find.
+          cache: false
+          cache-dependency-path: workspace-server/go.sum
+      - name: Pre-pull alpine + ensure provisioner network (Issue #94 items #2 + #3)
+        if: needs.detect-changes.outputs.api == 'true'
+        run: |
+          # Provisioner uses alpine:latest for ephemeral token-write
+          # containers (workspace-server/internal/handlers/container_files.go).
+          # Pre-pull so the first provision in test_api.sh doesn't race
+          # the daemon's pull cache. Idempotent — `docker pull` is a no-op
+          # when the image is already present.
+          docker pull alpine:latest >/dev/null
+          # Provisioner attaches workspace containers to
+          # molecule-core-net (workspace-server/internal/provisioner/
+          # provisioner.go::DefaultNetwork). The bridge already exists on
+          # the operator host's docker daemon — `network create` is
+          # idempotent via `|| true`.
+          docker network create molecule-core-net >/dev/null 2>&1 || true
+          echo "alpine:latest pre-pulled; molecule-core-net ensured."
+      - name: Start Postgres (docker)
+        if: needs.detect-changes.outputs.api == 'true'
+        run: |
+          # Defensive cleanup — only matches THIS run's container name,
+          # so it cannot kill a sibling run's postgres. (Pre-fix the
+          # name was static and this rm hit other runs' containers.)
+          docker rm -f "$PG_CONTAINER" 2>/dev/null || true
+          # `-p 0:5432` requests an ephemeral host port; we read it back
+          # below and export DATABASE_URL.
+          docker run -d --name "$PG_CONTAINER" \
+            -e POSTGRES_USER=dev -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=molecule \
+            -p 0:5432 postgres:16 >/dev/null
+          # Resolve the host-side port assignment. `docker port` prints
+          # `0.0.0.0:NNNN` (and on host-net runners may also print an
+          # IPv6 line — take the first IPv4 line).
+          PG_PORT=$(docker port "$PG_CONTAINER" 5432/tcp | awk -F: '/^0\.0\.0\.0:/ {print $2; exit}')
+          if [ -z "$PG_PORT" ]; then
+            # Fallback: any first line. Some Docker versions print only
+            # one line.
+            PG_PORT=$(docker port "$PG_CONTAINER" 5432/tcp | head -1 | awk -F: '{print $NF}')
+          fi
+          if [ -z "$PG_PORT" ]; then
+            echo "::error::Could not resolve host port for $PG_CONTAINER"
+            docker port "$PG_CONTAINER" 5432/tcp || true
+            docker logs "$PG_CONTAINER" || true
+            exit 1
+          fi
+          # 127.0.0.1 (NOT localhost) — IPv6 first-resolve flake (#92).
+          echo "PG_PORT=${PG_PORT}" >> "$GITHUB_ENV"
+          echo "DATABASE_URL=postgres://dev:dev@127.0.0.1:${PG_PORT}/molecule?sslmode=disable" >> "$GITHUB_ENV"
+          echo "Postgres host port: ${PG_PORT}"
+          for i in $(seq 1 30); do
+            if docker exec "$PG_CONTAINER" pg_isready -U dev >/dev/null 2>&1; then
+              echo "Postgres ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Postgres did not become ready in 30s"
+          docker logs "$PG_CONTAINER" || true
+          exit 1
+      - name: Start Redis (docker)
+        if: needs.detect-changes.outputs.api == 'true'
+        run: |
+          docker rm -f "$REDIS_CONTAINER" 2>/dev/null || true
+          docker run -d --name "$REDIS_CONTAINER" -p 0:6379 redis:7 >/dev/null
+          REDIS_PORT=$(docker port "$REDIS_CONTAINER" 6379/tcp | awk -F: '/^0\.0\.0\.0:/ {print $2; exit}')
+          if [ -z "$REDIS_PORT" ]; then
+            REDIS_PORT=$(docker port "$REDIS_CONTAINER" 6379/tcp | head -1 | awk -F: '{print $NF}')
+          fi
+          if [ -z "$REDIS_PORT" ]; then
+            echo "::error::Could not resolve host port for $REDIS_CONTAINER"
+            docker port "$REDIS_CONTAINER" 6379/tcp || true
+            docker logs "$REDIS_CONTAINER" || true
+            exit 1
+          fi
+          echo "REDIS_PORT=${REDIS_PORT}" >> "$GITHUB_ENV"
+          echo "REDIS_URL=redis://127.0.0.1:${REDIS_PORT}" >> "$GITHUB_ENV"
+          echo "Redis host port: ${REDIS_PORT}"
+          for i in $(seq 1 15); do
+            if docker exec "$REDIS_CONTAINER" redis-cli ping 2>/dev/null | grep -q PONG; then
+              echo "Redis ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Redis did not become ready in 15s"
+          docker logs "$REDIS_CONTAINER" || true
+          exit 1
+      - name: Set deterministic admin token for the e2e platform
+        if: needs.detect-changes.outputs.api == 'true'
+        run: |
+          # AdminAuth (workspace-server/internal/middleware/wsauth_middleware.go:164)
+          # reads ADMIN_TOKEN. Setting it (a) closes isDevModeFailOpen (devmode.go:50
+          # returns false when ADMIN_TOKEN is non-empty), so admin routes require a
+          # bearer, and (b) makes Tier-2b accept a bearer that constant-time-equals
+          # ADMIN_TOKEN. The platform process inherits ADMIN_TOKEN from $GITHUB_ENV.
+          #
+          # MOLECULE_ADMIN_TOKEN is the var the e2e scripts send as the bearer
+          # (tests/e2e/_lib.sh:33 e2e_mint_workspace_token, and the run_mock
+          # org-import curl). Set BOTH to the SAME value so the bearer the test
+          # sends == the secret the platform checks. Deterministic test value;
+          # this platform is ephemeral, single-run, and never reachable off-host.
+          E2E_ADMIN_TOKEN="e2e-api-admin-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "ADMIN_TOKEN=${E2E_ADMIN_TOKEN}" >> "$GITHUB_ENV"
+          echo "MOLECULE_ADMIN_TOKEN=${E2E_ADMIN_TOKEN}" >> "$GITHUB_ENV"
+          echo "Admin token configured for the e2e platform (ADMIN_TOKEN + MOLECULE_ADMIN_TOKEN)."
+          # Channels e2e test seam (core#2332 P1.10). These env-gated overrides
+          # let the LIVE Slack-webhook send path + Telegram discover path target
+          # the local mock upstreams that tests/e2e/test_channels_e2e.sh binds,
+          # so the outbound serialize+POST is provable in CI (was unit-mock-only).
+          # Inert in prod/staging — those deploys never set these. The fixed
+          # loopback ports MUST match the script's E2E_CHANNELS_*_PORT defaults.
+          echo "MOLECULE_CHANNELS_TEST_WEBHOOK_BASE=http://127.0.0.1:18099/" >> "$GITHUB_ENV"
+          echo "MOLECULE_CHANNELS_TEST_TELEGRAM_API_BASE=http://127.0.0.1:18098" >> "$GITHUB_ENV"
+          echo "Channels test seam configured (webhook+telegram mock bases on fixed loopback ports)."
+      - name: Build platform
+        if: needs.detect-changes.outputs.api == 'true'
+        working-directory: workspace-server
+        run: go build -o platform-server ./cmd/server
+      - name: Pick platform port
+        if: needs.detect-changes.outputs.api == 'true'
+        run: |
+          PLATFORM_PORT=$(python3 - <<'PY'
+          import socket
+
+          with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+              s.bind(("127.0.0.1", 0))
+              print(s.getsockname()[1])
+          PY
+          )
+          echo "PORT=${PLATFORM_PORT}" >> "$GITHUB_ENV"
+          echo "BASE=http://127.0.0.1:${PLATFORM_PORT}" >> "$GITHUB_ENV"
+          echo "Platform host port: ${PLATFORM_PORT}"
+      - name: Kill stale platform-server before start (issue #1046)
+        if: needs.detect-changes.outputs.api == 'true'
+        run: |
+          # Concurrent runs on the same host-network act_runner can leave a
+          # zombie platform-server from a cancelled/timeout run. Cancelled
+          # runs never reach the "Stop platform" step (line 335), so the
+          # old process lingers. Kill it before the ephemeral port probe
+          # or start so the port is definitively free.
+          #
+          # /proc scan — works on any Linux without pkill/lsof/ss.
+          # comm field is truncated to 15 chars: "platform-serve" matches
+          # "platform-server". Verify with cmdline to avoid false positives.
+          killed=0
+          for pid in $(grep -l "platform-serve" /proc/[0-9]*/comm 2>/dev/null); do
+            kpid="${pid%/comm}"
+            kpid="${kpid##*/}"
+            cmdline=$(cat "/proc/${kpid}/cmdline" 2>/dev/null | tr '\0' ' ')
+            if echo "$cmdline" | grep -q "platform-server"; then
+              echo "Killing stale platform-server pid ${kpid}: ${cmdline}"
+              kill "$kpid" 2>/dev/null || true
+              killed=$((killed + 1))
+            fi
+          done
+          if [ "$killed" -gt 0 ]; then
+            sleep 2
+            echo "Killed $killed stale process(es); port(s) released."
+          else
+            echo "No stale platform-server found."
+          fi
+      - name: Start platform (background)
+        if: needs.detect-changes.outputs.api == 'true'
+        working-directory: workspace-server
+        run: |
+          # DATABASE_URL + REDIS_URL exported by the start-postgres /
+          # start-redis steps point at this run's per-run host ports.
+          ./platform-server > platform.log 2>&1 &
+          echo $! > platform.pid
+      - name: Wait for /health (with migration completion gate)
+        # Issue #2205: 30 one-second probes is insufficient when the migration
+        # chain is still running; /health can flip true before migrations
+        # finish, so subsequent steps that touch the DB fail. Hybrid fix:
+        # bump timeout to 300s AND gate exit on the same workspaces-table
+        # existence check the downstream "Assert migrations applied" uses.
+        if: needs.detect-changes.outputs.api == 'true'
+        run: |
+          # Readiness signal: the platform binds /health only AFTER the full
+          # migration chain has been applied on cold start (it prints
+          # "Platform starting on :PORT" at that point). So a 200 from /health
+          # is the real "migrations done + server listening" signal.
+          #
+          # The migration chain grows every release, so a fixed ~30s budget is
+          # brittle by construction (it WILL be exceeded as migrations accrue).
+          # Use a generous wall-clock budget that comfortably exceeds
+          # cold-start + full-migration time, polling fast. This is robust to a
+          # growing chain WITHOUT masking a genuinely dead platform: if the
+          # background platform-server process has exited (e.g. a broken
+          # migration crashed it), we stop and fail loudly at once instead of
+          # waiting out the whole budget.
+          #
+          # Issue #2205: /health can flip true before migrations finish on a
+          # growing chain, so we gate exit on the workspaces-table existence
+          # check the downstream "Assert migrations applied" uses.
+          DEADLINE_SECS=300          # cold-start + full migration chain headroom
+          PLATFORM_PID="$(cat workspace-server/platform.pid 2>/dev/null || true)"
+          start=$(date +%s)
+          while :; do
+            if curl -sf "$BASE/health" > /dev/null; then
+              tables=$(docker exec "$PG_CONTAINER" psql -U dev -d molecule -tAc \
+                "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='workspaces'" 2>/dev/null || echo "0")
+              if [ "$tables" = "1" ]; then
+                echo "Platform healthy + migrations applied after $(( $(date +%s) - start ))s"
+                exit 0
+              fi
+            fi
+            # Fast-fail: if the platform process died, /health will never come.
+            if [ -n "$PLATFORM_PID" ] && ! kill -0 "$PLATFORM_PID" 2>/dev/null; then
+              echo "::error::platform-server (pid ${PLATFORM_PID}) exited before /health became reachable — see log below"
+              cat workspace-server/platform.log || true
+              exit 1
+            fi
+            if [ "$(( $(date +%s) - start ))" -ge "$DEADLINE_SECS" ]; then
+              echo "::error::Platform did not become healthy with migrations applied within ${DEADLINE_SECS}s — see log below"
+              cat workspace-server/platform.log || true
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Assert migrations applied
+        if: needs.detect-changes.outputs.api == 'true'
+        run: |
+          tables=$(docker exec "$PG_CONTAINER" psql -U dev -d molecule -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='workspaces'")
+          if [ "$tables" != "1" ]; then
+            echo "::error::Migrations did not apply"
+            cat workspace-server/platform.log || true
+            exit 1
+          fi
+          echo "Migrations OK"
+      - name: Run today's-PR-coverage E2E (mc#1525/1535/1536/1539/1542 fix-specific assertions)
+        if: needs.detect-changes.outputs.api == 'true'
+        run: bash tests/e2e/test_today_pr_coverage_e2e.sh
+      - name: Run E2E API tests
+        if: needs.detect-changes.outputs.api == 'true'
+        run: bash tests/e2e/test_api.sh
+      - name: Run keyless feature-contract E2E (terminal-diagnose / webhooks / budget / checkpoints / audit / traces / session-search / rescue / llm-billing-mode / resume / hibernate)
+        # Keyless required-lane coverage for feature endpoints that ship without
+        # an LLM key (runtime=external fixture). Each asserts the real HTTP
+        # contract + a meaningful failure mode (401/400/fail-closed) so a
+        # regression goes RED, not silently green. The mock-runtime A2A canned
+        # round-trip is covered by the priority-runtimes `mock` arm, not here.
+        if: needs.detect-changes.outputs.api == 'true'
+        run: bash tests/e2e/test_keyless_feature_contracts_e2e.sh
+      - name: Run user_tasks E2E (REST + MCP — agent→user action requests)
+        if: needs.detect-changes.outputs.api == 'true'
+        run: bash tests/e2e/test_user_tasks_e2e.sh
+      - name: Run secrets-dispatch contract test (keyless SECRETS_JSON branch order)
+        # Previously orphaned (no workflow referenced it). Hermetic unit-style
+        # contract over test_staging_full_saas.sh's LLM-key branch precedence —
+        # needs no platform, no bearer, no network. Guards the 2026-05-03
+        # "wrong key shape wins" incident class.
+        if: needs.detect-changes.outputs.api == 'true'
+        run: bash tests/e2e/test_secrets_dispatch.sh
+      - name: Run notify-with-attachments E2E
+        if: needs.detect-changes.outputs.api == 'true'
+        run: bash tests/e2e/test_notify_attachments_e2e.sh
+      - name: "Run channels + data-prune E2E (REQUIRE-LIVE: mock upstream proves send+discover, purge proves prune)"
+        # core#2332 P1.10. Stands up a local mock upstream, points the LIVE
+        # Slack-webhook send + Telegram discover paths at it via the
+        # production-inert test seam configured above, and asserts the mock
+        # RECEIVED the serialized payload (send) + round-tripped the bot/chat
+        # (discover). Then exercises the RFC #734 data-prune: DELETE
+        # ?purge=true removes the target's durable child data while a sibling
+        # survives. E2E_REQUIRE_LIVE=1 ⇒ a missing/regressed seam is RED, not a
+        # silent skip. The platform inherits the MOLECULE_CHANNELS_TEST_* bases
+        # from $GITHUB_ENV; the script's mock ports match them (18099/18098).
+        if: needs.detect-changes.outputs.api == 'true'
+        env:
+          E2E_REQUIRE_LIVE: '1'
+        run: bash tests/e2e/test_channels_e2e.sh
+      - name: "Run priority-runtimes E2E (REQUIRE-LIVE: mock validates the runtime plumbing end-to-end)"
+        # E2E_REQUIRE_LIVE=1 is ON: the run MUST validate >=1 runtime end-to-end
+        # or it exits NON-zero (RED). This is now SAFE because the `mock` arm can
+        # actually provision in CI: the only blocker was that POST /org/import and
+        # POST /admin/workspaces/:id/tokens are AdminAuth-gated
+        # (router.go:778 + :427) and this job previously configured NO admin token,
+        # so every admin call 401'd ("admin auth required"). The "Set deterministic
+        # admin token" step above now sets ADMIN_TOKEN on the platform AND exports
+        # the matching MOLECULE_ADMIN_TOKEN the e2e scripts send as the bearer, so
+        # the mock arm can org-import → online → mint token → canned A2A reply →
+        # validated(). That guarantees VALIDATED>=1 on a healthy platform, so the
+        # REQUIRED `E2E API Smoke Test` gate now HONESTLY validates a runtime
+        # end-to-end; if the mock plumbing (DB insert, status flip, A2A proxy,
+        # activity logging, or the admin-auth wiring) genuinely breaks, the gate
+        # goes RED instead of false-green. The zero-validated→RED decision is also
+        # regression-gated WITHOUT provisioning by the bash unit test
+        # tests/e2e/test_require_live_priority_gate_unit.sh (wired into ci.yml's
+        # "Run E2E bash unit tests" job), so a revert of that logic still fails CI.
+        #
+        # MiniMax stays an OPPORTUNISTIC best-effort arm: create is registry-fragile
+        # in CI (422 UNREGISTERED_MODEL_FOR_RUNTIME), so a miss is reported via
+        # bestfail() and never reds the gate — mock carries the required validation,
+        # MiniMax is a bonus real-LLM check when it comes up. ZERO new credentials.
+        if: needs.detect-changes.outputs.api == 'true'
+        env:
+          E2E_REQUIRE_LIVE: '1'
+          E2E_MINIMAX_API_KEY: ${{ secrets.MOLECULE_STAGING_MINIMAX_API_KEY }}
+        run: bash tests/e2e/test_priority_runtimes_e2e.sh
+      - name: Install standalone runtime parser from Gitea registry
+        if: needs.detect-changes.outputs.api == 'true'
+        run: |
+          python3 -m pip install --no-deps \
+            --index-url https://git.moleculesai.app/api/packages/molecule-ai/pypi/simple/ \
+            molecule-ai-workspace-runtime
+      - name: Run poll-mode + since_id cursor E2E (#2339)
+        if: needs.detect-changes.outputs.api == 'true'
+        run: bash tests/e2e/test_poll_mode_e2e.sh
+      - name: Run poll-mode chat upload E2E (RFC #2891)
+        if: needs.detect-changes.outputs.api == 'true'
+        run: bash tests/e2e/test_poll_mode_chat_upload_e2e.sh
+      - name: Dump platform log on failure
+        if: failure() && needs.detect-changes.outputs.api == 'true'
+        run: cat workspace-server/platform.log || true
+      - name: Stop platform
+        if: always() && needs.detect-changes.outputs.api == 'true'
+        run: |
+          if [ -f workspace-server/platform.pid ]; then
+            kill "$(cat workspace-server/platform.pid)" 2>/dev/null || true
+          fi
+      - name: Stop service containers
+        # always() so containers don't leak when test steps fail. The
+        # cleanup is best-effort: if the container is already gone
+        # (e.g. concurrent rerun race), don't fail the job.
+        if: always() && needs.detect-changes.outputs.api == 'true'
+        run: |
+          docker rm -f "$PG_CONTAINER" 2>/dev/null || true
+          docker rm -f "$REDIS_CONTAINER" 2>/dev/null || true

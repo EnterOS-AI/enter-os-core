@@ -1,0 +1,17 @@
+{
+  "_comment": "v0.3 with method=message/stream (vs message/send). The streaming path is otherwise identical at the request shape level — it differs in the response (event stream vs single response). Pins that the normalizer is method-agnostic.",
+  "_added": "2026-04-30",
+  "_source": "Streaming dispatch path",
+  "jsonrpc": "2.0",
+  "method": "message/stream",
+  "id": "msg-test-v03-stream",
+  "params": {
+    "message": {
+      "messageId": "msg-7",
+      "role": "user",
+      "parts": [
+        {"kind": "text", "text": "Stream me a long answer please."}
+      ]
+    }
+  }
+}

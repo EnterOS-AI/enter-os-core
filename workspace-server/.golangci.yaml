@@ -1,0 +1,8 @@
+# golangci-lint configuration for workspace-server
+# https://golangci-lint.run/usage/configuration/
+version: "2"
+run:
+  timeout: 3m
+linters:
+  disable:
+    - errcheck

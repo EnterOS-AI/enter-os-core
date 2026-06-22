@@ -1,0 +1,58 @@
+# local-e2e/docker-compose.yml — minimal harness stack.
+#
+# Two services:
+#   runtime  — the template image under test (TEMPLATE_IMAGE env var).
+#              Exposes :8000 for A2A traffic. The simulator POSTs to it.
+#   cp_sim   — thin Python tenant-CP simulator. Drives the canary turns.
+#
+# Deliberately NO postgres, NO redis, NO platform Go service. SessionStore
+# continuity is a runtime-internal concern (a2a_executor + executor_helpers);
+# we test it without dragging the platform-tenant Go binary into the loop.
+# See README.md "Why a thin Python simulator" for rationale.
+
+services:
+  runtime:
+    image: ${TEMPLATE_IMAGE:?TEMPLATE_IMAGE env required, e.g. ghcr.io/molecule-ai/workspace-template-hermes:latest}
+    # The runtime entrypoint (workspace/entrypoint.sh) refuses to start when
+    # any operator-scope env var is present. We deliberately set no creds —
+    # the canary doesn't invoke a real LLM provider (see TEST_NO_PROVIDER below).
+    environment:
+      # Disable provider calls during canary — the runtime returns canned
+      # echo-style replies so the harness can assert continuity / file-handling
+      # behaviour without burning provider quota. The template image must
+      # honour MOLECULE_CANARY_MODE=1 (added in molecule-ai-workspace-runtime
+      # PR #46 — see molecule_runtime/a2a_executor.py canary short-circuit).
+      MOLECULE_CANARY_MODE: "1"
+      # Anonymous workspace identity so RBAC paths exercise the same code
+      # they would in tenant production.
+      WORKSPACE_ID: "canary-${CANARY_RUN_ID:-local}"
+      # Memory tool requires a writable scope; point at /tmp inside the
+      # container so cross-session canary (#4) works without bind mounts.
+      MOLECULE_MEMORY_ROOT: "/tmp/canary-memory"
+      # The provisioner's forbidden-env guard exits non-zero when any
+      # operator-scope literal is present; the canary intentionally sets
+      # zero of them. Leave guard ON (do NOT set MOLECULE_TENANT_GUARD_DISABLE)
+      # so we exercise the prod entrypoint code path verbatim.
+    ports:
+      - "${RUNTIME_PORT:-18000}:8000"
+    healthcheck:
+      # /agent-card is the universal A2A discovery endpoint — every template
+      # exposes it. /health varies per template.
+      test: ["CMD-SHELL", "wget -qO /dev/null --tries=1 http://localhost:8000/agent-card || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+
+  cp_sim:
+    build:
+      context: ./cp_sim
+    depends_on:
+      runtime:
+        condition: service_healthy
+    environment:
+      RUNTIME_URL: "http://runtime:8000"
+      CANARY_RUN_ID: "${CANARY_RUN_ID:-local}"
+    # cp_sim doesn't expose a port — it's a one-shot driver invoked by
+    # run-canary.sh via `docker compose run cp_sim pytest ...`.
+    profiles: ["driver"]

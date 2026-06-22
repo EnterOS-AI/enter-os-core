@@ -1,0 +1,10 @@
+# Excluded from `docker build` context. Without this, the COPY . . step in
+# canvas/Dockerfile clobbers the freshly-installed node_modules with the
+# host's (potentially broken / wrong-arch) copy — the @tailwindcss/oxide
+# native binary disagreed and broke `next build`.
+node_modules
+.next
+.git
+*.log
+.env*
+!.env.example

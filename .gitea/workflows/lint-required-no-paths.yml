@@ -1,0 +1,97 @@
+# lint-required-no-paths — structural enforcement of
+# `feedback_path_filtered_workflow_cant_be_required`.
+#
+# Fails the PR if ANY workflow whose status-check context appears in
+# `branch_protections/main.status_check_contexts` carries a
+# `paths:` or `paths-ignore:` filter in its `on:` block.
+#
+# Why this exists:
+#   A required-check workflow with a paths filter silently degrades the
+#   merge gate. If a PR's diff doesn't touch the filter, the workflow
+#   never fires; Gitea (1.22.6) reports the required context as
+#   `pending` (NOT `skipped == success`), so the PR cannot merge. For a
+#   docs-only PR against `paths: ['**.go']`, the PR is wedged forever.
+#
+#   Previously prevented only by reviewer vigilance + the saved memory
+#   `feedback_path_filtered_workflow_cant_be_required`. This workflow
+#   makes it a hard CI gate.
+#
+# Forward-compat scope:
+#   Today (2026-05-11) molecule-core/main protects 3 contexts:
+#     - "Secret scan / Scan diff for credential-shaped strings (pull_request)"
+#     - "sop-checklist / all-items-acked (pull_request)"
+#     - "CI / all-required (pull_request)"
+#   Per RFC#324 Step 2 the required-list expands to ~5 contexts
+#   (qa-review, security-review added). Each new required context's
+#   workflow must remain unconditional. This lint pins that contract.
+#
+# Meta-required-check:
+#   This workflow ITSELF deliberately has NO `paths:` filter on its `on:`
+#   block — otherwise a paths-non-matching PR could bypass the check.
+#   Self-evident from this file: only `pull_request` types + no paths.
+#
+# Auth:
+#   `GET /repos/.../branch_protections/{branch}` requires repo-admin
+#   role in Gitea 1.22.6. The workflow-default `GITHUB_TOKEN` is
+#   non-admin (read-only), so we re-use `DRIFT_BOT_TOKEN` (same persona
+#   that powers `ci-required-drift.yml` — verified working there).
+#   If `DRIFT_BOT_TOKEN` becomes unavailable, the script exits 0 with a
+#   loud `::error::` rather than red-X every PR — token-scope issues
+#   should be fixed at the token, not surfaced as a gate failure on
+#   every unrelated PR.
+#
+# Behavior-based gate per `feedback_behavior_based_ast_gates`:
+#   YAML AST walk (PyYAML), NOT grep. Workflow renames, formatting
+#   changes (block-scalar vs flow-style), or moving `paths:` between
+#   `pull_request:` and `pull_request_target:` all still detect.
+#
+# IMPORTANT — Gitea 1.22.6 parser quirk per
+# `feedback_gitea_workflow_dispatch_inputs_unsupported`: do NOT add an
+# `inputs:` block to `workflow_dispatch:` — Gitea 1.22.6 rejects the
+# entire workflow as "unknown on type" and it registers for ZERO events.
+
+name: lint-required-no-paths
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+# Read protection + read local YAML. No writes.
+permissions:
+  contents: read
+
+# Only one in-flight run per PR — re-pushes cancel the previous run to
+# keep the queue short. Required-list reads are cheap (one GET); the
+# cancellation is just hygiene.
+concurrency:
+  group: lint-required-no-paths-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # bp-exempt: meta-lint advisory; CI / all-required is the required aggregate.
+  lint:
+    name: lint-required-no-paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repo (we read the workflow YAML files locally)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - name: Set up Python (PyYAML for AST parsing)
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Install PyYAML
+        run: python -m pip install --quiet 'PyYAML==6.0.2'
+      - name: Run lint-required-no-paths
+        env:
+          # DRIFT_BOT_TOKEN is owned by mc-drift-bot, a least-privilege
+          # Gitea persona with repo-admin role for branch_protections
+          # read. Same secret used by ci-required-drift.yml — see that
+          # workflow's header for provisioning trail (internal#329).
+          GITEA_TOKEN: ${{ secrets.DRIFT_BOT_TOKEN }}
+          GITEA_HOST: git.moleculesai.app
+          REPO: ${{ github.repository }}
+          BRANCH: main
+          WORKFLOWS_DIR: .gitea/workflows
+        run: python3 .gitea/scripts/lint-required-no-paths.py

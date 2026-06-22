@@ -1,0 +1,260 @@
+import { PLATFORM_URL, platformAuthHeaders } from "@/lib/api";
+import type { ChatAttachment } from "./types";
+
+/** Hard cap on a single chat upload. Pre-flight gate: this constant is
+ *  checked BEFORE any network I/O so a file-size violation surfaces
+ *  immediately with an actionable reason ("File too large (got X MB)
+ *  — limit is 100MB") rather than as a downstream timeout or 413.
+ *
+ *  SERVER_MIRROR: keep aligned with
+ *    - workspace-server/internal/handlers/chat_files.go chatUploadMaxBytes
+ *    - workspace/internal_chat_uploads.py CHAT_UPLOAD_MAX_BYTES /
+ *      CHAT_UPLOAD_MAX_FILE_BYTES
+ *
+ *  Three mirror sites exist because each layer must enforce / pre-flight
+ *  on its own (no shared codegen yet). Tracked for SSOT follow-up:
+ *  expose via GET /uploads/limits so the client can fetch the live cap
+ *  instead of duplicating the constant. */
+export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+
+/** Thrown by `uploadChatFiles` when a candidate file exceeds
+ *  MAX_UPLOAD_BYTES. Caught by `useChatSend` and surfaced verbatim —
+ *  the message is already user-actionable. Distinct name lets the
+ *  catch path route it correctly without parsing the message string.
+ *
+ *  Why a distinct class instead of a sentinel string match: the catch
+ *  in `useChatSend` already needs to discriminate this case from a
+ *  `TimeoutError` (which has a structurally similar surface but a
+ *  DIFFERENT root cause). Conflating them was the bug CTO flagged on
+ *  forensic a99ab0a1: "if its file size issue, should have error that
+ *  instead saying timeout which is wrong". */
+export class FileTooLargeError extends Error {
+  readonly name = "FileTooLargeError";
+  readonly fileSize: number;
+  constructor(fileSize: number, message: string) {
+    super(message);
+    this.fileSize = fileSize;
+  }
+}
+
+/** Compute the abort timeout for an upload of `totalBytes`. Floor at
+ *  60s (small-file ergonomics: a 100 KB image shouldn't wait 1000s to
+ *  see a typo'd hostname surface as a connect error). Above the floor,
+ *  scale linearly at ~100 KB/s assumed minimum uplink — at the 100 MB
+ *  cap this yields ~1000s, comfortable for the slow-mobile-tether case
+ *  that motivated forensic a99ab0a1 (Ryan's >50 MB upload aborted at
+ *  the fixed 60s timeout while still streaming).
+ *
+ *  Exported for the unit test that pins the curve at the boundary. */
+export function computeUploadTimeoutMs(totalBytes: number): number {
+  return Math.max(60_000, totalBytes / 100); // 100KB/s → ms = bytes/100
+}
+
+/** Chat attachments are intentionally uploaded via a direct fetch()
+ *  instead of the `api.post` helper — `api.post` JSON-stringifies the
+ *  body, which would 500 on a Blob. Auth headers (tenant slug, admin
+ *  token, credentials) come from `platformAuthHeaders()` — the same
+ *  helper `request()` uses, so a missing bearer surfaces as a single
+ *  fix site instead of N copies. We deliberately do NOT set
+ *  Content-Type so the browser writes the multipart boundary into the
+ *  header; setting it manually would yield a multipart body the server
+ *  can't parse. See lib/api.ts platformAuthHeaders() for the full
+ *  rationale on why this pair must stay matched.
+ *
+ *  Failure-reason contract (CTO 2026-05-19 directive on forensic
+ *  a99ab0a1: each cause maps to ITS OWN message, no conflation):
+ *    1. file.size > MAX_UPLOAD_BYTES  → throws FileTooLargeError
+ *       BEFORE any network I/O, with the offending size + the cap.
+ *    2. fetch aborts via AbortSignal  → DOMException name="TimeoutError";
+ *       caller surfaces "connection too slow" (file-size already
+ *       excluded by gate 1, so the TimeoutError CANNOT mean file-size).
+ *    3. server returns !res.ok        → throws Error with the server's
+ *       reason embedded (status + body); caller surfaces verbatim.
+ *    4. any other thrown error        → falls through as-is. */
+export async function uploadChatFiles(
+  workspaceId: string,
+  files: File[],
+): Promise<ChatAttachment[]> {
+  if (files.length === 0) return [];
+
+  // PRE-FLIGHT: bail before any network I/O if any file exceeds the cap.
+  // After this gate, an AbortSignal.timeout firing during the fetch
+  // CANNOT be attributed to file size — it's necessarily a slow
+  // connection. That distinction is what makes the downstream error
+  // mapping unambiguous.
+  let totalBytes = 0;
+  for (const f of files) {
+    if (f.size > MAX_UPLOAD_BYTES) {
+      const sizeMb = (f.size / (1024 * 1024)).toFixed(1);
+      throw new FileTooLargeError(
+        f.size,
+        `File too large (got ${sizeMb}MB) — limit is 100MB. Please use a smaller file.`,
+      );
+    }
+    totalBytes += f.size;
+  }
+
+  const form = new FormData();
+  for (const f of files) form.append("files", f, f.name);
+
+  // Scale the abort timeout with payload size so a legitimate slow-
+  // uplink upload of a large file isn't aborted before the body has
+  // finished streaming. The fixed 60s previous-version was the root
+  // cause of forensic a99ab0a1: Ryan's ~60 MB upload over a constrained
+  // uplink streamed past 60s, AbortSignal fired client-side, server
+  // got a truncated body, the user saw "signal timed out" — when the
+  // real cause was simply "uplink slower than our hard-coded deadline".
+  const res = await fetch(`${PLATFORM_URL}/workspaces/${workspaceId}/chat/uploads`, {
+    method: "POST",
+    headers: platformAuthHeaders(),
+    body: form,
+    credentials: "include",
+    signal: AbortSignal.timeout(computeUploadTimeoutMs(totalBytes)),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`upload failed: ${res.status} ${text}`);
+  }
+  const json = (await res.json()) as { files: ChatAttachment[] };
+  return json.files ?? [];
+}
+
+/** Resolve a file URI into a browser-downloadable URL. Accepts:
+ *    - `workspace:<abs-path>` (our canonical form)
+ *    - `file:///workspace/...` (some agents emit this)
+ *    - `/workspace/...` (bare absolute path inside the container)
+ *    - `platform-pending:<wsid>/<file_id>` (poll-mode upload, staged
+ *      on platform side; resolves to /pending-uploads/<file_id>/content)
+ *    - `/workspaces/<wsid>/content/<file_id>/content` (legacy platform
+ *      content URL; normalizes to the same pending-upload endpoint)
+ *  Everything that looks like an allowed-root container path is
+ *  rewritten to the authenticated /chat/download endpoint. HTTP(S)
+ *  URIs pass through unchanged so we can also render links to
+ *  artefacts hosted off-platform. Unknown schemes fall back to the
+ *  raw URI — the caller gets to decide how to render it. */
+export function resolveAttachmentHref(
+  workspaceId: string,
+  uri: string,
+): string {
+  // platform-pending: agents-emitted URI that lives in the platform-side
+  // staging layer (poll-mode chat uploads, see workspace-server's
+  // chat_files.go ~line 690 + pendinguploads.Storage). The wire shape
+  // is `platform-pending:<workspace_id>/<file_id>`. Resolving it
+  // requires hitting GET /workspaces/<wsid>/pending-uploads/<file_id>/content
+  // which streams the bytes with full workspace auth. Without this
+  // case the browser sees an unhandled-protocol click → about:blank,
+  // which was the user-visible bug from 2026-05-05 (acme-demo).
+  if (uri.startsWith("platform-pending:")) {
+    const rest = uri.slice("platform-pending:".length);
+    const slash = rest.indexOf("/");
+    // Defensive: if the URI doesn't have the expected wsid/fileid
+    // shape, fall through to raw-URI handling so the consumer can
+    // still try to render it (rather than producing a broken /pending-
+    // uploads/// path).
+    if (slash > 0) {
+      const wsid = rest.slice(0, slash);
+      const fileID = rest.slice(slash + 1);
+      if (wsid && fileID) {
+        // Use the URI's own workspace_id (the bytes live in THAT
+        // workspace's pending-uploads store), not the chat's
+        // workspace_id — these CAN differ when a user drags a file
+        // into one workspace's chat that gets forwarded to another
+        // (cross-workspace delegation, agent forwarding).
+        return `${PLATFORM_URL}/workspaces/${wsid}/pending-uploads/${fileID}/content`;
+      }
+    }
+    return uri;
+  }
+  const legacy = parseLegacyPlatformContentUri(uri);
+  if (legacy) {
+    const [wsid, fileID] = legacy;
+    return `${PLATFORM_URL}/workspaces/${encodeURIComponent(wsid)}/pending-uploads/${encodeURIComponent(fileID)}/content`;
+  }
+  const containerPath = normalizeWorkspaceUri(uri);
+  if (containerPath) {
+    return `${PLATFORM_URL}/workspaces/${workspaceId}/chat/download?path=${encodeURIComponent(containerPath)}`;
+  }
+  return uri;
+}
+
+/** Returns true when the URI points at a platform-side resource that
+ *  requires our auth headers — caller should route through
+ *  downloadChatFile rather than letting the browser navigate. */
+export function isPlatformAttachment(uri: string): boolean {
+  if (uri.startsWith("platform-pending:")) return true;
+  if (parseLegacyPlatformContentUri(uri)) return true;
+  return normalizeWorkspaceUri(uri) !== null;
+}
+
+/** Extracts the absolute container path from a workspace-scoped URI,
+ *  or null if the URI isn't a container path. The matching roots
+ *  mirror the server's `allowedRoots` allowlist. */
+const ALLOWED_CONTAINER_ROOTS = ["/configs", "/workspace", "/home", "/plugins"];
+
+function parseLegacyPlatformContentUri(uri: string): [string, string] | null {
+  const m = uri.match(/^\/workspaces\/([^/]+)\/content\/([^/]+)\/content(?:[?#].*)?$/);
+  if (!m || !m[1] || !m[2]) return null;
+  return [m[1], m[2]];
+}
+
+function normalizeWorkspaceUri(uri: string): string | null {
+  let path: string | null = null;
+  if (uri.startsWith("workspace:")) {
+    path = uri.slice("workspace:".length);
+  } else if (uri.startsWith("file:///")) {
+    path = uri.slice("file://".length); // keep the leading slash
+  } else if (uri.startsWith("/")) {
+    path = uri;
+  }
+  if (!path) return null;
+  // Only rewrite when the path lands in an allowed root; otherwise
+  // return null so the caller falls through to raw-URI handling
+  // (which will open a new tab for HTTP-ish schemes).
+  for (const root of ALLOWED_CONTAINER_ROOTS) {
+    if (path === root || path.startsWith(root + "/")) return path;
+  }
+  return null;
+}
+
+/** Trigger a browser download for an attachment. Uses fetch+blob
+ *  rather than an anchor navigation because the download endpoint
+ *  requires workspace auth — and the browser won't attach
+ *  `Authorization: Bearer` or `X-Molecule-Org-Slug` to a bare anchor
+ *  click. A 25MB per-file cap server-side keeps the blob buffer
+ *  bounded. HTTP(S) URIs skip the fetch path and open directly
+ *  since they're off-platform artefacts that we don't own auth for. */
+export async function downloadChatFile(
+  workspaceId: string,
+  attachment: ChatAttachment,
+): Promise<void> {
+  const href = resolveAttachmentHref(workspaceId, attachment.uri);
+  if (!isPlatformAttachment(attachment.uri)) {
+    // External URL — let the browser navigate. Opens in new tab so
+    // the canvas context survives a navigation. `href` here is the
+    // raw URI (http(s), or anything else the agent sent back).
+    window.open(href, "_blank", "noopener,noreferrer");
+    return;
+  }
+
+  const res = await fetch(href, {
+    headers: platformAuthHeaders(),
+    credentials: "include",
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!res.ok) {
+    throw new Error(`download failed: ${res.status}`);
+  }
+  const blob = await res.blob();
+  // Revoke the object URL after the click — browsers hold the blob
+  // until the URL is either revoked or the document unloads. 30s is
+  // plenty of headroom for the click → save dialog round-trip.
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = attachment.name;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}

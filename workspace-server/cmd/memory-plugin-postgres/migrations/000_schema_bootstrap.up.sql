@@ -1,0 +1,31 @@
+-- Create the dedicated schema this plugin owns when it shares a Postgres
+-- with the tenant platform (the default deployment shape — see
+-- entrypoint-tenant.sh which appends `search_path=memory_plugin,public`
+-- to DATABASE_URL when the operator hasn't set MEMORY_PLUGIN_DATABASE_URL
+-- explicitly).
+--
+-- The schema name `memory_plugin` matches the search_path injected by
+-- the entrypoint; sql.Open's URL controls *where* subsequent CREATE
+-- TABLE lands (search_path) but does NOT auto-create the target schema,
+-- so the plugin has to do it itself before 001_memory_v2 runs.
+--
+-- About the `,public` fallback in search_path: pgvector ships as an
+-- extension that lives in one schema. On fresh tenants 001_memory_v2's
+-- `CREATE EXTENSION IF NOT EXISTS vector` installs it into the first
+-- writable schema in search_path (memory_plugin — SSOT preserved). On
+-- tenants where pgvector was already installed into `public` by a
+-- prior boot, the IF NOT EXISTS is a no-op and the extension stays in
+-- public; the `vector(1536)` type reference in 001 then resolves via
+-- the public fallback. Without that fallback, 001 would die with
+-- "type vector does not exist" on every pre-existing tenant (#1742
+-- review finding).
+--
+-- Operators who point the plugin at a dedicated database (no shared
+-- tenant tables) can leave this no-op: CREATE SCHEMA IF NOT EXISTS is
+-- idempotent and a fresh DB happily owns a `memory_plugin` schema.
+--
+-- Migration files are sorted alphabetically (cmd/memory-plugin-postgres/
+-- main.go:runMigrationsFromEmbed → sort.Strings), so 000_ runs before
+-- 001_memory_v2 which assumes the schema already exists in search_path.
+
+CREATE SCHEMA IF NOT EXISTS memory_plugin;

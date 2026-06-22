@@ -1,0 +1,40 @@
+name: gate-check-v3-tests
+
+# Regression unit tests for tools/gate-check-v3/gate_check.py.
+# This workflow closes the CI gap identified in molecule-core#2615:
+# the gate-check evaluator is load-bearing for merge decisions and must
+# have automated coverage for its security-sensitive governance-context
+# logic (molecule-core#2589).
+
+on:
+  push:
+    branches: [main, staging]
+    paths:
+      - 'tools/gate-check-v3/**'
+      - '.gitea/workflows/gate-check-v3-tests.yml'
+  pull_request:
+    branches: [main, staging]
+    paths:
+      - 'tools/gate-check-v3/**'
+      - '.gitea/workflows/gate-check-v3-tests.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # bp-exempt: test-only regression suite for the gate-check evaluator.
+  # Merge blocking is enforced by the existing CI / all-required aggregate.
+  unit-tests:
+    name: gate-check-v3 unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install pytest
+        run: pip install pytest -q
+
+      - name: Run gate-check-v3 unit tests
+        working-directory: tools/gate-check-v3
+        run: python3 -m pytest test_gate_check.py -v

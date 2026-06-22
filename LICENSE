@@ -1,0 +1,45 @@
+Business Source License 1.1
+
+Licensor: EnterOS
+
+Licensed Work: EnterOS
+
+The Licensed Work is copyright © 2025 EnterOS
+
+Additional Use Grant:
+
+You may make use of the Licensed Work, provided that you may not use the
+Licensed Work to offer a competing product or service that is substantially
+similar to the Licensed Work. A "competing product or service" means a
+product or service that is primarily intended to provide an organizational
+control plane for heterogeneous AI agent teams, including but not limited
+to agent governance, memory management, or team orchestration features
+similar to those offered by EnterOS.
+
+Personal, internal, and non-commercial use is permitted without restriction.
+
+Change Date: January 1, 2029
+
+Change License: Apache License, Version 2.0
+
+Terms:
+
+The Licensor hereby grants you the right to copy, modify, create derivative
+works, redistribute, and make non-production use of the Licensed Work. The
+Licensor may make production use of the Licensed Work, provided such use
+does not violate the Additional Use Grant.
+
+If you are not in compliance with the terms of this license, you must
+immediately cease all use of the Licensed Work and notify the Licensor.
+
+The Licensed Work is provided "AS IS" without warranties of any kind,
+express or implied, including but not limited to warranties of
+merchantability, fitness for a particular purpose, and non-infringement.
+In no event shall the Licensor be liable for any claim, damages, or other
+liability arising from the use of the Licensed Work.
+
+On the Change Date, the terms of the Change License apply to the Licensed
+Work, and this license terminates automatically.
+
+For the full text of the Change License (Apache License, Version 2.0),
+see: https://www.apache.org/licenses/LICENSE-2.0

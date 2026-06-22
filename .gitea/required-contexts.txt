@@ -1,0 +1,53 @@
+# SSOT: the branch-protection REQUIRED status contexts on molecule-core
+# main. Authoritative for lint-no-coe-on-required (CI cannot always read
+# branch_protections; when a repo-admin token is present the lint also
+# live-cross-checks this list against BP and fails on drift).
+#
+# Form: "<workflow name> / <job name>" (event suffix stripped). Verified
+# 2026-06-10 against GET /api/v1/repos/molecule-ai/molecule-core/branch_protections.
+# Keep in sync with branch protection; lint-required-context-exists-in-bp
+# is the cousin that guards the other direction.
+CI / all-required
+E2E API Smoke Test / E2E API Smoke Test
+Handlers Postgres Integration / Handlers Postgres Integration
+E2E Peer Visibility (literal MCP list_peers) / E2E Peer Visibility
+Secret scan / Scan diff for credential-shaped strings
+template-delivery-e2e / Template-asset delivery (fresh seo-agent — config+prompts via asset channel, seo-all via plugin reconcile)
+E2E Staging SaaS (full lifecycle) / E2E Staging Concierge Creates Workspace
+# #48 (RCA molecule-controlplane #878→#885): real platform-managed boot is now
+# merge-blocking. SSOT updated here in the same PR that removed continue-on-error
+# (lint-no-coe-on-required forbids CoE on any listed context). REMAINING OWNER
+# ACTION: add "E2E Staging SaaS (full lifecycle) / E2E Staging Platform Boot
+# (pull_request)" to branch_protections/main.status_check_contexts AFTER this PR
+# merges (allowlist-superset-of-BP is lint-clean; BP-superset-of-allowlist is not).
+E2E Staging SaaS (full lifecycle) / E2E Staging Platform Boot
+# #3141 (CTO-authorized): make the three review-team gates TRULY merge-blocking.
+# Today they post commit statuses but are NOT in BP, so a PR merges once its 4
+# BP-required contexts are green regardless of the review verdicts (proven: #3131
+# merged with qa-review red).
+#
+# MECHANISM — Path B (owner BP flip) is the ONLY option; Path A (sentinel) is
+# structurally impossible: `CI / all-required` is a plain `needs:` aggregator
+# over CI's OWN jobs (ci.yml). Gitea has no cross-workflow `needs:`, and the
+# poll-the-status-API design was deliberately removed (runner-squat RCA
+# 2026-06-01). These three contexts are emitted by SEPARATE workflow files on
+# pull_request_target / pull_request_review events, so the sentinel cannot gate
+# them — which is exactly why ci-required-drift.py F4 enforces cross-workflow
+# required contexts in BP directly.
+#
+# BP variant = (pull_request_target): it fires on every PR open/synchronize and
+# starts RED when there is no APPROVE (review-check.sh exits 1 → job conclusion
+# publishes `failure`) — fail-closed, no false-green, no deadlock. The
+# pull_request_review path explicitly RE-POSTS the (pull_request_target) context
+# to flip green on a genuine non-author APPROVE (same shape as sop-checklist).
+# Requiring (pull_request_review) instead would deadlock (absent-until-review =
+# pending forever).
+#
+# REMAINING OWNER ACTION: after THIS PR merges, PATCH
+# branch_protections/main.status_check_contexts to ADD the three
+# `(pull_request_target)` variants of the contexts below (keep the existing 4).
+# Allowlist-superset-of-BP is lint-clean; BP-superset-of-allowlist is not — so
+# the allowlist (this file) MUST land first, BP flip second. See #3141.
+qa-review / approved
+security-review / approved
+reserved-path-review / reserved-path-review

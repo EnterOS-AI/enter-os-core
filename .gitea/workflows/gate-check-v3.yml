@@ -1,0 +1,158 @@
+# gate-check-v3 — automated PR gate detector
+#
+# Runs on every open PR (push/synchronize) and hourly via cron.
+# Posts a structured [gate-check-v3] STATUS: comment on the PR.
+#
+# Inputs:
+#   PR_NUMBER  — set via ${{ github.event.pull_request.number }} from the trigger
+#   POST_COMMENT — "true" to post/update comment on PR
+#
+# Gating logic (MVP signals 1,2,3,4,6):
+#   1. Author-aware agent-tag comment scan
+#   2. REQUEST_CHANGES reviews state machine
+#   3. Staleness detection (SOP-12: review.commit_id != PR.head_sha + >1 working day)
+#   4. Branch divergence / scope-creep guard (base-sha vs target HEAD; mc#365)
+#   6. CI required-checks awareness
+#
+# Exit code: 0=CLEAR, 1=BLOCKED, 2=ERROR
+
+name: gate-check-v3
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+  schedule:
+    # Hourly: refresh all open PRs
+    - cron: '8 * * * *'
+  # NOTE: `workflow_dispatch.inputs` block intentionally omitted.
+  # Gitea 1.22.6 parser rejects `workflow_dispatch.inputs.X` with
+  # "unknown on type" — it mis-treats the inputs sub-keys as top-level
+  # `on:` event types. Dropping the inputs block restores parsing.
+  # Manual dispatch from the Gitea UI works without the inputs schema
+  # (github.event.inputs.X returns empty); the script falls back to
+  # iterating all open PRs when PR_NUMBER is empty.
+  workflow_dispatch:
+
+# Serialize per PR (or per repo for schedule/manual ticks) to prevent
+# the fan-out OOM class documented in
+# `reference_operator_host_python3_oom_storm_2026_05_18`. `edited`
+# events fan out on every PR-body edit; combined with the hourly cron
+# and synchronize bursts this workflow can stack runs of the same
+# workflow_id on the same PR (each ~4GB anon-RSS) and trip the
+# `--memory=4g --memory-swap=8g` per-container cap.
+#
+# NO `cancel-in-progress` (defaults to false). Per
+# `feedback_janitor_supersede_must_group_by_workflow_id`, cancelling
+# in-flight runs of any required-check-shaped workflow risks the
+# dismiss_stale_approvals + empty-commit-rerun dance (Gitea 1.22.6 has
+# no REST rerun). The gate-check is `continue-on-error: true` +
+# idempotent (POST/PATCH gate-check comment by context) so sequential
+# ticks are strictly safe.
+concurrency:
+  group: gate-check-v3-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+
+permissions:
+  # read: contents — for checkout (base ref, not PR head for security)
+  # read: pull-requests — for reading PR info via API
+  # write: pull-requests — for posting/updating gate-check comments
+  #   Without this the token cannot POST/PATCH /issues/comments → 403.
+  contents: read
+  pull-requests: write
+
+env:
+  GITHUB_SERVER_URL: https://git.moleculesai.app
+
+jobs:
+  # bp-exempt: PR advisory bot; merge blocking is enforced by CI status and branch protection.
+  gate-check:
+    runs-on: ubuntu-latest
+    # Hard bound on a hung-while-running run so the advisory context
+    # CONCLUDES (continue-on-error: true -> ignored) instead of
+    # hanging unconcluded and 405-blocking the Gitea merge-check.
+    # Normal conclude-time is ~12-16s, so 10m is a 30x safety margin
+    # over a stuck Python tick. Does NOT fix a QUEUED-never-picked-up
+    # orphan (operator-side run-clearing needed for that).
+    timeout-minutes: 10
+    # mc#2654: pre-existing continue-on-error mask; root-fix and remove, do not renew silently.
+    continue-on-error: true  # Never block on our own detector failing
+    steps:
+      - name: Check out BASE ref (never PR-head under pull_request_target)
+        # pull_request_target runs with repo secrets-context, so checking out
+        # the PR HEAD would execute PR-branch gate_check.py with secrets.
+        # Fix: always load gate_check.py from the trusted base/default ref.
+        # Bug-1 (self-loop exclusion) + Bug-3 (403→exit0) from #547 are
+        # kept; only this checkout-ref regresses to pre-#547 behavior.
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.ref_name }}
+
+      - name: Run gate-check-v3 (single PR mode)
+        if: github.event_name == 'pull_request_target' || github.event.inputs.pr_number != ''
+        env:
+          GITEA_TOKEN: ${{ secrets.SOP_CHECKLIST_GATE_TOKEN }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+          POST_COMMENT: ${{ github.event.inputs.post_comment || 'true' }}
+        run: |
+          set -euo pipefail
+          python3 tools/gate-check-v3/gate_check.py \
+            --repo "${{ github.repository }}" \
+            --pr "$PR_NUMBER" \
+            $([ "$POST_COMMENT" = "true" ] && echo "--post-comment")
+          echo "verdict=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Run gate-check-v3 (all open PRs — cron mode)
+        if: github.event_name == 'schedule'
+        env:
+          GITEA_TOKEN: ${{ secrets.SOP_CHECKLIST_GATE_TOKEN }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Fetch all open PRs and run gate-check on each. This scheduled
+          # refresher is advisory; a transient Gitea list timeout must not turn
+          # main red. PR-specific gate-check runs still use normal failure
+          # semantics.
+          pr_numbers=$(python3 <<'PY'
+          import json
+          import os
+          import socket
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          socket.setdefaulttimeout(30)
+          token = os.environ["GITEA_TOKEN"]
+          repo = os.environ["REPO"]
+          url = f"https://git.moleculesai.app/api/v1/repos/{repo}/pulls?state=open&limit=100"
+          last_error = None
+          for attempt in range(1, 4):
+              req = urllib.request.Request(
+                  url,
+                  headers={"Authorization": f"token {token}", "Accept": "application/json"},
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      prs = json.loads(r.read())
+                  break
+              except (TimeoutError, OSError, urllib.error.URLError, urllib.error.HTTPError) as exc:
+                  last_error = exc
+                  print(f"warning: PR list fetch attempt {attempt}/3 failed: {exc}", file=sys.stderr)
+                  if attempt < 3:
+                      time.sleep(2 * attempt)
+          else:
+              print(f"warning: skipped scheduled gate-check refresh; failed to list open PRs after 3 attempts: {last_error}", file=sys.stderr)
+              raise SystemExit(0)
+          for pr in prs:
+              print(pr["number"])
+          PY
+          )
+          for pr in $pr_numbers; do
+            echo "Checking PR #$pr..."
+            python3 tools/gate-check-v3/gate_check.py \
+              --repo "${{ github.repository }}" \
+              --pr "$pr" \
+              --post-comment \
+              || true
+          done

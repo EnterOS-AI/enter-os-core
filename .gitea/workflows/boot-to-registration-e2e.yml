@@ -1,0 +1,165 @@
+name: boot-to-registration-e2e (advisory)
+
+# cp#455 — Minimal-cell boot-to-registration e2e.
+# CTO directive 14eb4f07: "build the minimal claude-code+kimi cell,
+# it should now go GREEN since the fix is live."
+#
+# Stage 1 of 5-stage rollout. Reuses the dispatch-only EC2
+# provisioning path from test_staging_full_saas.sh but reduced to
+# the minimum boot-to-registration surface:
+#
+#   1. Provision request accepted; workspace transitions to booting/running
+#   2. Controlplane receives /registry/register for that workspace_id
+#   3. JSON-RPC/completion route returns successful minimal response
+#   4. Teardown terminates workspace even on failure (trap)
+#
+# Advisory (non-blocking) per Researcher Stage 2 design — RED on
+# current main is expected pre-cp#469-cluster. After cp#477 deploy
+# (888efceb) + PR #2167 merge, cell should turn GREEN. THAT green
+# is the cluster-proof signal.
+#
+# Cost controls (mandatory):
+#   - SPOT instances (tagged run_id/workspace_id for cost attribution)
+#   - Fast teardown (~3-5 min wall-clock) even on assertion failure
+#   - Structured per-cell results JSON (runtime/provider/model/
+#     billing_mode/workspace_id/register_status/completion_status/
+#     teardown_status/elapsed_seconds)
+#
+# Inputs:
+#   runtime        : default claude-code
+#   billing_mode   : default platform_managed (the cp#469-cluster path)
+#   provider       : default platform (vs direct-to-provider)
+#   model          : default moonshot/kimi-k2.6 (CTO-specified)
+#
+# PR target: molecule-core (this file). Companion harness extension
+# (test_minimal_boot_cell.sh) lives in tests/e2e/ alongside
+# test_staging_full_saas.sh — same repo, same branch.
+#
+# Note: cp#455 was originally spec'd to live in molecule-controlplane
+# (`.gitea/workflows/` path), but molecule-core's CI is the home for
+# tenant-boot e2e tests in this stage. Stage 2 may move the path.
+
+on:
+  workflow_dispatch:
+  # Note: Gitea 1.22.6 does not support workflow_dispatch.inputs
+  # (feedback_gitea_workflow_dispatch_inputs_unsupported). Defaults
+  # are hardcoded in the job env below. Stage 2 can add matrix/
+  # param support once the Gitea version supports it.
+
+# Advisory: no cron schedule, manual dispatch only. Branch protection
+# doesn't require this — RED on main is expected pre-cp#469-cluster
+# deploy, GREEN signals the cluster is live.
+permissions:
+  contents: read
+  # No issue-write; failures surface as red runs in workflow history.
+
+concurrency:
+  group: boot-to-registration-e2e
+  cancel-in-progress: false
+
+jobs:
+  # bp-exempt: advisory e2e — non-gating, manual dispatch only (cp#455 Stage 1)
+  minimal-cell:
+    name: Minimal cell (claude-code + platform + moonshot/kimi-k2.6)
+    runs-on: ubuntu-latest
+    # Bounded at 12 min. Wall-clock budget breakdown:
+    #   - cold EC2 provision: ~3-4 min (SPOT)
+    #   - /registry/register wait: ~30s
+    #   - completion call: ~10s
+    #   - teardown: ~30-60s
+    #   - tail headroom: ~6-7 min
+    timeout-minutes: 12
+    env:
+      # Hardcoded defaults — Gitea 1.22.6 does not support workflow_dispatch.inputs
+      # (feedback_gitea_workflow_dispatch_inputs_unsupported). Stage 2 can add
+      # matrix/param support once the Gitea version supports it.
+      E2E_RUNTIME: claude-code
+      E2E_BILLING_MODE: platform_managed
+      E2E_PROVIDER: platform
+      E2E_MODEL: moonshot/kimi-k2.6
+      E2E_RUN_ID: cp455-${{ github.run_id }}
+      E2E_PROVISION_TIMEOUT_SECS: '300' # 5 min — fast teardown budget
+      MOLECULE_CP_URL: ${{ vars.STAGING_CP_URL || 'https://staging-api.moleculesai.app' }}
+      MOLECULE_ADMIN_TOKEN: ${{ secrets.CP_STAGING_ADMIN_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Verify required secrets present
+        run: |
+          if [ -z "${MOLECULE_ADMIN_TOKEN:-}" ]; then
+            echo "::error::CP_STAGING_ADMIN_API_TOKEN secret missing — minimal-cell e2e cannot run"
+            echo "::error::Set it at Settings → Secrets and Variables → Actions; pull from staging-CP's CP_ADMIN_API_TOKEN env in Railway."
+            exit 1
+          fi
+
+      - name: Install required tools
+        run: |
+          for cmd in jq curl python3; do
+            command -v "$cmd" >/dev/null 2>&1 || {
+              echo "::error::required tool '$cmd' not on PATH — runner image regression?"
+              exit 1
+            }
+          done
+
+      - name: Run minimal-cell boot-to-registration harness
+        # The harness script handles its own teardown via EXIT trap;
+        # even on assertion failure (provision timeout, register
+        # timeout, completion failure), the workspace is deprovisioned
+        # and a leak is reported. Exit code propagates from the script.
+        # Structured per-cell results are emitted to ${GITHUB_STEP_SUMMARY}
+        # so operators see pass/fail per assertion without scrolling.
+        run: |
+          bash tests/e2e/test_minimal_boot_cell.sh
+
+      - name: Emit structured per-cell results
+        if: always()
+        # Always run (even on failure) so the structured results are
+        # visible in the workflow summary. The script writes a JSON
+        # file at /tmp/cell-result.json; this step renders it as a
+        # job summary.
+        run: |
+          if [ -f /tmp/cell-result.json ]; then
+            echo "## Minimal-cell results" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat /tmp/cell-result.json >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Minimal-cell results: NO_RESULT_FILE" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Harness did not produce /tmp/cell-result.json — likely crashed before trap fired." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Failure summary
+        if: failure()
+        run: |
+          {
+            echo "## cp#455 minimal-cell FAILED"
+            echo ""
+            echo "**Run ID:** ${{ github.run_id }}"
+            echo "**Runtime:** ${E2E_RUNTIME}"
+            echo "**Billing mode:** ${E2E_BILLING_MODE}"
+            echo "**Provider:** ${E2E_PROVIDER}"
+            echo "**Model:** ${E2E_MODEL}"
+            echo "**Slug:** ${E2E_RUN_ID}"
+            echo ""
+            echo "### What this means"
+            echo ""
+            echo "The minimal claude-code+kimi cell did not pass all 4 assertions:"
+            echo "1. Provision request accepted; workspace transitions to booting/running"
+            echo "2. Controlplane receives /registry/register for that workspace_id"
+            echo "3. JSON-RPC/completion route returns successful minimal response"
+            echo "4. Teardown terminates workspace even on failure (trap)"
+            echo ""
+            echo "RED is expected pre-cp#469-cluster. After cp#477 deploy (888efceb) + PR #2167 merge,"
+            echo "this should turn GREEN. Persistent RED after both merge = cluster bug, not e2e bug."
+            echo ""
+            echo "### Next steps"
+            echo ""
+            echo "1. Check the harness output above for the assertion that failed"
+            echo "2. If assertion 1 fails: provision path broken — check CP admin API + EC2 quota"
+            echo "3. If assertion 2 fails: /registry/register path broken — check workspace-server boot"
+            echo "4. If assertion 3 fails: LLM proxy / completion path broken — check cp#469 cluster"
+            echo "5. If assertion 4 fails: teardown trap broken — leak risk, fix immediately"
+          } >> "$GITHUB_STEP_SUMMARY"
