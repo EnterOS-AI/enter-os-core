@@ -1,10 +1,6 @@
 <div align="center">
 
 <p>
-  <img src="./docs/assets/branding/enteros-icon.png" alt="EnterOS" width="140" />
-</p>
-
-<p>
   <img src="./docs/assets/branding/enteros-logo.svg" alt="EnterOS" width="420" />
 </p>
 
@@ -12,10 +8,10 @@
   <a href="./README.md">English</a> | <a href="./README.zh-CN.md">中文</a>
 </p>
 
-<h3>The Org-Native Control Plane For Heterogeneous AI Agent Teams</h3>
+<h3>The operating system for AI agent teams</h3>
 
 <p>
-  The world's most powerful governance platform for AI agent teams.
+  EnterOS is the org-native control plane that runs heterogeneous AI agents as one governed organization — a single runtime contract, hierarchy-aligned memory, and a real production control plane.
 </p>
 
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-orange.svg)](LICENSE)
@@ -54,11 +50,11 @@ See the full [Quickstart Guide](./docs/quickstart.md) for prerequisites, manual 
 
 ## The Pitch
 
-EnterOS is the most powerful way to govern an AI agent organization in production.
+EnterOS is the operating system for AI agent teams: the org-native control plane that runs heterogeneous AI agents as one governed organization.
 
 It combines the parts that are usually scattered across demos, internal glue code, and framework-specific tooling into one product:
 
-- one org-native control plane for teams, roles, hierarchy, and lifecycle
+- one org-native operating layer for teams, roles, hierarchy, permissions, and lifecycle
 - one runtime layer that lets **four** maintained agent runtimes — Claude Code, Codex, **Hermes**, and OpenClaw — run side by side behind one workspace contract
 - one memory model that keeps recall, sharing, and skill evolution aligned with organizational boundaries (Memory v2 backed by pgvector for semantic recall)
 - one operational surface for observing, pausing, restarting, inspecting, and improving live workspaces

@@ -1,24 +1,17 @@
 <div align="center">
 
 <p>
-  <img src="./docs/assets/branding/molecule-icon.svg" alt="EnterOS" width="160" />
-</p>
-
-<p>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./docs/assets/branding/molecule-text-white.png">
-    <img src="./docs/assets/branding/molecule-text-black.png" alt="EnterOS 文字 Logo" width="420" />
-  </picture>
+  <img src="./docs/assets/branding/enteros-logo.svg" alt="EnterOS" width="420" />
 </p>
 
 <p>
   <a href="./README.md">English</a> | <a href="./README.zh-CN.md">中文</a>
 </p>
 
-<h3>面向异构 AI Agent 团队的组织级控制平面</h3>
+<h3>AI Agent 团队的操作系统</h3>
 
 <p>
-  全球最强大的 Agent Team 治理方案。
+  EnterOS 是组织原生的控制平面，把异构 AI agents 作为一个受治理的组织运行起来：统一运行时契约、层级对齐的记忆，以及真正面向生产的控制平面。
 </p>
 
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-orange.svg)](LICENSE)
@@ -38,8 +31,8 @@
   <a href="./docs/agent-runtime/workspace-runtime.md"><strong>Workspace Runtime</strong></a>
 </p>
 
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/EnterOS-AI/enter-os-core)
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/EnterOS-AI/enter-os-core)
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/EnterOS-AI/enter-os-core.git)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/EnterOS-AI/enter-os-core.git)
 
 </div>
 
@@ -47,11 +40,11 @@
 
 ## 一句话定位
 
-EnterOS 是目前最强的 AI Agent 组织治理方案之一，用来把 agent 从“能跑的 demo”推进到“可管理、可协作、可运营的生产系统”。
+EnterOS 是 AI Agent 团队的操作系统：一个组织原生的控制平面，用统一运行时契约、层级对齐的记忆和生产级运维能力，把异构 agents 作为一个受治理的组织运行起来。
 
 它把过去分散在 demo、内部胶水代码和各类 framework 私有工具里的关键能力，收敛成一个产品：
 
-- 一套组织原生 control plane，管理团队、角色、层级和生命周期
+- 一套组织原生 operating layer，管理团队、角色、层级、权限和生命周期
 - 一套 runtime abstraction，让 **4 个**维护中的 agent runtime —— Claude Code、Codex、**Hermes**、OpenClaw —— 共用一套 workspace 契约
 - 一套与组织边界对齐的 memory 模型，把 recall、sharing 和 skill evolution 放进同一体系（Memory v2 由 pgvector 支撑语义召回）
 - 一套面向线上 workspace 的运维面，统一完成观测、暂停、重启、检查和持续改进
