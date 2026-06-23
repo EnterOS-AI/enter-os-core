@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="190" height="40" viewBox="0 0 190 40" role="img" aria-label="Website enteros.ai">
+  <defs>
+    <filter id="shadow" x="-8%" y="-20%" width="116%" height="150%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#101828" flood-opacity="0.10"/>
+    </filter>
+    <linearGradient id="accent" x1="76" y1="1" x2="189" y2="39" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7468ff"/>
+      <stop offset="1" stop-color="#5148e8"/>
+    </linearGradient>
+  </defs>
+  <g filter="url(#shadow)">
+    <rect x="1" y="1" width="188" height="38" rx="19" fill="#ffffff" stroke="#dfe3ee"/>
+    <rect x="1" y="1" width="82" height="38" rx="19" fill="#f6f7fb"/>
+    <rect x="76" y="1" width="113" height="38" rx="19" fill="url(#accent)"/>
+    <text x="41" y="24" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="10" font-weight="700" fill="#606579">WEBSITE</text>
+    <text x="132.5" y="24" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="10" font-weight="800" fill="#ffffff">ENTEROS.AI</text>
+  </g>
+</svg>

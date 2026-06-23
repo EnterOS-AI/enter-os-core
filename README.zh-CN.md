@@ -15,9 +15,9 @@
 </p>
 
 <p>
-  <a href="https://www.enteros.ai"><img alt="官网" src="https://img.shields.io/static/v1?label=&message=Website&color=5B5BF7&style=for-the-badge"></a>
-  <a href="#快速开始"><img alt="快速开始" src="https://img.shields.io/static/v1?label=&message=Quick%20Start&color=111827&style=for-the-badge"></a>
-  <a href="./docs/architecture/architecture.md"><img alt="系统架构" src="https://img.shields.io/static/v1?label=&message=Architecture&color=374151&style=for-the-badge"></a>
+  <a href="https://www.enteros.ai"><img alt="官网: enteros.ai" src="./docs/assets/branding/cta-website.svg" height="40"></a>
+  <a href="#快速开始"><img alt="快速开始: 本地运行" src="./docs/assets/branding/cta-quick-start.svg" height="40"></a>
+  <a href="./docs/architecture/architecture.md"><img alt="系统架构: 查看设计" src="./docs/assets/branding/cta-architecture.svg" height="40"></a>
 </p>
 
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-orange.svg)](LICENSE)
