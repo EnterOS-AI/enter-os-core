@@ -14,6 +14,12 @@
   EnterOS is the org-native control plane that runs heterogeneous AI agents as one governed organization — a single runtime contract, hierarchy-aligned memory, and a real production control plane.
 </p>
 
+<p>
+  <a href="https://www.enteros.ai"><img alt="Website" src="https://img.shields.io/badge/Website-enteros.ai-5B5BF7?style=for-the-badge"></a>
+  <a href="#quick-start"><img alt="Quick Start" src="https://img.shields.io/badge/Quick_Start-Run_locally-111827?style=for-the-badge"></a>
+  <a href="./docs/architecture/architecture.md"><img alt="Architecture" src="https://img.shields.io/badge/Architecture-Read_the_design-111827?style=for-the-badge"></a>
+</p>
+
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-orange.svg)](LICENSE)
 
 [![Go Version](https://img.shields.io/badge/go-1.25+-00ADD8?logo=go)](https://golang.org/)
@@ -21,7 +27,7 @@
 [![Next.js](https://img.shields.io/badge/Next.js-15-black?logo=next.js)](https://nextjs.org/)
 
 <p>
-  Visual Canvas • Runtime Compatibility • Hierarchical Memory • Skill Evolution • Operational Guardrails
+  Role-native workspaces • Memory v2 (pgvector) • Claude Code · Codex · Hermes · OpenClaw
 </p>
 
 <p>
@@ -35,6 +41,17 @@
 </div>
 
 ---
+
+## Why Teams Choose EnterOS
+
+EnterOS gives AI platform teams the missing operating layer between raw agent runtimes and production. It turns agents into durable roles, makes the org chart the collaboration topology, scopes memory to real team boundaries, and gives operators a live surface for lifecycle, approvals, traces, files, terminal access, and runtime control.
+
+| What you need | How EnterOS helps |
+|---|---|
+| **Governed agent teams** | Model agents as long-lived workspaces with roles, hierarchy, lifecycle, secrets, approvals, and activity history. |
+| **Runtime freedom** | Run Claude Code, Codex, Hermes, and OpenClaw behind one workspace contract instead of locking every team into one framework. |
+| **Memory that compounds safely** | Use hierarchy-aligned `LOCAL`, `TEAM`, and `GLOBAL` memory scopes backed by Memory v2 and pgvector semantic recall. |
+| **Production operations** | Inspect, pause, restart, observe, and improve live workspaces through Canvas, WebSockets, Langfuse traces, terminal, files, and runtime tiers. |
 
 ## Quick Start
 
