@@ -1,7 +1,10 @@
 <div align="center">
 
 <p>
-  <img src="./docs/assets/branding/enteros-logo.svg" alt="EnterOS" width="420" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./docs/assets/branding/enteros-logo-white.svg">
+    <img src="./docs/assets/branding/enteros-logo.svg" alt="EnterOS" width="420" />
+  </picture>
 </p>
 
 <p>
