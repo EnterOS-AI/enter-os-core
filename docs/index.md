@@ -6,7 +6,7 @@ hero:
   text: The Org-Native OS For AI Agent Teams
   tagline: Visual canvas, Go control plane, pluggable runtimes, scoped memory, and operational guardrails for heterogeneous agent organizations.
   image:
-    src: /assets/branding/molecule-icon.png
+    src: /assets/branding/enteros-icon.png
     alt: EnterOS
   actions:
     - theme: brand
