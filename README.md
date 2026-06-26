@@ -11,14 +11,15 @@
   <a href="./README.md">English</a> | <a href="./README.zh-CN.md">中文</a>
 </p>
 
-<h3>The operating system for AI agent teams</h3>
+<h3>The world's first operating system for AI Agent teams</h3>
 
 <p>
-  EnterOS is the org-native control plane that runs heterogeneous AI agents as one governed organization — a single runtime contract, hierarchy-aligned memory, and a real production control plane.
+  EnterOS creates the agent-native workforce layer: every agent gets a role, a place in the org chart, hierarchy-aligned memory, and production control, so large-scale AI teams can run as one governed system.
 </p>
 
 <p>
   <a href="https://www.enteros.ai"><img alt="Website: enteros.ai" src="./docs/assets/branding/cta-website.svg" height="40"></a>
+  <a href="https://github.com/EnterOS-AI/enter-os-core"><img alt="GitHub: star repo" src="./docs/assets/branding/cta-star.svg" height="40"></a>
   <a href="#quick-start"><img alt="Quick Start: run locally" src="./docs/assets/branding/cta-quick-start.svg" height="40"></a>
   <a href="./docs/architecture/architecture.md"><img alt="Architecture: read design" src="./docs/assets/branding/cta-architecture.svg" height="40"></a>
 </p>
@@ -30,7 +31,7 @@
 [![Next.js](https://img.shields.io/badge/Next.js-15-black?logo=next.js)](https://nextjs.org/)
 
 <p>
-  Role-native workspaces • Memory v2 (pgvector) • Claude Code · Codex · Hermes · OpenClaw
+  Agent-native workforce • Org-chart topology • Memory v2 (pgvector) • Production control plane
 </p>
 
 <p>
@@ -45,16 +46,19 @@
 
 ---
 
-## Why Teams Choose EnterOS
+## Why This Is A New Category
 
-EnterOS gives AI platform teams the missing operating layer between raw agent runtimes and production. It turns agents into durable roles, makes the org chart the collaboration topology, scopes memory to real team boundaries, and gives operators a live surface for lifecycle, approvals, traces, files, terminal access, and runtime control.
+EnterOS is not another agent framework. It is the operating system for the agent workforce: a world where agents have job roles, reporting lines, memory boundaries, runtime contracts, and operational controls.
+
+That is what moves agents from impressive demos into large-scale systems that can be organized, governed, inspected, restarted, delegated to, and improved over time.
 
 | What you need | How EnterOS helps |
 |---|---|
-| **Governed agent teams** | Model agents as long-lived workspaces with roles, hierarchy, lifecycle, secrets, approvals, and activity history. |
-| **Runtime freedom** | Run Claude Code, Codex, Hermes, and OpenClaw behind one workspace contract instead of locking every team into one framework. |
-| **Memory that compounds safely** | Use hierarchy-aligned `LOCAL`, `TEAM`, and `GLOBAL` memory scopes backed by Memory v2 and pgvector semantic recall. |
-| **Production operations** | Inspect, pause, restart, observe, and improve live workspaces through Canvas, WebSockets, Langfuse traces, terminal, files, and runtime tiers. |
+| **An agent-native workforce** | Every agent becomes a durable role inside a living organization, not a disposable chat session. |
+| **Real organization structure** | The org chart becomes runtime topology: delegation, visibility, approvals, and memory follow hierarchy. |
+| **Safe compounding memory** | `LOCAL`, `TEAM`, and `GLOBAL` scopes let knowledge accumulate without leaking across the whole system. |
+| **Multi-runtime freedom** | Claude Code, Codex, Hermes, and OpenClaw run behind one workspace contract instead of one fragile framework choice. |
+| **Production-scale control** | Canvas, WebSockets, traces, files, terminal access, restart flows, and runtime tiers make agent teams operable at scale. |
 
 ## Quick Start
 
@@ -70,7 +74,7 @@ See the full [Quickstart Guide](./docs/quickstart.md) for prerequisites, manual 
 
 ## The Pitch
 
-EnterOS is the operating system for AI agent teams: the org-native control plane that runs heterogeneous AI agents as one governed organization.
+EnterOS is the world's first operating system for AI Agent teams: the org-native layer that turns fragmented agents into a governed, memory-driven, production-ready workforce.
 
 It combines the parts that are usually scattered across demos, internal glue code, and framework-specific tooling into one product:
 

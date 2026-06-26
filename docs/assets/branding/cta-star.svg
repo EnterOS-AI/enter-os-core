@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="176" height="40" viewBox="0 0 176 40" role="img" aria-label="GitHub star repo">
+  <defs>
+    <filter id="shadow" x="-8%" y="-20%" width="116%" height="150%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#101828" flood-opacity="0.10"/>
+    </filter>
+    <linearGradient id="accent" x1="72" y1="1" x2="175" y2="39" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0f1320"/>
+      <stop offset="1" stop-color="#050816"/>
+    </linearGradient>
+  </defs>
+  <g filter="url(#shadow)">
+    <rect x="1" y="1" width="174" height="38" rx="19" fill="#ffffff" stroke="#dfe3ee"/>
+    <rect x="1" y="1" width="78" height="38" rx="19" fill="#f6f7fb"/>
+    <rect x="72" y="1" width="103" height="38" rx="19" fill="url(#accent)"/>
+    <text x="39" y="24" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="10" font-weight="700" fill="#606579">GITHUB</text>
+    <text x="123.5" y="24" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="10" font-weight="800" fill="#ffffff">STAR REPO</text>
+  </g>
+</svg>

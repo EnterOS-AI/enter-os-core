@@ -11,14 +11,15 @@
   <a href="./README.md">English</a> | <a href="./README.zh-CN.md">中文</a>
 </p>
 
-<h3>AI Agent 团队的操作系统</h3>
+<h3>全球首个 AI Agent 团队操作系统</h3>
 
 <p>
-  EnterOS 是组织原生的控制平面，把异构 AI agents 作为一个受治理的组织运行起来：统一运行时契约、层级对齐的记忆，以及真正面向生产的控制平面。
+  EnterOS 正在创造 Agent 原生劳动力世界：每个 Agent 都有角色、组织位置、层级对齐的记忆和生产级控制面，让大规模 AI Agent 团队可以像一个受治理的组织一样运行。
 </p>
 
 <p>
   <a href="https://www.enteros.ai"><img alt="官网: enteros.ai" src="./docs/assets/branding/cta-website.svg" height="40"></a>
+  <a href="https://github.com/EnterOS-AI/enter-os-core"><img alt="GitHub: Star Repo" src="./docs/assets/branding/cta-star.svg" height="40"></a>
   <a href="#快速开始"><img alt="快速开始: 本地运行" src="./docs/assets/branding/cta-quick-start.svg" height="40"></a>
   <a href="./docs/architecture/architecture.md"><img alt="系统架构: 查看设计" src="./docs/assets/branding/cta-architecture.svg" height="40"></a>
 </p>
@@ -29,7 +30,7 @@
 [![Next.js](https://img.shields.io/badge/Next.js-15-black?logo=next.js)](https://nextjs.org/)
 
 <p>
-  角色原生 Workspace • Memory v2 (pgvector) • Claude Code · Codex · Hermes · OpenClaw
+  Agent 原生劳动力 • 组织图即拓扑 • Memory v2 (pgvector) • 生产级控制面
 </p>
 
 <p>
@@ -47,20 +48,23 @@
 
 ---
 
-## 为什么团队选择 EnterOS
+## 为什么这是一个新类别
 
-EnterOS 为 AI 平台团队补上 agent runtime 与生产环境之间缺失的操作层。它把 agent 建模为持久角色，让组织图直接成为协作拓扑，把记忆限定在真实团队边界内，并为生命周期、审批、追踪、文件、终端和 runtime 控制提供实时运维界面。
+EnterOS 不是又一个 agent framework。它是 Agent 劳动力的操作系统：在这个世界里，Agent 有岗位角色、汇报关系、记忆边界、运行时契约和运维控制。
+
+这让 Agent 从“很惊艳的 demo”进入真正的大规模系统：可以被组织、治理、观察、重启、委派任务，并随着工作持续进化。
 
 | 你需要什么 | EnterOS 如何解决 |
 |---|---|
-| **可治理的 Agent 团队** | 用角色、层级、生命周期、secrets、approvals 和 activity history 管理长期运行的 workspaces。 |
-| **运行时自由度** | 让 Claude Code、Codex、Hermes、OpenClaw 共用同一 workspace contract，而不是把所有团队锁进同一个 framework。 |
-| **可安全复利的记忆** | 通过 `LOCAL`、`TEAM`、`GLOBAL` 分层作用域，以及 Memory v2 + pgvector 语义召回，让记忆沿组织边界沉淀。 |
-| **生产级运维面** | 通过 Canvas、WebSocket、Langfuse traces、terminal、files 和 runtime tiers，检查、暂停、重启、观测并持续改进 live workspaces。 |
+| **Agent 原生劳动力** | 每个 Agent 都是组织里的长期角色，而不是一次性的聊天会话。 |
+| **真正的组织架构** | 组织图直接成为运行拓扑：委派、可见性、审批和记忆都沿层级流动。 |
+| **可安全复利的记忆** | `LOCAL`、`TEAM`、`GLOBAL` 作用域让知识持续沉淀，同时避免全局泄漏。 |
+| **多运行时自由度** | Claude Code、Codex、Hermes、OpenClaw 共用一个 workspace contract，不被单一 framework 锁死。 |
+| **大规模生产控制** | Canvas、WebSocket、traces、files、terminal、restart flows 和 runtime tiers 让 Agent 团队可以在生产系统中被稳定运维。 |
 
 ## 一句话定位
 
-EnterOS 是 AI Agent 团队的操作系统：一个组织原生的控制平面，用统一运行时契约、层级对齐的记忆和生产级运维能力，把异构 agents 作为一个受治理的组织运行起来。
+EnterOS 是全球首个 AI Agent 团队操作系统：一个组织原生层，把分散的 agents 变成可治理、有记忆、可生产运行的 Agent 劳动力。
 
 它把过去分散在 demo、内部胶水代码和各类 framework 私有工具里的关键能力，收敛成一个产品：
 
