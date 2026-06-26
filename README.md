@@ -17,7 +17,6 @@
 
 <p>
   <a href="https://www.enteros.ai"><img alt="Website: enteros.ai" src="./docs/assets/branding/cta-website.svg" height="40"></a>
-  <a href="https://github.com/EnterOS-AI/enter-os-core"><img alt="GitHub: star repo" src="./docs/assets/branding/cta-star.svg" height="40"></a>
   <a href="#quick-start"><img alt="Quick Start: run locally" src="./docs/assets/branding/cta-quick-start.svg" height="40"></a>
   <a href="./docs/architecture/architecture.md"><img alt="Architecture: read design" src="./docs/assets/branding/cta-architecture.svg" height="40"></a>
 </p>

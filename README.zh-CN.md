@@ -17,7 +17,6 @@
 
 <p>
   <a href="https://www.enteros.ai"><img alt="官网: enteros.ai" src="./docs/assets/branding/cta-website.svg" height="40"></a>
-  <a href="https://github.com/EnterOS-AI/enter-os-core"><img alt="GitHub: Star Repo" src="./docs/assets/branding/cta-star.svg" height="40"></a>
   <a href="#快速开始"><img alt="快速开始: 本地运行" src="./docs/assets/branding/cta-quick-start.svg" height="40"></a>
   <a href="./docs/architecture/architecture.md"><img alt="系统架构: 查看设计" src="./docs/assets/branding/cta-architecture.svg" height="40"></a>
 </p>
