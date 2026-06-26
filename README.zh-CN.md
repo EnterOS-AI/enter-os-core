@@ -1,7 +1,8 @@
 <div align="center">
 
 <p>
-  <img src="./docs/assets/branding/enteros-logo.svg" alt="EnterOS" width="420" />
+  <img src="./docs/assets/branding/enteros-logo.svg#gh-light-mode-only" alt="EnterOS" width="420" />
+  <img src="./docs/assets/branding/enteros-logo-white.svg#gh-dark-mode-only" alt="EnterOS" width="420" />
 </p>
 
 <p>
