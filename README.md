@@ -8,10 +8,10 @@
   <a href="./README.md">English</a> | <a href="./README.zh-CN.md">中文</a>
 </p>
 
-<h3>The world's first operating system for AI Agent teams</h3>
+<h3>The first agent-native operating system for AI Agent teams</h3>
 
 <p>
-  EnterOS creates the agent-native workforce layer: agents with roles, org charts, memory, governance, and production control, running at scale as one organized system instead of disappearing after a chat.
+  EnterOS creates the agent-native workforce layer: a unified runtime, org topology, scoped memory, governance, and production control plane that turns agents into team-based, production-grade automated labor with massive potential.
 </p>
 
 <p>
