@@ -1,10 +1,7 @@
 <div align="center">
 
 <p>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./docs/assets/branding/enteros-logo-white.svg">
-    <img src="./docs/assets/branding/enteros-logo.svg" alt="EnterOS" width="420" />
-  </picture>
+  <img src="./docs/assets/branding/enteros-logo.svg" alt="EnterOS" width="420" />
 </p>
 
 <p>
@@ -14,7 +11,7 @@
 <h3>全球首个 AI Agent 团队操作系统</h3>
 
 <p>
-  EnterOS 正在创造 Agent 原生劳动力世界：每个 Agent 都有角色、组织位置、层级对齐的记忆和生产级控制面，让大规模 AI Agent 团队可以像一个受治理的组织一样运行。
+  EnterOS 正在创造 Agent 原生劳动力层：让 Agent 拥有角色、组织架构、记忆、治理和生产级控制面，从一次性聊天变成可大规模运行的数字劳动力系统。
 </p>
 
 <p>
@@ -30,7 +27,7 @@
 [![Next.js](https://img.shields.io/badge/Next.js-15-black?logo=next.js)](https://nextjs.org/)
 
 <p>
-  Agent 原生劳动力 • 组织图即拓扑 • Memory v2 (pgvector) • 生产级控制面
+  Frameworks build agents • EnterOS builds the world they work in
 </p>
 
 <p>
@@ -48,19 +45,24 @@
 
 ---
 
-## 为什么这是一个新类别
+## 一个巨大的判断
 
-EnterOS 不是又一个 agent framework。它是 Agent 劳动力的操作系统：在这个世界里，Agent 有岗位角色、汇报关系、记忆边界、运行时契约和运维控制。
+Agent 正在成为劳动力，但今天绝大多数工具还在把 Agent 当成 prompt、chat、script 或 workflow node。
 
-这让 Agent 从“很惊艳的 demo”进入真正的大规模系统：可以被组织、治理、观察、重启、委派任务，并随着工作持续进化。
+EnterOS 补上的就是这个时代缺失的操作层：一个 Agent 有岗位角色、汇报关系、记忆边界、运行时契约、审批和生产级控制的世界。它让 Agent 不再只是“很惊艳的 demo”，而是进入可组织、可治理、可观察、可重启、可委派、可持续进化的大规模系统。
 
-| 你需要什么 | EnterOS 如何解决 |
+> Frameworks build agents. EnterOS builds the workforce they run in.
+
+## 为什么这个 Repo 值得 Star
+
+| 如果你相信... | EnterOS 正在构建... |
 |---|---|
-| **Agent 原生劳动力** | 每个 Agent 都是组织里的长期角色，而不是一次性的聊天会话。 |
-| **真正的组织架构** | 组织图直接成为运行拓扑：委派、可见性、审批和记忆都沿层级流动。 |
-| **可安全复利的记忆** | `LOCAL`、`TEAM`、`GLOBAL` 作用域让知识持续沉淀，同时避免全局泄漏。 |
-| **多运行时自由度** | Claude Code、Codex、Hermes、OpenClaw 共用一个 workspace contract，不被单一 framework 锁死。 |
-| **大规模生产控制** | Canvas、WebSocket、traces、files、terminal、restart flows 和 runtime tiers 让 Agent 团队可以在生产系统中被稳定运维。 |
+| **AI Agent 会成为真正的劳动力** | 一个 role-native workspace 模型，让每个 Agent 有身份、归属、生命周期和职责。 |
+| **Agent 团队需要组织结构，而不是 spaghetti graphs** | 组织图即运行拓扑：委派、可见性、审批和记忆都自然沿层级流动。 |
+| **记忆必须复利，但不能变成安全漏洞** | `LOCAL`、`TEAM`、`GLOBAL` 记忆作用域，叠加 Memory v2 和 pgvector 语义召回。 |
+| **未来不会被单一 runtime 垄断** | Claude Code、Codex、Hermes、OpenClaw 和未来 runtimes 的共享操作层。 |
+| **生产级 Agent 需要运维，不是玄学** | Canvas、WebSocket、traces、terminal、files、restart flows、runtime tiers 和 live workspace control。 |
+| **Agent 系统应该越用越强** | 从 memory 到 skill 的进化闭环，把有效经验变成可复用、可热加载的 procedure。 |
 
 ## 一句话定位
 

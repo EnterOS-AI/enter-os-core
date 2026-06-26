@@ -1,10 +1,7 @@
 <div align="center">
 
 <p>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./docs/assets/branding/enteros-logo-white.svg">
-    <img src="./docs/assets/branding/enteros-logo.svg" alt="EnterOS" width="420" />
-  </picture>
+  <img src="./docs/assets/branding/enteros-logo.svg" alt="EnterOS" width="420" />
 </p>
 
 <p>
@@ -14,7 +11,7 @@
 <h3>The world's first operating system for AI Agent teams</h3>
 
 <p>
-  EnterOS creates the agent-native workforce layer: every agent gets a role, a place in the org chart, hierarchy-aligned memory, and production control, so large-scale AI teams can run as one governed system.
+  EnterOS creates the agent-native workforce layer: agents with roles, org charts, memory, governance, and production control, running at scale as one organized system instead of disappearing after a chat.
 </p>
 
 <p>
@@ -31,7 +28,7 @@
 [![Next.js](https://img.shields.io/badge/Next.js-15-black?logo=next.js)](https://nextjs.org/)
 
 <p>
-  Agent-native workforce • Org-chart topology • Memory v2 (pgvector) • Production control plane
+  Frameworks build agents • EnterOS builds the world they work in
 </p>
 
 <p>
@@ -46,19 +43,24 @@
 
 ---
 
-## Why This Is A New Category
+## The Big Bet
 
-EnterOS is not another agent framework. It is the operating system for the agent workforce: a world where agents have job roles, reporting lines, memory boundaries, runtime contracts, and operational controls.
+Agents are becoming labor, but today's tools still treat them like prompts, chats, scripts, or workflow nodes.
 
-That is what moves agents from impressive demos into large-scale systems that can be organized, governed, inspected, restarted, delegated to, and improved over time.
+EnterOS is the missing operating layer for that shift: a world where AI agents have job roles, reporting lines, memory boundaries, runtime contracts, approvals, and production controls. It is how agents stop being isolated demos and start becoming an organized digital workforce.
 
-| What you need | How EnterOS helps |
+> Frameworks build agents. EnterOS builds the workforce they run in.
+
+## Why This Repo Is Worth A Star
+
+| If you believe... | EnterOS is building... |
 |---|---|
-| **An agent-native workforce** | Every agent becomes a durable role inside a living organization, not a disposable chat session. |
-| **Real organization structure** | The org chart becomes runtime topology: delegation, visibility, approvals, and memory follow hierarchy. |
-| **Safe compounding memory** | `LOCAL`, `TEAM`, and `GLOBAL` scopes let knowledge accumulate without leaking across the whole system. |
-| **Multi-runtime freedom** | Claude Code, Codex, Hermes, and OpenClaw run behind one workspace contract instead of one fragile framework choice. |
-| **Production-scale control** | Canvas, WebSockets, traces, files, terminal access, restart flows, and runtime tiers make agent teams operable at scale. |
+| **AI agents will become a real workforce** | A role-native workspace model where every agent has identity, ownership, lifecycle, and responsibility. |
+| **Agent teams need org structure, not spaghetti graphs** | Org-chart topology where delegation, visibility, approvals, and memory naturally follow hierarchy. |
+| **Memory must compound without becoming a security leak** | `LOCAL`, `TEAM`, and `GLOBAL` memory scopes backed by Memory v2 and pgvector semantic recall. |
+| **No single runtime will own the future** | A shared operating layer for Claude Code, Codex, Hermes, OpenClaw, and future runtimes. |
+| **Production agents need operations, not vibes** | Canvas, WebSockets, traces, terminal, files, restart flows, runtime tiers, and live workspace control. |
+| **Agent systems should improve with use** | A memory-to-skill loop where durable wins become reusable, hot-reloadable procedure. |
 
 ## Quick Start
 
