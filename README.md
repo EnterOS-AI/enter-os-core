@@ -15,10 +15,6 @@
 </p>
 
 <p>
-  <b>Frameworks build agents. EnterOS builds the organization they work in.</b>
-</p>
-
-<p>
   <a href="https://www.enteros.ai"><b>Website</b></a> ·
   <a href="./docs/quickstart.md"><b>Quick Start</b></a> ·
   <a href="./docs/architecture/architecture.md"><b>Architecture</b></a> ·
@@ -244,13 +240,13 @@ Personal, internal, and non-commercial use is permitted without restriction. You
 
 ---
 
-## Founder
+## Founders
 
-**Maverick** — Founder, EnterOS
+EnterOS is built by:
 
-- 💬 WeChat: `-MrCui-`
-- ✉️ Email: [saitannrinn@gmail.com](mailto:saitannrinn@gmail.com)
+- **Maverick** — Co-Founder · WeChat `-MrCui-` · [saitannrinn@gmail.com](mailto:saitannrinn@gmail.com)
+- **Hongming Wang** — Co-Founder · [hongmingwang@moleculesai.app](mailto:hongmingwang@moleculesai.app)
 
 <div align="center">
-<sub>Building the operating system for the agent workforce. Frameworks build agents — EnterOS builds the organization they work in.</sub>
+<sub>Building the operating system for the agent workforce.</sub>
 </div>

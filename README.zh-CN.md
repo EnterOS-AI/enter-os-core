@@ -12,10 +12,6 @@
 </p>
 
 <p>
-  <b>框架构建 Agent，EnterOS 构建 Agent 工作的组织。</b>
-</p>
-
-<p>
   <a href="https://www.enteros.ai"><b>官网</b></a> ·
   <a href="./docs/quickstart.md"><b>快速开始</b></a> ·
   <a href="./docs/architecture/architecture.md"><b>系统架构</b></a> ·
@@ -241,13 +237,13 @@ EnterOS 开放共建,欢迎贡献者。请从[本地开发](./docs/development/l
 
 ---
 
-## 创始人
+## 创始团队
 
-**Maverick** —— EnterOS 创始人
+EnterOS 由以下成员共同打造:
 
-- 💬 微信:`-MrCui-`
-- ✉️ 邮箱:[saitannrinn@gmail.com](mailto:saitannrinn@gmail.com)
+- **Maverick** —— 联合创始人 · 微信 `-MrCui-` · [saitannrinn@gmail.com](mailto:saitannrinn@gmail.com)
+- **Hongming Wang** —— 联合创始人 · [hongmingwang@moleculesai.app](mailto:hongmingwang@moleculesai.app)
 
 <div align="center">
-<sub>为 Agent 劳动力打造操作系统。框架构建 Agent —— EnterOS 构建它们工作的组织。</sub>
+<sub>为 Agent 劳动力打造操作系统。</sub>
 </div>
